@@ -137,7 +137,12 @@ int nvn_gpu_write(uint64_t gpu, const void *src, uint64_t n) {
 }
 
 /* ---- device ---- */
-static volatile LONG depth_minus_w;
+/* (hookshot) GL's near = -w from the start: the mode the game sets at its start (nvnDeviceSetDepthMode below). The
+   shaders prepared before that (gpu/vk/vk_draw.cpp prepare_run, at the renderer's start, which the game waits for;
+   and hookshot_rt --prepare-shaders, with no game at all) are translated for it: with 0 here they came out without
+   the depth conversion, and the first run after a preparation showed a white or black screen and menus without
+   their pictures until the game's own translations replaced them */
+static volatile LONG depth_minus_w = 1;
 int nvn_depth_minus_w(void) { return depth_minus_w != 0; }
 uint64_t nvn_native_proc(const char *name);
 
@@ -213,8 +218,10 @@ NV(nvnDeviceSetWindowOriginMode) {
 }
 NV(nvnDeviceSetDepthMode) {
     ((nvn_dev *)P(0))->depth_mode = U32(1);
-    InterlockedExchange(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
+    const LONG was = InterlockedExchange(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
     hos_log("nvn: depth mode %s", U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W ? "near = -w (GL)" : "near = 0");
+    if (was != depth_minus_w)
+        hos_log("nvn: the depth mode is not the one the prepared shaders were made for: their vertex stages draw wrong");
 }
 NV(nvnDeviceFinalizeCommandHandle) {}
 /* (mkw-recomp) GPU time on the CPU's tick clock (31.25 MHz: 32 ns a tick), as on the console: MKW's frame pacer

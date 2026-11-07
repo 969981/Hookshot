@@ -1016,6 +1016,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             // same key)
             for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
             vrt.previous_stage_stores.mask.set();
+            // (hookshot) GL's near = -w before the game says so, for the programs prepared before it does (host/nvn_native.c)
             vrt.convert_depth_mode = host->depth_minus_w() != 0;
             Stage v;
             v.nvn_stage = 0;
