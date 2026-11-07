@@ -95,9 +95,14 @@ typedef struct MkwVkRenderer {
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
-    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent */
+    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent,
+                                4: mouse sensitivity in percent, 5: mouse vertical inverted, 6: native mouse look */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
+    /* (hookshot, the menu) the controllers' buttons (host/nn_hid.c's B_* bits) with each read: they open, close and work it */
+    void (*menu_pad)(uint64_t buttons);
+    /* (hookshot, the menu) a setting changed from the game's side (the - and = keys: the mouse's sensitivity), kept in the file */
+    void (*option_set)(int id, int value);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

@@ -22,6 +22,8 @@ volatile LONG64 hos_present_count;   /* (nvn_native.c: the game's presents) */
 static HWND hwnd;
 static int renderer;   /* the renderer presents into the window */
 
+int rx_option(int id, int otherwise);   /* rx_backend.c: 1, the menu is open */
+
 /* mouse capture: raw motion accumulated here, taken by nn_hid.c */
 static volatile LONG mouse_dx, mouse_dy;
 static volatile LONG mouse_captured;
@@ -112,7 +114,8 @@ static void mouse_capture(HWND w, int on, const char *why) {
 
 static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_TIMER:
+    case WM_TIMER:   /* (hookshot) the menu open: the mouse let go, to point and click in it (vk_menu.cpp) */
+        if (mouse_captured && rx_option(1, 0)) mouse_capture(w, 0, "the menu opened");
         return 0;
     case WM_INPUT: {
         RAWINPUT ri;
@@ -134,7 +137,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN:
         InterlockedIncrement(&clicks);
         if (!renderer) hos_log("mouse: a click before the renderer was up: not captured");
-        if (renderer && !mouse_captured) mouse_capture(w, 1, "a click in the window");
+        if (renderer && !mouse_captured && !rx_option(1, 0)) mouse_capture(w, 1, "a click in the window");
         return 0;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) mouse_capture(w, 0, "Esc");

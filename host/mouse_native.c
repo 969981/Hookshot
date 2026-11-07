@@ -77,11 +77,13 @@ static void turn(uint64_t at, float dpitch, float dyaw) {
 /* With each read of the controller (nn_hid.c, the game's threads): 0 if the mouse is not captured, 1 if its motion
    turned the camera, -1 if no camera was found and the motion was given back (the stick's way takes it) */
 int hos_mouse_native(void) {
-    static int invert = -1;
-    if (invert < 0) {
-        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
-        hos_log("mouse native: on (HOS_MOUSE_NATIVE=0: the mouse as the right stick)");
+    static int env_invert = -1;
+    if (env_invert < 0) {
+        env_invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
+        hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE=0: the mouse as the right stick)");
     }
+    int rx_option(int id, int otherwise);
+    const int invert = env_invert || rx_option(5, 0);   /* (the menu's Invert vertical) */
     int32_t dx, dy;
     if (!hos_mouse_take(&dx, &dy)) return 0;
     if (InterlockedExchange(&busy, 1)) {   /* (another thread is at it: the motion waits for the next read) */

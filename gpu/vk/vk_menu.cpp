@@ -27,6 +27,7 @@ struct Row {
     int lo, hi, step;
     const char* (*text)(int v);
     const char* help;   // (shown under the list while the row is selected)
+    int tab;            // (hookshot: the tab it is on, tab_names)
 };
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
@@ -51,37 +52,56 @@ const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
 const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
 
+const char* tx_sens(int v) {
+    static char b[12];
+    snprintf(b, sizeof b, "%.2f", v / 100.0);
+    return b;
+}
+const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
+
+const char* tab_names[] = {"Display", "Performance", "Camera & Mouse"};
+constexpr int kTabs = 3;
+
 Row rows[] = {
     {"Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
-     "Fills the whole screen with the game, without the window's border. The same as F11."},
-    {"Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
-     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
-     "can show artifacts."},
-    {"Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
-     "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
+     "Fills the whole screen with the game, without the window's border. The same as F11.", 0},
     {"Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
      "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
-     "faster."},
+     "faster.", 0},
     {"Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
-     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
+     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still.", 0},
     {"Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
-     "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
+     "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges.", 0},
+    {"Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
+     "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart.", 0},
+    {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
+     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate.", 0},
+    {"Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
+     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
+     "can show artifacts.", 1},
+    {"Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
+     "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay.", 1},
     {"Game speed", &opts.realtime, 0, 1, 1, tx_speed,
      "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
-     "longer steps."},
+     "longer steps.", 1},
     {"Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
-     "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
-    {"Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
-    {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
-     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
+     "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart.", 1},
+    {"Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
+     "Native: the mouse turns the camera itself, one to one, like a PC game. As the stick: the mouse stands in for the right stick "
+     "(the game's own stick curve and top speed). Click in the game's window to use the mouse; Esc lets it go.", 2},
+    {"Mouse sensitivity", &opts.mouse_sens, 10, 500, 5, tx_sens,
+     "How far the camera turns for a given mouse movement: at 1.00, a tenth of a degree a count. One setting for every camera. "
+     "The - and = keys change it in the game too.", 2},
+    {"Invert vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
+     "Swaps up and down for the mouse: moving it forward tilts the camera down.", 2},
 };
 constexpr int kRows = sizeof rows / sizeof rows[0];
-constexpr int kMenuWidth = 360;   // (at a scale of 1: 720 lines)
+constexpr int kMenuWidth = 480;   // (at a scale of 1: 720 lines)
 
 std::atomic<bool> open_now{false};
-int selected = 0;
-bool menu_refresh = false;
+int cur_tab = 0, selected = 0;    // (selected: the row's index in rows, on cur_tab)
+std::atomic<bool> menu_refresh{false};
+std::atomic<uint64_t> pad_now{0};
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
@@ -199,60 +219,141 @@ void fill(HDC dc, int x, int y, int w, int h, COLORREF c) {
     FillRect(dc, &r, b);
     DeleteObject(b);
 }
+// (hookshot) The menu redrawn: tabs, a row a setting with a switch, a slider or arrows, the help under them; in the pause
+// menu's colours. Only rectangles and text: the POSIX GDI stand-in (host/posix/gdi_posix.c) has nothing else. Where each
+// part landed is kept for the mouse (hits), in the menu's own pixels.
+enum Kind { K_CHOICE, K_TOGGLE, K_SLIDER };
+Kind kind_of(const Row& r) {
+    if (r.text == tx_onoff) return K_TOGGLE;
+    if ((r.hi - r.lo) / r.step >= 8 && r.text != tx_framegen) return K_SLIDER;
+    return K_CHOICE;
+}
+constexpr int kMaxShown = 8;   // (rows a tab shows at most: the panel keeps that height)
+struct Hits {
+    RECT tab[kTabs]{}, close{};
+    RECT row[kMaxShown]{}, ctl[kMaxShown]{};
+    int index[kMaxShown]{}, shown = 0;
+} hits;
+const COLORREF kBg = RGB(30, 24, 18), kHead = RGB(46, 36, 25), kTabOff = RGB(38, 30, 21), kSel = RGB(72, 56, 36),
+               kGold = RGB(214, 174, 92), kText = RGB(242, 232, 212), kDim = RGB(172, 156, 128), kTrack = RGB(64, 52, 38),
+               kLine = RGB(84, 68, 46);
+int shown_rows(int tab, int* out) {
+    int n = 0;
+    for (int i = 0; i < kRows && n < kMaxShown; i++)
+        if (rows[i].tab == tab) out[n++] = i;
+    return n;
+}
+int most_rows() {
+    int most = 0, tmp[kMaxShown];
+    for (int t = 0; t < kTabs; t++) most = std::max(most, shown_rows(t, tmp));
+    return most;
+}
+int text_w(HDC dc, const char* t) {
+    SIZE sz{};
+    GetTextExtentPoint32A(dc, t, (int)strlen(t), &sz);
+    return (int)sz.cx;
+}
+void text_at(HDC dc, int x, int y, const char* t, COLORREF c) {
+    SetTextColor(dc, c);
+    TextOutA(dc, x, y, t, (int)strlen(t));
+}
+void frame(HDC dc, int x, int y, int w, int h, int t, COLORREF c) {
+    fill(dc, x, y, w, t, c), fill(dc, x, y + h - t, w, t, c), fill(dc, x, y, t, h, c), fill(dc, x + w - t, y, t, h, c);
+}
 void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
-    fill(dc, 0, 0, (int)w, (int)h, RGB(16, 20, 18));
-    fill(dc, 0, 0, (int)w, 2 * s, RGB(96, 176, 112));
+    const int W = (int)w;
+    fill(dc, 0, 0, W, (int)h, kBg);
+    frame(dc, 0, 0, W, (int)h, std::max(1, s), kLine);
     SetBkMode(dc, TRANSPARENT);
-    HFONT title = font(20 * s, FW_SEMIBOLD), body = font(16 * s, FW_NORMAL);
+    HFONT title = font(19 * s, FW_SEMIBOLD), body = font(15 * s, FW_NORMAL), bold = font(15 * s, FW_SEMIBOLD),
+          small = font(12 * s, FW_NORMAL), help = font(14 * s, FW_NORMAL);
     HGDIOBJ old = SelectObject(dc, title);
-    SetTextColor(dc, RGB(236, 240, 236));
-    TextOutA(dc, 16 * s, 12 * s, "Hookshot", 8);
-    {   // (which build, beside the title, so a report can say it without opening the log; the release alone when the whole
-        // line would run into the title)
-        SIZE tsz{};
-        GetTextExtentPoint32A(dc, "Hookshot", 8, &tsz);
-        HFONT small = font(12 * s, FW_NORMAL);
-        SelectObject(dc, small);
-        SetTextColor(dc, RGB(140, 150, 144));
-        std::string ver = HOOKSHOT_VERSION;
-        const int room = (int)w - 32 * s - tsz.cx - 12 * s;
-        SIZE sz{};
-        GetTextExtentPoint32A(dc, ver.c_str(), (int)ver.size(), &sz);
-        if (sz.cx > room && ver.find(" (") != std::string::npos) {
-            ver.resize(ver.find(" ("));
-            GetTextExtentPoint32A(dc, ver.c_str(), (int)ver.size(), &sz);
+    // the header: the name, and a close box
+    const int head = 44 * s;
+    fill(dc, 0, 0, W, head, kHead);
+    fill(dc, 0, head - 2 * s, W, 2 * s, kGold);
+    text_at(dc, 18 * s, 11 * s, "Hookshot", kText);
+    const int tw = text_w(dc, "Hookshot");
+    SelectObject(dc, body);
+    text_at(dc, 18 * s + tw + 10 * s, 14 * s, "Settings", kDim);
+    const int cb = 28 * s;
+    hits.close = {W - cb - 10 * s, 8 * s, W - 10 * s, 8 * s + cb};
+    frame(dc, hits.close.left, hits.close.top, cb, cb, std::max(1, s), kLine);
+    SelectObject(dc, bold);
+    text_at(dc, hits.close.left + (cb - text_w(dc, "X")) / 2, hits.close.top + 5 * s, "X", kDim);
+    // the tabs
+    const int ty = head, th = 36 * s, tabw = W / kTabs;
+    for (int t = 0; t < kTabs; t++) {
+        const int x = t * tabw, wd = t == kTabs - 1 ? W - x : tabw;
+        hits.tab[t] = {x, ty, x + wd, ty + th};
+        fill(dc, x, ty, wd, th, t == cur_tab ? kBg : kTabOff);
+        if (t == cur_tab) fill(dc, x + 12 * s, ty + th - 3 * s, wd - 24 * s, 3 * s, kGold);
+        SelectObject(dc, t == cur_tab ? bold : body);
+        text_at(dc, x + (wd - text_w(dc, tab_names[t])) / 2, ty + 9 * s, tab_names[t], t == cur_tab ? kText : kDim);
+    }
+    // the rows
+    const int top = ty + th + 8 * s, rh = 40 * s, cw = 210 * s, cx = W - 18 * s - cw;
+    int list[kMaxShown];
+    hits.shown = shown_rows(cur_tab, list);
+    for (int k = 0; k < hits.shown; k++) {
+        const Row& r = rows[list[k]];
+        const int y = top + k * rh, sel = list[k] == selected;
+        hits.index[k] = list[k];
+        hits.row[k] = {8 * s, y, W - 8 * s, y + rh};
+        hits.ctl[k] = {cx, y, cx + cw, y + rh};
+        if (sel) fill(dc, 8 * s, y + 2 * s, W - 16 * s, rh - 4 * s, kSel), fill(dc, 8 * s, y + 2 * s, 4 * s, rh - 4 * s, kGold);
+        SelectObject(dc, body);
+        text_at(dc, 22 * s, y + 10 * s, r.name, sel ? kText : RGB(222, 210, 188));
+        const int v = *r.value, mid = y + rh / 2;
+        switch (kind_of(r)) {
+        case K_TOGGLE: {
+            const int sw = 48 * s, sh = 22 * s, sx = cx + cw - sw, sy = mid - sh / 2;
+            fill(dc, sx, sy, sw, sh, v ? kGold : kTrack);
+            fill(dc, v ? sx + sw - sh + 3 * s : sx + 3 * s, sy + 3 * s, sh - 6 * s, sh - 6 * s, v ? RGB(40, 30, 18) : kDim);
+            const char* t = r.text(v);
+            text_at(dc, sx - 12 * s - text_w(dc, t), y + 10 * s, t, sel ? kText : kDim);
+            break;
         }
-        if (sz.cx <= room) TextOutA(dc, (int)w - 16 * s - sz.cx, 18 * s, ver.c_str(), (int)ver.size());
-        SelectObject(dc, title);
-        DeleteObject(small);
+        case K_SLIDER: {
+            const int vw = 52 * s, tx = cx, tw2 = cw - vw - 10 * s, ky = mid - 3 * s;
+            const int at = tx + (int)((long long)(v - r.lo) * tw2 / std::max(1, r.hi - r.lo));
+            fill(dc, tx, ky, tw2, 6 * s, kTrack);
+            fill(dc, tx, ky, at - tx, 6 * s, kGold);
+            fill(dc, at - 5 * s, mid - 10 * s, 10 * s, 20 * s, sel ? kText : kDim);
+            const char* t = r.text(v);
+            SelectObject(dc, bold);
+            text_at(dc, cx + cw - text_w(dc, t), y + 10 * s, t, sel ? kText : kDim);
+            break;
+        }
+        default: {
+            const int bw = 26 * s, by = mid - 13 * s;
+            frame(dc, cx, by, bw, 26 * s, std::max(1, s), sel ? kGold : kLine);
+            frame(dc, cx + cw - bw, by, bw, 26 * s, std::max(1, s), sel ? kGold : kLine);
+            SelectObject(dc, bold);
+            text_at(dc, cx + (bw - text_w(dc, "<")) / 2, by + 3 * s, "<", sel ? kGold : kDim);
+            text_at(dc, cx + cw - bw + (bw - text_w(dc, ">")) / 2, by + 3 * s, ">", sel ? kGold : kDim);
+            SelectObject(dc, body);
+            const char* t = r.text(v);
+            text_at(dc, cx + (cw - text_w(dc, t)) / 2, y + 10 * s, t, sel ? kText : kDim);
+        }
+        }
     }
-    SelectObject(dc, body);
-    const int rh = 28 * s, top = 44 * s;
-    for (int i = 0; i < kRows; i++) {
-        const int y = top + i * rh;
-        if (i == selected) fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
-        SetTextColor(dc, i == selected ? RGB(255, 255, 255) : RGB(196, 204, 198));
-        TextOutA(dc, 16 * s, y + 4 * s, rows[i].name, (int)strlen(rows[i].name));
-        char v[40];
-        snprintf(v, sizeof v, i == selected ? "<  %s  >" : "%s", rows[i].text(*rows[i].value));
-        SIZE sz{};
-        GetTextExtentPoint32A(dc, v, (int)strlen(v), &sz);
-        TextOutA(dc, (int)w - 16 * s - sz.cx, y + 4 * s, v, (int)strlen(v));
-    }
-    const int help_top = top + kRows * rh + 8 * s;
-    fill(dc, 16 * s, help_top - 4 * s, (int)w - 32 * s, std::max(1, s), RGB(52, 64, 56));
-    HFONT help = font(14 * s, FW_NORMAL);
+    // the help, then the hints
+    const int help_top = top + most_rows() * rh + 8 * s;
+    fill(dc, 16 * s, help_top, W - 32 * s, std::max(1, s), kLine);
     SelectObject(dc, help);
-    SetTextColor(dc, RGB(176, 186, 180));
-    wrap_help(dc, rows[selected].help, (int)w - 32 * s, 16 * s, help_top + 4 * s, true);
-    SelectObject(dc, body);
-    SetTextColor(dc, RGB(140, 150, 144));
-    const char* hint = "Arrows change   Insert or F1 closes";
-    TextOutA(dc, 16 * s, help_top + 4 * s + help_px + 10 * s, hint, (int)strlen(hint));
+    SetTextColor(dc, RGB(200, 186, 160));
+    wrap_help(dc, rows[selected].help, W - 32 * s, 16 * s, help_top + 10 * s, true);
+    const int foot = help_top + 10 * s + help_px + 12 * s;
+    fill(dc, 0, foot, W, (int)h - foot, kHead);
+    SelectObject(dc, small);
+    text_at(dc, 16 * s, foot + 8 * s, "Mouse: click, drag   Keys: arrows, Tab, Enter   Pad: D-pad, A, B, L / R", kDim);
+    text_at(dc, 16 * s, foot + 26 * s, "Close: Esc, Insert, F1, or both sticks pressed in", kDim);
+    std::string ver = HOOKSHOT_VERSION;
+    if (ver.find(" (") != std::string::npos) ver.resize(ver.find(" ("));
+    text_at(dc, W - 16 * s - text_w(dc, ver.c_str()), foot + 26 * s, ver.c_str(), RGB(128, 114, 92));
     SelectObject(dc, old);
-    DeleteObject(title);
-    DeleteObject(body);
-    DeleteObject(help);
+    for (HFONT f : {title, body, bold, small, help}) DeleteObject(f);
 }
 char fps_text[48] = "";
 char fps_sub[32] = "";
@@ -304,8 +405,9 @@ int measure_help(int s) {
 void redraw_menu(int s) {
     static int measured_at = 0;
     if (measured_at != s) help_px = measure_help(s), measured_at = s;
-    // (title and rows, the rule and the help text, the hint line)
-    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s), (uint32_t)((44 + kRows * 28 + 12 + 10 + 30) * s + help_px), paint_menu, s);
+    // (header, tabs, the tallest tab's rows, the help, the hints)
+    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s), (uint32_t)((44 + 36 + 8 + most_rows() * 40 + 8 + 10 + 12 + 46) * s + help_px),
+             paint_menu, s);
 }
 
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
@@ -425,38 +527,141 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
     return have;
 }
 
+namespace {
+/// A row's value moved one step (dir -1 or +1): a switch flips, a slider stops at its ends, a choice goes round
+void change(Row& r, int dir) {
+    int v = *r.value + dir * r.step;
+    if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
+    if (kind_of(r) == K_SLIDER) v = std::min(std::max(v, r.lo), r.hi);
+    else v = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
+    if (v != *r.value) *r.value = v, save();
+}
+void set_from_x(Row& r, int x, const RECT& ctl, int s) {   // (a slider: the value under the pointer)
+    const int tw = (ctl.right - ctl.left) - 52 * s - 10 * s;
+    const int v = r.lo + (int)((long long)(x - ctl.left) * (r.hi - r.lo) / std::max(1, tw));
+    const int stepped = r.lo + (std::min(std::max(v, r.lo), r.hi) - r.lo + r.step / 2) / r.step * r.step;
+    if (stepped != *r.value) *r.value = std::min(stepped, r.hi), save();
+}
+bool in(const RECT& r, int x, int y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
+int first_on(int tab) {
+    for (int i = 0; i < kRows; i++)
+        if (rows[i].tab == tab) return i;
+    return 0;
+}
+void move_sel(int dir) {   // (up or down among the rows on cur_tab)
+    int list[kMaxShown];
+    const int n = shown_rows(cur_tab, list);
+    int k = 0;
+    while (k < n && list[k] != selected) k++;
+    selected = list[((k + dir) % n + n) % n];
+}
+void to_tab(int t) {
+    cur_tab = (t % kTabs + kTabs) % kTabs;
+    selected = first_on(cur_tab);
+}
+/// a press that repeats while held: the first at once, then after 350 ms every 60 ms
+bool repeat(bool down, int64_t now, int64_t& since, int64_t& next) {
+    if (!down) { since = 0; return false; }
+    if (!since) { since = now, next = now + 350000000; return true; }
+    if (now >= next) { next = now + 60000000; return true; }
+    return false;
+}
+} // namespace
+
+void menu_pad(uint64_t buttons) { pad_now.store(buttons, std::memory_order_relaxed); }
+
+void menu_option_set(int id, int value) {
+    if (id == 4) opts.mouse_sens = std::min(std::max(value, 10), 500);
+    else return;
+    save();
+    menu_refresh = true;
+}
+
 void menu_tick() {
     fullscreen_tick();
-    static bool held[7];
-    static const int keys[7] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1};   // (F1: for keyboards without Insert)
+    // the keyboard (while the game's window is in front), the mouse's left button, and the controllers (host/nn_hid.c)
+    enum { K_INSERT, K_UP, K_DOWN, K_LEFT, K_RIGHT, K_ESC, K_F1, K_TAB, K_ENTER, K_MOUSE, NKEYS };
+    static const int keys[NKEYS] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1, VK_TAB, VK_RETURN, VK_LBUTTON};
+    static bool held[NKEYS];
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
     const bool mine = pid == GetCurrentProcessId();
-    bool press[7] = {};
-    for (int i = 0; i < 7; i++) {
-        const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
-        press[i] = down && !held[i];
-        held[i] = down;
+    bool press[NKEYS] = {}, down[NKEYS] = {};
+    for (int i = 0; i < NKEYS; i++) {
+        down[i] = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
+        press[i] = down[i] && !held[i];
+        held[i] = down[i];
     }
+    // (the Switch layout's bits, as host/nn_hid.c reads every pad: A 0, B 1, L 6, R 7, d-pad left 12, up 13, right 14, down 15)
+    const uint64_t pad = pad_now.load(std::memory_order_relaxed);
+    static uint64_t pad_was;
+    const uint64_t pad_press = pad & ~pad_was;
+    pad_was = pad;
+    auto bit = [](uint64_t b, int n) { return (b >> n & 1) != 0; };
+    const bool sticks = bit(pad, 4) && bit(pad, 5) && (bit(pad_press, 4) || bit(pad_press, 5));   // (both sticks pressed in)
     const int scale = scale_of(dev.swap_extent.height);
-    bool changed = scale != cur_scale || menu_refresh;
-    menu_refresh = false;
+    bool changed = scale != cur_scale || menu_refresh.exchange(false);
     cur_scale = scale;
-    if (press[0] || press[6]) open_now = !open_now.load(), changed = true;
+    if (press[K_INSERT] || press[K_F1] || sticks) open_now = !open_now.load(), changed = true;
     if (open_now.load()) {
-        if (press[5]) open_now = false;
-        if (press[1]) selected = (selected + kRows - 1) % kRows, changed = true;
-        if (press[2]) selected = (selected + 1) % kRows, changed = true;
-        if (press[3] || press[4]) {
+        const int64_t now = prof_now();
+        static int64_t since[2], next[2];
+        const bool left = repeat(down[K_LEFT] || bit(pad, 12), now, since[0], next[0]);
+        const bool right = repeat(down[K_RIGHT] || bit(pad, 14), now, since[1], next[1]);
+        if (rows[selected].tab != cur_tab) selected = first_on(cur_tab);
+        if (press[K_ESC] || bit(pad_press, 1)) open_now = false, changed = true;
+        if (press[K_UP] || bit(pad_press, 13)) move_sel(-1), changed = true;
+        if (press[K_DOWN] || bit(pad_press, 15)) move_sel(+1), changed = true;
+        if (press[K_TAB] || bit(pad_press, 7)) to_tab(cur_tab + 1), changed = true;
+        if (bit(pad_press, 6)) to_tab(cur_tab - 1), changed = true;
+        if (left || right) change(rows[selected], right ? +1 : -1), changed = true;
+        if (press[K_ENTER] || bit(pad_press, 0)) {
             Row& r = rows[selected];
-            int v = *r.value + (press[4] ? r.step : -r.step);
-            if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)
-            *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-            changed = true;
-            save();
+            if (kind_of(r) != K_SLIDER) change(r, +1), changed = true;
         }
-        if (changed) redraw_menu(scale);
+#ifdef _WIN32
+        {   // the mouse: where it points in the menu's own pixels (the menu sits in the middle of the window's image)
+            static POINT last{-1, -1};
+            static int dragging = -1;
+            POINT p{};
+            const HWND win = app_window();
+            RECT cr{};
+            std::unique_lock lk(bmp_mu);
+            const int mw = (int)menu_bmp.w, mh = (int)menu_bmp.h;
+            lk.unlock();
+            if (win && mine && mw && GetCursorPos(&p) && ScreenToClient(win, &p) && GetClientRect(win, &cr) && cr.right > 0 && cr.bottom > 0) {
+                const int ix = (int)((long long)p.x * dev.swap_extent.width / cr.right) - ((int)dev.swap_extent.width - mw) / 2;
+                const int iy = (int)((long long)p.y * dev.swap_extent.height / cr.bottom) - ((int)dev.swap_extent.height - mh) / 2;
+                const bool moved = p.x != last.x || p.y != last.y;
+                last = p;
+                if (!down[K_MOUSE]) dragging = -1;
+                if (dragging >= 0) {
+                    for (int k = 0; k < hits.shown; k++)
+                        if (hits.index[k] == dragging) set_from_x(rows[dragging], ix, hits.ctl[k], scale), changed = true;
+                } else {
+                    for (int k = 0; k < hits.shown; k++)
+                        if (moved && in(hits.row[k], ix, iy) && selected != hits.index[k]) selected = hits.index[k], changed = true;
+                    if (press[K_MOUSE]) {
+                        if (in(hits.close, ix, iy)) open_now = false, changed = true;
+                        for (int t = 0; t < kTabs; t++)
+                            if (in(hits.tab[t], ix, iy) && t != cur_tab) to_tab(t), changed = true;
+                        for (int k = 0; k < hits.shown; k++) {
+                            if (!in(hits.ctl[k], ix, iy)) continue;
+                            Row& r = rows[hits.index[k]];
+                            selected = hits.index[k];
+                            const Kind kd = kind_of(r);
+                            if (kd == K_SLIDER) set_from_x(r, ix, hits.ctl[k], scale), dragging = hits.index[k];
+                            else if (kd == K_TOGGLE) change(r, +1);
+                            else change(r, ix < (hits.ctl[k].left + hits.ctl[k].right) / 2 ? -1 : +1);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+#endif
+        if (changed && open_now.load()) redraw_menu(scale);
     }
     if (opts.show_fps) {
         static int64_t next = 0, last_game = 0, last_shown = 0;

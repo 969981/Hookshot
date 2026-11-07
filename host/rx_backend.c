@@ -317,6 +317,8 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
+void rx_menu_pad(uint64_t buttons) { if (vk && vk->menu_pad) vk->menu_pad(buttons); }
+void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }

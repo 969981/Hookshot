@@ -17,12 +17,17 @@ struct Options {
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
     int show_fps = 0;
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
+    int mouse_native = 1; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
+    int mouse_sens = 100; // percent: 0.1 degrees a count at 100 (host/mouse_native.c)
+    int mouse_invert = 0; // up and down swapped
 };
 extern Options opts;
 
 void menu_init();             // (the options from the file, once)
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
+void menu_pad(uint64_t buttons);              // (the controllers' buttons, from the game's threads: host/nn_hid.c)
+void menu_option_set(int id, int value);      // (a setting from the game's side: 4 the mouse's sensitivity)
 void menu_note_frame(bool game_frame);   // (the frame rates the FPS counter shows)
 /// Over the window's image (TRANSFER_DST_OPTIMAL), w x h: the menu and the FPS counter. slot: the frame in flight, 0 to 2.
 void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h);

@@ -74,13 +74,27 @@ static void mouse_sens_save(void) {
     if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
 }
 
+void rx_option_set(int id, int value);
+static int sens_from_env = -1;
 static void mouse_sens_keys(void) {
     static int prev_minus, prev_plus;
+    /* (hookshot) the menu keeps the sensitivity (Camera & Mouse; hookshot_options.ini), in percent: read with each
+       read; - and = change it there. HOS_MOUSE_SENS still wins. Before: <user>/mouse_sens.txt, moved into the menu once */
+    if (sens_from_env < 0) {
+        sens_from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
+        if (!sens_from_env && hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(4, 100) == 100)
+            rx_option_set(4, (int)lround(hos_mouse_sens * 100));
+    }
+    if (!sens_from_env) hos_mouse_sens = rx_option(4, 100) / 100.0;
     const int minus = key(VK_OEM_MINUS) || key(VK_SUBTRACT), plus = key(VK_OEM_PLUS) || key(VK_ADD);
-    if (minus && !prev_minus) { hos_mouse_sens *= 0.8; mouse_sens_save(); }
-    if (plus && !prev_plus) { hos_mouse_sens *= 1.25; mouse_sens_save(); }
-    if (hos_mouse_sens < 0.05) hos_mouse_sens = 0.05;
-    if (hos_mouse_sens > 20) hos_mouse_sens = 20;
+    if ((minus && !prev_minus) || (plus && !prev_plus)) {
+        hos_mouse_sens *= minus && !prev_minus ? 0.8 : 1.25;
+        if (hos_mouse_sens < 0.1) hos_mouse_sens = 0.1;
+        if (hos_mouse_sens > 5) hos_mouse_sens = 5;
+        if (sens_from_env) mouse_sens_save();
+        else rx_option_set(4, (int)lround(hos_mouse_sens * 100));
+        hos_log("mouse: sensitivity %.2f", hos_mouse_sens);
+    }
     prev_minus = minus;
     prev_plus = plus;
 }
@@ -135,7 +149,7 @@ static void mouse_look_tick(void) {
 static int invert = -1;
 static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
-        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
+        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;   /* (and the menu's Invert vertical, read in mouse_stick) */
         hos_mouse_sens = 1.0;
         char path[512];
         snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
@@ -156,6 +170,9 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     static int captured, was_pointing;
     mouse_setup();
     mouse_sens_keys();
+    static int env_invert = -1;
+    if (env_invert < 0) env_invert = invert;
+    invert = env_invert || rx_option(5, 0);
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
         int32_t dx, dy;
@@ -434,7 +451,22 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
     if ((exclusive && npresses > 0 && (hos_now_ns() - script_t0) / 1000000 < script_end_ms + 5000) || !game_in_front())
         return;
-    pads_read(buttons, stick);
+    {   /* (hookshot) the pads go to the menu too (both sticks pressed in open it; it is worked with the d-pad, A, B, L
+           and R), and while it is open the game gets nothing: before, only the keyboard was kept from it */
+        void rx_menu_pad(uint64_t buttons);
+        uint64_t pad_buttons = 0;
+        int32_t pad_stick[4] = {0};
+        pads_read(&pad_buttons, pad_stick);
+        rx_menu_pad(pad_buttons);
+        if (rx_option(1, 0)) {
+            *buttons = 0;
+            memset(stick, 0, 4 * sizeof *stick);
+            return;
+        }
+        if ((pad_buttons >> B_LS & 1) && (pad_buttons >> B_RS & 1)) pad_buttons &= ~(1ULL << B_LS | 1ULL << B_RS);
+        *buttons |= pad_buttons;
+        stick_max(stick, pad_stick);
+    }
     /* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for
        Plus and IJKL as another camera) */
     struct { int vk; int b; } kmap[] = {
@@ -449,11 +481,8 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     static int armed[2];
     /* (hookshot) the mouse turns the camera itself (mouse_native.c); as the right stick while no camera is found, or
        always with HOS_MOUSE_NATIVE=0 */
-    static int native = -1;
-    if (native < 0) {
-        const char *e = getenv("HOS_MOUSE_NATIVE");
-        native = !e || atoi(e) != 0;
-    }
+    const char *native_env = getenv("HOS_MOUSE_NATIVE");
+    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 1);   /* (the menu's Mouse camera) */
     int hos_mouse_native(void);
     int mouse_on, as_stick = !native;
     if (native) {
