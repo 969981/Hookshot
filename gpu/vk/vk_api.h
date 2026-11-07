@@ -96,7 +96,8 @@ typedef struct MkwVkRenderer {
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
     int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent,
-                                4: mouse sensitivity in percent, 5: mouse vertical inverted, 6: native mouse look */
+                                4: mouse sensitivity in percent, 5: mouse vertical inverted, 6: native mouse look,
+                                100 + action * 2 + slot: a key of the controls, 200 + button: the pad button for one (host/nn_hid.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (hookshot, the menu) the controllers' buttons (host/nn_hid.c's B_* bits) with each read: they open, close and work it */

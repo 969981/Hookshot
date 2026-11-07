@@ -3093,7 +3093,9 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_register_texture = register_texture_queued;
     t.nvn_event_signal = event_signal_queued;
     t.option = [](int id) -> int { return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? opts.resolution == 0 : id == 3 ? (opts.resolution == 1 ? 100 : opts.resolution == 2 ? 75 : opts.resolution == 3 ? 67 : opts.resolution == 4 ? 50 : 0) :
-                                          id == 4 ? opts.mouse_sens : id == 5 ? opts.mouse_invert : id == 6 ? opts.mouse_native : 0; };
+                                          id == 4 ? opts.mouse_sens : id == 5 ? opts.mouse_invert : id == 6 ? opts.mouse_native :
+                                          id >= 100 && id < 148 ? opts.keys[(id - 100) / 2][(id - 100) % 2] :   // (the controls: host/nn_hid.c)
+                                          id >= 200 && id < 216 ? opts.pads[id - 200] : 0; };
     t.menu_pad = menu_pad;
     t.option_set = menu_option_set;
     t.nvn_register_sampler = register_sampler_queued;

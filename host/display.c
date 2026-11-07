@@ -134,6 +134,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return DefWindowProcA(w, msg, wp, lp);
     }
+    case WM_MOUSEWHEEL:   /* (hookshot) the menu's lists scroll (vk_menu.cpp) */
+        if (rx_option(1, 0)) {
+            void rx_option_set(int id, int value);
+            rx_option_set(10, (int)(short)HIWORD(wp));
+        }
+        return 0;
     case WM_LBUTTONDOWN:
         InterlockedIncrement(&clicks);
         if (!renderer) hos_log("mouse: a click before the renderer was up: not captured");

@@ -433,6 +433,41 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     stick_max(stick, s);
 }
 
+/* (hookshot) The controls (the menu's Keyboard and Controller tabs, kept in hookshot_options.ini). Each of the 24 actions
+   has two keys, a key's or a mouse button's virtual-key code (0: none): the 16 buttons in B_* order, then move up, down,
+   left and right and the camera's up, down, left and right; rx_option(100 + action * 2 + slot). The defaults are the
+   menu's (gpu/vk/vk_menu.cpp), and what is used without the Vulkan back end: totk-pc-recomp's keys as before. A mouse
+   button counts only while the mouse is captured, and one held when the capture began only after it was let go (the
+   click that captures never reaches the game). Each of the game's 16 buttons is pressed by a pad button (B_*, by
+   position): rx_option(200 + button), -1 none, itself by default. */
+#ifndef VK_XBUTTON1
+#define VK_XBUTTON1 0x05
+#define VK_XBUTTON2 0x06
+#endif
+enum { ACT_MOVE_UP = 16, ACT_MOVE_DOWN, ACT_MOVE_LEFT, ACT_MOVE_RIGHT, ACT_CAM_UP, ACT_CAM_DOWN, ACT_CAM_LEFT, ACT_CAM_RIGHT, N_ACT };
+static const int key_default[N_ACT][2] = {
+    {'E', 0}, {VK_SHIFT, 0}, {VK_SPACE, 0}, {VK_LBUTTON, 0}, {VK_CONTROL, 0}, {'C', 0}, {'Q', 0}, {'R', 0},
+    {'Z', VK_RBUTTON}, {'X', 'F'}, {VK_TAB, VK_RETURN}, {'M', 0}, {'1', 0}, {'2', 0}, {'3', 0}, {'4', 0},
+    {'W', 0}, {'S', 0}, {'A', 0}, {'D', 0}, {VK_UP, 'I'}, {VK_DOWN, 'K'}, {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
+static int mouse_vk_slot(int vk) {
+    return vk == VK_LBUTTON ? 0 : vk == VK_RBUTTON ? 1 : vk == VK_MBUTTON ? 2 : vk == VK_XBUTTON1 ? 3 : vk == VK_XBUTTON2 ? 4 : -1;
+}
+static int mouse_armed[5];
+static void mouse_buttons_arm(int captured) {   /* (once a read) */
+    static const int vks[5] = {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
+    for (int i = 0; i < 5; i++) mouse_armed[i] = captured && (mouse_armed[i] || !key(vks[i]));
+}
+/* whether an action's key is down: keys always, mouse buttons only with mouse (captured and armed) */
+static int action_down(int a, int mouse) {
+    for (int slot = 0; slot < 2; slot++) {
+        const int vk = rx_option(100 + a * 2 + slot, key_default[a][slot]);
+        if (vk <= 0) continue;
+        const int m = mouse_vk_slot(vk);
+        if (m >= 0 ? mouse && mouse_armed[m] && key(vk) : key(vk)) return 1;
+    }
+    return 0;
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -464,21 +499,19 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
             return;
         }
         if ((pad_buttons >> B_LS & 1) && (pad_buttons >> B_RS & 1)) pad_buttons &= ~(1ULL << B_LS | 1ULL << B_RS);
-        *buttons |= pad_buttons;
+        uint64_t mapped = 0;   /* (the Controller tab: each of the game's buttons from the pad button set for it) */
+        for (int i = 0; i < 16; i++) {
+            const int from = rx_option(200 + i, i);
+            if (from >= 0 && from < 16 && (pad_buttons >> from & 1)) mapped |= 1ULL << i;
+        }
+        *buttons |= mapped;
         stick_max(stick, pad_stick);
     }
-    /* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for
-       Plus and IJKL as another camera) */
-    struct { int vk; int b; } kmap[] = {
-        {VK_SPACE, B_X}, {'E', B_A}, {VK_SHIFT, B_B}, {'Q', B_L}, {'R', B_R}, {'Z', B_ZL}, {'X', B_ZR}, {'F', B_ZR},
-        {VK_CONTROL, B_LS}, {'C', B_RS}, {VK_TAB, B_PLUS}, {VK_RETURN, B_PLUS}, {'M', B_MINUS}, {'1', B_LEFT},
-        {'2', B_UP}, {'3', B_RIGHT}, {'4', B_DOWN}};
-    for (unsigned i = 0; i < sizeof kmap / sizeof *kmap; i++)
-        if (key(kmap[i].vk)) *buttons |= 1ULL << kmap[i].b;
+    /* the keys (the Keyboard tab's; by default totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp,
+       MIT, plus Enter for Plus and IJKL as another camera); the mouse's buttons after the mouse, below */
+    for (int a = 0; a < 16; a++)
+        if (action_down(a, 0)) *buttons |= 1ULL << a;
     int32_t mouse[4] = {0};
-    /* left button Y (attack), right button ZL (shield, lock on), while the mouse is captured; a button held when
-       the capture began counts only after it was let go (the click that captures never reaches the game) */
-    static int armed[2];
     /* (hookshot) the mouse turns the camera itself (mouse_native.c); as the right stick while no camera is found, or
        always with HOS_MOUSE_NATIVE=0 */
     const char *native_env = getenv("HOS_MOUSE_NATIVE");
@@ -492,19 +525,16 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         if (mouse_on < 0) as_stick = 1;
     }
     if (as_stick) mouse_on = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
-    if (mouse_on) {
-        if (as_stick) stick_max(stick, mouse);
-        const int vk[2] = {VK_LBUTTON, VK_RBUTTON}, b[2] = {B_Y, B_ZL};
-        for (int i = 0; i < 2; i++) {
-            if (!key(vk[i])) armed[i] = 1;
-            else if (armed[i]) *buttons |= 1ULL << b[i];
-        }
-    } else {
-        armed[0] = armed[1] = 0;
-    }
-    const int cx = (key(VK_RIGHT) || key('L')) - (key(VK_LEFT) || key('J')),
-              cy = (key(VK_UP) || key('I')) - (key(VK_DOWN) || key('K'));
-    const int32_t keys[4] = {(key('D') - key('A')) * 32767, (key('W') - key('S')) * 32767, cx * 32767, cy * 32767};
+    if (mouse_on && as_stick) stick_max(stick, mouse);
+    mouse_buttons_arm(mouse_on > 0);
+    if (mouse_on > 0)
+        for (int a = 0; a < 16; a++)
+            if (action_down(a, 1)) *buttons |= 1ULL << a;
+    const int cx = action_down(ACT_CAM_RIGHT, mouse_on > 0) - action_down(ACT_CAM_LEFT, mouse_on > 0),
+              cy = action_down(ACT_CAM_UP, mouse_on > 0) - action_down(ACT_CAM_DOWN, mouse_on > 0);
+    const int32_t keys[4] = {(action_down(ACT_MOVE_RIGHT, mouse_on > 0) - action_down(ACT_MOVE_LEFT, mouse_on > 0)) * 32767,
+                             (action_down(ACT_MOVE_UP, mouse_on > 0) - action_down(ACT_MOVE_DOWN, mouse_on > 0)) * 32767,
+                             cx * 32767, cy * 32767};
     stick_max(stick, keys);
     {
         const int32_t m = abs(stick[2]) > abs(stick[3]) ? abs(stick[2]) : abs(stick[3]);
