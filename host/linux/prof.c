@@ -27,6 +27,9 @@
 #include <unistd.h>
 #include <unwind.h>
 #include <windows.h>
+#ifndef TRAP_PERF   /* (the kernel's since 5.13; glibc names it from 2.36) */
+#define TRAP_PERF 6
+#endif
 
 int hos_thread_handles(HANDLE *out, const char **names, int max);   /* hos_thread.c */
 void hos_prof_start(void);
