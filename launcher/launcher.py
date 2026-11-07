@@ -31,7 +31,7 @@ import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LAUNCHER_VERSION = 1
+LAUNCHER_VERSION = 2
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(HERE)
 HOME = os.environ.get("HOOKSHOT_HOME") or os.path.dirname(TOOLS)
@@ -342,6 +342,7 @@ class Job:
                 self.say("Writing the new source into " + TOOLS)
                 c = sync(zpath, commit, self.say)
                 self.say("%d files changed, %d added, %d removed, %d the same" % (c["changed"], c["added"], c["removed"], c["same"]))
+                threading.Thread(target=checker.check, daemon=True).start()   # (the page shows the new commit as installed)
                 with self.lock:
                     self.relaunch = c["launcher"]
                     self.message = ""
@@ -514,10 +515,9 @@ class Handler(BaseHTTPRequestHandler):
         if action == "check":
             threading.Thread(target=checker.check, daemon=True).start()
         elif action == "update":
-            chk = checker.view()
-            cfg = load_config()
-            latest = chk["latest"] if chk["latest"] and (chk["latest"]["repo"], chk["latest"]["branch"]) == source_of(cfg) else None
-            error = job.start(True, cfg, latest)
+            # (the newest commit is asked for again when the update starts: the last check's answer could be minutes old, and a
+            # commit pushed since was missed. v1 used it, and built the commit before the one that was wanted)
+            error = job.start(True, load_config())
         elif action == "rebuild":
             error = job.start(False, load_config())
         elif action == "cancel":
