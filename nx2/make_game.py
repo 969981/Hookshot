@@ -4,6 +4,11 @@
     python -I nx2/make_game.py --romfs <dir> --exefs <dir> --out <folder> [--work <folder>] [--jobs <n>]
     python -I nx2/make_game.py --check --nup <file.nup>       (or --exefs <dir>: is this the right game and version?)
 
+--target windows (the default, also from a Linux PC with scripts/setup-winsysroot.sh) or linux (nx2/target.py).
+--part game: only the game module, against a prebuilt runtime (nx2/module.py; what launcher/hookshot.c runs in a
+release, where --runtime defaults to tools/link): no Windows SDK or Visual Studio needed. --dump <folder>: a folder
+with exefs/ and romfs/.
+
 The folder holds the executable and all it needs, started with a double click: nothing goes back into the repository, and no game
 data ever comes with the tools. Lines the app reads, each on its own line of stdout:
 
@@ -25,7 +30,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u"]   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
-BESIDE = ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -98,7 +102,8 @@ def check_modules(exefs):
 
 
 def check(a, work):
-    check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
+    if not a.part:
+        check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
@@ -159,26 +164,27 @@ def windows_kits_environment(base):
     return env
 
 
-def compile_test(toolchain):
+def compile_test(toolchain, target):
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             # (_UCRT: the C library of Visual Studio 2015 and later. An older one's stdio.h compiled, and the link failed 40 minutes later
             # on __iob_func: issue 80)
             f.write(chr(10).join(("#include <stdio.h>", "#ifndef _UCRT", "#error \"stdio.h is from an old C library (before Visual Studio 2015)\"",
-                                  "#endif", "#include <windows.h>", "int main(void) { return 0; }", "")))
-        return subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-c", src, "-o", os.path.join(d, "t.o")],
+                                  "#endif", "#include <windows.h>", "int main(void) { return 0; }", "")) if target.windows() else
+                    chr(10).join(("#include <stdio.h>", "int main(void) { return 0; }", "")))
+        return subprocess.run([toolchain.need(toolchain.find("clang"))] + target.compile_flags() + ["-c", src, "-o", os.path.join(d, "t.o")],
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def check_cpp_library(toolchain):
+def check_cpp_library(toolchain, target):
     """The renderer needs C++20's formatting from Visual Studio's library: said now, not after 300 failed files (issue 39)"""
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.cpp")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <format>", "#include <string>",
                                   "std::string t(int v) { return std::vformat(\"{}\", std::make_format_args(v)); }", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang++"))] + toolchain.native_target() + ["-std=c++20", "-c", src, "-o", os.path.join(d, "t.o")],
+        r = subprocess.run([toolchain.need(toolchain.find("clang++"))] + target.compile_flags() + ["-std=c++20", "-c", src, "-o", os.path.join(d, "t.o")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
@@ -186,26 +192,41 @@ def check_cpp_library(toolchain):
              "Visual Studio 2022 (or install it), then build again.")
 
 
+def tools():
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    sys.path.insert(0, HERE)
+    import toolchain
+    import target
+    return toolchain, target
+
+
 def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import toolchain
-    # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
-    # library in it, it is dropped and the compiler looks for Visual Studio itself. Issues 80 and 89)
-    for k in [n for n in os.environ if n.upper() == "INCLUDE"]:
-        if "ucrt" not in os.environ[k].lower():
-            print("INCLUDE is set on this PC without the Windows SDK's C library: not used (%s)" % os.environ[k][:200], flush=True)
-            for n in [n for n in os.environ if n.upper() in ("INCLUDE", "LIB", "LIBPATH")]:
-                del os.environ[n]
-            break
-    r = compile_test(toolchain)
+    toolchain, target = tools()
+    if target.windows() and not target.cross():
+        # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
+        # library in it, it is dropped and the compiler looks for Visual Studio itself. Issues 80 and 89)
+        for k in [n for n in os.environ if n.upper() == "INCLUDE"]:
+            if "ucrt" not in os.environ[k].lower():
+                print("INCLUDE is set on this PC without the Windows SDK's C library: not used (%s)" % os.environ[k][:200], flush=True)
+                for n in [n for n in os.environ if n.upper() in ("INCLUDE", "LIB", "LIBPATH")]:
+                    del os.environ[n]
+                break
+    r = compile_test(toolchain, target)
+    if r.returncode and target.cross():
+        print(r.stdout + r.stderr, flush=True)
+        fail("Microsoft's C library and Windows SDK were not found at %s. Run scripts/setup-winsysroot.sh (it asks you to accept Microsoft's "
+             "licence), or set RX_WINSYSROOT to such a folder, then build again." % target.winsysroot())
+    if r.returncode and not target.windows():
+        print(r.stdout + r.stderr, flush=True)
+        fail("The compiler could not run a test build for Linux. Install clang, lld and your distribution's C library headers.")
     found = None
     if r.returncode:   # (clang looks for Visual Studio its own way, and does not always find it: then ask Visual Studio)
         found = visual_studio_environment()
         if found:
             print("the compiler did not find Visual Studio by itself: using vcvars64", flush=True)
             os.environ.update(found)
-            r = compile_test(toolchain)
+            r = compile_test(toolchain, target)
     if r.returncode and found and ("stdio.h" in r.stderr or "windows.h" in r.stderr.lower()):
         # (only on top of vcvars' INCLUDE: clang takes INCLUDE as all of its system headers once it is set)
         kits = windows_kits_environment(found)
@@ -213,9 +234,10 @@ def check_windows_sdk():
             for k in [n for n in os.environ if n.upper() in ("INCLUDE", "LIB")]:
                 del os.environ[k]
             os.environ.update(kits)
-            r = compile_test(toolchain)
+            r = compile_test(toolchain, target)
     if not r.returncode:
-        check_cpp_library(toolchain)
+        if target.windows():
+            check_cpp_library(toolchain, target)
         return
     print(r.stdout + r.stderr, flush=True)   # (all of it, for Show details)
     errors = [l for l in r.stderr.splitlines() if "error:" in l]
@@ -252,12 +274,26 @@ def main():
     p.add_argument("--nup")
     p.add_argument("--romfs")
     p.add_argument("--exefs")
+    p.add_argument("--dump", help="a folder with exefs/ and romfs/")
+    p.add_argument("--part", choices=("game",), help="only the game module, against a prebuilt runtime (nx2/module.py)")
+    p.add_argument("--runtime", default=os.path.join(os.path.dirname(ROOT), "link"),
+                   help="--part game: the runtime's link files (a release's tools/link)")
     p.add_argument("--out")
-    p.add_argument("--work", default=os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
+    p.add_argument("--work", default=os.path.join(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or
+                                                  (os.path.expanduser(os.path.join("~", ".local", "share")) if os.name != "nt" else ROOT),
+                                                  "HookshotBuilder"))
     p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
+    p.add_argument("--target", choices=("windows", "linux"), default=os.environ.get("RX_TARGET", "windows").lower(),
+                   help="what the game is built for: windows (the default; from Linux a cross-build) or linux")
     a = p.parse_args()
+    if a.dump:
+        a.romfs, a.exefs = a.romfs or os.path.join(a.dump, "romfs"), a.exefs or os.path.join(a.dump, "exefs")
+    os.environ["RX_TARGET"] = a.target   # (for the checks here and for build.py)
+    if a.part:
+        os.environ["RX_NO_SDK"] = "1"   # (the module brings its own C library headers: nx2/rt/crt)
+    _, target = tools()
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
@@ -270,7 +306,13 @@ def main():
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
     os.makedirs(out, exist_ok=True)
-    check_windows_sdk()
+    if not a.part:
+        check_windows_sdk()
+    else:   # (the runtime's link files, before the long steps: nx2/module.py)
+        import module
+        for name in (module.RUNTIME_LIB[a.target], "hookshot_game.interface", module.STAMP):
+            if not os.path.exists(os.path.join(a.runtime, name)):
+                fail("The runtime's %s is not in %s: download Hookshot again and extract all of it." % (name, a.runtime))
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
@@ -297,7 +339,16 @@ def main():
             shutil.rmtree(kept, ignore_errors=True)
             if not os.path.exists(good):
                 shutil.rmtree(romfs, ignore_errors=True)
-            run(PY + ["nx2/nup.py", a.nup, "--extract", game])
+            files = {"of": 0}
+
+            def unpacked(line):   # (nup.py: the title it unpacks says its romfs's file count, then every 5000 files a count)
+                m = re.match(r"title \d+: .* romfs (\d+) files", line)
+                if m:
+                    files["of"] = int(m.group(1))
+                m = re.match(r"\s+(\d+) files, [\d.]+ GB$", line)
+                if m and files["of"]:
+                    say("progress", "%.3f" % min(1.0, int(m.group(1)) / files["of"]))
+            run(PY + ["nx2/nup.py", a.nup, "--extract", game], on_line=unpacked)
             shutil.move(os.path.join(game, "exefs"), exefs)
             if not os.path.isdir(romfs):
                 shutil.move(os.path.join(game, "romfs"), romfs)
@@ -331,7 +382,8 @@ def main():
 
     say("stage", "lift", "Translating the game to PC code")
     run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-    run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+    if os.path.exists(os.path.join(work, "sa", "gen", "code_hot.c")):   # (only with hot_funcs.txt: the lift writes none without)
+        run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
 
     say("stage", "compile", "Compiling")
     done = {"n": 0, "of": 1}
@@ -343,11 +395,18 @@ def main():
         elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
             done["n"] += 1
             say("progress", "%.3f" % (done["n"] / done["of"]))
-    run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    if a.part:
+        run(PY + ["nx2/build.py", "--part", "game", "--runtime", os.path.abspath(a.runtime), "--jobs", str(a.jobs)], env, compiled)
+    else:
+        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
 
     say("stage", "finish", "Putting the game folder together")
-    built = os.path.join(work, "sa", "build")
-    for name in BESIDE:
+    built = os.path.join(work, "sa", target.BUILD_DIR[a.target])
+    beside = target.BESIDE[a.target]
+    if a.part:   # (the runtime is already in the folder: the module and its stamp go beside it)
+        import module
+        built, beside = os.path.join(work, "sa", "game-" + a.target), [module.MODULE[a.target], module.GAME_STAMP]
+    for name in beside:
         if os.path.exists(os.path.join(built, name)):
             shutil.copy2(os.path.join(built, name), os.path.join(out, name))
     shutil.copy2(os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin"))

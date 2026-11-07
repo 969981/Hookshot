@@ -61,7 +61,7 @@ void hos_thread_adopt_guest(HosThread *t) {
 int hos_thread_prio(HosThread *t) { return t->priority; }
 
 int hos_trace;
-extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
+extern HOS_GAME_DATA const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
 static _Thread_local HosThread *cur;
 static SRWLOCK threads_lock = SRWLOCK_INIT;
 static HosThread *threads[1024];

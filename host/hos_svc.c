@@ -327,7 +327,7 @@ void hos_kernel_dump(void) {
 }
 
 /* svcQueryMemory: MemoryInfo { u64 addr, size; u32 state, attr, perm, ipc_refs, device_refs, pad } */
-extern const uint64_t hos_image_end;
+extern HOS_GAME_DATA const uint64_t hos_image_end;
 static void query_memory(uint64_t out, uint64_t addr) {
     uint64_t base = 0, size = 0;
     uint32_t state = 0, perm = 0;   /* Free */

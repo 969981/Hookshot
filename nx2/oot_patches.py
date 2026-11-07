@@ -10,7 +10,9 @@ import glob
 import os
 import sys
 
-DECL = "extern volatile int hos_fixed_resolution;\nextern volatile uint32_t hos_fixed_scale_bits;\n"
+# (A64_HOST_DATA: dllimport in the split build's Windows game module, nx2/module.py)
+DECL = ("#ifndef A64_HOST_DATA\n#define A64_HOST_DATA\n#endif\n"
+        "extern A64_HOST_DATA volatile int hos_fixed_resolution;\nextern A64_HOST_DATA volatile uint32_t hos_fixed_scale_bits;\n")
 OLD = "if (!((c->x[8] >> 0) & 1)) { goto L_8082640c; }"
 NEW = "if (hos_fixed_resolution || !((c->x[8] >> 0) & 1)) { goto L_8082640c; }"
 LABEL = "L_8082640c:;"

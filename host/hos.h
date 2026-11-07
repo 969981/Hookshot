@@ -44,13 +44,25 @@
 #define HOS_SYSTEM_END 0x07000000ULL
 #define HOS_HEAP_BASE 0x1000000000ULL
 #define HOS_GUEST_SPACE (1ULL << 39)
-extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
-extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
-extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
+/* (hookshot) HOS_GAME_DATA: the game module's data (gen/hos_image.c) as the split runtime imports it (nx2/module.py) */
+#ifndef HOS_GAME_DATA
+#define HOS_GAME_DATA
+#endif
+extern HOS_GAME_DATA const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
+extern HOS_GAME_DATA const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
+extern HOS_GAME_DATA const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
 /* (oot-recomp) MKW's own hooks at fixed guest addresses (its frame pacer in nvn_native.c / nn_vi.c, its idle loop in
    hos_thread.c) run only when the lifted main is Mario Kart World's: any other game has other code there */
 int hos_game_is_mkw(void);
 #define HOS_GAME_TITLE "Hookshot"
+/* (hookshot) the host's path separator: what GetModuleFileNameA answers (host/linux/windows.h on Linux) */
+#ifdef _WIN32
+#define HOS_SEP 92
+#define HOS_SEP_S "\\"
+#else
+#define HOS_SEP 47
+#define HOS_SEP_S "/"
+#endif
 void hos_commit(uint64_t addr, uint64_t size);         /* (mkw_glue.c) guest pages made usable by host APIs */
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);   /* (hos_mem.c: guest memory written by host code, native soft watch) */
