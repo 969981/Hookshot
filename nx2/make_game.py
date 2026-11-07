@@ -75,7 +75,7 @@ def run(cmd, env=None, on_line=None):
             on_line(line)
     if p.wait():
         why = [l for l in tail if "error:" in l.lower() and "CalledProcessError" not in l]
-        fail("%s stopped: %s" % (os.path.basename(cmd[2]), why[-1] if why else tail[-1] if tail else "no output"))
+        fail("%s stopped: %s" % (os.path.basename(cmd[len(PY)]), why[-1] if why else tail[-1] if tail else "no output"))
 
 
 def build_id(main):
