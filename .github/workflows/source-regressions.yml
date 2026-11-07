@@ -27,6 +27,9 @@ on:
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
       - tests/test_submitted_page.py
+      - gpu/vk/vk_replay.cpp
+      - gpu/vk/vk_draw.h
+      - tests/test_ub_memo.py
       - tests/test_shader_census_cmd.py
       - nx2/version.py
       - nx2/test_version.py
@@ -35,12 +38,20 @@ on:
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
       - tests/test_upscale_label.py
+      - gpu/vk/movie_upscale_policy.h
+      - tests/test_movie_upscale_policy.cpp
+      - tests/test_movie_upscale_policy.py
       - nx2/test_import_windows.py
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/CMakeLists.txt
       - tests/global_load_16/README.md
+      - builder/linux/hookshot-launch
+      - builder/linux/AppRun
+      - builder/linux/hookshot-builder.desktop
+      - scripts/linux/appimage.sh
+      - tests/test_hookshot_launch.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -68,6 +79,9 @@ on:
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
       - tests/test_submitted_page.py
+      - gpu/vk/vk_replay.cpp
+      - gpu/vk/vk_draw.h
+      - tests/test_ub_memo.py
       - tests/test_shader_census_cmd.py
       - nx2/version.py
       - nx2/test_version.py
@@ -76,12 +90,20 @@ on:
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
       - tests/test_upscale_label.py
+      - gpu/vk/movie_upscale_policy.h
+      - tests/test_movie_upscale_policy.cpp
+      - tests/test_movie_upscale_policy.py
       - nx2/test_import_windows.py
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/CMakeLists.txt
       - tests/global_load_16/README.md
+      - builder/linux/hookshot-launch
+      - builder/linux/AppRun
+      - builder/linux/hookshot-builder.desktop
+      - scripts/linux/appimage.sh
+      - tests/test_hookshot_launch.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -147,6 +169,9 @@ jobs:
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py
+      - name: Check a repeated uniform word is not read again
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_ub_memo.py
       - name: Check the shader list's text encoding
         run: python -I -B tests/test_shader_census_cmd.py
       - name: Check the build's version stamp
@@ -160,9 +185,15 @@ jobs:
       - name: Check upscale menu labels
         if: runner.os == 'Linux'
         run: python -I -B tests/test_upscale_label.py
+      - name: Check movie upscale fallback policy
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_movie_upscale_policy.py
       - name: Check import windows
         if: runner.os == 'Linux'
         run: python -I -B nx2/test_import_windows.py --cxx g++
+      - name: Check the game launcher
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_hookshot_launch.py
 
   spirv-global16:
     name: SPIR-V global halfword lowering

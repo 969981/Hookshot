@@ -25,6 +25,10 @@
 Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows program, the
 console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.
+<br>
+
+Discord: https://discord.gg/EajnD2AJD9 Please use the hookshot-discussion channel, as the main point of the discord is for webports, not my work
+<br>
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
@@ -83,8 +87,9 @@ A build takes about 40 minutes, and you can use your PC in the meantime.
    make it executable (`chmod +x`) and start it. It is Hookshot Builder with everything it needs inside: the compiler,
    the libraries and the Vulkan renderer. Nothing else has to be installed.
 2. Choose your `.nup` (or your `romfs` and `exefs` folders), a language and a folder for the game, and build.
-3. When it finishes, press Play. The game is also added to your applications menu, and starting the AppImage again
-   offers Play. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
+3. When it finishes, press Play. The game is also added to your applications menu. The same AppImage starts that
+   game without opening the builder: `./Hookshot-<version>-x86_64.AppImage --play`, or `--play ~/Games/Hookshot`
+   for a different folder. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
 
 From the command line: `./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot`
 (the same options as `make_game.py`).
@@ -95,6 +100,11 @@ to `~/.cache/hookshot-builder`. Saves go in `$XDG_DATA_HOME/hookshot` (`~/.local
 beside the game from an earlier build is moved there once. `HOOKSHOT_JOBS` sets how many files compile at once.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows.
+
+`RX_VK_MOVIE_UPSCALE=linear` replaces the movie's neural upscale with the existing linear path. The default `auto` behavior
+keeps the networks and falls back only when movie GPU time exceeds the existing 40 ms trigger. This switch does not change
+the gameplay upscaler and can make movie images look softer. It works on Windows and Linux; `RX_VK_NETWORK_KEEP=all` takes
+precedence and keeps the movie networks enabled.
 
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
@@ -229,6 +239,8 @@ Bigger ways to help:
 Hookshot exists thanks to the work of many people:
 
 - **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
+- **EvilBoyce** (Discord: evilmfkr, [fork](https://github.com/evilmfkr/Hookshot)): Ocarina of Time's foliage culling, ambient
+  light, water and fog fixes, the freeze after Load, the exposure flashes, and the rendering diagnostics tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.
