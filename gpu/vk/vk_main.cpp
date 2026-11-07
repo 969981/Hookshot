@@ -12,6 +12,9 @@
 
 #include "vk_api.h"
 #include "vk_internal.h"
+#if defined(__linux__)
+#include "rx_window.h"
+#endif
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -25,7 +28,11 @@ VKX_DEVICE3(VKX_DEFINE)
 static PFN_vkGetInstanceProcAddr get_instance_proc;
 
 bool load_global() {
+#if defined(__linux__)
+    HMODULE m = LoadLibraryA("libvulkan.so.1");
+#else
     HMODULE m = LoadLibraryA("vulkan-1.dll");
+#endif
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
@@ -84,14 +91,25 @@ bool create_instance() {
         logf("vk: the Vulkan loader is %u.%u: 1.3 is needed", VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version));
         return false;
     }
-    const char* exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    std::vector<VkExtensionProperties> available;
+    uint32_t extension_count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+    available.resize(extension_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, available.data());
+    std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME};
+#if defined(__linux__)
+    if (has_extension(available, VK_KHR_XLIB_SURFACE_EXTENSION_NAME)) exts.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
+    if (has_extension(available, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME)) exts.push_back(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+#else
+    exts.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mkw-recomp";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = 2;
-    ci.ppEnabledExtensionNames = exts;
+    ci.enabledExtensionCount = (uint32_t)exts.size();
+    ci.ppEnabledExtensionNames = exts.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (getenv("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -354,6 +372,10 @@ bool started_up() {
     if (!replay_start()) return false;
     if (precompile_wanted()) {   // (a release build, before the game: nothing to build during play)
         // (a console while it lasts: there is no window yet, and a long wait with nothing on screen looks like a hang)
+#if defined(__linux__)
+        prepare_run(nullptr);
+        precompile_run(nullptr);
+#else
         static HANDLE console = nullptr;
         const auto progress = [](size_t done, size_t total) {
             static bool tried = false;
@@ -375,6 +397,7 @@ bool started_up() {
         prepare_run(progress);
         precompile_run(progress);
         if (console) CloseHandle(console), console = nullptr, FreeConsole();
+#endif
     }
     return true;
 }
@@ -387,16 +410,37 @@ int start(void* hwnd) {
         logf("vk: no window: presents render offscreen (%ux%u)", dev.swap_extent.width, dev.swap_extent.height);
         return started_up() ? 1 : 0;
     }
+#if defined(__linux__)
+    const RxLinuxWindow *w = (const RxLinuxWindow *)hwnd;
+    VkResult surface_result = VK_ERROR_INITIALIZATION_FAILED;
+    if (w->kind == 1) {
+        VkWaylandSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
+        si.display = (struct wl_display *)w->display;
+        si.surface = (struct wl_surface *)w->wl_surface;
+        surface_result = vkCreateWaylandSurfaceKHR(dev.instance, &si, nullptr, &dev.surface);
+    } else if (w->kind == 2) {
+        VkXlibSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+        si.dpy = (Display *)w->display;
+        si.window = (Window)w->xwindow;
+        surface_result = vkCreateXlibSurfaceKHR(dev.instance, &si, nullptr, &dev.surface);
+    }
+    if (surface_result != VK_SUCCESS) return 0;
+#else
     VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     si.hinstance = GetModuleHandleA(nullptr);
     si.hwnd = (HWND)hwnd;
     if (vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &dev.surface) != VK_SUCCESS) return 0;
+#endif
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
     if (!ok) return 0;
+#if defined(__linux__)
+    if (!create_swapchain((uint32_t)w->width, (uint32_t)w->height)) return 0;
+#else
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
+#endif
     return started_up() ? 1 : 0;
 }
 
@@ -423,7 +467,11 @@ extern "C" __declspec(dllexport) const MkwVkRenderer* mkwvk_init(const MkwVkHost
     if (!h || h->version != MKWVK_API_VERSION) return nullptr;
     host = h;
     if (!load_global()) {
+#if defined(__linux__)
+        logf("vk: libvulkan.so.1 not found");
+#else
         logf("vk: vulkan-1.dll not found");
+#endif
         return nullptr;
     }
     if (!create_instance() || !pick_device() || !create_device()) return nullptr;

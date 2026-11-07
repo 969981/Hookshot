@@ -15,7 +15,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#if !defined(__linux__)
 #include <psapi.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -221,7 +223,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
         }
     }
     Arena a;
-    a.size = std::max(kArena, (n + 0xFFFFF) & ~0xFFFFFull);
+    a.size = std::max(kArena, uint64_t((n + 0xFFFFF) & ~0xFFFFFull));
     void* m = nullptr;
     if (!create_buffer(a.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, a.buffer,
                        a.allocation, &m) || !m)
@@ -2484,12 +2486,16 @@ void texture_frame(uint64_t completed) {
             ++it;
         }
         if (frame_no % 600 == 0) {   // (the process's memory now and then: what the host side holds)
+#if defined(__linux__)
+            logf("vk: memory: staging %llu MB in %zu arenas", (unsigned long long)(kept >> 20), arenas.size());
+#else
             PROCESS_MEMORY_COUNTERS_EX pm{};
             pm.cb = sizeof pm;
             if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
                 logf("vk: memory: working set %llu MB (peak %llu), private %llu MB, staging %llu MB in %zu arenas",
                      (unsigned long long)(pm.WorkingSetSize >> 20), (unsigned long long)(pm.PeakWorkingSetSize >> 20),
                      (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(kept >> 20), arenas.size());
+#endif
         }
     }
     for (auto it = dead.begin(); it != dead.end();) {

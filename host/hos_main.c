@@ -11,10 +11,13 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
-#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+#if defined(_WIN32) || defined(__EMSCRIPTEN__) || defined(__linux__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 #else
 #include <sys/mman.h>
 #endif
@@ -163,13 +166,22 @@ int main(int argc, char **argv) {
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
         const DWORD len = GetModuleFileNameA(NULL, dir, MAX_PATH);
-        char *slash = len ? strrchr(dir, 92) : NULL;
+        char *slash = len ? strrchr(dir, '/'): NULL;
+#if defined(_WIN32)
+        if (!slash) slash = len ? strrchr(dir, 92) : NULL;
+#endif
         if (slash) {
             *slash = 0;
             SetCurrentDirectoryA(dir);
+#if defined(_WIN32)
             snprintf(beside_image, MAX_PATH, "%s\\image.bin", dir);
             snprintf(beside_romfs, MAX_PATH, "%s\\romfs", dir);
             snprintf(beside_user, MAX_PATH, "%s\\user", dir);
+#else
+            snprintf(beside_image, MAX_PATH, "%s/image.bin", dir);
+            snprintf(beside_romfs, MAX_PATH, "%s/romfs", dir);
+            snprintf(beside_user, MAX_PATH, "%s/user", dir);
+#endif
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;

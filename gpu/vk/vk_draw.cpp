@@ -638,7 +638,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
                 zero_used = true;
                 continue;
             }
-            va.push_back({i, a.stream, supported_vertex_format(f), a.offset & 0x3FFF});
+            va.push_back({i, a.stream, supported_vertex_format(f), (uint32_t)(a.offset & 0x3FFF)});
             stream_used[a.stream] = true;
         }
     for (uint32_t b = 0; b < 15; b++)

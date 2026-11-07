@@ -188,7 +188,11 @@ static void flush_early(void) {
 static const MkwVkRenderer *load_vulkan(const char *dll) {
     char path[MAX_PATH];
     const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+#if defined(__linux__)
+    char *slash = n ? strrchr(path, '/') : NULL;
+#else
     char *slash = n ? strrchr(path, '\\') : NULL;
+#endif
     if (!slash) return NULL;
     strcpy(slash + 1, dll);
     HMODULE m = LoadLibraryA(path);
@@ -209,7 +213,12 @@ int rx_start(void *hwnd) {
     const char *b = getenv("RX_BACKEND");
     const int eden = b && !_stricmp(b, "eden");
     if (!b || !_stricmp(b, "vulkan") || eden) {   /* (hookshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */
-        const char *dll = eden ? "mkw_eden.dll" : "hookshot_vk.dll";
+        const char *dll = eden ?
+#if defined(__linux__)
+            "mkw_eden.so" : "hookshot_vk.so";
+#else
+            "mkw_eden.dll" : "hookshot_vk.dll";
+#endif
         const MkwVkRenderer *r = load_vulkan(dll);
         if (r && r->start(hwnd)) {
             vk = r;

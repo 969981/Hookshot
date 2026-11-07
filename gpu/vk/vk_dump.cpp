@@ -8,7 +8,12 @@
 #include <string>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/stat.h>
+#define _mkdir(path) mkdir(path, 0755)
+#else
 #include <direct.h>
+#endif
 
 #include "vk_dump.h"
 

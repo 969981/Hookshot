@@ -22,7 +22,7 @@
   <a href="#license">License</a>
 </p>
 
-Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows program, the
+Hookshot is a static recompilation. The game's code is translated to C and compiled into a native program, the
 console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.
 
@@ -74,6 +74,17 @@ python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out
 ```
 
 Add `--check` with your `.nup` or `--exefs` to only check the game's version. It builds nothing.
+
+**On Linux:**
+
+```bash
+scripts/build-linux.sh --exefs "/path/to/exefs" --jobs 1
+HOOKSHOT_ROMFS="/path/to/romfs" work/sa/build/run-hookshot.sh
+```
+
+The Linux script builds the Vulkan renderer and standalone executable, and keeps its generated files and compiler
+cache under `work/`. It can be rerun after an interruption. It uses the user's own extracted `exefs` and `romfs`; game
+files are not included in this repository.
 
 A build takes about 40 minutes, and you can use your PC in the meantime.
 
@@ -156,8 +167,8 @@ game than anyone has yet.
 
 Bigger ways to help:
 
-- **Linux support.** Hookshot only runs on Windows today. The Vulkan renderer is a good start, but the system layer
-  still needs porting.
+- **Linux support.** Linux builds are experimental and currently use the Vulkan renderer; only one Linux machine has
+  been tested so far.
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
   anything generated from your game out of it.
 

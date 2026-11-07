@@ -2,16 +2,35 @@
 // instance and device level. VK_NO_PROTOTYPES is set for the whole DLL (nx2/build.py).
 #pragma once
 
+#if defined(__linux__)
+#define VK_USE_PLATFORM_XLIB_KHR
+#define VK_USE_PLATFORM_WAYLAND_KHR
+#else
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <vulkan/vulkan.h>
+#if defined(__linux__)
+#undef None
+#undef Always
+#undef True
+#undef False
+#endif
 
 #define VKX_GLOBAL(X)                                                                                                 \
     X(vkCreateInstance)                                                                                               \
     X(vkEnumerateInstanceExtensionProperties)                                                                         \
     X(vkEnumerateInstanceVersion)
+
+#if defined(__linux__)
+#define VKX_PLATFORM_INSTANCE(X)                                                                                       \
+    X(vkCreateXlibSurfaceKHR)                                                                                          \
+    X(vkCreateWaylandSurfaceKHR)
+#else
+#define VKX_PLATFORM_INSTANCE(X) X(vkCreateWin32SurfaceKHR)
+#endif
 
 #define VKX_INSTANCE(X)                                                                                               \
     X(vkDestroyInstance)                                                                                              \
@@ -26,7 +45,7 @@
     X(vkEnumerateDeviceExtensionProperties)                                                                           \
     X(vkCreateDevice)                                                                                                 \
     X(vkGetDeviceProcAddr)                                                                                            \
-    X(vkCreateWin32SurfaceKHR)                                                                                        \
+    VKX_PLATFORM_INSTANCE(X)                                                                                          \
     X(vkDestroySurfaceKHR)                                                                                            \
     X(vkGetPhysicalDeviceSurfaceSupportKHR)                                                                           \
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)                                                                      \

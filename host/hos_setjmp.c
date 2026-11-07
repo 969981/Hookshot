@@ -30,12 +30,27 @@
 #include <stdlib.h>
 #include <windows.h>
 #include <string.h>
+#if defined(__linux__)
+#include <setjmp.h>
+#endif
 
 #define DEPTH 256
 typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
 typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
 static _Thread_local SjStack *stack;
 
+/* The Windows implementation below saves the Win64 ABI context explicitly. Linux uses
+   the native System V context through sigsetjmp/siglongjmp; the surrounding owner and
+   target bookkeeping is shared by both ABIs. */
+#if defined(__linux__)
+__attribute__((returns_twice)) static int recomp_sj_setjmp(void **buf) {
+    return sigsetjmp(*(sigjmp_buf *)buf, 0);
+}
+
+__attribute__((noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    siglongjmp(*(sigjmp_buf *)buf, value);
+}
+#else
 /* buf: rbx rbp rdi rsi r12 r13 r14 r15 at 0-56, rsp (after the return) at 64, the return address at 72, xmm6-15 at
    80-224, mxcsr at 240 and the x87 control word at 244 */
 __attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
@@ -98,6 +113,7 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "movq 64(%rcx), %rsp\n\t"
         "jmpq *72(%rcx)\n\t");
 }
+#endif
 
 void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
     (void)c;

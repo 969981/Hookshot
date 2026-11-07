@@ -41,14 +41,20 @@ OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
+WINDOWS = os.name == "nt"
+LINUX = sys.platform.startswith("linux")
 
 
 def HOT_ORDER():
     p = os.path.join(kit.WORK, "hot_order.txt")
-    return ["-Wl,/order:@" + p.replace("\\", "/"), "-Wl,/ignore:4037"] if os.path.exists(p) and not os.environ.get("RX_NO_ORDER") else []
+    # This file uses MSVC/link.exe syntax; the ELF linker needs a different
+    # symbol-ordering format, so leave it disabled on Linux for now.
+    return (["-Wl,/order:@" + p.replace("\\", "/"), "-Wl,/ignore:4037"]
+            if WINDOWS and os.path.exists(p) and not os.environ.get("RX_NO_ORDER") else [])
 
 
-HOST_LIBS = ["-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
+HOST_LIBS = (["-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
+             if WINDOWS else ["-ldl", "-pthread", "-lm"])
 GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
 # in the Eglantine clone's package cache
@@ -99,7 +105,8 @@ def vk_sources():
     for sub in ("eden", os.path.join("sirit", "src")):
         for d, _, files in os.walk(os.path.join(vk, sub)):
             out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
-    out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp")]
+    out += [os.path.join(vk, f) for f in os.listdir(vk)
+            if f.endswith(".cpp") and (not LINUX or f != "vk_menu.cpp")]
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
     out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
     return sorted(out)
@@ -123,6 +130,13 @@ def cpm_package(name):
     return None
 
 
+def system_package(header):
+    """Return /usr when a Linux SDK header is installed, for builds without CPM caches."""
+    if LINUX and os.path.exists(os.path.join("/usr", "include", header)):
+        return "/usr"
+    return None
+
+
 def cache_put(obj, key):
     """Hard-link a built object into the cache under its key (a copy across volumes)"""
     os.makedirs(OBJ_CACHE, exist_ok=True)
@@ -140,6 +154,24 @@ FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in c
                for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))), None)
 
 
+def pkg_config(*args):
+    """Return Linux system-library flags from pkg-config."""
+    if not LINUX:
+        return []
+    return subprocess.check_output(["pkg-config", *args], text=True).split()
+
+
+def linux_ffmpeg_flags(kind):
+    if not LINUX:
+        return []
+    return pkg_config("--cflags" if kind == "cflags" else "--libs",
+                      "libavcodec", "libavutil", "libswscale", "libswresample")
+
+
+def linux_sdl_flags(kind):
+    return pkg_config("--cflags" if kind == "cflags" else "--libs", "sdl3") if LINUX else []
+
+
 # the soft write watch (rt/a64.h A64_MARK): lifted stores mark their 4 KB page, and the renderer reads the marks
 # instead of Windows' write watch (GetWriteWatch over the 6 GB MKW's GPU sees took ~20 ms a scan, in one thread or
 # four: the race's replay waited ~12 ms a frame for it). RX_SOFT_WRITE_WATCH=0: Windows' write watch (a full rebuild)
@@ -150,10 +182,11 @@ WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WR
 # the exact software body on baseline x86-64) and the bit counts are single instructions. No contraction, so a C
 # expression is rounded as written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
 CPU = ["-march=" + os.environ.get("RX_MARCH", "x86-64-v3"), "-ffp-contract=off"]
+PIC = ["-fPIC"] if LINUX else []
 
 
 def flags(gen, rt64, opt, polls):
-    return toolchain.native_target() + CPU + [
+    return toolchain.native_target() + CPU + PIC + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
@@ -265,7 +298,12 @@ def main():
                 [os.path.join(rt64, "a64_rt.c")]
         if a.standalone:
             srcs += [os.path.join(gen, f) for f in ("a64_stubs.c", "hos_image.c", "nvn2_exports.c")]
-            host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen"))
+            linux_skip = {"display.c", "pad_sdl.c", "mf_av1.c"} if LINUX else set()
+            host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST)
+                               if f.endswith(".c") and f not in linux_skip and (f != "pgo_rt.c" or PGO == "gen"))
+            if LINUX and os.path.isdir(os.path.join(HOST, "linux")):
+                host_srcs += sorted(os.path.join(HOST, "linux", f) for f in os.listdir(os.path.join(HOST, "linux"))
+                                    if f.endswith(".c"))
         else:
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     # biggest first, so the long ones do not end up alone at the end
@@ -283,37 +321,52 @@ def main():
              hot_fl if os.path.basename(s).startswith("code_hot") else fl,
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
-    host_fl = toolchain.native_target() + CPU + ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0",
-                                           "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+    host_fl = toolchain.native_target() + CPU + PIC + ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0",
+                                           "-mcx16", "-DA64_POLLING"] + ([("-I" + os.path.join(HOST, "linux"))] if LINUX else []) + \
+              linux_sdl_flags("cflags") + linux_ffmpeg_flags("cflags") + WRITE_TRACK
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
+    if LINUX and os.path.isdir(os.path.join(HOST, "linux")):
+        host_deps += tree_headers(os.path.join(HOST, "linux"))
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []), host_deps) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     if host_srcs:
-        oflags = toolchain.native_target() + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
+        oflags = toolchain.native_target() + PIC + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
                                               "-DHAVE_LRINTF", "-DHAVE_LRINT"] +             ["-I" + os.path.join(OPUS, d) for d in ("include", "celt", "silk", "silk/float", "src")]
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
     # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
-    wgpu = a.standalone and not a.only and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
+    wgpu_name = "wgpu_native.dll" if WINDOWS else "libwgpu_native.so"
+    wgpu = (a.standalone and not a.only and
+            os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h")) and
+            os.path.isfile(os.path.join(WGPU, "lib", wgpu_name)))
     if a.standalone and not a.only and not wgpu:
         print("no wgpu-native at %s (WGPU_NATIVE): building without the renderer" % WGPU)
     if wgpu:
+        host_srcs = [s for s in host_srcs if os.path.basename(s) != "wgpu_stub.c"]
+    if wgpu:
         cxx = toolchain.need(toolchain.find("clang++"))
-        gflags = toolchain.native_target() + ["-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything",
-                                              "-I" + os.path.join(GPU, "compat"),
-                                              "-I" + os.path.join(GPU, "third_party", "suyu"),
-                                              "-I" + os.path.join(WGPU, "include"), "-I" + HOST, "-I" + rt64] + WRITE_TRACK +                  ["-include", os.path.join(GPU, "render", "rx_wgpu_names.h")]   # (rx_* -> wgr_*: host/rx_backend.c)
-        gdeps = tree_headers(GPU, HOST, skip=("vk",)) + open(os.path.join(WGPU, "include", "webgpu", "webgpu.h"), "rb").read()
+        gflags = (toolchain.native_target() + PIC + ["-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything",
+                   "-I" + os.path.join(GPU, "compat"),
+                   "-I" + os.path.join(GPU, "third_party", "suyu"),
+                   "-I" + os.path.join(WGPU, "include"), "-I" + HOST, "-I" + rt64] +
+                  (["-I" + os.path.join(HOST, "linux")] if LINUX else []) + WRITE_TRACK +
+                  ["-include", os.path.join(GPU, "render", "rx_wgpu_names.h")])   # (rx_* -> wgr_*: host/rx_backend.c)
+        gdeps = tree_headers(GPU, HOST, *((os.path.join(HOST, "linux"),) if LINUX else ()), skip=("vk",)) + open(os.path.join(WGPU, "include", "webgpu", "webgpu.h"), "rb").read()
         for src in gpu_sources():
             name = os.path.relpath(src, GPU).replace(os.sep, "_")[:-4]
             jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags, gdeps))
     # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): built when the Vulkan headers are in the CPM cache
     vk_jobs = []
-    vk_headers, spirv_headers = cpm_package("vulkanheaders"), cpm_package("spirv-headers")
+    vk_headers = cpm_package("vulkanheaders") or system_package(os.path.join("vulkan", "vulkan.h"))
+    spirv_headers = cpm_package("spirv-headers") or system_package(os.path.join("spirv", "unified1", "spirv.hpp"))
+    vma_headers = cpm_package("vulkanmemoryallocator")
+    vma_headers = vma_headers or system_package("vk_mem_alloc.h")
+    if not vma_headers and LINUX and os.path.exists("/usr/local/include/vk_mem_alloc.h"):
+        vma_headers = "/usr/local"
     if a.standalone and not a.only and vk_headers and spirv_headers:
         cxx = toolchain.need(toolchain.find("clang++"))
         vk = os.path.join(GPU, "vk")
@@ -324,7 +377,7 @@ def main():
         for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_state.h", "vk_api.h")]:
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
-        vflags = toolchain.native_target() + CPU + [   # (hookshot: the replay is the frame's limit now)
+        vflags = (toolchain.native_target() + CPU + PIC + [   # (hookshot: the replay is the frame's limit now)
             "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16],
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
@@ -336,7 +389,9 @@ def main():
             "-I" + os.path.join(GPU, "third_party", "suyu"),
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
-            "-I" + os.path.join(vk_headers, "include"), "-I" + vk] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+            "-I" + os.path.join(vk_headers, "include"), "-I" + vk] +
+            (["-I" + os.path.join(HOST, "linux")] if LINUX else []) +
+            (["-I" + os.path.join(vma_headers, "include")] if vma_headers else []))
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -371,20 +426,30 @@ def main():
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
     if a.lib:
-        lib = os.path.join(out, "hookshot_game.lib")
-        subprocess.run([toolchain.lld_link(), "/lib", "/out:" + lib, "@" + rsp], check=True)
+        if WINDOWS:
+            lib = os.path.join(out, "hookshot_game.lib")
+            subprocess.run([toolchain.lld_link(), "/lib", "/out:" + lib, "@" + rsp], check=True)
+        else:
+            lib = os.path.join(out, "libhookshot_game.a")
+            ar = toolchain.need(toolchain.find("llvm-ar"))
+            subprocess.run([ar, "rcs", lib] + [j[2] for j in jobs if j[2] not in vk_objs], check=True)
         print("wrote %s (%d objects, %d MB)" % (lib, len(objs), os.path.getsize(lib) >> 20))
     if a.standalone and not a.only and not vk_only:
-        exe = os.path.join(out, "hookshot.exe")   # (+ hookshot.map: crash offsets -> f_<guest address>)
+        exe = os.path.join(out, "hookshot" + (".exe" if WINDOWS else ""))
         t = time.time()
+        map_file = exe[:-4] + ".map" if WINDOWS else exe + ".map"
+        link_flags = (["-Wl,/map:" + map_file, "-Wl,/stack:8388608"] if WINDOWS else ["-Wl,-Map," + map_file])
+        renderer_libs = ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if WINDOWS and wgpu else
+                         (["-L" + os.path.join(WGPU, "lib"), "-lwgpu_native", "-Wl,-rpath,$ORIGIN"] if wgpu else []))
+        media_libs = (([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
+                       ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"]) if WINDOWS and FFMPEG else
+                      (linux_ffmpeg_flags("libs") if LINUX else []))
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-o", exe, "-Wl,/map:" + exe[:-4] + ".map", "-Wl,/stack:8388608", "@" + rsp] + HOT_ORDER() + HOST_LIBS +
-                           (["-Wl,/nodefaultlib:clang_rt.profile.lib"] if PGO == "gen" else []) +
-                           ([os.path.join(kit.WORK, "hookshot.res")] if os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +   # (nx2/make_icon.py)
-                           (["-Wl,/subsystem:windows,/entry:mainCRTStartup"] if os.environ.get("RX_RELEASE") == "1" else []) +   # (no console window)
-                           ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if wgpu else []) +
-                           ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
-                            ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []),
+                           ["-o", exe] + link_flags + ["@" + rsp] + HOT_ORDER() + HOST_LIBS +
+                           (["-lSDL2"] if WINDOWS else linux_sdl_flags("libs")) + renderer_libs + media_libs +
+                           (["-Wl,/nodefaultlib:clang_rt.profile.lib"] if WINDOWS and PGO == "gen" else []) +
+                           ([os.path.join(kit.WORK, "hookshot.res")] if WINDOWS and os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +
+                           (["-Wl,/subsystem:windows,/entry:mainCRTStartup"] if WINDOWS and os.environ.get("RX_RELEASE") == "1" else []),
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
         if r.returncode:
@@ -392,11 +457,12 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
-        if wgpu:   # (wgpu_native.dll beside it; in use while the game runs)
+        if wgpu:
             import shutil
-            dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
-            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
-                shutil.copyfile(dll, dst)
+            native = "wgpu_native.dll" if WINDOWS else "libwgpu_native.so"
+            source, dst = os.path.join(WGPU, "lib", native), os.path.join(out, native)
+            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(source):
+                shutil.copyfile(source, dst)
         # (hookshot) SDL2.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...)
         sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
         sdl_dst = os.path.join(out, "SDL2.dll")
@@ -404,12 +470,15 @@ def main():
             import shutil
             shutil.copyfile(sdl, sdl_dst)
     if vk_jobs:   # (hookshot_vk.dll beside the exe: loaded by host/rx_backend.c with RX_BACKEND=vulkan)
-        vdll = os.path.join(out, "hookshot_vk.dll")
+        vdll = os.path.join(out, "hookshot_vk" + (".dll" if WINDOWS else ".so"))
         vrsp = os.path.join(out, "vk_objs.rsp")
         open(vrsp, "w").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
         t = time.time()
+        vk_map = vdll[:-4] + ".map"
+        vk_link_flags = (["-Wl,/map:" + vk_map] if WINDOWS else ["-Wl,-Map," + vk_map])
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-shared", "-o", vdll, "-Wl,/map:" + vdll[:-4] + ".map", "@" + vrsp, "-luser32", "-lgdi32"],
+                           ["-shared", "-o", vdll] + vk_link_flags + ["@" + vrsp] +
+                           (["-luser32", "-lgdi32"] if WINDOWS else ["-ldl", "-pthread"]),
                            capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
@@ -418,10 +487,12 @@ def main():
             return 1
         print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
     if a.dll and not a.only:
-        dll = os.path.join(out, "hookshot_game.dll")   # (+ hookshot_game.map: crash offsets -> f_<guest address>)
+        dll = os.path.join(out, "hookshot_game" + (".dll" if WINDOWS else ".so"))
         t = time.time()
+        dll_map = dll[:-4] + ".map" if WINDOWS else dll + ".map"
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-shared", "-o", dll, "-Wl,/map:" + dll[:-4] + ".map", "@" + rsp],
+                           ["-shared", "-o", dll] + (["-Wl,/map:" + dll_map] if WINDOWS else ["-Wl,-Map," + dll_map]) +
+                           ["@" + rsp] + ([] if WINDOWS else ["-ldl", "-pthread"]),
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
         if r.returncode:

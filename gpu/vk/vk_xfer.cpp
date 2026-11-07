@@ -3,6 +3,7 @@
 // image per texture: a copy addresses a level, its layers or slices, and a region).
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 

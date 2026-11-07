@@ -11,6 +11,7 @@
    The runtime commits what it hands out (image, system region, heap, address regions: hos_commit), because host
    APIs given guest buffers (ReadFile into a game buffer) fail on reserved pages without raising an exception. A
    guest or host access to a page nothing committed is committed on first touch, 64 KB at a time, by the handler. */
+#if !defined(__linux__)
 void hos_commit(uint64_t addr, uint64_t size) {
     if (!size) return;
     const uint64_t lo = addr & ~0xFFFFULL, hi = (addr + size + 0xFFFF) & ~0xFFFFULL;
@@ -700,3 +701,62 @@ void hos_process_memory(uint64_t *private_bytes, uint64_t *working_set) {
     *private_bytes = m.PrivateUsage;
     *working_set = m.WorkingSetSize;
 }
+#else
+/* Linux reserves and commits the complete guest window in hos_main.c.  Keeping these
+   hooks as no-ops preserves the same interface without pulling in Win32 VM APIs. */
+void hos_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+void hos_commit_init(void) {}
+void hos_mods_init(const char *image_path) { (void)image_path; }
+
+int hos_game_cores(void) { return 0; }
+int hos_blank_cached_icon(const char *guest, const char *host) {
+    (void)guest; (void)host; return 0;
+}
+int hos_ultrawide_redirect(const char *guest, char *out, size_t cap) {
+    (void)guest; (void)out; (void)cap; return 0;
+}
+uint64_t hos_title_input(uint64_t buttons) { return buttons; }
+uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }
+int hos_mods_dir_extras(const char *rel, const char *base_dir,
+                        void (*fn)(void *, const char *, int, uint64_t), void *arg) {
+    (void)rel; (void)base_dir; (void)fn; (void)arg; return 0;
+}
+int hos_mods_romfs(const char *rel, char *out, size_t cap) {
+    (void)rel; (void)out; (void)cap; return 0;
+}
+
+int hos_gpu_async(void) { return 0; }
+void hos_gpu_submit(int channel_fd, const uint64_t *entries, uint32_t n) {
+    static volatile LONG seen;
+    if (InterlockedIncrement(&seen) <= 4)
+        hos_log("gpu: submit of %u entries on channel %d (no GPU yet)", n, channel_fd);
+    (void)entries;
+}
+void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, int incr_id) {
+    (void)incr_id;
+    hos_gpu_submit(channel_fd, entries, n);
+}
+
+void a64_poll(Ctx *c) {
+    c->poll = 0;
+    void hos_vcore_checkpoint(void);
+    hos_vcore_checkpoint();
+}
+
+uint64_t a64_cntpct_host(void) {
+    static struct timespec base;
+    static int initialized;
+    struct timespec now;
+    if (!initialized) {
+        clock_gettime(CLOCK_MONOTONIC_RAW, &base);
+        __atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
+    }
+    clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+    const uint64_t ns = (uint64_t)(now.tv_sec - base.tv_sec) * 1000000000ULL +
+                        (uint64_t)now.tv_nsec - (uint64_t)base.tv_nsec;
+    return (ns * HOS_TICK_HZ) / 1000000000ULL;
+}
+
+void hos_ultrawide_apply(void) {}
+float hos_view_aspect;
+#endif

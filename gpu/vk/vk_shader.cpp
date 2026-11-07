@@ -9,7 +9,6 @@
 // A program's stages are emitted with one Backend::Bindings, so their descriptors share one set in Eden's order
 // (per stage: uniform buffers, storage buffers, texture buffers, image buffers, textures, images), which
 // vk_pipeline.cpp lays out from the stages' Info the same way.
-#include <io.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
