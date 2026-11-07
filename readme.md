@@ -77,6 +77,20 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 
 A build takes about 40 minutes, and you can use your PC in the meantime.
 
+**From Linux:**
+
+The same Windows game can be built on a Linux PC and played with Proton or Wine. Microsoft's C library and Windows SDK
+are downloaded once by [xwin](https://github.com/Jake-Shadle/xwin), which asks you to accept Microsoft's licence:
+
+```sh
+cargo install xwin --locked
+scripts/setup-winsysroot.sh
+python3 -I nx2/make_game.py --nup ~/your-game.nup --out ~/Games/Hookshot --language en-US
+```
+
+This needs clang, lld (with `lld-link`) and the Python packages below. `--target windows` is the default on both systems.
+`--target linux` builds a native `hookshot`, but the system layer is not ported yet, so that build does not compile.
+
 ### What you need
 
 - The Visual Studio C++ tools and the Windows SDK. Microsoft does not allow these to be bundled, so install
@@ -91,7 +105,7 @@ A build takes about 40 minutes, and you can use your PC in the meantime.
 
 To build from the command line you also need:
 
-- Python 3 with `lz4`, `numpy`, `capstone` and `unicorn`.
+- Python 3 with `lz4`, `numpy`, `capstone`, `zstandard` and `unicorn`.
 - The clang from [emsdk](https://github.com/emscripten-core/emsdk), at `C:\emsdk`.
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
 - The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
@@ -156,8 +170,9 @@ game than anyone has yet.
 
 Bigger ways to help:
 
-- **Linux support.** Hookshot only runs on Windows today. The Vulkan renderer is a good start, but the system layer
-  still needs porting.
+- **Linux support.** Hookshot can be built on Linux, but the game only runs as a Windows program today (Proton or Wine).
+  `--target linux` is the build path for a native one: the Vulkan renderer is a good start, but the system layer
+  (`host/`) still needs porting.
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
   anything generated from your game out of it.
 

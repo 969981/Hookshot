@@ -15,11 +15,27 @@ Status: the dump is read and lifted (100 % translated, the instruction test pass
 
 ## Use
 
-Requirements: Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` (2.1); emsdk's clang at `C:\emsdk` (or `EMSDK`);
+Requirements: Python 3 with `lz4`, `numpy`, `capstone`, `zstandard`, `unicorn` (2.1); emsdk's clang at `C:\emsdk` (or `EMSDK`);
 for the Vulkan back end, Eden's CPM package cache (found in mkw-recomp's `work/eg` or `..\Eglantine\.cache\cpm`, or
 `RX_CPM`).
 
 Run everything with `python -I` from this folder.
+
+Targets (`nx2/target.py`): `build.py` and `make_game.py` take `--target windows` (the default; `RX_TARGET`) or `linux`.
+From a Linux PC, `windows` is a cross-build with the system's clang and lld-link over a /winsysroot-style copy of
+Microsoft's C library and Windows SDK (`scripts/setup-winsysroot.sh`, xwin; `RX_WINSYSROOT`, default
+`~/.local/share/hookshot/winsysroot`), and the game runs with Proton or Wine. `linux` builds `work/sa/build-linux/hookshot`
++ `libhookshot_vk.so`, and only the build path is there: host/ and gpu/vk still call Win32. The tools that run during
+the build (zbic, the tests) are always built for the PC they run on.
+
+The split build (`nx2/module.py`): `build.py --part runtime` makes the game-independent runtime once
+(`work/runtime-<target>`: `hookshot_rt[.exe]`, the Vulkan back end, and the files a module links against), and
+`build.py --part game` makes the game module from a lift against it (`hookshot_game.dll` / `libhookshot_game.so`,
+in `work/sa/game-<target>`). The module compiles against `nx2/rt/crt` instead of an SDK, so the player's PC needs no
+Windows SDK, Visual Studio or libc headers. `scripts/package.py` puts a runtime, the launcher (`launcher/hookshot.c`)
+and the build scripts in a release folder; the launcher builds the game module from the player's `.nup` the first time,
+and again when the runtime changes (`runtime.stamp` against `game.stamp`). The one-executable build (no `--part`) is
+unchanged and stays the development build.
 
 | Command | What |
 |---|---|
