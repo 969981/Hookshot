@@ -78,6 +78,10 @@ For test runs:
 | `RX_VK_PRECOMPILE=0` | no shader preparation: each shader is translated when first drawn |
 | `HOOKSHOT_JOBS` | make_game.py's default `--jobs`, the launcher's builds included |
 
+The saves' folder (`host/hos_main.c` saves_dir): started from its own folder, the game keeps its saves in
+`Documents\My Games\Hookshot` or `$XDG_DATA_HOME/hookshot`, and moves a `user/` folder beside the executable there
+entry by entry the first time; started with an image path, it keeps `user/` in the current folder; `--user` wins.
+
 `hookshot_rt --prepare-shaders` prepares every shader without starting the game (the launcher's "Preparing shaders"
 step). A runtime built with libc++ keeps its own program cache, since the records hold C++ library types as they lie.
 
