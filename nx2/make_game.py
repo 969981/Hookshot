@@ -264,7 +264,8 @@ def main():
 
     say("stage", "lift", "Translating the game to PC code")
     run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-    run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+    if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
+        run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
 
     say("stage", "compile", "Compiling")
     done = {"n": 0, "of": 1}
