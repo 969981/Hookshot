@@ -151,6 +151,18 @@ static DWORD WINAPI display_main(void *p) {
         SetEvent(renderer_up);
         return 0;
     }
+    {   /* the window's icon: hookshot.png beside the executable (scripts/package.py), for X11 and the compositors that
+           take one from the window; others find it by the app id, in the launcher's desktop file */
+        char png[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, png, MAX_PATH);
+        while (n && png[n - 1] != '/') n--;
+        snprintf(png + n, sizeof png - n, "hookshot.png");
+        SDL_Surface *icon = SDL_LoadPNG(png);
+        if (icon) {
+            SDL_SetWindowIcon(window, icon);
+            SDL_DestroySurface(icon);
+        }
+    }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     hos_log("display: SDL %d.%d.%d on %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
             SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());

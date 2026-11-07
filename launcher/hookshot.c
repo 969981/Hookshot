@@ -1034,6 +1034,49 @@ static int build(const char *game) {
 #endif
 }
 
+#ifndef _WIN32
+/* Linux: the game in the desktop's menus, with its icon (hookshot.png here, scripts/package.py), as
+   $XDG_DATA_HOME/applications/io.github.gab9281.Hookshot.desktop: the name of the window's app id (host/linux/
+   display_sdl.c), so the compositor puts the icon on the window too. Written again when this folder moved;
+   HOOKSHOT_NO_DESKTOP=1 leaves it out */
+static void desktop_entry(void) {
+    char icon[PATH_CAP], dir[PATH_CAP], file[PATH_CAP + 64];
+    path(icon, "hookshot.png");
+    struct stat st;
+    if (getenv("HOOKSHOT_NO_DESKTOP") || stat(icon, &st)) return;
+    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s/applications", xdg);
+    else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/applications", home);
+    else return;
+    char exec[PATH_CAP * 2], *e = exec;   /* (the spec's quoting: ", `, $ and \ escaped inside the quotes) */
+    *e++ = '"';
+    for (const char *c = here; *c && e < exec + sizeof exec - 16; c++) {
+        if (strchr("\"`$\\", *c)) *e++ = '\\';
+        *e++ = *c;
+    }
+    snprintf(e, (size_t)(exec + sizeof exec - e), "/hookshot\"");
+    char want[PATH_CAP * 4];
+    snprintf(want, sizeof want,
+             "[Desktop Entry]\nType=Application\nName=Hookshot\nComment=The Legend of Zelda: Ocarina of Time, built on this PC\n"
+             "Exec=%s\nIcon=%s\nTerminal=false\nCategories=Game;\nStartupWMClass=io.github.gab9281.Hookshot\n", exec, icon);
+    snprintf(file, sizeof file, "%s/io.github.gab9281.Hookshot.desktop", dir);
+    char have[sizeof want] = "";
+    FILE *f = fopen(file, "r");
+    if (f) {
+        have[fread(have, 1, sizeof have - 1, f)] = 0;
+        fclose(f);
+    }
+    if (!strcmp(have, want)) return;
+    for (char *c = dir + 1; *c; c++)   /* (the folders on the way, as mkdir -p) */
+        if (*c == '/') *c = 0, mkdir(dir, 0755), *c = '/';
+    mkdir(dir, 0755);
+    if ((f = fopen(file, "w"))) {
+        fputs(want, f);
+        fclose(f);
+    }
+}
+#endif
+
 static int start(int argc, char **argv) {
     char rt[PATH_CAP];
     path(rt, RUNTIME);
@@ -1046,6 +1089,7 @@ static int start(int argc, char **argv) {
     const int why = (int)GetLastError();
 #else
     (void)argc;
+    desktop_entry();
     argv[0] = rt;
     execv(rt, argv);
     const int why = errno;

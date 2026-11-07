@@ -138,9 +138,17 @@ To build from the command line you also need:
 - The build reads your game and never changes it. It writes to the folder you choose and to
   `%LOCALAPPDATA%\HookshotBuilder` (Linux: `~/.local/share/HookshotBuilder`).
 - The romfs is hard-linked instead of copied where the disk allows it.
+- Your saves are kept where your system keeps games' saves: `Documents\My Games\Hookshot` on Windows (where
+  Documents is, OneDrive included), `~/.local/share/hookshot` on Linux (`$XDG_DATA_HOME/hookshot`). A new or rebuilt
+  game folder finds them there. Saves from an older version, in a `user` folder beside the game, are moved there the
+  first time, and `saves-moved.txt` beside the game says where. `--user <folder>` uses another folder.
+- On Linux, the launcher adds Hookshot to your desktop's menus with its icon
+  (`~/.local/share/applications/io.github.gab9281.Hookshot.desktop`), and updates it if you move the folder. Set
+  `HOOKSHOT_NO_DESKTOP=1` to leave it out.
 - It compiles with half your processor's threads. With little memory, use fewer: set `HOOKSHOT_JOBS`, for example
   `HOOKSHOT_JOBS=3 ./hookshot`.
-- To uninstall, delete the game folder and `%LOCALAPPDATA%\HookshotBuilder` (Linux: `~/.local/share/HookshotBuilder`).
+- To uninstall, delete the game folder and `%LOCALAPPDATA%\HookshotBuilder` (Linux: `~/.local/share/HookshotBuilder`
+  and the desktop file above). Your saves stay until you delete their folder too.
 
 ### If something goes wrong
 

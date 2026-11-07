@@ -93,6 +93,8 @@ def main():
         if os.path.exists(os.path.join(rt, name)):
             shutil.copy2(os.path.join(rt, name), os.path.join(out, name))
     shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE.txt"))
+    if not win:   # (the window's icon and the desktop file's: host/linux/display_sdl.c, launcher/hookshot.c)
+        shutil.copy2(os.path.join(ROOT, "assets", "hookshot.png"), os.path.join(out, "hookshot.png"))
     link = os.path.join(out, "tools", "link")
     os.makedirs(link)
     for name in [module.STAMP, module.RUNTIME_LIB[a.target], "hookshot_game.interface"]:

@@ -43,8 +43,12 @@ jobs:
           path: work/deps/dl
           key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
       - run: scripts/fetch-deps.sh windows
+      - name: The icon of the Windows game and launcher (nx2/make_icon.py; build.py and package.py link work/hookshot.res)
+        run: |
+          work/deps/linux-python/bin/python3 -m pip install -q --disable-pip-version-check pillow==11.3.0
+          work/deps/linux-python/bin/python3 -I nx2/make_icon.py assets/hookshot.png work
       - name: The Windows job's share
-        run: tar -cf deps-windows.tar work/deps/win-python work/deps/win-llvm work/deps/cpm third_party/sdl3/SDL3.dll
+        run: tar -cf deps-windows.tar work/deps/win-python work/deps/win-llvm work/deps/cpm third_party/sdl3/SDL3.dll work/hookshot.res
       - uses: actions/upload-artifact@v4
         with:
           name: deps-windows
