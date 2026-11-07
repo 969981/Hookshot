@@ -150,6 +150,9 @@ inline HBITMAP CreateDIBSection(HDC, const BITMAPINFO* bi, UINT, void** bits, HA
     return b;
 }
 inline HGDIOBJ SelectObject(HDC d, HGDIOBJ o) {
+    // (nothing: what a DC with no font or bitmap of its own gives back as "the old one", and vk_menu.cpp selects it back
+    // when done; GDI's own DC has its stock objects there. Read as an object, it was the Insert menu's crash)
+    if (!o) return nullptr;
     if (o->kind == vk_gdi::K_BITMAP) { HGDIOBJ old = d->bmp; d->bmp = (HBITMAP)o; return old; }
     if (o->kind == vk_gdi::K_FONT) { HGDIOBJ old = d->font; d->font = (HFONT)o; return old; }
     return nullptr;

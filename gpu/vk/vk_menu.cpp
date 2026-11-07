@@ -347,6 +347,10 @@ void menu_tick() {
     menu_refresh = false;
     cur_scale = scale;
     if (press[0] || press[6]) open_now = !open_now.load(), changed = true;
+    {   // (hookshot) RX_VK_MENU_OPEN=1 (diagnosis): the menu opened at the first frame, as Insert would, with no keyboard
+        static bool forced = false;
+        if (!forced && getenv("RX_VK_MENU_OPEN")) forced = true, open_now = true, changed = true;
+    }
     if (open_now.load()) {
         if (press[5]) open_now = false;
         if (press[1]) selected = (selected + kRows - 1) % kRows, changed = true;
