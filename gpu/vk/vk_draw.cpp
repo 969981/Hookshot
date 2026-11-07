@@ -1351,7 +1351,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (dump_on() && dump_ssbo_wanted(p.key)) {   // (RX_VK_DUMP_SSBO: where it is, and what the CPU's memory holds)
                     std::vector<uint32_t> words((size_t)std::min<uint64_t>(n, 65536) / 4);
                     size_t nz = 0;
-                    const bool read = addr && !words.empty() && host->gpu_read(base, words.data(), words.size() * 4);
+                    const bool read = b && addr && !words.empty() && host->gpu_read(base, words.data(), words.size() * 4);
                     if (read)
                         for (uint32_t w : words) nz += w != 0;
                     logf("vk: dump ssbo %03d prog %016llx stage %d sb%u (c%u+%#x%s): addr %#llx size %#llx bound %s; guest "
