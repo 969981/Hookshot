@@ -16,6 +16,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
+#ifdef _WIN32
+#include <shlobj.h>   /* (SHGetFolderPathA: the saves' folder) */
+#endif
 #else
 #include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
@@ -153,10 +156,10 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 void hos_update_check(void);   /* (host/hos_update.c) */
-#ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
-   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
-   cannot be moved keeps the old place. --user still wins. */
+/* Saves live where the system keeps a game's, so a new or rebuilt game folder still finds them: on Windows in
+   Documents\My Games\Hookshot (Documents wherever it is, OneDrive's included), on Linux in $XDG_DATA_HOME/hookshot
+   (~/.local/share/hookshot). A user/ folder beside the executable from before is moved there the first time, entry by
+   entry. Anything that cannot be moved keeps the old place. --user still wins. */
 static int is_dir(const char *p) {
     const DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
@@ -212,6 +215,13 @@ static void delete_tree(const char *p) {
 }
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
+#ifdef _WIN32
+    char docs[MAX_PATH];
+    if (FAILED(SHGetFolderPathA(NULL, CSIDL_PERSONAL | CSIDL_FLAG_CREATE, NULL, SHGFP_TYPE_CURRENT, docs))) return beside;
+    snprintf(dir, sizeof dir, "%s\\My Games", docs);
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir, sizeof dir, "%s\\My Games\\Hookshot", docs);
+#else
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
     if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
     else if (home && home[0] == '/') {
@@ -221,6 +231,7 @@ static const char *saves_dir(const char *beside) {
     } else return beside;
     CreateDirectoryA(dir, NULL);
     snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
+#endif
     CreateDirectoryA(dir, NULL);
     if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
     char pattern[MAX_PATH];
@@ -258,7 +269,6 @@ static const char *saves_dir(const char *beside) {
     }
     return dir;
 }
-#endif
 
 /* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
@@ -341,11 +351,7 @@ static int game_main(int argc, char **argv) {
                 hos_update_check();   /* (a game folder from the builder: is a newer release out? host/hos_update.c) */
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
-#ifndef _WIN32
                 if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
-#else
-                if (!hos_user_dir) hos_user_dir = beside_user;
-#endif
             }
         }
     }
