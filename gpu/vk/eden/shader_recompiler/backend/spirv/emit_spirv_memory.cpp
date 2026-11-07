@@ -55,6 +55,27 @@ Id LoadStorage32(EmitContext& ctx, const IR::Value& binding, const IR::Value& of
                        &StorageDefinitions::U32, index_offset);
 }
 
+Id LoadGlobal16(EmitContext& ctx, Id address, bool is_signed) {
+    if (!ctx.profile.support_int64) {
+        LOG_WARNING(Shader_SPIRV, "Int64 not supported, ignoring memory operation");
+        return ctx.Const(0u);
+    }
+
+    // The global U32 helper performs aligned word loads on both the SSBO and page-table paths.
+    // Align the full guest address before calling it, but derive the halfword lane from the
+    // original low word so the address's high bits are preserved.
+    const Id aligned_address{
+        ctx.OpBitwiseAnd(ctx.U64, address, ctx.Constant(ctx.U64, ~u64{3}))};
+    const Id word{EmitLoadGlobal32(ctx, aligned_address)};
+    const Id low_address{ctx.OpUConvert(ctx.U32[1], address)};
+    const Id bit_offset{ctx.OpBitwiseAnd(ctx.U32[1],
+                                         ctx.OpShiftLeftLogical(ctx.U32[1], low_address,
+                                                               ctx.Const(3u)),
+                                         ctx.Const(16u))};
+    return is_signed ? ctx.OpBitFieldSExtract(ctx.U32[1], word, bit_offset, ctx.Const(16u))
+                     : ctx.OpBitFieldUExtract(ctx.U32[1], word, bit_offset, ctx.Const(16u));
+}
+
 void WriteStorage(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                   const StorageTypeDefinition& type_def, size_t element_size,
                   Id StorageDefinitions::*member_ptr, u32 index_offset = 0) {
@@ -86,12 +107,12 @@ void EmitLoadGlobalS8(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-void EmitLoadGlobalU16(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitLoadGlobalU16(EmitContext& ctx, Id address) {
+    return LoadGlobal16(ctx, address, false);
 }
 
-void EmitLoadGlobalS16(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitLoadGlobalS16(EmitContext& ctx, Id address) {
+    return LoadGlobal16(ctx, address, true);
 }
 
 Id EmitLoadGlobal32(EmitContext& ctx, Id address) {
