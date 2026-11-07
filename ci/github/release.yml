@@ -14,6 +14,9 @@
 #                 Python, compiler and helpers work, and its launcher runs a game build up to reading the game
 #   test-windows  the same in a bare Windows Server Core container (no Visual Studio, no SDK, no Python)
 #
+# cross-windows.yml beside it is an example of the windows job cross-compiled on Linux instead (xwin's SDK, behind an
+# explicit licence input): how a developer's Linux PC builds it, not how the release is built.
+#
 # There is no game in CI (nor may there be): the tests stop where the game is read, with a file that is not one, and
 # check that the build says so. A full build from a real .nup is the release checklist's step (docs/development.md).
 name: release

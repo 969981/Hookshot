@@ -1,0 +1,108 @@
+# (hookshot) An example: the Windows release folder cross-compiled on Linux. NOT ACTIVE, as release.yml: GitHub runs
+# only the files in .github/workflows/. To try it:
+#
+#     git mv ci/github/cross-windows.yml .github/workflows/cross-windows.yml
+#
+# then Actions > cross-windows > Run workflow, saying yes to Microsoft's licence there (see below).
+#
+# How it differs from release.yml's windows job: the same runtime and release folder, built on an ubuntu-22.04
+# runner with the release's own Linux LLVM, against Microsoft's C library and Windows SDK fetched by xwin
+# (scripts/setup-winsysroot.sh, as on a developer's Linux PC: nx2/target.py's cross build). release.yml builds on a
+# native Windows runner instead, whose SDK comes with the runner image: there nobody has to accept Microsoft's licence
+# on the project's behalf, which is why it stays the release's way. Here the licence is accepted by whoever runs the
+# workflow, through its required input, and never by default: xwin is run with --accept-license only when it says yes.
+#
+#   cross-windows       fetch-deps (both systems: Linux's LLVM builds, Windows' Python and LLVM ship), xwin (pinned,
+#                       sha256-checked), the sysroot, the runtime (build.py --part runtime --target windows) and
+#                       dist/Hookshot-windows (scripts/package.py), zipped
+#   test-windows-cross  the folder in a bare Windows Server Core container, as release.yml's test-windows
+name: cross-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      accept_msvc_license:
+        description: "I accept Microsoft's licence for its C library and Windows SDK (shown by xwin; see https://go.microsoft.com/fwlink/?LinkId=2086102)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  JOBS: "4"
+  XWIN: "0.10.0"
+  XWIN_SHA256: d870eb4b2f390878af6da1ccd3cf321d22fcb72720984853b4be732ae597fc88
+
+jobs:
+  cross-windows:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Microsoft's licence (accepted by the person running this, or no build)
+        if: ${{ !inputs.accept_msvc_license }}
+        run: |
+          echo "This workflow downloads Microsoft's C library and Windows SDK, under Microsoft's licence."
+          echo "Run it again with accept_msvc_license checked to accept it, or use release.yml (native Windows runner)."
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: work/deps/dl
+          key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
+      - run: scripts/fetch-deps.sh all
+      - name: xwin, pinned
+        run: |
+          curl -fsSL --retry 3 -o xwin.tar.gz \
+            "https://github.com/Jake-Shadle/xwin/releases/download/$XWIN/xwin-$XWIN-x86_64-unknown-linux-musl.tar.gz"
+          echo "$XWIN_SHA256  xwin.tar.gz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf xwin.tar.gz -C "$RUNNER_TEMP/bin" --strip-components=1 "xwin-$XWIN-x86_64-unknown-linux-musl/xwin"
+      - name: The Linux LLVM as a cross compiler
+        # (lld is every linker by the name it is called with: the MSVC target's driver calls lld-link)
+        run: ln -s lld work/deps/linux-llvm/bin/lld-link
+      - name: Microsoft's C library and Windows SDK (xwin)
+        run: |
+          export PATH="$RUNNER_TEMP/bin:$PWD/work/deps/linux-llvm/bin:$PATH"
+          export RX_WINSYSROOT="$RUNNER_TEMP/winsysroot" XDG_CACHE_HOME="$RUNNER_TEMP/cache"
+          scripts/setup-winsysroot.sh --accept-license
+      - name: Runtime
+        run: |
+          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_WINSYSROOT="$RUNNER_TEMP/winsysroot"
+          export RX_CPM="$PWD/work/deps/cpm" OOT_WORK="$PWD/work" RX_RELEASE=1
+          work/deps/linux-python/bin/python3 -I nx2/build.py --part runtime --target windows --jobs "$JOBS"
+      - name: Release folder
+        run: |
+          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_WINSYSROOT="$RUNNER_TEMP/winsysroot"
+          work/deps/linux-python/bin/python3 -I scripts/package.py --target windows --runtime work/runtime-windows \
+            --python work/deps/win-python --llvm work/deps/win-llvm
+          (cd dist && zip -qr ../Hookshot-windows.zip Hookshot-windows)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hookshot-windows-cross
+          path: Hookshot-windows.zip
+
+  test-windows-cross:
+    needs: cross-windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Hookshot-windows-cross
+      - run: Expand-Archive Hookshot-windows.zip -DestinationPath C:\t
+        shell: pwsh
+      - name: In a bare Windows (Server Core, no Visual Studio, no Windows SDK, no Python)
+        shell: pwsh
+        run: |
+          Set-Content -Path C:\t\test.cmd -Encoding ascii -Value @'
+          @echo off
+          cd /d C:\t\Hookshot-windows
+          where cl clang python 2>nul && (echo build tools are here & exit /b 1)
+          tools\python\python.exe -I -c "import ctypes, lz4, numpy, capstone, zstandard; ctypes.CDLL(r'tools\hookshot\third_party\a64-kit\lift\a64emit.dll'); ctypes.CDLL(r'tools\hookshot\third_party\zbic\zbic.dll'); print('python ok')" || exit /b 1
+          tools\python\python.exe -I tools\hookshot\nx2\make_game.py --help > nul || exit /b 1
+          echo NOTANUP> C:\t\fake.nup
+          tools\python\python.exe -I tools\hookshot\nx2\make_game.py --part game --target windows --nup C:\t\fake.nup --out C:\t\Hookshot-windows > C:\t\build.txt 2>&1
+          type C:\t\build.txt
+          findstr /c:"not a NUP package" C:\t\build.txt || exit /b 1
+          '@
+          docker run --rm -v C:\t:C:\t mcr.microsoft.com/windows/servercore:ltsc2022 cmd /c C:\t\test.cmd
