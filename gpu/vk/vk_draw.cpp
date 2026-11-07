@@ -1299,9 +1299,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const size_t first = dw.bufs.size();
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t off = d.cbuf_offset + k * 16;
-                const uint64_t addr = driver_bank_word(s, (int)d.cbuf_index, ns, off) |
-                                      (uint64_t)driver_bank_word(s, (int)d.cbuf_index, ns, off + 4) << 32;
-                const uint64_t size = driver_bank_word(s, (int)d.cbuf_index, ns, off + 8);
+                const uint64_t addr = stage_cbuf_word(s, st, d.cbuf_index, off) |
+                                      (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
+                const uint64_t size = stage_cbuf_word(s, st, d.cbuf_index, off + 8);
                 const uint64_t base = addr & ~(salign - 1), n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
                 const auto t0 = std::chrono::steady_clock::now();
                 // (hookshot) a storage buffer table's entries (count > 1, Info::global_tables): the ones past the table's
