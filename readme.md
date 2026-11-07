@@ -108,7 +108,7 @@ To build from the command line you also need:
 - Python 3 with `lz4`, `numpy`, `capstone`, `zstandard` and `unicorn`.
 - The clang from [emsdk](https://github.com/emscripten-core/emsdk), at `C:\emsdk`.
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
-- The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
+- The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL3.
 
 ### What this does on your PC
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # (hookshot) What the runtime build and the release folders take that the repository does not hold, at pinned versions,
 # every download checked against its sha256 here: the Vulkan headers, SPIR-V headers and VMA (build.py's CPM folder),
-# FFmpeg's LGPL shared builds (BtbN), SDL2 for Windows, and the release folders' interpreter (python-build-standalone
+# FFmpeg's LGPL shared builds (BtbN), SDL3 (Windows' build; for Linux built here from its source), and the release folders' interpreter (python-build-standalone
 # with lz4, numpy, capstone, zstandard) and compiler (an LLVM release, trimmed to clang, lld, llvm-nm, llvm-ar).
 #
 #     scripts/fetch-deps.sh [linux|windows|all]     (default all; run on Linux, as the builds are)
@@ -10,7 +10,10 @@
 #     cpm/<name>/<version>/            RX_CPM=<that>/cpm for nx2/build.py
 #     linux-python/ win-python/        scripts/package.py --python
 #     linux-llvm/ win-llvm/            scripts/package.py --llvm (and the Linux one on PATH for the builds)
-#     third_party/sdl2/SDL2.dll        (Windows: beside the runtime; into the repository's third_party/sdl2/)
+#     linux-sdl3/                      RX_SDL3=<that> for nx2/build.py: libSDL3.so.0 bundled beside the Linux runtime, for
+#                                      systems without SDL3 (Ubuntu 22.04, Debian 12). Needs cmake and the headers of
+#                                      Wayland, X11, PipeWire, PulseAudio, ALSA and udev (SDL loads each at run time)
+#     third_party/sdl3/SDL3.dll        (Windows: beside the runtime; into the repository's third_party/sdl3/)
 # Downloads are kept in <deps>/dl and not fetched again while their hash matches. BtbN's "latest" FFmpeg builds are
 # replaced daily: when the pinned one is gone, the script says so; take the new one's hash from its checksums.sha256.
 set -euo pipefail
@@ -26,7 +29,7 @@ PBS=20261026
 PY=3.12.16
 LLVM=23.1.5
 FFMPEG=ffmpeg-n8.1-latest
-SDL=2.32.10
+SDL=3.4.18
 
 # fetch <file in dl/> <url> <sha256>
 fetch() {
@@ -127,6 +130,27 @@ if [ "$want" = linux ] || [ "$want" = all ]; then
         "zstandard==0.25.0 --hash=sha256:5a56ba0db2d244117ed744dfa8f6f5b366e14148e00de44723413b2f3938a902"
     llvm "LLVM-$LLVM-Linux-X64.tar.xz" "LLVM-$LLVM-Linux-X64" f72edb0b36580ece7f52e23858f00c18fad4e87395ea7ad05d7e55c39f8fc78a linux-llvm \
         bin/clang bin/clang++ bin/clang-23 bin/lld bin/ld.lld bin/llvm-ar bin/llvm-nm bin/llvm-cxxfilt
+    fetch "SDL3-$SDL.tar.gz" "$GH/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" \
+        9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+    if [ ! -f "$deps/linux-sdl3/lib/libSDL3.so.0" ] && [ -z "${NO_SDL3_BUILD:-}" ]; then   # (NO_SDL3_BUILD=1: not needed, a Windows build)
+        command -v cmake >/dev/null || { echo "fetch-deps: SDL3 is built with cmake: install it (or leave RX_SDL3 unset for the system's SDL3)" >&2; exit 1; }
+        rm -rf "$deps/.sdl3" "$deps/linux-sdl3"
+        mkdir -p "$deps/.sdl3"
+        tar -xzf "$dl/SDL3-$SDL.tar.gz" -C "$deps/.sdl3" --strip-components=1
+        # (the video and audio back ends loaded at run time, as the system's SDL does: a player needs none of them all)
+        cmake -S "$deps/.sdl3" -B "$deps/.sdl3/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$deps/linux-sdl3" \
+            -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF -DSDL_DEPS_SHARED=ON >/dev/null
+        conf="$(find "$deps/.sdl3/build" -name SDL_build_config.h | head -1)"
+        for d in VIDEO_DRIVER_WAYLAND VIDEO_DRIVER_X11 AUDIO_DRIVER_PIPEWIRE AUDIO_DRIVER_PULSEAUDIO AUDIO_DRIVER_ALSA \
+                 VIDEO_VULKAN; do
+            grep -q "^#define SDL_$d 1" "$conf" || { echo "fetch-deps: SDL3 would build without $d: install its headers" >&2; exit 1; }
+        done
+        grep -q "^#define SDL_UDEV_DYNAMIC" "$conf" || { echo "fetch-deps: SDL3 would build without udev (controllers plugged in later): install libudev's headers" >&2; exit 1; }
+        cmake --build "$deps/.sdl3/build" -j "${JOBS:-3}" >/dev/null
+        cmake --install "$deps/.sdl3/build" >/dev/null
+        rm -rf "$deps/.sdl3"
+    fi
 fi
 
 if [ "$want" = windows ] || [ "$want" = all ]; then
@@ -148,10 +172,9 @@ if [ "$want" = windows ] || [ "$want" = all ]; then
         "zstandard==0.25.0 --hash=sha256:ffef5a74088f1e09947aecf91011136665152e0b4b359c42be3373897fb39b01"
     llvm "clang+llvm-$LLVM-x86_64-pc-windows-msvc.tar.xz" "clang+llvm-$LLVM-x86_64-pc-windows-msvc" 62fdada7f6fa2b73856486dfbbdba3d2c1882991621615bcb55c60207611c6d4 win-llvm \
         bin/clang.exe bin/lld.exe bin/lld-link.exe bin/llvm-ar.exe bin/llvm-nm.exe bin/llvm-cxxfilt.exe
-    fetch "SDL2-$SDL-win32-x64.zip" "$GH/libsdl-org/SDL/releases/download/release-$SDL/SDL2-$SDL-win32-x64.zip" \
-        6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb
-    [ -f "$root/third_party/sdl2/SDL2.dll" ] ||
-        "$pyhost" -I -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("SDL2.dll"))' \
-            "$dl/SDL2-$SDL-win32-x64.zip" "$root/third_party/sdl2/SDL2.dll"
+    fetch "SDL3-$SDL-win32-x64.zip" "$GH/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL-win32-x64.zip" \
+        75c2c0fc74e7d1206aaedc22893a35887332f4f85f5c8b74fddc10d177985f2c
+    "$pyhost" -I -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("SDL3.dll"))' \
+        "$dl/SDL3-$SDL-win32-x64.zip" "$root/third_party/sdl3/SDL3.dll"
 fi
 echo "deps ready in $deps (RX_CPM=$deps/cpm)"

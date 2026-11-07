@@ -10,8 +10,9 @@
 #   linux         the runtime (nx2/build.py --part runtime --target linux) and dist/Hookshot-linux (scripts/package.py)
 #   windows       the same on a Windows runner, natively: its Windows SDK and C library (no xwin, no licence accepted
 #                 for anyone here); the compiler is the release's own LLVM
-#   test-linux    the release folder in a bare Debian (no compiler, no Python, nothing but SDL2 a player has): its own
-#                 Python, compiler and helpers work, and its launcher runs a game build up to reading the game
+#   test-linux    the release folder in a bare Debian (no compiler, no Python, no SDL: Debian 12 has no SDL3, the folder
+#                 brings its own): its own Python, compiler and helpers work, and its launcher runs a game build up to
+#                 reading the game
 #   test-windows  the same in a bare Windows Server Core container (no Visual Studio, no SDK, no Python)
 #
 # cross-windows.yml beside it is an example of the windows job cross-compiled on Linux instead (xwin's SDK, behind an
@@ -43,7 +44,7 @@ jobs:
           key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
       - run: scripts/fetch-deps.sh windows
       - name: The Windows job's share
-        run: tar -cf deps-windows.tar work/deps/win-python work/deps/win-llvm work/deps/cpm third_party/sdl2/SDL2.dll
+        run: tar -cf deps-windows.tar work/deps/win-python work/deps/win-llvm work/deps/cpm third_party/sdl3/SDL3.dll
       - uses: actions/upload-artifact@v4
         with:
           name: deps-windows
@@ -58,12 +59,17 @@ jobs:
         with:
           path: work/deps/dl
           key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
-      - run: scripts/fetch-deps.sh linux
-      - name: Headers the runtime builds against (SDL2, FreeType)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsdl2-dev libfreetype-dev pkg-config
+      - name: What SDL3's build looks for (it loads each at run time), and FreeType's headers
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config libfreetype-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols libdecor-0-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev libpipewire-0.3-dev libpulse-dev \
+            libasound2-dev libudev-dev libdbus-1-dev libdrm-dev libgbm-dev
+      - run: scripts/fetch-deps.sh linux   # (with SDL3 built from its pinned source: Ubuntu 22.04 has none)
       - name: Runtime
         run: |
           export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_CPM="$PWD/work/deps/cpm" OOT_WORK="$PWD/work" RX_RELEASE=1
+          export RX_SDL3="$PWD/work/deps/linux-sdl3"
           work/deps/linux-python/bin/python3 -I nx2/build.py --part runtime --target linux --jobs "$JOBS"
       - name: Release folder
         run: |
@@ -114,9 +120,8 @@ jobs:
     runs-on: ubuntu-22.04
     container: debian:bookworm-slim
     steps:
-      - name: A player's system (SDL2, nothing to build with)
+      - name: A player's system (nothing to build with, no SDL)
         run: |
-          apt-get update && apt-get install -y --no-install-recommends libsdl2-2.0-0
           for t in cc gcc clang ld python3 python; do
             if command -v "$t"; then echo "$t is here: this is not a system without build tools"; exit 1; fi
           done

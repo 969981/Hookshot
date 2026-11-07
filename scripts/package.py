@@ -6,7 +6,7 @@
 What goes in it, and none of it is made from the game:
 
     hookshot[.exe]              the launcher (launcher/hookshot.c, built here for the target)
-    hookshot_rt[.exe] + the Vulkan back end, SDL2.dll, wgpu-native: the runtime (build.py --part runtime)
+    hookshot_rt[.exe] + the Vulkan back end, SDL3.dll (Linux: libSDL3.so.0), wgpu-native: the runtime (build.py --part runtime)
     runtime.stamp               which runtime this is: the launcher rebuilds a game module made for another
     tools/link/                 what the module links against (hookshot_rt.lib or hookshot_rt.exports, the interface)
     tools/hookshot/             the build scripts (nx2/, host/ for the HLE set, a64-kit), with a64emit and zbic prebuilt
@@ -77,11 +77,11 @@ def main():
     os.makedirs(out)
 
     # the runtime and what it loads
-    # (the libraries it loads, SDL2 and a shared FFmpeg among them (Linux: FFmpeg's lib*.so.<major>; SDL2 the system's), and their licences: *-LICENSE.txt beside them)
+    # (the libraries it loads, SDL3 and a shared FFmpeg among them (Linux: FFmpeg's lib*.so.<major>, libSDL3.so.0), and their licences: *-LICENSE.txt beside them)
     keep = [module.RUNTIME[a.target], module.STAMP, target.VK[a.target], "libwgpu_native.so",
             module.RUNTIME[a.target].replace(".exe", "") + ".map"]
     keep += [f for f in os.listdir(rt) if (f.lower().endswith(".dll") and f != module.MODULE["windows"]) or
-             re.match(r"lib(avcodec|avutil|swscale|swresample)\.so\.\d+$", f) or f.endswith("-LICENSE.txt")]
+             re.match(r"lib(avcodec|avutil|swscale|swresample|SDL3)\.so\.\d+$", f) or f.endswith("-LICENSE.txt")]
     for name in keep:
         if os.path.exists(os.path.join(rt, name)):
             shutil.copy2(os.path.join(rt, name), os.path.join(out, name))

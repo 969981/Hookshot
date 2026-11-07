@@ -66,6 +66,13 @@ def pkg_cflags(name):
     except OSError:
         return None
     return r.stdout.split() if r.returncode == 0 else None
+# (hookshot) Linux: an SDL3 build's prefix (scripts/fetch-deps.sh: work/deps/linux-sdl3), its libSDL3.so.0 bundled
+# beside the runtime (rpath $ORIGIN) for systems that have no SDL3; unset, the system's
+SDL3 = os.environ.get("RX_SDL3", "")
+
+
+def sdl3_cflags():
+    return ["-I" + os.path.join(SDL3, "include")] if SDL3 else (pkg_cflags("sdl3") or [])
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
@@ -101,7 +108,8 @@ def HOT_ORDER():
 
 def HOST_LIBS():   # (hookshot) per target: nx2/target.py
     if not target.windows():   # (SDL3: the window, audio and controllers, host/linux)
-        return ["-lSDL3", "-lpthread", "-ldl", "-lm"]
+        return (["-L" + os.path.join(SDL3, "lib"), "-Wl,-rpath,$ORIGIN"] if SDL3 else []) + \
+               ["-lSDL3", "-lpthread", "-ldl", "-lm"]
     return ["-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
 
 
@@ -400,10 +408,10 @@ def main():
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
     if not target.windows():   # (hookshot) host/linux: its windows.h first, SDL3's headers (the system's)
-        host_fl = ["-I" + HOST_LINUX] + host_fl + ["-D_GNU_SOURCE"] + (pkg_cflags("sdl3") or [])
+        host_fl = ["-I" + HOST_LINUX] + host_fl + ["-D_GNU_SOURCE"] + sdl3_cflags()
         host_deps += b"".join(open(os.path.join(HOST_LINUX, f), "rb").read() for f in sorted(os.listdir(HOST_LINUX))
                               if f.endswith(".h"))
-        for fl in pkg_cflags("sdl3") or ["-I/usr/include"]:   # (and SDL's version: its headers are not ours either)
+        for fl in sdl3_cflags() or ["-I/usr/include"]:   # (and SDL's version: its headers are not ours either)
             ver = os.path.join(fl[2:], "SDL3", "SDL_version.h") if fl.startswith("-I") else ""
             if os.path.exists(ver):
                 host_deps += open(ver, "rb").read()
@@ -547,12 +555,17 @@ def main():
             dll, dst = os.path.join(WGPU, "lib", so), os.path.join(out, so)
             if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
                 shutil.copyfile(dll, dst)
-        # (hookshot) SDL3.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...). Linux: the system's
-        sdl = os.path.join(kit.HERE, "..", "third_party", "sdl3", "SDL3.dll")
-        sdl_dst = os.path.join(out, "SDL3.dll")
-        if win and os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
+        # (hookshot) SDL3.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...). Linux: the
+        # window, audio and controllers, RX_SDL3's libSDL3.so.0 when given (else the system's). Its licence as SDL3-LICENSE.txt
+        sdl = os.path.join(kit.HERE, "..", "third_party", "sdl3", "SDL3.dll") if win else \
+            os.path.join(SDL3, "lib", "libSDL3.so.0") if SDL3 else ""
+        sdl_dst = os.path.join(out, os.path.basename(sdl))
+        if sdl and os.path.exists(sdl):
             import shutil
-            shutil.copyfile(sdl, sdl_dst)
+            if not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl):
+                shutil.copyfile(sdl, sdl_dst)   # (the file a .so.0 link names)
+            shutil.copyfile(os.path.join(kit.HERE, "..", "third_party", "sdl3", "LICENSE.txt"),
+                            os.path.join(out, "SDL3-LICENSE.txt"))
         # (hookshot) a shared FFmpeg build (import libraries in lib/, its DLLs in bin/): those DLLs beside it too
         # (Linux: its lib<name>.so.<major> files, the names the runtime asks for) and its licence as FFmpeg-LICENSE.txt
         fbin = os.path.join(ffmpeg_dir(), "bin" if win else "lib") if ffmpeg_dir() else None

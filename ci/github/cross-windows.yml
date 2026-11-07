@@ -50,7 +50,7 @@ jobs:
         with:
           path: work/deps/dl
           key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
-      - run: scripts/fetch-deps.sh all
+      - run: NO_SDL3_BUILD=1 scripts/fetch-deps.sh all   # (Linux's SDL3 is the Linux runtime's, not built here)
       - name: xwin, pinned
         run: |
           curl -fsSL --retry 3 -o xwin.tar.gz \
