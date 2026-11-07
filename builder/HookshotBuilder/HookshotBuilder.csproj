@@ -24,4 +24,9 @@
     <DebugType>none</DebugType>
   </PropertyGroup>
 
+  <!-- The ZIP packer checks this against the source checkout before stamping its tools. -->
+  <Target Name="WriteBuilderRevision" AfterTargets="Publish" Condition="'$(SourceRevisionId)' != ''">
+    <WriteLinesToFile File="$(PublishDir)builder-revision.txt" Lines="$(SourceRevisionId)" Overwrite="true" Encoding="UTF-8" />
+  </Target>
+
 </Project>

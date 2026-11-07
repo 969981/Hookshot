@@ -223,6 +223,9 @@ Bigger ways to help:
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
   anything generated from your game out of it.
 
+Release maintainers: [packaging and release identity](docs/release-identity.md) explains how to stamp a builder so corrected
+builds published under the same tag can be offered to players.
+
 ## Credits
 
 Hookshot exists thanks to the work of many people:
