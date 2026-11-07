@@ -63,6 +63,7 @@ struct StorageInfo {
     /// instructions (the IR does not change while storage buffers are collected).
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
+    std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> compute_tracks;   // (leaves)
     StorageBufferSet tables;   // (hookshot: TrackTable's, for the fallbacks)
 };
 
@@ -513,6 +514,20 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         return result;
     };
     std::optional<StorageBufferAddr> storage_buffer{cached_track(&nvn_bias, info.biased_tracks)};
+    // (leaves) A compute program's storage buffer descriptors are in c0 from 0x40 (vk_bank.cpp cs_layout), under nvn_bias'
+    // range, so the unbiased search took the first constant it met. OoT's foliage culling adds its counters at c0[0x90] + c1[0] +
+    // k, c1[0] = 12 (an offset in the program's own constants): the counters were bound to a "buffer" at address 12 and every tree
+    // count stayed 0. c0's descriptor area first, then as before. RX_VK_C1_FIRST=1: as before
+    static const bool c1_first{std::getenv("RX_VK_C1_FIRST") != nullptr};
+    if (!storage_buffer && g_follow_stage && !c1_first) {
+        static constexpr Bias compute_bias{
+            .index = 0,
+            .offset_begin = 0x40,
+            .offset_end = 0xA00,
+            .alignment = 16,
+        };
+        storage_buffer = cached_track(&compute_bias, info.compute_tracks);
+    }
     if (!storage_buffer) {
         // If it fails, track without a bias
         storage_buffer = cached_track(nullptr, info.unbiased_tracks);

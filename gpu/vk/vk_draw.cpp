@@ -1094,6 +1094,13 @@ struct BankCache {
     std::vector<uint8_t> bytes;
 };
 thread_local BankCache bank_cache[2][kNvnStages];   // [c0 or c2][NVN stage]: the last upload (draws in a row share most of it)
+// (leaves) An indirect dispatch's grid as its program reads it from c0+0..0xc. dispatch() filled it from guest memory as the
+// recording saw it, but OoT's foliage culling chains write the next pass's group counts on the GPU in the same frame: the program
+// read stale counts (its own work bounds) and culled the forest. grid_patch_want: c0 gets an upload of its own, grid_patch_at, into
+// which dispatch() copies the 12 bytes of arguments on the GPU just before the dispatch, as the console's hardware sees them.
+// RX_VK_NO_GRID_PATCH=1: as before
+thread_local bool grid_patch_want = false;
+thread_local uint64_t grid_patch_at = UINT64_MAX;
 
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
@@ -1102,6 +1109,14 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
     if (index == 0 || index == 2) {   // the driver's banks: only what the program reads of them
         const uint32_t n = std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00);
         BankCache& c = bank_cache[index == 2][std::clamp(st.nvn_stage, 0, kNvnStages - 1)];
+        if (index == 0 && st.nvn_stage == 5 && grid_patch_want) {   // (leaves) an upload of its own, patched on the GPU
+            const uint64_t at = stream_alloc(n, align);
+            if (at == UINT64_MAX) return bi;
+            driver_bank_fill(s, 0, 5, cur->mapped + at, n);
+            grid_patch_at = at;
+            c.at = UINT64_MAX;   // (not shared: its first words change on the GPU)
+            return {cur->stream, at, n};
+        }
         const bool grid_same = st.nvn_stage != 5 || !std::memcmp(c.grid, s.grid, sizeof c.grid);
         static const bool no_bank_cache = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: filled every time)
         if (!no_bank_cache && c.at != UINT64_MAX && c.bind_gen == s.bind_gen && grid_same && c.size >= n)
@@ -1349,10 +1364,37 @@ void build_descriptors(const NvnState& s, const Program& p) {
                         if (const uint64_t end = gpu_pool_end(base); end > base + n)
                             n = std::max<uint64_t>(n, std::min<uint64_t>(end - base, 64ull << 20) & ~uint64_t{3});
                 }
+                // (leaves) A table of bare pointers: OoT's foliage passes keep their outputs' addresses in a user constant buffer
+                // (c4), 16 bytes an entry with no size word. Each entry read size 0, was taken for garbage and bound to nothing, and every
+                // write went nowhere: 383a5669 never filled the instance lists the culling (44511d69 and others) reads, and the forest was
+                // culled. The size is the one another program's descriptor gave the same address (the culling's own c0 descriptors:
+                // 0x...96c000, 0xa040), remembered here. A guessed size will not do: a written range is copied back over guest memory at
+                // the submission's end, and 4 MB ranges overwrote the game's pool headers past the buffers (a crash on loading a save).
+                // An address never seen with a size stays unbound. RX_VK_TABLE_NO_SIZE=1: all left unbound, as before
+                static const bool sizeless_off = getenv("RX_VK_TABLE_NO_SIZE") != nullptr;
+                static std::mutex known_mu;
+                static std::unordered_map<uint64_t, uint64_t> known_size;   // (a buffer's address -> the size a descriptor gave it)
+                bool sizeless = false;
+                if (!sizeless_off && addr) {
+                    if (size && size <= (256ull << 20) && ns == 5) {   // (compute descriptors: where the foliage's are)
+                        std::lock_guard lk(known_mu);
+                        if (known_size.size() < 65536) known_size[addr] = size;
+                    } else if (!size && d.count > 1) {
+                        uint64_t known = 0;
+                        {
+                            std::lock_guard lk(known_mu);
+                            if (auto it = known_size.find(addr); it != known_size.end()) known = it->second;
+                        }
+                        if (known && host->gpu_guest(base)) {
+                            n = std::max<uint64_t>(((known + (addr - base)) + 3) & ~3ull, 16);
+                            sizeless = true;
+                        }
+                    }
+                }
                 const auto t0 = std::chrono::steady_clock::now();
                 // (hookshot) a storage buffer table's entries (count > 1, Info::global_tables): the ones past the table's
                 // end are whatever the constant buffer holds there, bound only when they look like a buffer
-                const bool plausible = d.count == 1 || (size && size <= (256ull << 20) && host->gpu_guest(base));
+                const bool plausible = d.count == 1 || sizeless || (size && size <= (256ull << 20) && host->gpu_guest(base));
                 BufferRef b = addr && plausible ? gpu_buffer_bind(base, n, d.is_written) : BufferRef{};
                 // (AyyBeeDee20738, PR 138) a table entry's region that does not fit its pool this moment bound nothing, and the next
                 // frame bound it again: its reads flipped between the data and 0, the picture between bright and dark. Smaller,
@@ -2597,7 +2639,7 @@ void probe_log(uint64_t f) {
     }
 }
 
-// (amd-fix, diagnosis) in a frame dump, the indirect mesh draws' arguments as the GPU has them: noted at the draw (inside
+// (diagnosis) in a frame dump, the indirect mesh draws' arguments as the GPU has them: noted at the draw (inside
 // the pass, where no copy can be recorded) and copied out once the pass ends ("dump buffer ... mesh indirect")
 thread_local std::vector<std::pair<uint64_t, uint64_t>> dump_mesh_indirect;   // (program key, indirect address)
 void end_pass(VkCommandBuffer cmd) {
@@ -3122,7 +3164,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (d.mesh) {
-        {   // (amd-fix, diagnosis) RX_VK_LOG_MESH_PROGS=1: each mesh program's first draw and every 600th, with what its
+        {   // (diagnosis) RX_VK_LOG_MESH_PROGS=1: each mesh program's first draw and every 600th, with what its
             // indirect arguments hold in guest memory (0 groups: the culling pass before it left nothing)
             static const bool per_prog = getenv("RX_VK_LOG_MESH_PROGS") != nullptr;
             if (dump_on() && d.indirect && dump_mesh_indirect.size() < 256) dump_mesh_indirect.push_back({p.key, d.indirect});
@@ -3870,12 +3912,15 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (plk.on) par_mutex().unlock(), plk.on = false;
     dclock.t_pipe = std::chrono::steady_clock::now();
     end_pass(cmd);
+    static const bool no_grid_patch = getenv("RX_VK_NO_GRID_PATCH") != nullptr;
+    grid_patch_want = indirect && !no_grid_patch, grid_patch_at = UINT64_MAX;
     build_descriptors(s, p);
+    grid_patch_want = false;
     dclock.t_desc = std::chrono::steady_clock::now();
     if (dump_on())
         logf("vk: dump-in %03d dispatch %ux%ux%u prog %016llx:%s", dump_seq(), x, y, z, (unsigned long long)p.key,
              dump_inputs.c_str());
-    if (dump_on()) {   // (amd-fix, diagnosis) what a dispatch can reach: its storage and uniform buffers, its pointer table
+    if (dump_on()) {   // (diagnosis) what a dispatch can reach: its storage and uniform buffers, its pointer table
         char line[1800];
         int n = snprintf(line, sizeof line, "vk: dump-reach %03d prog %016llx%s:", dump_seq(), (unsigned long long)p.key,
                          !p.stages.empty() && p.stages[0].info.stores_global_memory ? " (stores global)" : "");
@@ -3898,6 +3943,45 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             }
         }
         logf("%s", line);
+    }
+    {   // (diagnosis) RX_VK_PTR_SCAN=<prog>[,...]: in a dump, the 64-bit values in each storage buffer the game bound for
+        // that program that look like GPU addresses, by where they point: inside the page table's windows (spirv_emit_context.cpp:
+        // 8 GB from 0x1000000000, 4 GB from 0x7f00000000), or outside them, where a followed pointer reads 0
+        static const std::vector<uint64_t> scan = [] {
+            std::vector<uint64_t> v;
+            for (const char* q = getenv("RX_VK_PTR_SCAN"); q && *q;) {
+                char* end;
+                const uint64_t k = strtoull(q, &end, 16);
+                if (end == q) break;
+                v.push_back(k);
+                q = *end ? end + 1 : end;
+            }
+            return v;
+        }();
+        if (dump_on() && std::find(scan.begin(), scan.end(), p.key) != scan.end()) {
+            for (int i = 0; i < 16; i++) {
+                const uint64_t a = s.ssbo[5][i].addr, sz = std::min<uint64_t>(s.ssbo[5][i].size, 1ull << 20) & ~7ull;
+                if (!a || !sz) continue;
+                std::vector<uint64_t> w(sz / 8);
+                if (!host->gpu_read(a, w.data(), sz)) {
+                    logf("vk: ptr-scan prog %016llx sb%d %#llx: unreadable", (unsigned long long)p.key, i, (unsigned long long)a);
+                    continue;
+                }
+                uint64_t lo = 0, win2 = 0, high = 0, ex[3]{};
+                for (uint64_t v : w) {
+                    if (v >= 0x1000000000ull && v < 0x1000000000ull + (8ull << 30)) lo++;
+                    else if (v >= 0x7f00000000ull && v < 0x7f00000000ull + (4ull << 30)) win2++;
+                    else if (v >= 0x10000000000ull && v < 0x20000000000ull && (v & 3) == 0) {
+                        if (high < 3) ex[high] = v;
+                        high++;
+                    }
+                }
+                logf("vk: ptr-scan prog %016llx sb%d %#llx+%#llx: %zu words; pointer-like in window %llu, in 0x7f window %llu, "
+                     "ABOVE the windows %llu (e.g. %#llx %#llx %#llx)", (unsigned long long)p.key, i, (unsigned long long)a,
+                     (unsigned long long)sz, w.size(), (unsigned long long)lo, (unsigned long long)win2, (unsigned long long)high,
+                     (unsigned long long)ex[0], (unsigned long long)ex[1], (unsigned long long)ex[2]);
+            }
+        }
     }
     // (dispatches after other work wait for it: the WebGPU renderer's dispatches were ordered the same way by
     // wgpu's own tracking, and MKW's compute chains read what the one before wrote)
@@ -3927,6 +4011,24 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (indirect) {
         BufferRef args = gpu_buffer_bind(indirect, 12, false);
         if (!args) SKIP_HERE();
+        if (grid_patch_at != UINT64_MAX) {   // (leaves) the grid as the GPU has it, into the program's c0 (full_barrier above:
+            // the pass that wrote the arguments is done)
+            const VkBufferCopy cp{args.offset, grid_patch_at, 12};
+            vkCmdCopyBuffer(cmd, args.buffer, cur->stream, 1, &cp);
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            b.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &d);
+            if (dump_on()) {   // (what the recording read against what the GPU had: the stale-grid check)
+                static thread_local char what[120];
+                snprintf(what, sizeof what, "dispatch indirect prog %016llx grid as recorded %u %u %u", (unsigned long long)p.key,
+                         s.grid[0], s.grid[1], s.grid[2]);
+                dump_buffer(cmd, args.buffer, args.offset, 12, what);
+            }
+            grid_patch_at = UINT64_MAX;
+        }
         vkCmdDispatchIndirect(cmd, args.buffer, args.offset);
     } else {
         vkCmdDispatch(cmd, x, y, z);
