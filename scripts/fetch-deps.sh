@@ -11,8 +11,12 @@
 #     linux-python/ win-python/        scripts/package.py --python
 #     linux-llvm/ win-llvm/            scripts/package.py --llvm (and the Linux one on PATH for the builds)
 #     linux-sdl3/                      RX_SDL3=<that> for nx2/build.py: libSDL3.so.0 bundled beside the Linux runtime, for
-#                                      systems without SDL3 (Ubuntu 22.04, Debian 12). Needs cmake and the headers of
-#                                      Wayland, X11, PipeWire, PulseAudio, ALSA and udev (SDL loads each at run time)
+#                                      systems without SDL3 (Ubuntu 22.04, Debian 12). Needs cmake, make, a C
+#                                      compiler and the headers of Wayland, X11, PipeWire, PulseAudio, ALSA and udev
+#                                      (SDL loads each at run time)
+#     linux-libcxx/                    RX_LIBCXX=<that> for nx2/build.py: LLVM's libc++ (from the same LLVM release), linked
+#                                      into the Linux renderer: Ubuntu 22.04's libstdc++ has no <format>, and the
+#                                      release then asks for no libstdc++ of a player's system
 #     third_party/sdl3/SDL3.dll        (Windows: beside the runtime; into the repository's third_party/sdl3/)
 # Downloads are kept in <deps>/dl and not fetched again while their hash matches. BtbN's "latest" FFmpeg builds are
 # replaced daily: when the pinned one is gone, the script says so; take the new one's hash from its checksums.sha256.
@@ -130,6 +134,18 @@ if [ "$want" = linux ] || [ "$want" = all ]; then
         "zstandard==0.25.0 --hash=sha256:5a56ba0db2d244117ed744dfa8f6f5b366e14148e00de44723413b2f3938a902"
     llvm "LLVM-$LLVM-Linux-X64.tar.xz" "LLVM-$LLVM-Linux-X64" f72edb0b36580ece7f52e23858f00c18fad4e87395ea7ad05d7e55c39f8fc78a linux-llvm \
         bin/clang bin/clang++ bin/clang-23 bin/lld bin/ld.lld bin/llvm-ar bin/llvm-nm bin/llvm-cxxfilt
+    if [ ! -f "$deps/linux-libcxx/lib/libc++.a" ]; then
+        rm -rf "$deps/.libcxx" && mkdir -p "$deps/.libcxx"
+        top="LLVM-$LLVM-Linux-X64"
+        tar -xJf "$dl/LLVM-$LLVM-Linux-X64.tar.xz" -C "$deps/.libcxx" "$top/include/c++" \
+            "$top/include/x86_64-unknown-linux-gnu" "$top/lib/x86_64-unknown-linux-gnu/libc++.a" \
+            "$top/lib/x86_64-unknown-linux-gnu/libc++abi.a"
+        mkdir -p "$deps/linux-libcxx/lib"
+        mv "$deps/.libcxx/$top/include" "$deps/linux-libcxx/"
+        mv "$deps/.libcxx/$top/lib/x86_64-unknown-linux-gnu/"* "$deps/linux-libcxx/lib/"
+        cp "$dl/llvm-LICENSE.TXT" "$deps/linux-libcxx/LICENSE.TXT"
+        rm -rf "$deps/.libcxx"
+    fi
     fetch "SDL3-$SDL.tar.gz" "$GH/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" \
         9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
     if [ ! -f "$deps/linux-sdl3/lib/libSDL3.so.0" ] && [ -z "${NO_SDL3_BUILD:-}" ]; then   # (NO_SDL3_BUILD=1: not needed, a Windows build)

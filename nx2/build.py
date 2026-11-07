@@ -71,6 +71,21 @@ def pkg_cflags(name):
 SDL3 = os.environ.get("RX_SDL3", "")
 
 
+# (hookshot) Linux: LLVM's libc++ (scripts/fetch-deps.sh: work/deps/linux-libcxx), the renderer's C++ library, linked
+# in: older systems' libstdc++ (Ubuntu 22.04's) has no <format>, and the release asks for none; unset, the system's
+LIBCXX = os.environ.get("RX_LIBCXX", "")
+
+
+def libcxx_cflags():
+    return ["-nostdinc++", "-isystem", os.path.join(LIBCXX, "include", "c++", "v1"),
+            "-isystem", os.path.join(LIBCXX, "include", "x86_64-unknown-linux-gnu", "c++", "v1")] if LIBCXX else []
+
+
+def libcxx_libs():
+    return ["-nostdlib++", os.path.join(LIBCXX, "lib", "libc++.a"), os.path.join(LIBCXX, "lib", "libc++abi.a"),
+            "-lpthread"] if LIBCXX else []
+
+
 def sdl3_cflags():
     return ["-I" + os.path.join(SDL3, "include")] if SDL3 else (pkg_cflags("sdl3") or [])
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
@@ -468,7 +483,8 @@ def main():
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
         # (hookshot) Linux: host/linux's windows.h, FreeType's headers for the Insert menu's text (gpu/vk/vk_gdi_linux.h)
-        linux_vk = [] if target.windows() else ["-fPIC", "-I" + HOST_LINUX] + (pkg_cflags("freetype2") or ["-DVK_GDI_NO_FREETYPE"])
+        linux_vk = [] if target.windows() else ["-fPIC", "-I" + HOST_LINUX] + (pkg_cflags("freetype2") or ["-DVK_GDI_NO_FREETYPE"]) + \
+            libcxx_cflags()
         vflags = target.compile_flags() + CPU + linux_vk + [   # (hookshot: the replay is the frame's limit now)
             "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16],
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
@@ -586,7 +602,9 @@ def main():
         t = time.time()
         r = subprocess.run([cc] + target.compile_flags() + target.link_flags() +
                            ["-shared", "-o", vdll, MAP(os.path.splitext(vdll)[0] + ".map"), "@" + vrsp] +
-                           (["-luser32", "-lgdi32"] if target.windows() else ["-lstdc++", "-lpthread", "-ldl", "-lm"]),
+                           (["-luser32", "-lgdi32"] if target.windows() else
+                            # (libc++'s symbols kept inside: a driver's libstdc++ in the same process stays its own)
+                            (libcxx_libs() + ["-Wl,--exclude-libs,ALL"] if LIBCXX else ["-lstdc++"]) + ["-lpthread", "-ldl", "-lm"]),
                            capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

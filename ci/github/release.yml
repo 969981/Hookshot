@@ -62,18 +62,18 @@ jobs:
       - name: What SDL3's build looks for (it loads each at run time), and FreeType's headers
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config libfreetype-dev \
-            libwayland-dev libxkbcommon-dev wayland-protocols libdecor-0-dev libx11-dev libxext-dev libxrandr-dev \
+            libwayland-dev libegl-dev libxkbcommon-dev wayland-protocols libdecor-0-dev libx11-dev libxext-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev libpipewire-0.3-dev libpulse-dev \
             libasound2-dev libudev-dev libdbus-1-dev libdrm-dev libgbm-dev
       - run: scripts/fetch-deps.sh linux   # (with SDL3 built from its pinned source: Ubuntu 22.04 has none)
       - name: Runtime
         run: |
           export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_CPM="$PWD/work/deps/cpm" OOT_WORK="$PWD/work" RX_RELEASE=1
-          export RX_SDL3="$PWD/work/deps/linux-sdl3"
+          export RX_SDL3="$PWD/work/deps/linux-sdl3" RX_LIBCXX="$PWD/work/deps/linux-libcxx"   # (22.04's libstdc++ lacks <format>)
           work/deps/linux-python/bin/python3 -I nx2/build.py --part runtime --target linux --jobs "$JOBS"
       - name: Release folder
         run: |
-          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH"
+          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_LIBCXX="$PWD/work/deps/linux-libcxx"
           work/deps/linux-python/bin/python3 -I scripts/package.py --target linux --runtime work/runtime-linux \
             --python work/deps/linux-python --llvm work/deps/linux-llvm
           tar -C dist -czf Hookshot-linux.tar.gz Hookshot-linux   # (a tar keeps the links and the executable bits)

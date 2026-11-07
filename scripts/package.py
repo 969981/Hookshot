@@ -49,8 +49,15 @@ def tracked(rel):
 
 def compile_for_target(out, srcs, extra, cxx=False):
     cc = toolchain.need(toolchain.find("clang++" if cxx else "clang"))
-    subprocess.run([cc] + target.compile_flags() + target.link_flags() + ["-O2", "-Wno-everything", "-o", out] + srcs + extra,
-                   check=True)
+    # (Linux, RX_LIBCXX: LLVM's libc++ linked in, as nx2/build.py does for the renderer: the helper then asks for no
+    # libstdc++ of the player's system, and builds where the system's is too old)
+    lcx = os.environ.get("RX_LIBCXX") if cxx and not target.windows() else None
+    libcxx = ["-nostdinc++", "-isystem", os.path.join(lcx, "include", "c++", "v1"),
+              "-isystem", os.path.join(lcx, "include", "x86_64-unknown-linux-gnu", "c++", "v1"),
+              "-nostdlib++", os.path.join(lcx, "lib", "libc++.a"), os.path.join(lcx, "lib", "libc++abi.a"),
+              "-lpthread", "-Wl,--exclude-libs,ALL"] if lcx else []
+    subprocess.run([cc] + target.compile_flags() + target.link_flags() + ["-O2", "-Wno-everything", "-o", out] + srcs +
+                   extra + libcxx, check=True)
     return out
 
 
