@@ -770,6 +770,9 @@ def main():
     os.makedirs(game_dir, exist_ok=True)
     staged = [(os.path.join(built, n), os.path.join(game_dir, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    icon = os.path.join(ROOT, "assets", "hookshot.png")
+    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
+        staged.append((icon, os.path.join(out, "hookshot.png")))
     if launcher:
         staged.append((launcher, os.path.join(out, "hookshot.exe")))
     for src, dst in staged:
