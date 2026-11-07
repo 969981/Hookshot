@@ -19,9 +19,11 @@ dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj -c Release -o buil
 python -I scripts/package_builder.py --staged build/HookshotBuilder --tag RELEASE_TAG --out build/HookshotBuilder.zip
 ```
 
-The publish target writes `builder-revision.txt`. The packer verifies that marker, the clean checkout, the tag target and staged
-build sources before writing `tools/version.txt` and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
-GUI publish is rejected rather than stamped with today's revision. Upload that ZIP for the same tag. `revision.txt` identifies
+The publish target writes `builder-revision.txt`. The packer runs on Windows and verifies that marker against the source revision
+embedded in both GUI files' Win32 ProductVersion at compilation, as well as the clean checkout, tag target and staged
+build sources before writing `tools/version.txt`, `tools/VERSION` (the displayed release name) and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
+GUI publish is rejected rather than stamped with today's revision. Refreshing the sidecar with `--no-build` cannot bless an old
+EXE or managed DLL. Upload that ZIP for the same tag. `revision.txt` identifies
 the source; it is not the digest of the ZIP containing it. When GitHub supplies a ZIP SHA256, the downloader verifies that external
 digest before extracting.
 
