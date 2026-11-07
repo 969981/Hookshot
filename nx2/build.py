@@ -165,7 +165,7 @@ def linux_ffmpeg_flags(kind):
     if not LINUX:
         return []
     return pkg_config("--cflags" if kind == "cflags" else "--libs",
-                      "libavcodec", "libavutil", "libswscale", "libswresample")
+                      "libavcodec", "libavformat", "libavutil", "libswscale", "libswresample")
 
 
 def linux_sdl_flags(kind):

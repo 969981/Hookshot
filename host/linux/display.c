@@ -17,6 +17,7 @@ static RxLinuxWindow rxwin;
 static int display_up;
 static volatile int guest_done;
 static volatile LONG mouse_dx, mouse_dy, mouse_captured;
+volatile LONG64 hos_present_count;
 
 int hos_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);

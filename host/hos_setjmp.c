@@ -43,7 +43,7 @@ static _Thread_local SjStack *stack;
    the native System V context through sigsetjmp/siglongjmp; the surrounding owner and
    target bookkeeping is shared by both ABIs. */
 #if defined(__linux__)
-__attribute__((returns_twice)) static int recomp_sj_setjmp(void **buf) {
+__attribute__((returns_twice)) int recomp_sj_setjmp(void **buf) {
     return sigsetjmp(*(sigjmp_buf *)buf, 0);
 }
 

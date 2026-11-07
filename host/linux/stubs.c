@@ -34,6 +34,21 @@ void hos_mem_checkpoint(const char *what) { (void)what; }
 void hos_prof_start(void) {}
 int hos_ab(void) { return 0; }
 
+void rx_request_frame_dump(void) {}
+void rx_set_screenshot_ms(int64_t ms) { (void)ms; }
+void rx_request_rdoc_capture(int frames) { (void)frames; }
+void rx_flash_dark_arm(void) {}
+
+typedef void (*mf_av1_picture_fn)(void *user, const uint8_t *y, const uint8_t *uv,
+                                  int w, int h, int stride, int64_t pts);
+void *mf_av1_open(int w, int h) { (void)w; (void)h; return NULL; }
+void mf_av1_decode(void *m, const uint8_t *data, size_t n, int64_t pts,
+                   mf_av1_picture_fn fn, void *user) {
+    (void)m; (void)data; (void)n; (void)pts; (void)fn; (void)user;
+}
+void mf_av1_flush(void *m) { (void)m; }
+void mf_av1_close(void *m) { (void)m; }
+
 DWORD GetWindowThreadProcessId(HWND w, LPDWORD pid) {
     if (pid) *pid = w ? GetCurrentProcessId() : 0;
     return 1;

@@ -7,6 +7,7 @@
 int wgr_start(void *hwnd) { (void)hwnd; return 0; }
 void wgr_resize(int width, int height) { (void)width; (void)height; }
 const char *wgr_describe(void) { return "no WebGPU renderer"; }
+const char *rx_present_hotkey(int key) { (void)key; return NULL; }
 void wgr_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
     if (draws) *draws = 0;
     if (skipped) *skipped = 0;
