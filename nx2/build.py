@@ -403,6 +403,14 @@ def main():
         host_fl = ["-I" + HOST_LINUX] + host_fl + ["-D_GNU_SOURCE"] + (pkg_cflags("sdl2") or [])
         host_deps += b"".join(open(os.path.join(HOST_LINUX, f), "rb").read() for f in sorted(os.listdir(HOST_LINUX))
                               if f.endswith(".h"))
+    # (hookshot) the FFmpeg the host is compiled against, in its objects' keys: its headers are not ours, and an object
+    # built against the system's (another major version, other codec numbers and struct layouts) was taken from the
+    # cache for the bundled one: the AV1 movies opened as another codec, and the heap was written over
+    for inc in ([os.path.join(ffmpeg_dir(), "include")] if ffmpeg_dir() else []) + ["/usr/include"]:
+        ver = os.path.join(inc, "libavcodec", "version_major.h")
+        if os.path.exists(ver):
+            host_deps += open(ver, "rb").read() + open(os.path.join(inc, "libavcodec", "version.h"), "rb").read()
+            break
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(ffmpeg_dir(), "include")] if ffmpeg_dir() else []), host_deps) for s in host_srcs]

@@ -1,5 +1,5 @@
-/* (hookshot) Linux: no Media Foundation (host/mf_av1.c). FFmpeg decodes AV1 itself (the bundled LGPL build's dav1d),
-   which host/nn_video.c asks first; these are its fallback's entry points, answering "none". */
+/* (hookshot) Linux: no Media Foundation (host/mf_av1.c). FFmpeg decodes AV1 itself (the bundled LGPL build's dav1d,
+   which host/nn_video.c asks for by name); these are its fallback's entry points, answering "none". */
 #include <stddef.h>
 #include <stdint.h>
 
