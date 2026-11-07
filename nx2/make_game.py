@@ -433,6 +433,57 @@ def shader_census_cmd(romfs, out):
     return PY + [os.path.join(HERE, "shader_census.py"), romfs, "--out", out]
 
 
+def lift_key(exefs, env):
+    """What the translation is made from: the game's modules; nx2/lift.py, nx2/split_hot.py and every module of this tree they
+    import; a64emit's C++ (build_emit.py compiles it); the runtime functions host/ implements (standalone.py hooks those); the
+    shipped hot list and chunk map; the A64_* settings; the Python and capstone versions. The same key, the same lifted C, so a
+    build that changed none of it (the renderer, the rest of the runtime, the builder) compiles the last build's lift again"""
+    import hashlib
+    import importlib.metadata
+    import modulefinder
+    try:
+        disassembler = importlib.metadata.version("capstone")   # (its version, not an import: the game-free tests have none)
+    except importlib.metadata.PackageNotFoundError:
+        disassembler = ""
+    kit = os.path.join(ROOT, "third_party", "a64-kit")
+    path = [HERE] + [os.path.join(kit, sub) for sub in ("rt", "hos", "tools", "lift")]   # (nx2/kit.py's order)
+    h = hashlib.sha1(("hookshot lift 1, python %s, capstone %s" % (sys.version, disassembler)).encode())
+
+    def add(name, p):
+        h.update(b"\0" + name.encode() + b"\0")
+        with open(p, "rb") as f:
+            h.update(f.read())
+
+    files = set()
+    try:
+        for script in ("lift.py", "split_hot.py"):
+            finder = modulefinder.ModuleFinder(path=path)
+            finder.run_script(os.path.join(HERE, script))
+            files |= {os.path.abspath(m.__file__) for m in finder.modules.values() if m.__file__}
+    except Exception:   # (a module that does not compile: no key, so the lift runs and says what is wrong itself)
+        return None
+    lift_dir = os.path.join(kit, "lift")
+    files |= {os.path.join(d, f) for d, _, fs in os.walk(lift_dir) for f in fs if f.endswith((".cpp", ".h"))}
+    for p in sorted(files):
+        add(os.path.relpath(p, ROOT).replace(os.sep, "/"), p)
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import standalone
+    h.update(("\0host: " + " ".join(sorted(standalone.implemented()))).encode())
+    for f in sorted(os.listdir(exefs)):
+        if os.path.isfile(os.path.join(exefs, f)):
+            add("exefs/" + f, os.path.join(exefs, f))
+    for rel in ("hot_funcs.txt", "image/chunks.txt"):   # (as shipped: the lift writes its own chunks.txt into the work folder)
+        if os.path.exists(os.path.join(ROOT, "work", rel)):
+            add("work/" + rel, os.path.join(ROOT, "work", rel))
+    merged = dict(os.environ, **env)
+    for k in sorted(k for k in merged if k.upper().startswith("A64_")):
+        h.update(("\0%s=%s" % (k, merged[k])).encode())
+        if os.path.isfile(merged[k]):
+            add(k, merged[k])
+    return h.hexdigest()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -540,9 +591,21 @@ def main():
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
     say("stage", "lift", "Translating the game to PC code")
-    run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-    if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
-        run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+    gen, stamp = os.path.join(work, "sa", "gen"), os.path.join(work, "sa", "lift.sha1")
+    key = lift_key(exefs, env)
+    if (key and os.path.exists(stamp) and open(stamp).read() == key and os.path.isdir(gen)
+            and os.path.exists(os.path.join(work, "sa", "image", "image.bin"))):
+        # (the other half of issue 21: the compile below then takes only what changed, the rest from its object cache)
+        print("the game's code is translated as the last build left it: nothing the translation reads has changed", flush=True)
+    else:
+        if os.path.exists(stamp):
+            os.remove(stamp)   # (written again only after both steps: a translation cut short is never kept)
+        run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
+        if os.path.isfile(os.path.join(gen, "code_hot.c")):
+            run(PY + ["nx2/split_hot.py", gen], env)   # (eight files side by side: ~6 minutes, not 79)
+        if key:
+            with open(stamp, "w") as f:
+                f.write(key)
 
     if LINUX:
         check_linux_compiler()
