@@ -9,6 +9,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>   // (hookshot) isatty
+#endif
 
 #include "vk_api.h"
 #include "vk_internal.h"
@@ -84,13 +87,28 @@ bool create_instance() {
         logf("vk: the Vulkan loader is %u.%u: 1.3 is needed", VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version));
         return false;
     }
+#ifdef _WIN32
     const char* exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    const uint32_t nexts = 2;
+#else   // (hookshot) every window system's surface the loader has: the toolkit picks its own (HosLinuxWindow)
+    const char* exts[4] = {VK_KHR_SURFACE_EXTENSION_NAME};
+    uint32_t nexts = 1;
+    {
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> have(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, have.data());
+        for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
+            for (const VkExtensionProperties& e : have)
+                if (!strcmp(e.extensionName, want)) { exts[nexts++] = want; break; }
+    }
+#endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mkw-recomp";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = 2;
+    ci.enabledExtensionCount = nexts;
     ci.ppEnabledExtensionNames = exts;
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
@@ -368,8 +386,11 @@ bool started_up() {
                     if (console == INVALID_HANDLE_VALUE) console = nullptr;
                 }
             }
-            if (!console) return;
             char line[80];
+#ifndef _WIN32   // (hookshot) Linux: on the terminal it was started from, if any
+            if (isatty(2)) fprintf(stderr, "\rPreparing shaders: %zu of %zu (%zu%%)   %s", done, total, done * 100 / total, done == total ? "\n" : "");
+#endif
+            if (!console) return;
             const int n = snprintf(line, sizeof line, "%cPreparing shaders: %zu of %zu (%zu%%)   ", 13, done, total, done * 100 / total);
             DWORD wrote = 0;
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
@@ -389,16 +410,26 @@ int start(void* hwnd) {
         logf("vk: no window: presents render offscreen (%ux%u)", dev.swap_extent.width, dev.swap_extent.height);
         return started_up() ? 1 : 0;
     }
+#ifdef _WIN32
     VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     si.hinstance = GetModuleHandleA(nullptr);
     si.hwnd = (HWND)hwnd;
     if (vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &dev.surface) != VK_SUCCESS) return 0;
+    RECT r{};
+    GetClientRect((HWND)hwnd, &r);
+    const int width = r.right - r.left, height = r.bottom - r.top;
+#else   // (hookshot) Linux: the window's toolkit makes the surface (host/linux/display_sdl.c)
+    const HosLinuxWindow* w = (const HosLinuxWindow*)hwnd;
+    uint64_t surface = 0;
+    if (!w->vk_surface(w->native, dev.instance, &surface)) return 0;
+    dev.surface = (VkSurfaceKHR)surface;
+    int width = 0, height = 0;
+    w->size(w->native, &width, &height);
+#endif
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
     if (!ok) return 0;
-    RECT r{};
-    GetClientRect((HWND)hwnd, &r);
-    if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
+    if (!create_swapchain((uint32_t)width, (uint32_t)height)) return 0;
     return started_up() ? 1 : 0;
 }
 
@@ -420,7 +451,7 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
-extern "C" __declspec(dllexport) const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
+extern "C" MKWVK_EXPORT const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     using namespace mkwvk;
     if (!h || h->version != MKWVK_API_VERSION) return nullptr;
     host = h;

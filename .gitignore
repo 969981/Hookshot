@@ -18,12 +18,14 @@ gamefile/
 
 # ---- build output and caches ----
 build/
+dist/
 __pycache__/
 *.pyc
 *.o
 *.obj
 *.exe
 *.dll
+*.so
 *.lib
 *.exp
 *.pdb

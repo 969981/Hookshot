@@ -17,6 +17,7 @@
 #include <mmsystem.h>
 #else
 #include <sys/mman.h>
+#include <windows.h>   /* (hookshot) Linux: host/linux/windows.h */
 #endif
 
 #ifdef A64_MEM_ZERO
@@ -47,12 +48,12 @@ static void no_power_throttling(void) {
 int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
 
 /* gen/hos_image.c (build.py lift) */
-extern const uint64_t hos_main_stack_size;
-extern const int hos_main_priority, hos_main_core, hos_module_count;
-extern const uint64_t hos_module_init[];
-extern const char *const hos_module_name[];
-extern const uint64_t hos_entry_nninitStartup, hos_entry_nnMain;
-extern const uint64_t hos_entry_init_libc0, hos_entry_init_libc1, hos_entry_init_libc2, hos_entry_nnosInitialize,
+extern HOS_GAME_DATA const uint64_t hos_main_stack_size;
+extern HOS_GAME_DATA const int hos_main_priority, hos_main_core, hos_module_count;
+extern HOS_GAME_DATA const uint64_t hos_module_init[];
+extern HOS_GAME_DATA const char *const hos_module_name[];
+extern HOS_GAME_DATA const uint64_t hos_entry_nninitStartup, hos_entry_nnMain;
+extern HOS_GAME_DATA const uint64_t hos_entry_init_libc0, hos_entry_init_libc1, hos_entry_init_libc2, hos_entry_nnosInitialize,
     hos_entry_nninitInitializeSdkModule;
 /* nn_fs.c */
 extern const char *hos_romfs_dir, *hos_user_dir;
@@ -169,13 +170,13 @@ int main(int argc, char **argv) {
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
         const DWORD len = GetModuleFileNameA(NULL, dir, MAX_PATH);
-        char *slash = len ? strrchr(dir, 92) : NULL;
+        char *slash = len ? strrchr(dir, HOS_SEP) : NULL;
         if (slash) {
             *slash = 0;
             SetCurrentDirectoryA(dir);
-            snprintf(beside_image, MAX_PATH, "%s\\image.bin", dir);
-            snprintf(beside_romfs, MAX_PATH, "%s\\romfs", dir);
-            snprintf(beside_user, MAX_PATH, "%s\\user", dir);
+            snprintf(beside_image, MAX_PATH, "%s" HOS_SEP_S "image.bin", dir);
+            snprintf(beside_romfs, MAX_PATH, "%s" HOS_SEP_S "romfs", dir);
+            snprintf(beside_user, MAX_PATH, "%s" HOS_SEP_S "user", dir);
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
@@ -236,7 +237,7 @@ int main(int argc, char **argv) {
             int on = 0;
             char path[MAX_PATH];
             const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = len ? strrchr(path, 92) : NULL;
+            char *slash = len ? strrchr(path, HOS_SEP) : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
                 FILE *o = fopen(path, "r");

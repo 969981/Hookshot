@@ -10,6 +10,9 @@
 #include <vector>
 
 #include "vk_menu.h"
+#ifndef _WIN32
+#include "vk_gdi_linux.h"   // (hookshot) Linux: the GDI it draws with
+#endif
 
 namespace mkwvk {
 HWND app_window();

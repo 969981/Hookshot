@@ -28,7 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <windows.h>
+#include <windows.h>   /* (Linux: host/linux/windows.h) */
 #include <string.h>
 
 #define DEPTH 256
@@ -36,6 +36,7 @@ typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: r
 typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
 static _Thread_local SjStack *stack;
 
+#ifdef _WIN32
 /* buf: rbx rbp rdi rsi r12 r13 r14 r15 at 0-56, rsp (after the return) at 64, the return address at 72, xmm6-15 at
    80-224, mxcsr at 240 and the x87 control word at 244 */
 __attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
@@ -98,6 +99,49 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "movq 64(%rcx), %rsp\n\t"
         "jmpq *72(%rcx)\n\t");
 }
+
+#else
+/* (hookshot) Linux, the System V ABI: rbx rbp r12 r13 r14 r15 at 0-40, rsp (after the return) at 64, the return
+   address at 72, mxcsr at 240 and the x87 control word at 244 (no callee-saved xmm registers; the argument in rdi,
+   the value in esi) */
+__attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
+    __asm__ volatile(
+        "movq %rbx, 0(%rdi)\n\t"
+        "movq %rbp, 8(%rdi)\n\t"
+        "movq %r12, 16(%rdi)\n\t"
+        "movq %r13, 24(%rdi)\n\t"
+        "movq %r14, 32(%rdi)\n\t"
+        "movq %r15, 40(%rdi)\n\t"
+        "leaq 8(%rsp), %rdx\n\t"
+        "movq %rdx, 64(%rdi)\n\t"
+        "movq (%rsp), %rdx\n\t"
+        "movq %rdx, 72(%rdi)\n\t"
+        "stmxcsr 240(%rdi)\n\t"
+        "fnstcw 244(%rdi)\n\t"
+        "xorl %eax, %eax\n\t"
+        "ret\n\t");
+}
+
+__attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    __asm__ volatile(
+        "movq 0(%rdi), %rbx\n\t"
+        "movq 8(%rdi), %rbp\n\t"
+        "movq 16(%rdi), %r12\n\t"
+        "movq 24(%rdi), %r13\n\t"
+        "movq 32(%rdi), %r14\n\t"
+        "movq 40(%rdi), %r15\n\t"
+        "ldmxcsr 240(%rdi)\n\t"
+        "fldcw 244(%rdi)\n\t"
+        "movl %esi, %eax\n\t"
+        "testl %eax, %eax\n\t"
+        "jnz 1f\n\t"
+        "incl %eax\n\t"
+        "1:\n\t"
+        "movq 64(%rdi), %rsp\n\t"
+        "jmpq *72(%rdi)\n\t");
+}
+
+#endif
 
 void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
     (void)c;

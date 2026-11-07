@@ -13,6 +13,7 @@ static SRWLOCK lock = SRWLOCK_INIT;
 #else
 #include <pthread.h>
 #include <sys/mman.h>
+#include <windows.h>   /* (hookshot) Linux: host/linux/windows.h (VirtualFree) */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 #define LOCK() pthread_mutex_lock(&lock)
 #define UNLOCK() pthread_mutex_unlock(&lock)
