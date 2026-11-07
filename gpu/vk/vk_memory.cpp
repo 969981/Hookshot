@@ -66,6 +66,7 @@ struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken
 SrwMutex pools_mu;
 uint32_t generation = ~0u;
 uint64_t align = 4096;
+uint64_t max_import_size = UINT64_MAX;
 int failures = 0;
 
 constexpr VkBufferUsageFlags kUsage =
@@ -75,6 +76,11 @@ constexpr VkBufferUsageFlags kUsage =
     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
 bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
+    if (hi <= lo || hi - lo > max_import_size) {
+        logf("vk: import %#llx..%#llx exceeds the device's allocation/buffer limit", (unsigned long long)lo,
+             (unsigned long long)hi);
+        return false;
+    }
     p.lo = lo;
     p.hi = hi;
     uint8_t* ptr = host->guest_base() + lo;
@@ -199,9 +205,14 @@ bool memory_init() {
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    VkPhysicalDeviceVulkan11Properties p11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+    VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    hp.pNext = &p11;
+    p11.pNext = &p13;
     p2.pNext = &hp;
     vkGetPhysicalDeviceProperties2(dev.physical, &p2);
     align = std::max<uint64_t>(hp.minImportedHostPointerAlignment, 4096);
+    max_import_size = std::min(p11.maxMemoryAllocationSize, p13.maxBufferSize);
     logf("vk: guest memory imported in place (alignment %llu)", (unsigned long long)align);
     return true;
 }
@@ -996,6 +1007,7 @@ struct TlPool {
 thread_local TlPool tl_pools[1024];   // (a parallel replay thread's: by 64 KB page, read without the lock)
 
 Pool* pool_of(uint64_t guest, uint64_t size) {
+    if (!size || size > UINT64_MAX - guest) return nullptr;
     if (last_pool && guest >= last_pool->lo && guest + size <= last_pool->hi) return last_pool;
     Pool*& slot = pool_cache[(guest >> 16) & 4095];
     if (slot && guest >= slot->lo && guest + size <= slot->hi) return last_pool = slot;
@@ -1062,11 +1074,11 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                                [](uint64_t a, const GuestPool& p) { return a < p.lo; });
     if (it == guest_pools.begin()) return nullptr;
     --it;
-    if (guest < it->lo || guest + size > it->hi) return nullptr;
-    const GuestPool range = *it;
+    if (guest < it->lo || guest >= it->hi || !size || size > it->hi - guest) return nullptr;
     // (imports by 16 MB chunk (RX_VK_IMPORT_CHUNK_MB), not by pool: each import cost 5-45 ms in the driver, more as
     // their number grew, and the game makes ~13 pools a second; a chunk covers the pools after it at no cost)
     static const uint64_t chunk = (uint64_t)(getenv("RX_VK_IMPORT_CHUNK_MB") ? std::max(0, atoi(getenv("RX_VK_IMPORT_CHUNK_MB"))) : 16) << 20;
+    const GuestPool range = chunk ? GuestPool{guest, guest + size} : *it;
     auto covering = [&]() {
         auto c = imported.upper_bound(range.lo);
         if (c == imported.begin()) return imported.end();
@@ -1074,8 +1086,8 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         return c->second.lo <= range.lo && c->second.hi >= range.hi ? c : imported.end();
     };
     auto imp = chunk ? covering() : imported.find(range.lo);
-    const uint64_t want_lo = chunk ? range.lo & ~(chunk - 1) : range.lo;
-    const uint64_t want_hi = chunk ? (range.hi + chunk - 1) & ~(chunk - 1) : range.hi;
+    const uint64_t want_lo = chunk ? range.lo / chunk * chunk : range.lo;
+    const uint64_t want_hi = chunk ? (range.hi + chunk - 1) / chunk * chunk : range.hi;
     if (chunk && imp == imported.end()) imp = imported.find(want_lo);   // (a smaller one there: made again, larger)
     if (imp == imported.end() || imp->second.hi < range.hi) {   // (under way in the background: waited for)
         bool waited = false;
