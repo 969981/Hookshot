@@ -435,6 +435,15 @@ def main():
             dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
             if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
                 shutil.copyfile(dll, dst)
+        if FFMPEG:   # (raiders) the shared build's runtime dlls must be beside the exe too (avcodec-63.dll, avutil-61.dll, ...)
+            import shutil
+            ffmpeg_bin = os.path.join(FFMPEG, "bin")
+            if os.path.isdir(ffmpeg_bin):
+                for name in sorted(os.listdir(ffmpeg_bin)):
+                    if name.endswith(".dll") and name.split("-")[0] in ("avcodec", "swscale", "swresample", "avutil"):
+                        dll, dst = os.path.join(ffmpeg_bin, name), os.path.join(out, name)
+                        if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
+                            shutil.copyfile(dll, dst)
         # (hookshot) SDL2.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...)
         sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
         sdl_dst = os.path.join(out, "SDL2.dll")
