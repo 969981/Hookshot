@@ -5,8 +5,8 @@
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
    while the game's window is in front (the key state is global).
-   Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
-   mouse_stick), left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
+   Mouse (after a click in the window, display.c; Esc releases): its motion turns the camera itself (mouse_native.c;
+   as the right stick, mouse panning, mouse_stick, while no camera is found or with HOS_MOUSE_NATIVE=0), left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
    x1.25, shown in the title bar, kept in <user>/mouse_sens.txt); HOS_MOUSE_SENS=<x> sets it, HOS_MOUSE_INVERT_Y=1
    flips up/down.
 
@@ -447,19 +447,24 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     /* left button Y (attack), right button ZL (shield, lock on), while the mouse is captured; a button held when
        the capture began counts only after it was let go (the click that captures never reaches the game) */
     static int armed[2];
-    /* (hookshot) HOS_MOUSE_NATIVE=1: the mouse turns the camera itself (mouse_native.c), not the right stick */
+    /* (hookshot) the mouse turns the camera itself (mouse_native.c); as the right stick while no camera is found, or
+       always with HOS_MOUSE_NATIVE=0 */
     static int native = -1;
-    if (native < 0) native = getenv("HOS_MOUSE_NATIVE") && atoi(getenv("HOS_MOUSE_NATIVE")) != 0;
+    if (native < 0) {
+        const char *e = getenv("HOS_MOUSE_NATIVE");
+        native = !e || atoi(e) != 0;
+    }
     int hos_mouse_native(void);
-    int mouse_on;
+    int mouse_on, as_stick = !native;
     if (native) {
         mouse_setup();
         mouse_sens_keys();
         mouse_on = hos_mouse_native();
-    } else
-        mouse_on = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
+        if (mouse_on < 0) as_stick = 1;
+    }
+    if (as_stick) mouse_on = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
     if (mouse_on) {
-        if (!native) stick_max(stick, mouse);
+        if (as_stick) stick_max(stick, mouse);
         const int vk[2] = {VK_LBUTTON, VK_RBUTTON}, b[2] = {B_Y, B_ZL};
         for (int i = 0; i < 2; i++) {
             if (!key(vk[i])) armed[i] = 1;

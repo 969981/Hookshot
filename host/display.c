@@ -33,6 +33,12 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+void hos_mouse_give_back(int32_t dx, int32_t dy) {
+    InterlockedExchangeAdd(&mouse_dx, dx);
+    InterlockedExchangeAdd(&mouse_dy, dy);
+}
+
 /* (diagnostics, the mouse that did nothing for one player: nn_hid.c logs these every 5 s while the mouse is in use) the raw mouse
    reports since the last call, all of them and those taken while captured, and the clicks the window had */
 static volatile LONG raw_reports, raw_taken, raw_absolute, clicks;
