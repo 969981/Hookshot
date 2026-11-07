@@ -89,18 +89,12 @@ static int handheld(void) {
     if (v < 0) {
         v = getenv("HOS_HANDHELD") && atoi(getenv("HOS_HANDHELD")) != 0;
         if (!getenv("HOS_HANDHELD")) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp) */
-            char path[MAX_PATH];
-            const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
-            if (slash) {
-                snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-                FILE *f = fopen(path, "r");
-                if (f) {
-                    char line[80];
-                    while (fgets(line, sizeof line, f))
-                        if (!strncmp(line, "handheld_profile=", 17)) v = atoi(line + 17) != 0;
-                    fclose(f);
-                }
+            FILE *f = fopen(hos_options_path(), "r");
+            if (f) {
+                char line[80];
+                while (fgets(line, sizeof line, f))
+                    if (!strncmp(line, "handheld_profile=", 17)) v = atoi(line + 17) != 0;
+                fclose(f);
             }
         }
     }

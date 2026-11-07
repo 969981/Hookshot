@@ -101,6 +101,8 @@ void hos_thread_set_name(HosThread *t, const char *name);
 void hos_thread_pin(void *h, const char *name);   /* HOS_PIN: host CPU affinity by thread name */
 int hos_game_cores(void);   /* totk_cores.c: HOS_GAME_CORES, or 0 */
 const char *hos_thread_name(HosThread *t);
+/* hookshot_options.ini, the Insert menu's choices: with the saves (hos_main.c) */
+const char *hos_options_path(void);
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask);
 uint64_t hos_thread_mask(HosThread *t);
 int hos_thread_priority(HosThread *t, int set, int value);

@@ -183,7 +183,7 @@ Never send game files.
 ## In-game menu
 
 Press <kbd>Insert</kbd> in game. Everything is off by default, and your choices are saved in `hookshot_options.ini`
-beside the game.
+with your saves, so a new game folder keeps them.
 
 | Option | Choices |
 |---|---|

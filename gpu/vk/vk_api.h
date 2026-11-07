@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 1
+#define MKWVK_API_VERSION 2
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -58,6 +58,8 @@ typedef struct MkwVkHost {
     uint64_t (*guest_alloc)(uint64_t size);
     /// (debugging) CPU writes to [guest, guest + size) logged with the writer's guest call stack (a page watch)
     void (*watch_guest_writes)(uint64_t guest, uint64_t size);
+    /// hookshot_options.ini, the Insert menu's choices: beside the executable, or with the saves (host/hos_main.c)
+    const char *(*options_path)(void);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */

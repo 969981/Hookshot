@@ -269,6 +269,32 @@ static const char *saves_dir(const char *beside) {
     }
     return dir;
 }
+/* hookshot_options.ini, the Insert menu's choices (gpu/vk/vk_menu.cpp, host/nn_applet.c, Ultrawide below): beside the
+   executable, or with the saves when they are in the system's folder, so a new game folder keeps them too. One beside
+   the executable from before is moved there once; one there already is the newer and stays */
+static char options_path[MAX_PATH];
+const char *hos_options_path(void) {
+    if (!options_path[0]) {
+        const DWORD len = GetModuleFileNameA(NULL, options_path, MAX_PATH);
+        char *slash = len ? strrchr(options_path, SEP) : NULL;
+        if (slash) snprintf(slash + 1, (size_t)(options_path + MAX_PATH - slash - 1), "hookshot_options.ini");
+        else snprintf(options_path, sizeof options_path, "hookshot_options.ini");
+    }
+    return options_path;
+}
+static void options_with_saves(const char *dir) {
+    char old[MAX_PATH];
+    snprintf(old, sizeof old, "%s", hos_options_path());
+    snprintf(options_path, sizeof options_path, "%s" SEP_S "hookshot_options.ini", dir);
+    if (GetFileAttributesA(old) == INVALID_FILE_ATTRIBUTES || GetFileAttributesA(options_path) != INVALID_FILE_ATTRIBUTES)
+        return;
+    if (MoveFileExA(old, options_path, 0) || (copy_tree(old, options_path) && DeleteFileA(old)))
+        hos_log("options: moved from %s to %s", old, options_path);
+    else {   /* (a copy cut short: the original stays, and is the one used) */
+        DeleteFileA(options_path);
+        snprintf(options_path, sizeof options_path, "%s", old);
+    }
+}
 
 /* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
@@ -350,7 +376,10 @@ static int game_main(int argc, char **argv) {
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
-                if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
+                if (!hos_user_dir) {
+                    hos_user_dir = saves_dir(beside_user);
+                    if (hos_user_dir != beside_user) options_with_saves(hos_user_dir);
+                }
                 /* (a game folder from the builder: is a newer release out? host/hos_update.c. After the saves' folder is
                    known: a version skipped is noted there) */
                 hos_update_check();
@@ -364,6 +393,7 @@ static int game_main(int argc, char **argv) {
     if (getenv("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
+    hos_options_path();   /* (settled before any thread reads it) */
     if (!reserve_guest()) {
         fprintf(stderr, "cannot reserve the guest window\n");
         return 1;
@@ -408,18 +438,12 @@ static int game_main(int argc, char **argv) {
         memcpy(&was, at, 4);
         if (!e) {   /* (the Insert menu's Ultrawide, off unless it says 1: the main monitor's shape) */
             int on = 0;
-            char path[MAX_PATH];
-            const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = len ? strrchr(path, SEP) : NULL;
-            if (slash) {
-                snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-                FILE *o = fopen(path, "r");
-                if (o) {
-                    char line[80];
-                    while (fgets(line, sizeof line, o))
-                        if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
-                    fclose(o);
-                }
+            FILE *o = fopen(hos_options_path(), "r");
+            if (o) {
+                char line[80];
+                while (fgets(line, sizeof line, o))
+                    if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
+                fclose(o);
             }
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
             if (on && sh > 0 && (float)sw / (float)sh > 1.8f) want = (float)sw / (float)sh;
