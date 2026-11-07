@@ -658,6 +658,44 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
+def write_release_metadata(out):
+    """Record only identity shipped with the tools, never identity fetched for other files."""
+    path = os.path.join(out, "hookshot_version.txt")
+    version = os.path.join(ROOT, "version.txt")
+    if not os.path.isfile(version):
+        if os.path.isfile(path):
+            os.remove(path)   # a source build must not retain a previous release's stamp
+        return
+    with open(version, encoding="utf-8") as f:
+        tag = f.read().strip()
+    if not tag or len(tag.encode("utf-8")) > 127 or any(ord(c) < 32 or ord(c) == 127 for c in tag):
+        raise ValueError("The tools' release tag is invalid.")
+    revision_file = os.path.join(ROOT, "revision.txt")
+    revision = ""
+    if os.path.isfile(revision_file):
+        with open(revision_file, encoding="utf-8") as f:
+            revision = f.read().strip().lower()
+    lines = ["version=%s\n" % tag]
+    if re.fullmatch(r"[0-9a-f]{40}", revision):
+        lines.append("revision=%s\n" % revision)
+        if os.environ.get("HOOKSHOT_BUILDER_EXE") and os.environ.get("HOOKSHOT_BUILDER_UPDATE_PROTOCOL") == "2":
+            lines.append("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
+            lines.append("builder_protocol=2\n")
+    # Tag-only legacy tools remain explicitly unknown to the native updater; a
+    # one-time rebuild with a revision-aware package enables automatic offers.
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=out,
+                                         prefix=".hookshot-version-", delete=False) as f:
+            temp = f.name
+            f.writelines(lines)
+        os.replace(temp, path)
+        temp = None
+    finally:
+        if temp is not None:
+            os.remove(temp)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -827,15 +865,7 @@ def main(a=None):
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
         f.writelines("# %-8s %s\n" % l for l in LANGUAGES)
-    # (what the game's update offer reads, host/hos_update.c: which release these tools are, and where the builder that made the folder is)
-    version = os.path.join(ROOT, "version.txt")
-    if os.path.isfile(version):
-        with open(version, encoding="utf-8") as f:
-            tag = f.read().strip()
-        with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
-            f.write("version=%s\n" % tag)
-            if os.environ.get("HOOKSHOT_BUILDER_EXE"):
-                f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
+    write_release_metadata(out)
     say("done", out)
 
 

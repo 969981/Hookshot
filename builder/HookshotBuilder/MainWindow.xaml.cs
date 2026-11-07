@@ -657,7 +657,7 @@ public partial class MainWindow : Window
     void CopyForReport(object sender, RoutedEventArgs e)
     {
         var lines = log.ToString().Split('\n');
-        var text = $"Hookshot Builder {Tools.Find()?.Version ?? "(source)"} on Windows {Environment.OSVersion.Version}\n" +
+        var text = $"Hookshot Builder {Tools.Find()?.Identity?.Tag ?? "(source)"} on Windows {Environment.OSVersion.Version}\n" +
                    $"{ProblemTitle.Text}: {lastFailure}\n\n" + string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 200)));
         try { Clipboard.SetText(text); CopyReport.Content = "Copied"; } catch (Exception) { }
     }
@@ -693,7 +693,7 @@ public partial class MainWindow : Window
         var a = Environment.GetCommandLineArgs();
         var i = Array.IndexOf(a, "--tag");
         var to = i >= 0 && i + 1 < a.Length ? a[i + 1] : "the latest version";
-        var from = Tools.Find()?.Version;
+        var from = Tools.Find()?.Identity?.Tag;
         StepPill.Visibility = Visibility.Collapsed;
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;

@@ -298,6 +298,9 @@ Bigger ways to help:
 [CONTRIBUTING.md](CONTRIBUTING.md) has the setup, the test commands, the code conventions and what a good pull request
 looks like.
 
+Release maintainers: [packaging and release identity](docs/release-identity.md) explains how to stamp a builder so corrected
+builds published under the same tag can be offered to players.
+
 ## Credits
 
 Hookshot exists thanks to the work of many people:

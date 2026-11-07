@@ -1,32 +1,26 @@
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
-using System.Text.Json;
+using System.Security.Cryptography;
 using System.Windows;
 
 namespace HookshotBuilder;
 
 /// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>. When these tools are
-/// not that release, the release's HookshotBuilder.zip is downloaded and unpacked beside this app, and the new app is started with
-/// --fetched to build the folder; when they are, the folder is built again here (nx2/make_game.py --update: from the game files the
-/// folder keeps).
+/// not that tag AND source revision, the release's HookshotBuilder.zip is downloaded and unpacked beside this app. A downloaded
+/// builder validates the expected identity before building; --fetched is not a bypass for missing or mismatched metadata.
 static class Updater
 {
-    const string Latest = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest";
-    const string Asset = "HookshotBuilder.zip";
-    const string SetupAsset = "HookshotBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
-    const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
-
     public static async void FromCommandLine(MainWindow w)
     {
         var a = Environment.GetCommandLineArgs();
-        string? folder = null, tag = null;
+        string? folder = null, tag = null, revision = null;
         var fetched = false;
         for (var i = 1; i < a.Length; i++)
         {
             if (a[i] == "--update" && i + 1 < a.Length) folder = a[++i];
             else if (a[i] == "--tag" && i + 1 < a.Length) tag = a[++i];
+            else if (a[i] == "--revision" && i + 1 < a.Length) revision = a[++i];
             else if (a[i] == "--fetched") fetched = true;
         }
         if (folder == null) return;
@@ -37,68 +31,37 @@ static class Updater
             w.DownloadFailed("The Hookshot tools were not found next to this app.");
             return;
         }
-        // (already the new release, or just downloaded: no second download, whatever its version file says)
-        if (fetched || (tag != null && tools.Version == tag))
-        {
-            w.UpdateBuild(tools, folder);
-            return;
-        }
+        string? zip = null;
         try
         {
+            if (fetched && revision != null && !ReleaseIdentity.FetchedMatches(tools.Identity, tag, revision))
+                throw new InvalidDataException("The downloaded builder is a different build than requested. Download the current release and try again.");
             var token = w.DownloadToken;
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
             w.Note("Asking GitHub for the latest release");
-            string? newTag = null, url = null, setupUrl = null;
-            long size = 0;
-            var hasList = false;
+            LatestRelease latest;
             using (var ask = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
             using (var both = CancellationTokenSource.CreateLinkedTokenSource(token, ask.Token))
-            using (var doc = JsonDocument.Parse(await http.GetStringAsync(Latest, both.Token)))
             {
-                newTag = doc.RootElement.GetProperty("tag_name").GetString();
-                foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
-                {
-                    var assetName = asset.GetProperty("name").GetString();
-                    if (assetName == Asset)
-                    {
-                        url = asset.GetProperty("browser_download_url").GetString();
-                        size = asset.GetProperty("size").GetInt64();
-                    }
-                    else if (assetName == SetupAsset) setupUrl = asset.GetProperty("browser_download_url").GetString();
-                    else if (assetName == SetupList) hasList = true;
-                }
+                latest = await LatestRelease.FetchAsync(http, both.Token);
             }
-            if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
-            if (newTag == tools.Version)
+            if (fetched && !ReleaseIdentity.CanBuildFetched(tools.Identity, latest.Identity, tag, revision))
+                throw new InvalidDataException("The release changed while downloading. Retry the update after it finishes publishing.");
+            if (tools.Identity == latest.Identity)
             {
                 w.UpdateBuild(tools, folder);
                 return;
             }
-            var name = string.Concat(newTag.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'));
+            var name = latest.Identity.CacheName;
             var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
             Directory.CreateDirectory(cache);
-            // (a release with the setup and its list: the setup downloads only the parts that changed since the version installed (a few MB
-            // when only the builder's code did), checks them and starts the new builder with these arguments. The whole zip is the fallback)
-            if (setupUrl != null && hasList)
-            {
-                w.Note($"Downloading the update for {newTag}");
-                var setup = Path.Combine(cache, SetupAsset);
-                var bytes = await http.GetByteArrayAsync(setupUrl, token);
-                await File.WriteAllBytesAsync(setup, bytes, token);
-                var ssi = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
-                foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) ssi.ArgumentList.Add(arg);
-                Process.Start(ssi);
-                Application.Current.Shutdown();
-                return;
-            }
-            if (url == null) throw new InvalidOperationException("The latest release has no " + Asset + ".");
-            var zip = Path.Combine(cache, "HookshotBuilder-" + name + ".zip");
-            w.Note($"Downloading {Asset} of {newTag} ({size >> 20} MB)");
-            using (var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token))
+            zip = Path.Combine(cache, "HookshotBuilder-" + name + "-" + Guid.NewGuid().ToString("N") + ".zip");
+            w.Note($"Downloading {LatestRelease.Asset} of {latest.Identity.Tag} ({latest.Size >> 20} MB)");
+            using (var response = await http.GetAsync(latest.Url, HttpCompletionOption.ResponseHeadersRead, token))
             {
                 response.EnsureSuccessStatusCode();
-                var total = response.Content.Headers.ContentLength ?? size;
+                var total = response.Content.Headers.ContentLength ?? latest.Size;
                 await using var from = await response.Content.ReadAsStreamAsync(token);
                 await using var to = File.Create(zip);
                 var buffer = new byte[1 << 20];
@@ -116,23 +79,29 @@ static class Updater
                 }
                 if (total > 0 && have != total) throw new IOException($"The download ended early ({have >> 20} of {total >> 20} MB).");
             }
+            if (latest.Digest != null)
+            {
+                await using var input = File.OpenRead(zip);
+                var digest = "sha256:" + Convert.ToHexString(await SHA256.HashDataAsync(input, token)).ToLowerInvariant();
+                if (digest != latest.Digest) throw new InvalidDataException("The downloaded builder does not match the release's digest. Retry the update.");
+            }
             w.Note("Unpacking the new version");
             // (beside this app when that folder takes writing, else in the app data folder)
             var parent = Directory.GetParent(AppContext.BaseDirectory.TrimEnd('\\', '/'))!.FullName;
             string target;
             try
             {
-                target = await Unpack(zip, Path.Combine(parent, "HookshotBuilder " + name));
+                target = await BuilderArchive.UnpackAsync(zip, Path.Combine(parent, "HookshotBuilder " + name), latest.Identity);
             }
-            catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+            catch (Exception e) when (e is UnauthorizedAccessException || (e is IOException && e is not InvalidDataException))
             {
-                target = await Unpack(zip, Path.Combine(Path.GetDirectoryName(cache)!, "builders", name));
+                target = await BuilderArchive.UnpackAsync(zip, Path.Combine(Path.GetDirectoryName(cache)!, "builders", name), latest.Identity);
             }
-            try { File.Delete(zip); } catch (Exception) { }
+            token.ThrowIfCancellationRequested();
             var exe = Path.Combine(target, "HookshotBuilder.exe");
             if (!File.Exists(exe)) throw new FileNotFoundException("The download has no HookshotBuilder.exe (your antivirus may have removed it).");
             var si = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = target };
-            foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) si.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "--update", folder, "--tag", latest.Identity.Tag, "--revision", latest.Identity.Revision, "--fetched" }) si.ArgumentList.Add(arg);
             Process.Start(si);
             Application.Current.Shutdown();
         }
@@ -144,18 +113,10 @@ static class Updater
         {
             w.DownloadFailed(e.Message + " Your game folder is unchanged; you can also download the new version from GitHub yourself.");
         }
+        finally
+        {
+            if (zip != null) try { File.Delete(zip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
     }
 
-    /// The zip's HookshotBuilder folder, as target (an older one there replaced)
-    static async Task<string> Unpack(string zip, string target)
-    {
-        var part = target + ".part";
-        if (Directory.Exists(part)) Directory.Delete(part, true);
-        await Task.Run(() => ZipFile.ExtractToDirectory(zip, part));
-        var inner = Path.Combine(part, "HookshotBuilder");
-        if (Directory.Exists(target)) Directory.Delete(target, true);
-        Directory.Move(Directory.Exists(inner) ? inner : part, target);
-        if (Directory.Exists(part)) Directory.Delete(part, true);
-        return target;
-    }
 }

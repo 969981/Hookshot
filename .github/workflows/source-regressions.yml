@@ -103,6 +103,14 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
       - tests/test_mesh_stage_buffer_zero.py
+      - host/hos_update.c
+      - host/update_identity.h
+      - builder/HookshotBuilder/**
+      - scripts/package_builder.py
+      - tests/test_release_identity.py
+      - tests/update_identity_test.c
+      - tests/check_update_identity_c.py
+      - tests/update_identity/**
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -206,6 +214,14 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
       - tests/test_mesh_stage_buffer_zero.py
+      - host/hos_update.c
+      - host/update_identity.h
+      - builder/HookshotBuilder/**
+      - scripts/package_builder.py
+      - tests/test_release_identity.py
+      - tests/update_identity_test.c
+      - tests/check_update_identity_c.py
+      - tests/update_identity/**
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -278,7 +294,6 @@ jobs:
         run: python -I -B tests/test_finish_output.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
-<<<<<<< HEAD
       - name: Check setup payload retention on Windows
         if: runner.os == 'Windows'
         shell: cmd
@@ -320,6 +335,8 @@ jobs:
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
       - name: Check the CPU target follows the CPU
         run: python -I -B tests/test_cpu_target.py
+      - name: Check release metadata and packaging
+        run: python -I -B tests/test_release_identity.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
@@ -418,6 +435,17 @@ jobs:
         if: runner.os == 'Linux'
         run: python -I -B tests/test_hookshot_launch.py
 
+      - name: Check native release identity and prior tag-only behavior
+        if: runner.os == 'Linux'
+        run: python -I -B tests/check_update_identity_c.py
+      - name: Set up .NET for the update checks
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Check Builder release identity without UI or network
+        run: |
+          dotnet restore tests/update_identity/UpdateIdentityTests.csproj --configfile tests/update_identity/NuGet.Config
+          dotnet run --project tests/update_identity/UpdateIdentityTests.csproj --configuration Release --no-restore
   spirv-global16:
     name: SPIR-V global halfword lowering
     runs-on: ubuntu-24.04
