@@ -160,9 +160,11 @@ uint64_t* guest_pages = nullptr;
 uint64_t guest_pages_address = 0;
 void guest_pages_set(uint64_t lo, uint64_t hi, uint64_t address) {
     if (!guest_pages) return;
-    const uint64_t base = 0x1000000000ull, end = base + (8ull << 30);
-    for (uint64_t a = std::max(lo, base) & ~0xFFFull; a < std::min(hi, end); a += 0x1000)
-        guest_pages[(a - base) >> 12] = address ? address + (a - lo) : 0;
+    // (two windows, as spirv_emit_context.cpp reads them: 8 GB from 0x1000000000, then 4 GB from 0x7f00000000)
+    const struct { uint64_t base, bytes, first; } windows[] = {{0x1000000000ull, 8ull << 30, 0}, {0x7f00000000ull, 4ull << 30, (8ull << 30) >> 12}};
+    for (const auto& w : windows)
+        for (uint64_t a = std::max(lo, w.base) & ~0xFFFull; a < std::min(hi, w.base + w.bytes); a += 0x1000)
+            guest_pages[w.first + ((a - w.base) >> 12)] = address ? address + (a - lo) : 0;
 }
 
 uint64_t memory_guest_pages() {
@@ -175,7 +177,7 @@ uint64_t memory_guest_pages() {
     VkBuffer b = VK_NULL_HANDLE;
     VmaAllocation a = nullptr;
     void* mapped = nullptr;
-    const uint64_t bytes = (8ull << 30 >> 12) * 8;
+    const uint64_t bytes = ((8ull << 30 >> 12) + (4ull << 30 >> 12)) * 8;
     if (!create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, b, a, &mapped) || !mapped) {
         logf("vk: no page table of guest memory: pointers in no bound buffer read as 0");
         return 0;
@@ -1190,6 +1192,9 @@ uint64_t mirror_budget() {
         uint64_t vram = 0;
         for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
             if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
+        // (hookshot: an eighth on cards of 8 GB or less. A 6 GB laptop's 1.5 GB of mirrors and its textures went past what the
+        // driver allows, it paged, and the GPU timed out: device lost, issues 96 and 132)
+        if (vram && vram <= (8ull << 30)) return vram / 8;
         return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : 3072ull << 20;
     }();
     return b;
@@ -1538,7 +1543,9 @@ bool mirror_make(Pool& pool) {
     Pool* p = &pool;
     {
         const uint64_t n = p->hi - p->lo;
-        if (mirror_bytes + n > mirror_budget() || n > (1ull << 30)) {
+        uint64_t used = 0, allowed = 0;   // (hookshot: and none while VRAM is nearly full: a mirror is a speed-up, the pool works without)
+        const bool tight = vram_usage(&used, &allowed) && allowed && used > allowed / 100 * 90;
+        if (mirror_bytes + n > mirror_budget() || n > (1ull << 30) || tight) {
             p->mstate = n > (1ull << 30) ? Pool::MIRROR_REFUSED : Pool::MIRROR_NONE;
             static int logged;
             if (logged++ < 8)
