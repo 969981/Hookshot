@@ -10,6 +10,16 @@
 #include "vk_loader.h"
 #include "vk_api.h"
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#define HOOKSHOT_RDTSC() ((uint64_t)__rdtsc())
+#define HOOKSHOT_PAUSE() _mm_pause()
+#elif defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#define HOOKSHOT_RDTSC() ((uint64_t)__rdtsc())
+#define HOOKSHOT_PAUSE() _mm_pause()
+#endif
+
 typedef struct VmaAllocation_T* VmaAllocation;   // (vk_mem_alloc.h's handle)
 
 namespace mkwvk {
@@ -196,11 +206,40 @@ namespace mkwvk {
 enum ProfPhase { PROF_SUBMIT, PROF_PRESENT, PROF_DRAW, PROF_DESC, PROF_TEXGET, PROF_UPLOAD, PROF_PIPE, PROF_PROGRAM,
                  PROF_CMDS, PROF_DISPATCH, PROF_MEMSYNC, PROF_QSUBMIT, PROF_SLOTWAIT, PROF_COUNT };
 extern int64_t prof_ns[PROF_COUNT];
+/// Nanoseconds from a performance-counter reading. An integer number of nanoseconds per tick is a multiply, so a
+/// reading past 2^53 does not lose its low bits the way the double divide does.
+inline int64_t perf_ticks_to_ns(int64_t ticks, int64_t freq) {
+    if (freq > 0 && 1000000000LL % freq == 0)
+        return ticks * (1000000000LL / freq);
+    if (freq <= 0) return 0;
+    return (int64_t)((double)ticks * 1e9 / (double)freq);
+}
+// A cheap nanosecond clock for the per-phase replay timers. Ten QueryPerformanceCounter reads a draw were ~4% of
+// the GPU thread (gpu/render/rx_internal.h). The hot path reads the invariant TSC; the counter calibrates the scale once.
 inline int64_t prof_now() {
+#if defined(HOOKSHOT_RDTSC)
+    struct Scale { double ns_per; bool ok; };
+    static const Scale scale = [] {
+        LARGE_INTEGER f, a, b;
+        QueryPerformanceFrequency(&f);
+        const uint64_t c0 = HOOKSHOT_RDTSC();
+        QueryPerformanceCounter(&a);
+        volatile int sink = 0;
+        for (int i = 0; i < 400000; i++) { HOOKSHOT_PAUSE(); sink += 1; }
+        const uint64_t c1 = HOOKSHOT_RDTSC();
+        QueryPerformanceCounter(&b);
+        const int64_t dns = perf_ticks_to_ns(b.QuadPart - a.QuadPart, f.QuadPart);
+        Scale s;
+        s.ok = c1 > c0 && dns > 0 && sink > 0;
+        s.ns_per = s.ok ? (double)dns / (double)(c1 - c0) : 0.0;
+        return s;
+    }();
+    if (scale.ok) return (int64_t)((double)HOOKSHOT_RDTSC() * scale.ns_per);
+#endif
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     static const int64_t freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
-    return (int64_t)((double)t.QuadPart * 1e9 / (double)freq);
+    return perf_ticks_to_ns(t.QuadPart, freq);
 }
 struct ProfScope {
     int phase;

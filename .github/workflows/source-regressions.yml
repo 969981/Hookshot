@@ -20,6 +20,8 @@ on:
       - tests/test_framegen_gate.py
       - gpu/vk/vk_draw.cpp
       - tests/test_table_track.py
+      - gpu/vk/vk_internal.h
+      - tests/test_prof_clock.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -40,6 +42,8 @@ on:
       - tests/test_framegen_gate.py
       - gpu/vk/vk_draw.cpp
       - tests/test_table_track.py
+      - gpu/vk/vk_internal.h
+      - tests/test_prof_clock.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -92,3 +96,6 @@ jobs:
       - name: Check the table-entry tracker stops looking
         if: runner.os == 'Linux'
         run: python -I -B tests/test_table_track.py
+      - name: Check the replay clock skips the performance counter
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_prof_clock.py
