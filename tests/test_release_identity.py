@@ -103,6 +103,12 @@ class PackageTests(unittest.TestCase):
             shutil.copytree(self.repo / tree, self.stage / "tools" / tree)
         (self.stage / "builder-revision.txt").write_text(self.revision + "\n", encoding="utf-8")
         (self.stage / "HookshotBuilder.exe").write_text("authored fixture, not executable", encoding="utf-8")
+        (self.stage / "HookshotBuilder.dll").write_text("authored fixture, not executable", encoding="utf-8")
+        # These authored files are not PE binaries. Actual Windows publish checks
+        # exercise the version-resource reader; these cases exercise the producer's guard.
+        gui_patch = mock.patch.object(packer, "embedded_revision", return_value=self.revision)
+        self.gui_revision = gui_patch.start()
+        self.addCleanup(gui_patch.stop)
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), *args], text=True,
@@ -156,6 +162,19 @@ class PackageTests(unittest.TestCase):
         (self.stage / "builder-revision.txt").write_text(SHA, encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Publish the builder"):
             self.package()
+
+    def test_stale_exe_with_fresh_sidecar_is_rejected(self):
+        self.gui_revision.side_effect = lambda path: SHA if path.suffix == ".exe" else self.revision
+        with self.assertRaisesRegex(ValueError, "GUI was compiled.*HookshotBuilder.exe"):
+            self.package()
+        self.assertFalse(self.output.exists())
+        self.assertFalse((self.stage / "tools/revision.txt").exists())
+
+    def test_stale_managed_gui_with_fresh_exe_is_rejected(self):
+        self.gui_revision.side_effect = lambda path: SHA if path.suffix == ".dll" else self.revision
+        with self.assertRaisesRegex(ValueError, "GUI was compiled.*HookshotBuilder.dll"):
+            self.package()
+        self.assertFalse(self.output.exists())
 
     def test_untracked_gui_source_is_not_the_recorded_commit(self):
         (self.repo / "builder/HookshotBuilder/Untracked.cs").write_text("// not committed", encoding="utf-8")

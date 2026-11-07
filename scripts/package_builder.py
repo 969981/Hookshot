@@ -41,6 +41,37 @@ def source_matches(data, expected, textual=True):
     return blob_hash(data) == expected or (textual and blob_hash(data.replace(b"\r\n", b"\n")) == expected)
 
 
+def embedded_revision(path):
+    """Read the SDK's compile-time ProductVersion without loading or running the GUI."""
+    if os.name != "nt":
+        raise ValueError("Package the Windows builder on Windows to verify its embedded source revision.")
+    import ctypes
+    from ctypes import wintypes
+    version = ctypes.WinDLL("version", use_last_error=True)
+    version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    version.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID]
+    version.GetFileVersionInfoW.restype = wintypes.BOOL
+    version.VerQueryValueW.argtypes = [wintypes.LPCVOID, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT)]
+    version.VerQueryValueW.restype = wintypes.BOOL
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if size:
+        data = ctypes.create_string_buffer(size)
+        value, length = ctypes.c_void_p(), wintypes.UINT()
+        if (version.GetFileVersionInfoW(str(path), 0, size, data) and
+                version.VerQueryValueW(data, "\\VarFileInfo\\Translation", ctypes.byref(value), ctypes.byref(length))):
+            translations = ctypes.cast(value, ctypes.POINTER(wintypes.WORD))
+            for i in range(0, length.value // ctypes.sizeof(wintypes.WORD) - 1, 2):
+                key = "\\StringFileInfo\\%04x%04x\\ProductVersion" % (translations[i], translations[i + 1])
+                text, count = ctypes.c_void_p(), wintypes.UINT()
+                if version.VerQueryValueW(data, key, ctypes.byref(text), ctypes.byref(count)) and 0 < count.value <= 256:
+                    product = ctypes.wstring_at(text, count.value).rstrip("\0")
+                    match = re.fullmatch(r"[^+]+\+([0-9a-fA-F]{40})", product)
+                    if match:
+                        return match.group(1).lower()
+    raise ValueError("The builder has no supported compile-time source revision: " + str(path))
+
+
 def package(repo, staged, tag, output):
     repo, staged, output = Path(repo).resolve(), Path(staged).resolve(), Path(output).resolve()
     if not tag or tag != tag.strip() or len(tag.encode("utf-8")) > 127 or any(ord(c) < 32 or ord(c) == 127 for c in tag):
@@ -74,6 +105,12 @@ def package(repo, staged, tag, output):
         raise ValueError("Publish the builder from this revision before packaging it.")
     if not (staged / "HookshotBuilder.exe").is_file():
         raise ValueError("The staged builder executable is missing.")
+    # The sidecar alone is not proof: --no-build can refresh it beside old output.
+    # The SDK embeds SourceRevisionId in both the apphost and managed DLL at compile time.
+    for name in ("HookshotBuilder.exe", "HookshotBuilder.dll"):
+        binary = staged / name
+        if not binary.is_file() or embedded_revision(binary) != revision:
+            raise ValueError("The staged GUI was compiled from a different source revision: " + name)
     tracked = git(repo, "ls-tree", "-rz", "--format=%(objectname) %(path)", "HEAD", "--", *TREES).split("\0")
     sources = {}
     for item in tracked:
