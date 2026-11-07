@@ -15,6 +15,8 @@
 #define UPDATE_PATH L"/repos/NotRexed/Hookshot/releases/latest"
 #define RELEASES_PAGE L"https://github.com/NotRexed/Hookshot/releases/latest"
 
+extern const char *hos_user_dir;   /* (the saves' folder, hos_main.c: the version skipped is kept with them) */
+
 /* (a line "name=value" of a small text file, in UTF-8: its value, trimmed) */
 static int read_value(const wchar_t *path, const char *name, char *out, size_t cap) {
     FILE *f = _wfopen(path, L"rb");
@@ -88,8 +90,10 @@ void hos_update_check(void) {
     char have[128], builder[MAX_PATH * 3], skipped[128] = "", tag[128];
     _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_version.txt", dir);
     if (!read_value(file, "version", have, sizeof have)) return;
-    _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
-    read_value(file, "skip", skipped, sizeof skipped);
+    wchar_t user[MAX_PATH], skip_file[MAX_PATH + 64];
+    if (!hos_user_dir || !MultiByteToWideChar(CP_ACP, 0, hos_user_dir, -1, user, MAX_PATH)) return;
+    _snwprintf(skip_file, MAX_PATH + 64, L"%ls\\hookshot_update_skip.txt", user);
+    read_value(skip_file, "skip", skipped, sizeof skipped);
     if (!latest_tag(tag, sizeof tag)) {
         fprintf(stderr, "update: the latest release could not be asked for (offline?)\n");
         return;
@@ -119,11 +123,8 @@ void hos_update_check(void) {
                    wtag, whave);
     const int answer = MessageBoxW(NULL, text, L"Hookshot update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
     if (answer == IDCANCEL) {
-        wchar_t user[MAX_PATH + 16];
-        _snwprintf(user, MAX_PATH + 16, L"%ls\\user", dir);
         CreateDirectoryW(user, NULL);
-        _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
-        FILE *f = _wfopen(file, L"wb");
+        FILE *f = _wfopen(skip_file, L"wb");
         if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
         return;
     }
