@@ -59,6 +59,7 @@ struct GuestPool {
 };
 
 std::vector<GuestPool> guest_pools;   // by lo, from the host
+std::atomic<uint64_t> guest_pools_gen{1};   // (bumped when that table is replaced: a span cached without the lock goes stale)
 std::map<uint64_t, Pool> imported;    // by lo, made on first use
 Pool* last_pool = nullptr;            // (the last pool_of hit: draws in a row bind buffers of the same pools)
 extern Pool* pool_cache[4096];
@@ -278,6 +279,7 @@ void memory_sync() {
     std::sort(next.begin(), next.end(), [](const GuestPool& a, const GuestPool& b) { return a.lo < b.lo; });
     std::lock_guard lk(pools_mu);
     guest_pools.swap(next);
+    guest_pools_gen.fetch_add(1, std::memory_order_relaxed);
     last_pool = nullptr;
     std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
     static int logged;
@@ -1460,21 +1462,49 @@ static bool game_pool_of(uint64_t gpu, uint64_t& lo, uint64_t& hi) {   // (pools
     lo = it->lo, hi = it->hi;
     return true;
 }
+/// True when gpu sits in [lo, hi) and that span was cached from the guest-pool table this generation still is.
+bool guest_span_covers(uint64_t gpu, uint64_t lo, uint64_t hi, uint64_t cached_gen, uint64_t gen) {
+    return cached_gen == gen && lo < hi && gpu >= lo && gpu < hi;
+}
+struct GuestSpan { uint64_t lo = 1, hi = 0, gen = 0; };
+thread_local GuestSpan guest_span;
+bool guest_span_cached(uint64_t gpu, uint64_t* lo, uint64_t* hi) {
+    static const bool imported_only = getenv("RX_VK_POOL_END_IMPORTED") != nullptr;   // (A/B: the import's end, as before)
+    if (imported_only || gpu >= (1ull << 40)) return false;
+    const uint64_t gen = guest_pools_gen.load(std::memory_order_relaxed);
+    if (!guest_span_covers(gpu, guest_span.lo, guest_span.hi, guest_span.gen, gen)) return false;
+    *lo = guest_span.lo;
+    *hi = guest_span.hi;
+    return true;
+}
+void guest_span_store(uint64_t lo, uint64_t hi) {   // (pools_mu held: the generation matches the table just read)
+    guest_span = {lo, hi, guest_pools_gen.load(std::memory_order_relaxed)};
+}
 uint64_t gpu_pool_end(uint64_t gpu) {
+    uint64_t lo, hi;
+    // (storage-buffer tables ask this per entry, and the entries of one table sit in one pool: the locked lookup of a
+    // pool was ~8% of replay time before buffer binds cached it)
+    if (guest_span_cached(gpu, &lo, &hi)) return hi;
     ParLock plk;   // (before pools_mu, always)
     std::lock_guard lk(pools_mu);
-    uint64_t lo, hi;
     static const bool imported_only = getenv("RX_VK_POOL_END_IMPORTED") != nullptr;   // (A/B: the import's end, as before)
-    if (!imported_only && game_pool_of(gpu, lo, hi)) return hi;
+    if (!imported_only && game_pool_of(gpu, lo, hi)) {
+        guest_span_store(lo, hi);
+        return hi;
+    }
     const Pool* p = pool_of(gpu, 1);
     return p ? p->hi : 0;
 }
 uint64_t gpu_pool_start(uint64_t gpu) {   // (EvilOOT) where it begins
+    uint64_t lo, hi;
+    if (guest_span_cached(gpu, &lo, &hi)) return lo;
     ParLock plk;
     std::lock_guard lk(pools_mu);
-    uint64_t lo, hi;
     static const bool imported_only = getenv("RX_VK_POOL_END_IMPORTED") != nullptr;
-    if (!imported_only && game_pool_of(gpu, lo, hi)) return lo;
+    if (!imported_only && game_pool_of(gpu, lo, hi)) {
+        guest_span_store(lo, hi);
+        return lo;
+    }
     const Pool* p = pool_of(gpu, 1);
     return p ? p->lo : 0;
 }
