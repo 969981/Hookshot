@@ -74,8 +74,11 @@ void hos_renderer_wait(void) {
 }
 
 static void pump(void) {
+    void hos_sdl_pads_pump(void);   /* host/pad_sdl.c: the controllers, on this thread as SDL's queue wants */
     SDL_Event e;
-    while (SDL_WaitEventTimeout(&e, 250)) {
+    for (;;) {
+        hos_sdl_pads_pump();
+        if (!SDL_WaitEventTimeout(&e, 4)) return;   /* (4 ms: the controllers' poll, as their own thread had on Windows) */
         switch (e.type) {
         default:
             if (fullscreen_event && e.type == fullscreen_event) set_fullscreen(e.user.code);
