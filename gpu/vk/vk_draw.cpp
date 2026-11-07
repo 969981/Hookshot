@@ -414,6 +414,14 @@ bool depth_aspect(VkFormat f) {
 }
 
 // (hookshot) A driver's compiler that faults on a shader (amdvlk64.dll on a mesh program, Hookshot issue 26) costs that one draw, not the game
+#ifndef _WIN32   // (hookshot) Linux: a fault there is a signal, in the middle of the driver's own locks: not caught, called as before
+VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
+}
+VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
+}
+#else
 __declspec(noinline) VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
     __try {
         return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
@@ -428,6 +436,7 @@ __declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkCom
         return (VkResult)-77;   // (a fault in the driver, told apart from what it returns)
     }
 }
+#endif
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten

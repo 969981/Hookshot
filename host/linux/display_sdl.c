@@ -53,12 +53,33 @@ static int vk_surface(void *native, void *instance, uint64_t *surface) {
     return 1;
 }
 static void drawable_size(void *native, int *w, int *h) { SDL_Vulkan_GetDrawableSize((SDL_Window *)native, w, h); }
-static HosLinuxWindow surface_desc = {0, vk_surface, drawable_size};
+/* (asked from the render thread: SDL's window calls belong to the window's own, which pump() is) */
+static Uint32 fullscreen_event;
+static void ask_fullscreen(void *native, int on) {
+    (void)native;
+    SDL_Event e;
+    memset(&e, 0, sizeof e);
+    e.type = fullscreen_event;
+    e.user.code = on;
+    if (fullscreen_event) SDL_PushEvent(&e);
+}
+static int is_fullscreen(void *native) { (void)native; return fullscreen; }
+static HosLinuxWindow surface_desc = {0, vk_surface, drawable_size, ask_fullscreen, is_fullscreen};
+static HANDLE renderer_up;
+
+/* (hookshot) as display.c: the game's first work for the GPU waits for the renderer (what it submitted while the shaders
+   were prepared was lost: no ambient light, black foliage, dark characters) */
+void hos_renderer_wait(void) {
+    if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
+}
 
 static void pump(void) {
     SDL_Event e;
     while (SDL_WaitEventTimeout(&e, 250)) {
         switch (e.type) {
+        default:
+            if (fullscreen_event && e.type == fullscreen_event) set_fullscreen(e.user.code);
+            break;
         case SDL_QUIT:
             hos_log("display: window closed, exiting");
             hos_log_flush();
@@ -95,6 +116,7 @@ static DWORD WINAPI display_main(void *p) {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         hos_log("display: no window (%s): the renderer draws offscreen", SDL_GetError());
         rx_start(NULL);
+        SetEvent(renderer_up);
         return 0;
     }
     extern float hos_aspect_ratio;
@@ -108,12 +130,16 @@ static DWORD WINAPI display_main(void *p) {
     if (!window) {
         hos_log("display: no window (%s): the renderer draws offscreen", SDL_GetError());
         rx_start(NULL);
+        SetEvent(renderer_up);
         return 0;
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    fullscreen_event = SDL_RegisterEvents(1);
+    if (fullscreen_event == (Uint32)-1) fullscreen_event = 0;
     surface_desc.native = window;
     renderer = rx_start(&surface_desc);
     if (!renderer) hos_log("display: no Vulkan renderer: the window stays black");
+    SetEvent(renderer_up);
     for (;;) pump();
     return 0;
 }
@@ -123,6 +149,7 @@ void hos_display_start(void) {
         rx_start(NULL);
         return;
     }
+    renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);
     CreateThread(NULL, 0, display_main, NULL, 0, NULL);
 }
 

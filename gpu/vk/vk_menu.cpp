@@ -306,11 +306,21 @@ void fullscreen_tick() {
     if (opts.fullscreen != applied) {
         applied = opts.fullscreen;
         settle = 60;
+#ifdef _WIN32
         PostMessageA(main_window, WM_APP + 7, (WPARAM)applied, 0);
+#else   // (hookshot) Linux: the window's own call, which hands it to the window's thread (host/linux/display_sdl.c)
+        const HosLinuxWindow* lw = (const HosLinuxWindow*)main_window;
+        if (lw->set_fullscreen) lw->set_fullscreen(lw->native, applied);
+#endif
         return;
     }
     if (settle > 0) { settle--; return; }
+#ifdef _WIN32
     const int now = !(GetWindowLongA(main_window, GWL_STYLE) & WS_CAPTION);
+#else
+    const HosLinuxWindow* lw = (const HosLinuxWindow*)main_window;
+    const int now = lw->fullscreen ? lw->fullscreen(lw->native) : applied;
+#endif
     if (now != applied) {
         opts.fullscreen = applied = now;
         menu_refresh = true;
