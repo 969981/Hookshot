@@ -1834,6 +1834,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
 /// The dynamic state a draw sets, compared with what the command buffer has (only what changed is set again: most
 /// draws repeat their neighbours' state, and these calls were a third of the replay's command time)
 struct DynState {
+    bool mesh;
     VkViewport vp;
     VkRect2D sc;
     float blend[4];
@@ -1860,6 +1861,7 @@ thread_local bool last_dyn_valid = false;
 void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh) {
     DynState d;
     std::memset(&d, 0, sizeof d);   // (padding compared too)
+    d.mesh = mesh;
     // (RX_VK_FOOTPRINT=<key>,...: those programs' draws write depth wherever they rasterize, both faces, whatever is
     // there already: with RX_VK_DUMP_EACH, each one's footprint (diagnostics))
     static const std::vector<uint64_t> footprint = [] {
@@ -1973,8 +1975,8 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     if (DYN_CHANGED(cull)) vkCmdSetCullMode(cmd, d.cull);
     if (DYN_CHANGED(front)) vkCmdSetFrontFace(cmd, d.front);
     if (!mesh) {
-        if (DYN_CHANGED(topo)) vkCmdSetPrimitiveTopology(cmd, d.topo);
-        if (DYN_CHANGED(restart)) vkCmdSetPrimitiveRestartEnable(cmd, d.restart);
+        if (DYN_CHANGED(topo) || last_dyn.mesh) vkCmdSetPrimitiveTopology(cmd, d.topo);
+        if (DYN_CHANGED(restart) || last_dyn.mesh) vkCmdSetPrimitiveRestartEnable(cmd, d.restart);
     }
     if (DYN_CHANGED(dt)) vkCmdSetDepthTestEnable(cmd, d.dt);
     if (DYN_CHANGED(dw)) vkCmdSetDepthWriteEnable(cmd, d.dw);
