@@ -22,6 +22,7 @@
 #include <commdlg.h>
 #define SEP "\\"
 static const char *const RUNTIME = "hookshot_rt.exe", *const MODULE = "hookshot_game.dll";
+#define WHY_KIND "Windows error"
 #else
 #include <errno.h>
 #include <stddef.h>
@@ -31,6 +32,7 @@ static const char *const RUNTIME = "hookshot_rt.exe", *const MODULE = "hookshot_
 #include <unistd.h>
 #define SEP "/"
 static const char *const RUNTIME = "hookshot_rt", *const MODULE = "libhookshot_game.so";
+#define WHY_KIND "errno"
 #endif
 
 #define PATH_CAP 4096
@@ -329,8 +331,10 @@ static void win_layout(void) {
     MoveWindow(w.details, m, y, px(130), px(28), TRUE);
     MoveWindow(w.close, r.right - m - px(100), y, px(100), px(28), TRUE);
     y += px(38);
+    /* (sized when hidden too: an edit control lays its lines out for the size it has, and one left at 0 wide shows
+       them shifted once opened) */
+    MoveWindow(w.log, m, y, width, w.open && r.bottom - y - m > px(100) ? r.bottom - y - m : px(300), TRUE);
     ShowWindow(w.log, w.open ? SW_SHOW : SW_HIDE);
-    if (w.open) MoveWindow(w.log, m, y, width, r.bottom - y - m > 0 ? r.bottom - y - m : 0, TRUE);
 }
 
 static void win_set_open(int open) {
@@ -490,7 +494,7 @@ static int build_window(char *cmdline, const char *path_add) {
     w.times = win_child("STATIC", "", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, w.font);
     w.details = win_child("BUTTON", "Show details", BS_PUSHBUTTON, ID_DETAILS, w.font);
     w.close = win_child("BUTTON", "Stop", BS_PUSHBUTTON, ID_CLOSE, w.font);
-    w.log = win_child("EDIT", "", WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+    w.log = win_child("EDIT", "", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
                       0, w.mono);
     SendMessageA(w.log, EM_SETLIMITTEXT, 0, 0);
     ShowWindow(w.log, SW_HIDE);
@@ -824,14 +828,20 @@ static int start(int argc, char **argv) {
     char cmd[32768];
     int n = snprintf(cmd, sizeof cmd, "\"%s\"", rt);
     for (int i = 1; i < argc && n < (int)sizeof cmd; i++) n += snprintf(cmd + n, sizeof cmd - n, " \"%s\"", argv[i]);
-    return run_wait(cmd, NULL);
+    const int code = run_wait(cmd, NULL);
+    if (code != -1) return code;
+    const int why = (int)GetLastError();
 #else
     (void)argc;
     argv[0] = rt;
     execv(rt, argv);
-    perror(rt);
-    return 1;
+    const int why = errno;
 #endif
+    char msg[PATH_CAP + 200];   /* (said, not only printed: nobody reads a launcher's stderr) */
+    snprintf(msg, sizeof msg, "The game could not be started: %s (%s %d). Extracting the release again puts it back.",
+             rt, WHY_KIND, why);
+    say(msg);
+    return 1;
 }
 
 int main(int argc, char **argv) {
