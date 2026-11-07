@@ -1404,6 +1404,12 @@ void dump_input(char kind, uint32_t index, uint32_t handle, const Texture* tex) 
     dump_inputs += b;
 }
 
+/// A descriptor over 2 ms is logged, 40 times, and only while RX_VK_SLOW_DESC is set. Off, the clock is not read.
+bool slow_desc_timing() {
+    static const int on = getenv("RX_VK_SLOW_DESC") != nullptr;
+    return on;
+}
+
 /// (a descriptor that took over 2 ms to resolve: logged, 40 of them)
 void slow_descriptor(std::chrono::steady_clock::time_point t0, const char* what, uint64_t addr, uint64_t size) {
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1512,9 +1518,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, d.count);
             const size_t first = dw.bufs.size();
             for (uint32_t k = 0; k < d.count; k++) {
-                const auto t0 = std::chrono::steady_clock::now();
+                const auto t0 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 dw.bufs.push_back(uniform_range(s, st, d.index + k));
-                slow_descriptor(t0, "uniform buffer", d.index + k, dw.bufs.back().range);
+                if (slow_desc_timing()) slow_descriptor(t0, "uniform buffer", d.index + k, dw.bufs.back().range);
             }
             w.pBufferInfo = &dw.bufs[first];
             dw.writes.push_back(w);
@@ -1563,7 +1569,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     if (wide && d.count == 1 && addr)
                         if (const uint64_t end = gpu_pool_end(base); end > base + n) wide_n = std::min(end - base, wide) & ~3ull;
                 }
-                const auto t0 = std::chrono::steady_clock::now();
+                const auto t0 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 // (hookshot) a storage buffer table's entries (count > 1, Info::global_tables): the ones past the table's
                 // end are whatever the constant buffer holds there, bound only when they look like a buffer
                 const bool plausible = d.count == 1 || (size && size <= (256ull << 20) && host->gpu_guest(base));
@@ -1661,7 +1667,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                              (unsigned long long)addr, (unsigned long long)size, (void*)b.buffer,
                              (unsigned long long)b.offset, (unsigned long long)n, s.grid[0], s.grid[1], s.grid[2]);
                 }
-                slow_descriptor(t0, d.is_written ? "storage buffer (written)" : "storage buffer", base, n);
+                if (slow_desc_timing()) slow_descriptor(t0, d.is_written ? "storage buffer (written)" : "storage buffer", base, n);
                 if (dump_on() && dump_ssbo_wanted(p.key)) {   // (RX_VK_DUMP_SSBO: where it is, and what the CPU's memory holds)
                     std::vector<uint32_t> words((size_t)std::min<uint64_t>(n, 65536) / 4);
                     size_t nz = 0;
@@ -1712,10 +1718,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     }
                 }
                 if (b && d.is_written) {
-                    const auto t1 = std::chrono::steady_clock::now();
+                    const auto t1 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     const uint64_t guest = host->gpu_guest(base);
                     if (guest) { ParLock lk; memory_stamp_gpu(guest, n); }
-                    slow_descriptor(t1, "stamp", base, n);
+                    if (slow_desc_timing()) slow_descriptor(t1, "stamp", base, n);
                 }
             }
             w.pBufferInfo = &dw.bufs[first];
@@ -4204,11 +4210,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     st_draws++, pass.draws++;
 }
 
+/// A dispatch over 2 ms is logged, 60 times, and only while RX_VK_SLOW_DISPATCH is set. Off, the clock is not read.
+bool slow_dispatch_timing() {
+    static const int on = getenv("RX_VK_SLOW_DISPATCH") != nullptr;
+    return on;
+}
+
 struct DispatchClock {   // (a dispatch over 2 ms: logged, with where its time went)
-    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(), t_prog{}, t_pipe{}, t_desc{};
+    std::chrono::steady_clock::time_point t0 = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}, t_prog{}, t_pipe{}, t_desc{};
     uint64_t key = 0;
     bool made_pipeline = false;
     ~DispatchClock() {
+        if (!slow_dispatch_timing()) return;
         const auto t1 = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         static int logged;
@@ -4286,6 +4299,13 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
     descriptors_disturbed();
     return true;
 }
+
+// (hookshot, issue 109) The movie upscaler's networks cost 12 ms a frame on an RTX 3050 and 83-93 ms on an RTX 4060 with a newer
+// driver: the intro movie ran at 10 fps and the game never got past it. When a frame of few draws (a movie) takes over 40 ms
+// of GPU time (vk_replay.cpp), they are left out from then on, as on AMD: the linear upscale below, the same picture a little
+// softer. The gameplay networks are never left out. RX_VK_NETWORK_KEEP=all: never
+std::atomic<bool> movie_networks_slow{false};
+bool gameplay_network(uint64_t key) { return key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull; }
 
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     static const bool off = getenv("RX_VK_NO_UPSCALE_STUB") != nullptr;
@@ -4702,7 +4722,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     const uint8_t types[8]{};
     const Program* cp = program_for(s, ProgramKind::Compute, types);
-    dclock.t_prog = std::chrono::steady_clock::now();
+    dclock.t_prog = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // (a program still being translated is waited for, as a draw's is: a dispatch left out is work never done again.
     // MKW updates its terrain height clipmaps a region at a time as the camera moves, and makes its sky's tables
     // once; a skipped update left holes and flat patches in the terrain, garbage in the sky)
@@ -4751,7 +4771,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             logf("vk: dispatches of program %016llx are left out (it did not translate): grid %ux%ux%u%s",
                  (unsigned long long)cp->key, s.grid[0], s.grid[1], s.grid[2], indirect ? " (indirect)" : "");
     }
-    if ((!cp || cp->failed) && upscale_stub(cmd, s, compute_code_key(s))) return void(st_dispatches++);
+    const bool slow_network = movie_networks_slow.load(std::memory_order_relaxed) && cp && !cp->failed && !cp->stages.empty() &&
+                              cp->stages[0].info.uses_cooperative_matrix && !gameplay_network(cp->key);
+    if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) return void(st_dispatches++);
+    if (slow_network) SKIP_HERE();   // (an earlier pass of the network: the stub is its last pass)
     if (!cp || !cp->ready.load(std::memory_order_acquire) || cp->failed) SKIP_HERE();
     {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: those programs' dispatches left out, for diagnosis)
         static const char* skip = getenv("RX_VK_SKIP_PROG");
@@ -4819,10 +4842,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         pcache_built_since_save++;
     }
     if (plk.on) par_mutex().unlock(), plk.on = false;
-    dclock.t_pipe = std::chrono::steady_clock::now();
+    dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     end_pass(cmd);
     build_descriptors(s, p);
-    dclock.t_desc = std::chrono::steady_clock::now();
+    dclock.t_desc = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (dump_on())
         logf("vk: dump-in %03d dispatch %ux%ux%u prog %016llx:%s", dump_seq(), x, y, z, (unsigned long long)p.key,
              dump_inputs.c_str());
