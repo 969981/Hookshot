@@ -38,6 +38,7 @@
 typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
 typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
 static _Thread_local SjStack *stack;
+static _Thread_local uint64_t sj_target;
 
 /* The Windows implementation below saves the Win64 ABI context explicitly. Linux uses
    the native System V context through sigsetjmp/siglongjmp; the surrounding owner and
@@ -128,7 +129,10 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
     return s->buf;
 }
 
-uint64_t recomp_sj_target(void **buf) { return ((SjSlot *)((char *)buf - offsetof(SjSlot, buf)))->target; }
+uint64_t recomp_sj_target(void **buf) {
+    (void)buf;
+    return sj_target;
+}
 
 void recomp_sj_pop(void **buf) {
     if (!stack) return;
@@ -147,6 +151,7 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
             hos_log("longjmp to %#llx (value %llu, %d slots above dropped)", (unsigned long long)target,
                     (unsigned long long)c->x[0], stack->depth - 1 - i);
         s->target = target;
+        sj_target = target;
         stack->depth = i + 1;
         recomp_sj_longjmp(s->buf, 1);
     }
