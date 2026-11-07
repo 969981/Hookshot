@@ -11,6 +11,8 @@ on:
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
       - tests/test_import_hold.py
+      - gpu/vk/vk_replay.cpp
+      - tests/test_ub_gap.py
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
       - gpu/vk/vk_menu.cpp
@@ -33,6 +35,8 @@ on:
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
       - tests/test_import_hold.py
+      - gpu/vk/vk_replay.cpp
+      - tests/test_ub_gap.py
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
       - gpu/vk/vk_menu.cpp
@@ -84,6 +88,9 @@ jobs:
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check uniform words skip a known gap
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_ub_gap.py
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
