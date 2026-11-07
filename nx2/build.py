@@ -450,6 +450,25 @@ def main():
         if os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
             import shutil
             shutil.copyfile(sdl, sdl_dst)
+        # (hookshot) the game folder, as the builder makes one for OoT: image.bin beside the exe and romfs joined to
+        # the dump, so hookshot.exe started with nothing finds both and boots (hos_main.c)
+        import shutil
+        img, img_dst = os.path.join(sa, "image", "image.bin"), os.path.join(out, "image.bin")
+        if os.path.exists(img) and (not os.path.exists(img_dst) or os.path.getsize(img_dst) != os.path.getsize(img)):
+            shutil.copyfile(img, img_dst)
+            print("game folder: image.bin beside the exe")
+        link = os.path.join(out, "romfs")
+        if os.name == "nt" and not os.path.exists(link):
+            dump = ""
+            try:
+                dump = next((l.strip() for l in open(os.path.join(kit.WORK, "dump.txt"), encoding="utf-8")
+                             if l.strip() and not l.strip().startswith("#")), "")
+            except OSError:
+                pass
+            romfs = os.path.join(dump, "romfs")
+            if dump and os.path.isdir(romfs):
+                subprocess.run(["cmd", "/c", "mklink", "/J", link, romfs], capture_output=True)
+                print("game folder: romfs -> %s" % romfs)
     if vk_jobs:   # (hookshot_vk.dll beside the exe: loaded by host/rx_backend.c with RX_BACKEND=vulkan)
         vdll = os.path.join(out, "hookshot_vk.dll")
         vrsp = os.path.join(out, "vk_objs.rsp")
