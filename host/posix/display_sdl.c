@@ -31,6 +31,12 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (diagnostics, display.c's: none counted here) */
+int hos_mouse_stats(long *reports, long *taken, long *absolute, long *click_count) {
+    *reports = *taken = *absolute = *click_count = 0;
+    return mouse_captured;
+}
+
 /* ---- the SDL2 entry points used ---- */
 typedef struct { uint32_t format; int w, h, refresh_rate; void *driverdata; } SdlDisplayMode;
 typedef union { uint32_t type; uint8_t raw[56]; } SdlEvent;

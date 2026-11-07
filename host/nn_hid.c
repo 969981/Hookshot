@@ -40,6 +40,28 @@ int rx_option(int id, int otherwise);
 static int key(int vk) { return !rx_option(1, 0) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
+int hos_mouse_stats(long *reports, long *taken, long *absolute, long *click_count);   /* display.c */
+
+/* (diagnostics, the mouse that did nothing for one player) every 5 s while the mouse did anything: what the window had (reports,
+   clicks), what reached the stick, and the right stick the game was given */
+extern double hos_mouse_sens;
+static long long mouse_moved_x, mouse_moved_y;
+static int32_t mouse_shown_peak, stick_given_peak;
+static void mouse_report(void) {
+    static int64_t next;
+    const int64_t now = hos_now_ns();
+    if (now < next) return;
+    next = now + 5000000000LL;
+    long reports, taken, absolute, click_count;
+    const int captured = hos_mouse_stats(&reports, &taken, &absolute, &click_count);
+    if (reports || click_count || captured || mouse_moved_x || mouse_moved_y)
+        hos_log("mouse: in 5 s: %ld clicks, %ld raw reports (%ld while captured, %ld absolute), moved %lld,%lld; mouse stick up to %d, "
+                "right stick given to the game up to %d; %s, sensitivity %.2f",
+                click_count, reports, taken, absolute, mouse_moved_x, mouse_moved_y, (int)mouse_shown_peak, (int)stick_given_peak,
+                captured ? "captured" : "not captured", hos_mouse_sens);
+    mouse_moved_x = mouse_moved_y = 0;
+    mouse_shown_peak = stick_given_peak = 0;
+}
 
 /* The captured mouse's sensitivity (mouse_stick below): - and = change it, kept in <user>/mouse_sens.txt */
 double hos_mouse_sens = 0;   /* (display.c shows it in the title) */
@@ -134,6 +156,8 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     if (now >= next_tick) {
         int32_t dx, dy;
         captured = hos_mouse_take(&dx, &dy);
+        mouse_moved_x += dx;
+        mouse_moved_y += dy;
         if (pointing != was_pointing) look_x = look_y = 0, was_pointing = pointing;
         if (!captured) look_x = look_y = 0;
         else if (pointing) {
@@ -158,6 +182,10 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     if (!captured) return 0;
     *rx = shown[0];
     *ry = shown[1];
+    {
+        const int32_t m = abs(shown[0]) > abs(shown[1]) ? abs(shown[0]) : abs(shown[1]);
+        if (m > mouse_shown_peak) mouse_shown_peak = m;
+    }
     return 1;
 }
 
@@ -425,6 +453,11 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
               cy = (key(VK_UP) || key('I')) - (key(VK_DOWN) || key('K'));
     const int32_t keys[4] = {(key('D') - key('A')) * 32767, (key('W') - key('S')) * 32767, cx * 32767, cy * 32767};
     stick_max(stick, keys);
+    {
+        const int32_t m = abs(stick[2]) > abs(stick[3]) ? abs(stick[2]) : abs(stick[3]);
+        if (m > stick_given_peak) stick_given_peak = m;
+    }
+    mouse_report();
 }
 
 static void vibration_send(uint64_t handle, uint64_t value);

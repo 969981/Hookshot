@@ -33,6 +33,17 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (diagnostics, the mouse that did nothing for one player: nn_hid.c logs these every 5 s while the mouse is in use) the raw mouse
+   reports since the last call, all of them and those taken while captured, and the clicks the window had */
+static volatile LONG raw_reports, raw_taken, raw_absolute, clicks;
+int hos_mouse_stats(long *reports, long *taken, long *absolute, long *click_count) {
+    *reports = InterlockedExchange(&raw_reports, 0);
+    *taken = InterlockedExchange(&raw_taken, 0);
+    *absolute = InterlockedExchange(&raw_absolute, 0);
+    *click_count = InterlockedExchange(&clicks, 0);
+    return mouse_captured;
+}
+
 static HANDLE renderer_up;
 static int fullscreen;
 static WINDOWPLACEMENT windowed_place;
@@ -75,16 +86,17 @@ static UINT window_dpi(HWND w) {
     return dpi ? dpi : 96;
 }
 
-static void mouse_capture(HWND w, int on) {
+static void mouse_capture(HWND w, int on, const char *why) {
     if (on == (int)mouse_captured) return;
     mouse_captured = on;
+    if (why) hos_log("mouse: %s (%s)", on ? "captured: its motion turns the camera" : "released", why);
     InterlockedExchange(&mouse_dx, 0);
     InterlockedExchange(&mouse_dy, 0);
     if (on) {
         RECT rc;
         GetClientRect(w, &rc);
         MapWindowPoints(w, NULL, (POINT *)&rc, 2);
-        ClipCursor(&rc);
+        if (!ClipCursor(&rc) && why) hos_log("mouse: the cursor could not be kept in the window (error %lu)", GetLastError());
         if (!cursor_hidden) { ShowCursor(FALSE); cursor_hidden = 1; }
     } else {
         ClipCursor(NULL);
@@ -99,18 +111,27 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_INPUT: {
         RAWINPUT ri;
         UINT size = sizeof ri;
-        if (mouse_captured && GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
-            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            InterlockedExchangeAdd(&mouse_dx, ri.data.mouse.lLastX);
-            InterlockedExchangeAdd(&mouse_dy, ri.data.mouse.lLastY);
+        if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+            ri.header.dwType == RIM_TYPEMOUSE) {
+            InterlockedIncrement(&raw_reports);
+            if (ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) {
+                /* (a pen tablet, remote desktop, a VM or some mouse software: positions, not motion, and not used) */
+                InterlockedIncrement(&raw_absolute);
+            } else if (mouse_captured) {
+                InterlockedIncrement(&raw_taken);
+                InterlockedExchangeAdd(&mouse_dx, ri.data.mouse.lLastX);
+                InterlockedExchangeAdd(&mouse_dy, ri.data.mouse.lLastY);
+            }
         }
         return DefWindowProcA(w, msg, wp, lp);
     }
     case WM_LBUTTONDOWN:
-        if (renderer && !mouse_captured) mouse_capture(w, 1);
+        InterlockedIncrement(&clicks);
+        if (!renderer) hos_log("mouse: a click before the renderer was up: not captured");
+        if (renderer && !mouse_captured) mouse_capture(w, 1, "a click in the window");
         return 0;
     case WM_KEYDOWN:
-        if (wp == VK_ESCAPE) mouse_capture(w, 0);
+        if (wp == VK_ESCAPE) mouse_capture(w, 0, "Esc");
         if (wp == VK_F11 && !(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
         return 0;
     case WM_APP + 7:   /* (the Insert menu's row) */
@@ -125,7 +146,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KILLFOCUS:
     case WM_CANCELMODE:
-        mouse_capture(w, 0);
+        mouse_capture(w, 0, msg == WM_KILLFOCUS ? "the window lost the focus" : "cancel mode");
         break;
     case WM_SETCURSOR:
         if (mouse_captured && LOWORD(lp) == HTCLIENT) {
@@ -134,10 +155,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     case WM_MOVE:
-        if (mouse_captured) { mouse_capture(w, 0); mouse_capture(w, 1); }   /* (the clip follows the window) */
+        if (mouse_captured) { mouse_capture(w, 0, NULL); mouse_capture(w, 1, NULL); }   /* (the clip follows the window) */
         break;
     case WM_SIZE:
-        if (mouse_captured) { mouse_capture(w, 0); mouse_capture(w, 1); }
+        if (mouse_captured) { mouse_capture(w, 0, NULL); mouse_capture(w, 1, NULL); }
         if (renderer) rx_resize(LOWORD(lp), HIWORD(lp));
         return 0;
     case WM_PAINT:
@@ -199,7 +220,10 @@ static DWORD WINAPI display_main(void *p) {
         ShowWindow(hwnd, SW_SHOW);
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(hwnd, 1);
     RAWINPUTDEVICE rid = {1, 2, 0, hwnd};   /* generic desktop mouse: WM_INPUT while the window is in front */
-    RegisterRawInputDevices(&rid, 1, sizeof rid);
+    if (!RegisterRawInputDevices(&rid, 1, sizeof rid))
+        hos_log("mouse: raw mouse input could not be registered (error %lu): the mouse cannot turn the camera", GetLastError());
+    else
+        hos_log("mouse: raw mouse input registered: click in the window to use the mouse, Esc releases it");
     renderer = rx_start(hwnd);
     if (!renderer) hos_log("display: no WebGPU device: the window stays black");
     SetEvent(renderer_up);
