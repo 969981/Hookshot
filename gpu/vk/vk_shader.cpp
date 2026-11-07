@@ -1008,6 +1008,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             auto vs = translate(vs_env, true);
             questions += vs_env.texture_questions;
             Shader::RuntimeInfo vrt{};
+            if (!vs->program.info.stores[Shader::IR::Attribute::PointSize]) vrt.fixed_state_point_size = 1.0f;
             // (an attribute the draw leaves unset: build_graphics gives it a stream of (0, 0, 0, 1). It took Disabled here, under the
             // same key)
             for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
