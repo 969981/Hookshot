@@ -16,6 +16,11 @@ gamefile/
 *.nsz
 *.xcz
 
+# ---- agent tool state (not part of the project) ----
+.codegraph/
+.serena/
+.perch/
+
 # ---- build output and caches ----
 build/
 __pycache__/

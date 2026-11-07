@@ -874,7 +874,7 @@ HLE(_ZN2nn2os13GetSystemTickEv) {
     if (on) tick_log(c->x[30]);
     /* (hookshot) The graphics module: x19 at its frame-end clock read (main+0x346c770 is after the bl), for nn_vi.c's
        real-time step */
-    if (c->x[30] == 0x8348c770) hos_gfx_module = c->x[19];
+    if (hos_game_is_oot() && c->x[30] == 0x8348c770) hos_gfx_module = c->x[19];
     RET(hos_ticks());
 }
 HLE(_ZN2nn2os22GetSystemTickFrequencyEv) { RET(HOS_TICK_HZ); }

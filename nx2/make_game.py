@@ -25,7 +25,13 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u"]   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
-BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
+# Splatoon Raiders (Nintendo Switch 2), program 0400380020056000. BUILD_ID is the update title (v65536), which is what
+# nx2/nup.py extracts by default (it picks the newest title). The base title (v0) is the same game one version back and
+# lifts the same way, so it is accepted too: a user who points the builder at base/ instead of updates/ is not refused.
+BUILD_ID = "663c2e08"   # (the version the patches, the hot list and the profile were made from)
+BUILD_IDS = (BUILD_ID, "abb30e2f")   # (update v65536, base v0)
+GAME_NAME = "Splatoon Raiders"
+PROGRAM_ID = "0400380020056000"
 BESIDE = ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
@@ -101,7 +107,7 @@ def check_modules(exefs):
 
 def check_supported_build(exefs):
     bid = build_id(os.path.join(exefs, "main"))
-    if not bid.startswith(BUILD_ID):
+    if not bid.startswith(BUILD_IDS):
         fail("This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))
 
 
@@ -132,7 +138,7 @@ def check(a, work):
         shutil.rmtree(probe, ignore_errors=True)
     else:
         bid = build_id(os.path.join(a.exefs, "main"))
-    if bid.startswith(BUILD_ID):
+    if bid.startswith(BUILD_IDS):
         say("check", "ok", "This is the version Hookshot supports (build %s)." % bid[:8])
     else:
         say("check", "bad", "This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))

@@ -157,6 +157,18 @@ def cache_put(obj, key):
 FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in cpm_dirs()] if os.path.isdir(d)
                for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))), None)
 
+# (raiders) A plain FFmpeg dev build works too, without a CPM cache: FFMPEG_DIR points at a folder holding include/ and
+# lib/ (gyan.dev's "full_build-shared" layout), or work/deps/ffmpeg-* is used when it is there. host/nn_video.c is the
+# only file that needs it; without it the build still links, minus the video decoders.
+if FFMPEG is None:
+    _cand = [os.environ.get("FFMPEG_DIR")] + sorted(
+        os.path.join(kit.WORK, "deps", n) for n in (os.listdir(os.path.join(kit.WORK, "deps"))
+                                                    if os.path.isdir(os.path.join(kit.WORK, "deps")) else [])
+        if n.startswith("ffmpeg"))
+    FFMPEG = next((d for d in _cand if d and os.path.isfile(os.path.join(d, "include", "libavcodec", "avcodec.h"))
+                   and os.path.isdir(os.path.join(d, "lib"))), None)
+
+
 
 # the soft write watch (rt/a64.h A64_MARK): lifted stores mark their 4 KB page, and the renderer reads the marks
 # instead of Windows' write watch (GetWriteWatch over the 6 GB MKW's GPU sees took ~20 ms a scan, in one thread or

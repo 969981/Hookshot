@@ -47,6 +47,9 @@ static void no_power_throttling(void) {
 
 int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
 
+
+int hos_game_is_oot(void) { return !strcmp(hos_main_build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"); }
+
 /* gen/hos_image.c (build.py lift) */
 extern const uint64_t hos_main_stack_size;
 extern const int hos_main_priority, hos_main_core, hos_module_count;
