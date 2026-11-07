@@ -282,7 +282,8 @@ def main():
     p.add_argument("--work", default=os.path.join(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or
                                                   (os.path.expanduser(os.path.join("~", ".local", "share")) if os.name != "nt" else ROOT),
                                                   "HookshotBuilder"))
-    p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
+    # (HOOKSHOT_JOBS: the launcher's builds too, which pass no --jobs: fewer for a PC short of memory, each job a compiler's)
+    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or max(1, (os.cpu_count() or 2) // 2))
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--target", choices=("windows", "linux"), default=os.environ.get("RX_TARGET", "windows").lower(),
