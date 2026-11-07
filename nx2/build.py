@@ -71,9 +71,11 @@ GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
 # in the Eglantine clone's package cache
 FFMPEG = None   # (found in the CPM caches below, once cpm_dirs is defined)
-# the renderer's WebGPU: a wgpu-native release (include/, lib/); TOTKPort's build of it by default
-WGPU = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "Desktop", "TOTKPort", "third_party",
-                                                  "wgpu-native"))
+# the renderer's WebGPU: a wgpu-native release (include/, lib/): the repo vendors one under third_party (the NOTICE
+# names it), TOTKPort's build by default, WGPU_NATIVE overrides
+_wgpu_c = [os.environ.get("WGPU_NATIVE"), os.path.join(kit.ROOT, "third_party", "wgpu-native"),
+           os.path.join(os.path.expanduser("~"), "Desktop", "TOTKPort", "third_party", "wgpu-native")]
+WGPU = next((d for d in _wgpu_c if d and os.path.isfile(os.path.join(d, "include", "webgpu", "webgpu.h"))), _wgpu_c[0])
 
 
 def gpu_sources():
