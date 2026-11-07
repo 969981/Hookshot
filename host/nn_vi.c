@@ -7,21 +7,47 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hos_rate_policy.h"
 
 void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
 void hos_system_event_signal(uint64_t key);
+int hos_video_active_at(int64_t now);   /* nn_video.c: a real picture acquired recently */
 
 static uint64_t display, layer;
 static uint64_t vsync_events[8];
 static volatile LONG nvsync;
 static HANDLE vsync_thread;
+static volatile LONG native_rate_hz = HOS_RATE_DEFAULT_HZ;
+static volatile LONG native_rate_epoch_reset;
+static volatile LONG main_rate_committed_state;
+
+/* The packed sample is nonzero only after a committed step in active high-rate mode. */
+uint32_t hos_vi_clock_input(uint32_t original) {
+    const uint32_t state = (uint32_t)InterlockedCompareExchange(&main_rate_committed_state, 0, 0);
+    return hos_rate_clock_input(original, state);
+}
+
+static int native_rate(void) {
+    return (int)InterlockedCompareExchange(&native_rate_hz, 0, 0);
+}
+
+static void native_rate_set(int hz) {
+    const LONG old = InterlockedExchange(&native_rate_hz, (LONG)hz);
+    if (old != hz) hos_log("vi: experimental native rate %d Hz", hz);
+}
 
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
-    const int64_t period = 1000000000LL / 60;
-    int64_t next = hos_now_ns() + period;
+    int last_hz = 0;
+    int64_t next = 0;
     for (;;) {
+        const int hz = native_rate();
+        const int64_t period = hos_rate_period_ns(hz, 1);
         const int64_t now = hos_now_ns();
+        if (hz != last_hz) {
+            next = now + period;
+            last_hz = hz;
+        }
         if (next > now) hos_sleep_ns(next - now);
         next += period;
         if (next < hos_now_ns()) next = hos_now_ns() + period;   /* (fell behind: no burst of vsyncs) */
@@ -178,6 +204,22 @@ volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fi
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
+    static int target = -1, log_on = -1;
+    static int effective = HOS_RATE_DEFAULT_HZ;
+    static int no_pacing = -1;
+    static int warned_per_frame, warned_no_pacing;
+    static int last_written_nominal;
+    static HosRateLimiter limiter;
+    static HosRateStepper stepper;
+    if (target < 0) {
+        const int parsed = hos_rate_parse_target(getenv("HOS_FPS_TARGET"), &target);
+        if (parsed == HOS_RATE_INVALID) {
+            target = 0;
+            hos_log("vi: invalid HOS_FPS_TARGET; keeping the default 60 Hz policy");
+        }
+        log_on = getenv("HOS_FPS_LOG") != NULL;
+        no_pacing = getenv("HOS_NO_PACING") != NULL;
+    }
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
        unset and the 3D came out black. The dynamic path runs a few frames first, as when the menu turns it on in game) */
     hos_fixed_resolution = !rx_option(2, 1) && hos_dynres_runs >= 30;
@@ -196,49 +238,69 @@ static void realtime_step(int64_t now) {
         }
     }
     const uint64_t mod = hos_gfx_module;
-    if (!mod) return;
+    if (!mod) {
+        InterlockedExchange(&main_rate_committed_state, 0);
+        return;
+    }
+    const int realtime = rx_option(0, 1) != 0;
+    int requested_hz = target;
+    if (requested_hz > HOS_RATE_MAX_HZ) requested_hz = 0;   /* (the parser also rejects this) */
+    const int video_active = requested_hz > HOS_RATE_DEFAULT_HZ && hos_video_active_at(now);
+    const int rate = hos_rate_effective_hz(requested_hz, realtime, no_pacing, video_active);
+    if (rate != effective || !realtime || rate <= HOS_RATE_DEFAULT_HZ)
+        InterlockedExchange(&main_rate_committed_state, 0);
+    if (requested_hz > HOS_RATE_DEFAULT_HZ && no_pacing) {
+        if (!warned_no_pacing++)
+            hos_log("vi: HOS_FPS_TARGET above 60 is inactive with HOS_NO_PACING; restore pacing for the experiment");
+    } else if (requested_hz > HOS_RATE_DEFAULT_HZ && !realtime && !warned_per_frame++) {
+        hos_log("vi: HOS_FPS_TARGET above 60 requires Real time game speed; Per frame stays at 60");
+    }
+    if (rate != effective) {
+        int *slot = (int *)GP(mod + 0x2c8);
+        *slot = hos_rate_restore_nominal(*slot, last_written_nominal);
+        if (last_written_nominal > HOS_RATE_DEFAULT_HZ && *slot == HOS_RATE_DEFAULT_HZ)
+            last_written_nominal = 0;
+        effective = rate;
+        native_rate_set(rate);   /* (vsync thread, acquire deadlines and timestep share this published rate) */
+        InterlockedExchange(&native_rate_epoch_reset, 1);
+        hos_rate_stepper_reset(&stepper, now, realtime, rate);
+    }
     {   /* (hookshot) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
            variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
            HOS_FPS_LOG=1: what the game asks for, every 300 presents */
-        static int target = -1, log_on = -1;
         static long long n;
-        if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = getenv("HOS_FPS_LOG") != NULL;
         int *limit = (int *)GP(mod + 0xfc);
+        *limit = hos_rate_limiter_apply(&limiter, *limit, target, rate);
         if (log_on && !(n++ % 300))
             hos_log("vi: frame limiter %d, vrr %d %d, nominal %d, controller +0x58.. %d %d %d %d", *limit, *(uint8_t *)GP(mod + 0x231),
                     *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58), *(int *)GP(mod + 0x270 + 0x28),
                     *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30));
-        if (target && *limit > 0 && *limit < target) *limit = target;
     }
-    if (!rx_option(0, 1)) {   /* (the Insert menu: per frame) */
+    if (!realtime) {   /* (the Insert menu: Per frame remains at the default 60-Hz step) */
         int *slot = (int *)GP(mod + 0x2c8);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
+        last_written_nominal = 0;
+        hos_rate_stepper_update(&stepper, now, 0, rate, NULL, NULL);
         return;
     }
-    static int64_t last;
-    static double samples[5], carry;
-    static unsigned count, next;
     static long long steps;
-    const double dt = (now - last) / 1e9;
-    last = now;
-    if (dt <= 0 || dt > 0.25) { count = next = 0; carry = 0; return; }   /* (a load: the average starts again) */
-    samples[next++ % 5] = dt;
-    if (count < 5) count++;
-    double sum = 0;
-    for (unsigned i = 0; i < count; i++) sum += samples[i];
-    double ratio = sum / count * 60.0 + carry;
-    ratio = ratio < 1.0 ? 1.0 : ratio > 4.0 ? 4.0 : ratio;
-    int fps = (int)(60.0 / ratio + 0.5);
-    fps = fps < 15 ? 15 : fps > 60 ? 60 : fps;
     int *slot = (int *)GP(mod + 0x2c8);
-    if (*slot < 15 || *slot > 60) {
+    int fps = 0;
+    double ratio = 0.0;
+    if (!hos_rate_stepper_update(&stepper, now, 1, rate, &fps, &ratio)) {
+        InterlockedExchange(&main_rate_committed_state, 0);
+        return;
+    }
+    if (*slot < 15 || *slot > rate) {
+        InterlockedExchange(&main_rate_committed_state, 0);
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
         return;
     }
-    carry = ratio - 60.0 / fps;
-    carry = carry > 0.5 ? 0.5 : carry < -0.5 ? -0.5 : carry;
     *slot = fps;
+    last_written_nominal = fps;
+    hos_rate_stepper_commit(&stepper, fps, ratio);
+    InterlockedExchange(&main_rate_committed_state, (LONG)hos_rate_committed_nominal_state(rate, fps));
     if (!(steps++ % 3000)) hos_log("vi: real-time step on: ratio %.3f, game's frame rate %d", ratio, fps);
 }
 void hos_vi_native_presented(void) {
@@ -249,10 +311,18 @@ void hos_vi_native_presented(void) {
         if (ms < 0) ms = getenv("HOS_FRAME_SLEEP_MS") ? atoi(getenv("HOS_FRAME_SLEEP_MS")) : 0;
         if (ms) hos_sleep_ns(ms * 1000000LL);
     }
-    const int64_t period = 1000000000LL / 60 * present_interval, now = hos_now_ns();
+    const int64_t now = hos_now_ns();
     realtime_step(now);
+    const int hz = native_rate();
+    const int64_t period = hos_rate_period_ns(hz, present_interval);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
-    next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
+    static int last_rate = HOS_RATE_DEFAULT_HZ;
+    if (hz != last_rate) {
+        next_frame_at = now + period;
+        last_rate = hz;
+    } else {
+        next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
+    }
     {   /* (the display queue: this frame is shown one interval after the last, or now when the display waits) */
         const int64_t n = shown_count, last = n ? shown_at[(n - 1) & 15] : 0;
         shown_at[n & 15] = last + period > now ? last + period : now;
@@ -272,16 +342,31 @@ void hos_vi_native_presented(void) {
     /* (present-to-present intervals of the window, in buckets: which frames miss their vsync) */
     static int64_t last_present;
     static int hist[6];
+    if (InterlockedExchange(&native_rate_epoch_reset, 0)) {
+        window_start = now;
+        frames_in_window = 0;
+        last_present = 0;
+        memset(hist, 0, sizeof hist);
+    }
     if (last_present) {
         const int64_t d = now - last_present;
-        hist[d < 15500000 ? 0 : d < 17800000 ? 1 : d < 22000000 ? 2 : d < 30000000 ? 3 : d < 40000000 ? 4 : 5]++;
+        if (hz == HOS_RATE_DEFAULT_HZ) {
+            hist[d < 15500000 ? 0 : d < 17800000 ? 1 : d < 22000000 ? 2 : d < 30000000 ? 3 : d < 40000000 ? 4 : 5]++;
+        } else {
+            hist[d < period * 93 / 100 ? 0 : d < period * 107 / 100 ? 1 : d < period * 132 / 100 ? 2 :
+                 d < period * 180 / 100 ? 3 : d < period * 240 / 100 ? 4 : 5]++;
+        }
     }
     last_present = now;
     if (now - window_start >= 5000000000LL) {
-        hos_log("vi: %lld frames presented (%.1f fps over the last %.1f s, interval %d)", (long long)n,
-                frames_in_window * 1e9 / (double)(now - window_start), (now - window_start) / 1e9, present_interval);
-        hos_log("vi: present intervals: <15.5 ms %d, 15.5-17.8 %d, 17.8-22 %d, 22-30 %d, 30-40 %d, over 40 %d", hist[0],
-                hist[1], hist[2], hist[3], hist[4], hist[5]);
+        hos_log("vi: %lld frames presented (%.1f fps over the last %.1f s, interval %d, target %d Hz)", (long long)n,
+                frames_in_window * 1e9 / (double)(now - window_start), (now - window_start) / 1e9, present_interval, hz);
+        if (hz == HOS_RATE_DEFAULT_HZ)
+            hos_log("vi: present intervals: <15.5 ms %d, 15.5-17.8 %d, 17.8-22 %d, 22-30 %d, 30-40 %d, over 40 %d", hist[0],
+                    hist[1], hist[2], hist[3], hist[4], hist[5]);
+        else
+            hos_log("vi: present intervals vs %.2f ms target: <0.93x %d, 0.93-1.07x %d, 1.07-1.32x %d, 1.32-1.80x %d, "
+                    "1.80-2.40x %d, over 2.40x %d", (double)period / 1e6, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
         memset(hist, 0, sizeof hist);
         window_start = now, frames_in_window = 0;
         const uint64_t pacer = hos_mkw_pacer, freq = pacer ? G64(0x837de940) : 0;   /* (MKW only: nvn_native.c) */

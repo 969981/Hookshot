@@ -16,6 +16,7 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "hos_rate_policy.h"
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 
@@ -25,6 +26,24 @@
 #define PREF_MAGIC 0x46455250u     /* 'PREF' */
 #define MAX_SLOTS 16
 #define MAX_QUEUE 8
+
+/* Picture activity, rather than decoder lifetime: empty/EOS acquisitions must
+   not keep the experimental native-rate path at 60 after playback ends. */
+static _Alignas(8) volatile LONG64 video_picture_ns;
+
+int hos_video_active_at(int64_t now) {
+    return hos_rate_recent_video_picture(now, InterlockedCompareExchange64(&video_picture_ns, 0, 0));
+}
+
+static void video_picture_acquired(void) {
+    const LONG64 now = hos_now_ns();
+    LONG64 previous = InterlockedCompareExchange64(&video_picture_ns, 0, 0);
+    while (now > previous) {
+        const LONG64 observed = InterlockedCompareExchange64(&video_picture_ns, now, previous);
+        if (observed == previous) break;
+        previous = observed;
+    }
+}
 
 static int video_log(void) {   /* HOS_VIDEO_LOG=1: submissions and acquisitions */
     static int on = -1;
@@ -466,6 +485,7 @@ static void dec_acquire(Ctx *c) {
     d->slot_pts[slot] = p->pts;
     d->slot_last[slot] = p->last;
     d->busy[slot] = 1;
+    video_picture_acquired();
     {   /* (hookshot) HOS_VIDEO_LOG: the picture's time against this decoder's movie clock, to see it fall behind the sound */
         if (video_log() && d->acquires % 60 == 0) {
             const int64_t now = hos_now_ns();

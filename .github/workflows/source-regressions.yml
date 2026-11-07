@@ -6,6 +6,15 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - nx2/build.py
+      - nx2/lift.py
+      - nx2/oot_patches.py
+      - host/nn_vi.c
+      - host/nn_video.c
+      - host/hos_rate_policy.h
+      - host/tests/rate_policy_test.c
+      - host/tests/clock_input_test.c
+      - tests/test_native_clock_patch.py
       - nx2/unpack.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
@@ -42,6 +51,15 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - nx2/build.py
+      - nx2/lift.py
+      - nx2/oot_patches.py
+      - host/nn_vi.c
+      - host/nn_video.c
+      - host/hos_rate_policy.h
+      - host/tests/rate_policy_test.c
+      - host/tests/clock_input_test.c
+      - tests/test_native_clock_patch.py
       - nx2/unpack.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
@@ -112,6 +130,9 @@ jobs:
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check native clock hook and C rate policies
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_native_clock_patch.py --cc gcc
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py

@@ -197,6 +197,11 @@ beside the game.
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
 
+The optional native-rate experiment uses `HOS_FPS_TARGET` with Real time game speed. Its default remains 60 Hz;
+validation and current limits are described in [Native frame-rate experiment](docs/native-fps.md).
+A Windows smoke check at a 70 target reached 66.9 native FPS; 75 failed its stability guard. Whole-game
+performance and exact physics remain unverified.
+
 ### Controls
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move

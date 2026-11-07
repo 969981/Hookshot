@@ -326,6 +326,9 @@ def main():
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
+    if a.standalone and not os.environ.get("RX_VK_ONLY"):
+        import oot_patches
+        oot_patches.check_native_clock(gen)
     obj_dir = os.path.join(out, "obj")
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
