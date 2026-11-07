@@ -61,6 +61,16 @@ def fail(text):
     sys.exit(1)
 
 
+def reported(line):
+    """The sentence a builder shows. @@check is '@@check <ok|bad> <text>'; @@error is '@@error <text>'. None otherwise."""
+    if line.startswith("@@error "):
+        return line[len("@@error "):]
+    if line.startswith("@@check "):
+        parts = line.split(" ", 2)
+        return parts[2] if len(parts) == 3 else ""
+    return None
+
+
 def run(cmd, env=None, on_line=None):
     e = dict(os.environ, PYTHONIOENCODING="utf-8")
     e.update(env or {})

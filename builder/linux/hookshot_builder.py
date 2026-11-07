@@ -179,8 +179,12 @@ class Builder(tk.Tk):
         def run():
             r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--check"] + args,
                                capture_output=True, text=True, cwd=ROOT)
-            said = [l[2:] for l in r.stdout.splitlines() if l.startswith("@@check") or l.startswith("@@error")]
-            text = said[-1].split(" ", 2)[-1] if said else "The version could not be read."
+            said = []
+            for l in r.stdout.splitlines():
+                t = make_game.reported(l)
+                if t is not None:
+                    said.append(t)
+            text = said[-1] if said else "The version could not be read."
             self.lines.put(("check", text))
         threading.Thread(target=run, daemon=True).start()
 
