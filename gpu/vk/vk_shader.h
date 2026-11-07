@@ -25,6 +25,9 @@ struct Stage {
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
 };
 
+/// Read driver banks, shader constants, or submitted uniform-buffer data for this stage.
+uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);
+
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
 /// recompiler) run over the stage's constant banks and storage buffers as the draw has them
 uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program);
