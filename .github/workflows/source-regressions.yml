@@ -10,6 +10,8 @@ on:
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
+      - gpu/vk/vk_memory.cpp
+      - tests/test_submitted_page.py
       - tests/test_import_hold.py
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
@@ -30,6 +32,8 @@ on:
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
+      - gpu/vk/vk_memory.cpp
+      - tests/test_submitted_page.py
       - tests/test_import_hold.py
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
@@ -74,6 +78,9 @@ jobs:
         run: python -I -B tests/test_make_game_cache.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
+      - name: Check a captured page is read once
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_submitted_page.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++

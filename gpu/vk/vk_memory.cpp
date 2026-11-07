@@ -296,9 +296,15 @@ std::vector<uint32_t> region_gen(kPages / kRegionPages);
 // (and the generation every page of a region was written at, at least: a large stamp (a storage buffer a dispatch may
 // write, hundreds of MB) marks whole regions, not 512 pages each; it took dispatches 8-150 ms)
 std::vector<uint32_t> region_full(kPages / kRegionPages);
+inline uint32_t load_u32(uint32_t& x) {
+    return std::atomic_ref<uint32_t>(x).load(std::memory_order_acquire);
+}
+inline void store_u32(uint32_t& x, uint32_t v) {
+    std::atomic_ref<uint32_t>(x).store(v, std::memory_order_release);
+}
 inline uint32_t page_gen(uint64_t p) {
     const auto& c = gen_chunks[p / kChunkPages];
-    return std::max(c ? c[p % kChunkPages] : 0u, region_full[p / kRegionPages]);
+    return std::max(c ? load_u32(c[p % kChunkPages]) : 0u, load_u32(region_full[p / kRegionPages]));
 }
 uint32_t gen_now = 1;
 uint64_t pages_collected = 0;
@@ -310,11 +316,12 @@ void stamp_page(uint64_t p, uint32_t g) {
         c.reset(new uint32_t[kChunkPages]);
         std::fill(c.get(), c.get() + kChunkPages, 0u);
     }
-    c[p % kChunkPages] = g;
+    store_u32(c[p % kChunkPages], g);
     region_gen[p / kRegionPages] = g;
 }
 } // namespace
 
+void cap_view_bump();
 bool capture_owns(uint64_t guest);
 void memory_collect_written() {
     uint32_t* pages = nullptr;
@@ -331,6 +338,7 @@ void memory_collect_written() {
             stamp_page(pages[i], g);
         }
         pages_collected += (uint64_t)n;
+        cap_view_bump();
     }
     if (pages) host->free_pages(pages);
 }
@@ -342,7 +350,7 @@ bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen) {
     const uint64_t p0 = guest >> kPageShift, p1 = std::min((guest + size - 1) >> kPageShift, kPages - 1);
     for (uint64_t r = p0 / kRegionPages; r <= p1 / kRegionPages; r++) {
         if (region_gen[r] <= gen) continue;
-        if (region_full[r] > gen) return true;
+        if (load_u32(region_full[r]) > gen) return true;
         const uint64_t a = std::max(p0, r * kRegionPages), b = std::min(p1, r * kRegionPages + kRegionPages - 1);
         for (uint64_t p = a; p <= b; p++)
             if (page_gen(p) > gen) return true;
@@ -409,12 +417,14 @@ void memory_stamp(uint64_t guest, uint64_t size) {
     const uint64_t p0 = guest >> kPageShift, p1 = std::min((guest + size - 1) >> kPageShift, kPages - 1);
     for (uint64_t p = p0; p <= p1;) {
         if (p % kRegionPages == 0 && p + kRegionPages - 1 <= p1) {   // (a whole region)
-            region_full[p / kRegionPages] = region_gen[p / kRegionPages] = g;
+            store_u32(region_full[p / kRegionPages], g);
+            region_gen[p / kRegionPages] = g;
             p += kRegionPages;
             continue;
         }
         stamp_page(p++, g);
     }
+    cap_view_bump();   // (a replay read's cached page is this generation's answer, not the one from before the write)
 }
 uint64_t memory_pages_collected() {
     return pages_collected;
@@ -571,6 +581,8 @@ bool capture_on() {
     return on;
 }
 std::atomic<bool> captures_seen{false};
+std::atomic<uint64_t> cap_view_gen{1};   // (bumped when a capture is published or a page is stamped: cached reads go stale)
+void cap_view_bump() { cap_view_gen.fetch_add(1, std::memory_order_release); }
 double st_tk_all, st_tk_stamp, st_tk_copy;   // (memory_take_capture's parts, ms)   // (a capture was ever made: the replay thread's; without it nothing owns pages)
 
 // ---- texture storage in the capture ----
@@ -683,11 +695,46 @@ void memory_note_texture_upload(uint64_t guest, uint64_t size) {
     tex_spans_changed = true;
 }
 
+/// A replay read of one page can reuse what the last read of that page decided, while the page's write generation and
+/// the capture table are the ones that decision was made from.
+bool submitted_page_reuse(uint64_t page, uint32_t page_gen, uint64_t view, uint64_t cached_page, uint32_t cached_gen,
+                          uint64_t cached_view) {
+    return cached_view != 0 && page == cached_page && page_gen == cached_gen && view == cached_view;
+}
+struct SubmittedPage {
+    uint64_t page = ~0ull;
+    uint32_t pgen = 0;
+    uint64_t view = 0;
+    bool overlay = false;   // (bytes is the capture's copy of the page; otherwise guest memory stands)
+    uint8_t bytes[4096]{};
+};
+thread_local SubmittedPage submitted_page;
+
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
+    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
+    // the same page: the answer is kept until a stamp or a new capture)
+    if (n && capture_on() && captures_seen.load(std::memory_order_relaxed)) {
+        const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
+        if (guest) {
+            const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
+            const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
+            if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page,
+                                                       submitted_page.pgen, submitted_page.view) &&
+                submitted_page.overlay) {
+                std::memcpy(dst, submitted_page.bytes + (guest & 4095), (size_t)n);
+                return true;
+            }
+        }
+    }
     if (!host->gpu_read(gpu, dst, n)) return false;
     if (!n || !capture_on() || !captures_seen.load(std::memory_order_relaxed)) return true;
     const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
     if (!guest) return true;
+    const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
+    const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
+    if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page, submitted_page.pgen,
+                                               submitted_page.view))
+        return true;
     static std::atomic<int64_t> reads{0}, pages_from{0};
     int64_t from = 0;
     {
@@ -700,6 +747,20 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
             const uint64_t a = std::max(page << kPageShift, guest), z = std::min((page + 1) << kPageShift, guest + n);
             std::memcpy((uint8_t*)dst + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
             from++;
+        }
+        if (page0 == page1) {
+            submitted_page.page = page0;
+            submitted_page.pgen = page_gen(page0);
+            submitted_page.view = cap_view_gen.load(std::memory_order_relaxed);
+            submitted_page.overlay = false;
+            const CapEntry e = cap_entry(page0);
+            if (e.gen && e.gen == submitted_page.pgen) {
+                auto b = cap_bufs.find(e.gen);
+                if (b != cap_bufs.end() && b->second.map) {
+                    std::memcpy(submitted_page.bytes, (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096, 4096);
+                    submitted_page.overlay = true;
+                }
+            }
         }
     }
     pages_from += from;
@@ -1022,6 +1083,7 @@ bool memory_take_capture(uint64_t value, uint64_t completed) {
         cur_cap_gen = g;
         for (size_t i = 0; i < c->copied.size(); i++) cap_entry_set(c->copied[i], CapEntry{g, c->slots[i]});
     }
+    cap_view_bump();
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     {
         std::lock_guard lk(cap_mu);
