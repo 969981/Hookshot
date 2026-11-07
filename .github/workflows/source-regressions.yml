@@ -7,6 +7,8 @@ on:
       - nx2/nup.py
       - nx2/make_game.py
       - nx2/unpack.py
+      - nx2/oot_patches.py
+      - tests/test_resolution_scale.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
@@ -43,6 +45,8 @@ on:
       - nx2/nup.py
       - nx2/make_game.py
       - nx2/unpack.py
+      - nx2/oot_patches.py
+      - tests/test_resolution_scale.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_failure_reason.py
@@ -153,3 +157,6 @@ jobs:
       - name: Check import windows
         if: runner.os == 'Linux'
         run: python -I -B nx2/test_import_windows.py --cxx g++
+      - name: Check fixed-resolution scene invalidation
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_resolution_scale.py

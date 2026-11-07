@@ -197,6 +197,14 @@ beside the game.
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
 
+An experimental fixed-resolution correction is available after rebuilding the game executable:
+set `HOS_FIX_RES=1` in `hookshot_env.txt` beside it, then restart. It makes the scene refresh a stale
+dynamic scale when a fixed scale is requested. In one tested setup, 100% increased the main 3D
+targets from 1536x864 to 2048x1152; this does not enable native 1440p or 4K rendering.
+Auto, 75% and 100% were reported usable, but 67% and 50% produced image noise. Whether that noise
+is a regression is still unresolved. The correction is off by default; remove the variable or set
+it to `0` and restart to restore the previous behavior.
+
 ### Controls
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
