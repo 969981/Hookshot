@@ -65,6 +65,8 @@ int main() {
     CHECK(!pool_lookup(base,UINT64_MAX));
     CHECK(!pool_lookup(base,0));
     CHECK(!pool_of(base,UINT64_MAX) && !pool_of(base,0) && imports==before);
+    guest_pools.push_back({UINT64_MAX-1024,UINT64_MAX});
+    if(chunk) CHECK(!pool_lookup(UINT64_MAX-16,8) && imports==before);
     Pool rejected;CHECK(!import_pool(base,base,rejected) && !import_pool(base+1,base,rejected));
     CHECK(!import_pool(base,base+max_import_size+1,rejected));
     std::printf("PASS: request windows, reuse, overlap retirement, range/overflow guards, import limits (chunk %llu)\\n",(unsigned long long)chunk);

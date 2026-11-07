@@ -1086,6 +1086,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         return c->second.lo <= range.lo && c->second.hi >= range.hi ? c : imported.end();
     };
     auto imp = chunk ? covering() : imported.find(range.lo);
+    if (chunk && range.hi > UINT64_MAX - (chunk - 1)) return nullptr;
     const uint64_t want_lo = chunk ? range.lo / chunk * chunk : range.lo;
     const uint64_t want_hi = chunk ? (range.hi + chunk - 1) / chunk * chunk : range.hi;
     if (chunk && imp == imported.end()) imp = imported.find(want_lo);   // (a smaller one there: made again, larger)
