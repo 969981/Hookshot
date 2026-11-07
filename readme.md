@@ -77,6 +77,9 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 
 A build takes about 40 minutes, and you can use your PC in the meantime.
 
+Saves go in `Documents\My Games\Hookshot`, so a new or rebuilt game folder keeps them. A `user` folder beside the game
+from an earlier build is moved there once.
+
 ### On Linux
 
 1. Download `Hookshot-<version>-x86_64.AppImage` from the Releases page (or the Linux AppImage workflow's artifact),
