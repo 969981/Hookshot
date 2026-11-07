@@ -74,6 +74,8 @@ int main() {
         VkComponentMapping cm{};
         auto sampled=make_view(&x,VK_IMAGE_VIEW_TYPE_2D_ARRAY,c.compressed,VK_IMAGE_ASPECT_COLOR_BIT,0,3,0,2,cm,VK_IMAGE_USAGE_SAMPLED_BIT);CHECK(sampled);
         auto raw=make_view(&x,VK_IMAGE_VIEW_TYPE_2D,c.raw,VK_IMAGE_ASPECT_COLOR_BIT,1,1,1,1,cm,VK_IMAGE_USAGE_STORAGE_BIT);CHECK(bool(raw)==storage);storage_views+=bool(raw);
+        CHECK(!make_view(&x,VK_IMAGE_VIEW_TYPE_2D,c.raw,VK_IMAGE_ASPECT_COLOR_BIT,0,2,0,1,cm,VK_IMAGE_USAGE_STORAGE_BIT));
+        CHECK(!make_view(&x,VK_IMAGE_VIEW_TYPE_2D_ARRAY,c.raw,VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,2,cm,VK_IMAGE_USAGE_STORAGE_BIT));
         CHECK(!make_view(&x,VK_IMAGE_VIEW_TYPE_2D,c.raw,VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1,cm,0));
         CHECK(!make_view(&x,VK_IMAGE_VIEW_TYPE_2D,c.raw,VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1,cm,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT));
         if(raw)vkDestroyImageView(dev.device,raw,nullptr);vkDestroyImageView(dev.device,sampled,nullptr);vkDestroyImage(dev.device,x.image,nullptr);vkFreeMemory(dev.device,mem,nullptr);

@@ -285,6 +285,7 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
                       uint32_t nlevels, uint32_t layer0, uint32_t nlayers, const VkComponentMapping& cm,
                       VkImageUsageFlags usage) {
     if (!usage || (usage & tex->usage) != usage) return VK_NULL_HANDLE;
+    if (is_bc(tex->format) && !is_bc(f) && (nlevels != 1 || nlayers != 1)) return VK_NULL_HANDLE;
     VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
     uci.usage = usage & tex->usage;
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
