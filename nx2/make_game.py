@@ -325,6 +325,12 @@ def link_or_copy(src, dst):
             say("progress", "%.3f" % (i / max(1, len(files))))
 
 
+def shader_census_cmd(romfs, out):
+    """The shader list, under the same UTF-8 mode as the other steps. -I alone follows the console's code page, and an
+    archive name that page cannot print stopped this step: the game then compiled its shaders as it played."""
+    return PY + [os.path.join(HERE, "shader_census.py"), romfs, "--out", out]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -445,8 +451,7 @@ def main():
     shutil.copy2(os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin"))
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if subprocess.call([sys.executable, "-I", os.path.join(HERE, "shader_census.py"), romfs, "--out", os.path.join(out, "hookshot_shaders.bin")],
-                       stdout=sys.stderr):
+    if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
