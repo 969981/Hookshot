@@ -433,7 +433,7 @@ def main():
         open(vrsp, "w").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
         t = time.time()
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-shared", "-o", vdll, "-Wl,/map:" + vdll[:-4] + ".map", "@" + vrsp, "-luser32", "-lgdi32"],
+                           ["-shared", "-o", vdll, "-Wl,/map:" + vdll[:-4] + ".map", "@" + vrsp, "-luser32", "-lgdi32", "-lcabinet"],
                            capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

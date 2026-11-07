@@ -44,6 +44,8 @@
 #include "vk_internal.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
+#include <compressapi.h>   // (hookshot: the program cache's records, cabinet.lib)
+#pragma comment(lib, "cabinet.lib")
 
 namespace mkwvk {
 namespace {
@@ -739,7 +741,11 @@ void oot_visual(Shader::IR::Program& program, uint64_t key) {
 // the long stutters when walking somewhere (replay workers in jobs_wait for up to 150 ms). The pipelines themselves were
 // already kept (mkw_vk_pipelines.bin). Written as made; good for this translator (HOOKSHOT_SHADER_STAMP) and these switches only
 // (a file made by another starts again). RX_VK_NO_PROGRAM_CACHE=1: off ----
-struct DiskRecord { int64_t at; size_t size; uint32_t kind; };
+// (hookshot) a record's size field has kZBit set when its payload is compressed: [kind u32][raw size u32][XPRESS-Huffman bytes of
+// the whole record, kind included]. Windows' own Compression API, so no library: ~3x on these records (Shader::Info is mostly zeros),
+// which with every program of the game seeded took the file from 3.6 GB to about a third. Records without the bit (an older file) read as before
+constexpr uint64_t kZBit = 1ull << 63;
+struct DiskRecord { int64_t at; size_t size; uint32_t kind; bool z = false; };
 std::mutex disk_mu;
 // (read as wanted: with every program of the game in it the file is gigabytes, and it was read into memory whole)
 FILE* disk_in = nullptr;
@@ -790,9 +796,10 @@ void disk_init() {
                     uint32_t kind = 0;
                     _fseeki64(f, good, SEEK_SET);
                     if (fread(rec, 8, 2, f) != 2 || fread(&kind, 4, 1, f) != 1) break;
-                    if (good + 16 + (int64_t)rec[1] > whole) break;   // (the run stopped while writing it)
-                    disk_records[rec[0]].push_back({good + 16, (size_t)rec[1], kind});
-                    good += 16 + (int64_t)rec[1];
+                    const uint64_t size = rec[1] & ~kZBit;
+                    if (good + 16 + (int64_t)size > whole) break;   // (the run stopped while writing it)
+                    disk_records[rec[0]].push_back({good + 16, (size_t)size, kind, (rec[1] & kZBit) != 0});
+                    good += 16 + (int64_t)size;
                 }
             }
             fclose(f);
@@ -884,6 +891,43 @@ void get_info(Reader& r, Shader::Info& i) {
     for (auto& h : i.handle_programs) r.list(h);
 }
 
+/// raw (kind first) -> z as a compressed payload; false: left as it is (it does not shrink, or the API is not there)
+bool z_pack(const std::vector<uint8_t>& raw, std::vector<uint8_t>& z) {
+    if (raw.size() < 8 || raw.size() > 0xffffffffu || getenv("RX_VK_PROGRAM_CACHE_RAW")) return false;
+    COMPRESSOR_HANDLE h = nullptr;
+    if (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &h)) return false;
+    SIZE_T need = 0;
+    Compress(h, raw.data(), raw.size(), nullptr, 0, &need);   // (fails, with the size a buffer needs)
+    bool ok = false;
+    if (need) {
+        z.assign(8 + need, 0);
+        SIZE_T got = 0;
+        if (Compress(h, raw.data(), raw.size(), z.data() + 8, need, &got) && 8 + got < raw.size()) {
+            std::memcpy(z.data(), raw.data(), 4);   // (the kind, where the file's list reads it)
+            const uint32_t n = (uint32_t)raw.size();
+            std::memcpy(z.data() + 4, &n, 4);
+            z.resize(8 + got);
+            ok = true;
+        }
+    }
+    CloseCompressor(h);
+    return ok;
+}
+/// a compressed payload -> the record it was, in place
+bool z_unpack(std::vector<uint8_t>& data) {
+    if (data.size() < 8) return false;
+    uint32_t n = 0;
+    std::memcpy(&n, data.data() + 4, 4);
+    DECOMPRESSOR_HANDLE h = nullptr;
+    if (!CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &h)) return false;
+    std::vector<uint8_t> raw(n);
+    SIZE_T got = 0;
+    const bool ok = Decompress(h, data.data() + 8, data.size() - 8, raw.data(), n, &got) && got == n;
+    CloseDecompressor(h);
+    if (ok) data = std::move(raw);
+    return ok;
+}
+
 void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
@@ -902,15 +946,19 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
         put_list(o, st.c1);
         put_info(o, st.info);
     }
-    const uint64_t head[2] = {p.key, o.size()};
+    std::vector<uint8_t> z;
+    const bool zipped = z_pack(o, z);
+    const std::vector<uint8_t>& w = zipped ? z : o;
+    const uint64_t head[2] = {p.key, (uint64_t)w.size() | (zipped ? kZBit : 0)};
     std::lock_guard lk(disk_mu);
     _fseeki64(disk_out, 0, SEEK_END);
     const int64_t at = _ftelli64(disk_out);
     fwrite(head, 8, 2, disk_out);
-    fwrite(o.data(), 1, o.size(), disk_out);
+    fwrite(w.data(), 1, w.size(), disk_out);
     fflush(disk_out);
     // (the precompile's: nothing holds them but the file, and the game starts on them at once)
-    if (disk_listing) disk_records[p.key].push_back({at + 16, o.size(), (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0))});
+    if (disk_listing)
+        disk_records[p.key].push_back({at + 16, w.size(), (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0)), zipped});
 }
 
 /// (shader_mu held) the kept variants of key go to its list, ready, once
@@ -932,6 +980,7 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
             _fseeki64(disk_in, d.at, SEEK_SET);
             if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
         }
+        if (d.z && !z_unpack(data)) continue;
         Reader r{data.data()};
         auto p = std::make_unique<Program>();
         p->key = key;
