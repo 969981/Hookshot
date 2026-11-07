@@ -94,12 +94,10 @@ typedef struct { void *va; ULONG_PTR attr; } WsInfo;
 typedef BOOL(WINAPI *QwsFn)(HANDLE, void *, DWORD);
 #endif
 
-static void take_snapshot(void) {
-    const int64_t t0 = hos_now_ns();
-    drop_snapshot();
-    const uint64_t pages = hos_heap_size / PAGE;
+/* a byte a heap page: 1 if the process has it (the caller frees it) */
+static uint8_t *pages_in_use(uint64_t pages) {
     uint8_t *use = (uint8_t *)calloc((size_t)pages, 1);
-    if (!use) { hos_log("camfind: no memory for the page map"); return; }
+    if (!use) return NULL;
 #ifdef _WIN32
     QwsFn qws = (QwsFn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32QueryWorkingSetEx");
     if (qws) {
@@ -115,6 +113,34 @@ static void take_snapshot(void) {
     } else
 #endif
         memset(use, 1, (size_t)pages);
+    return use;
+}
+
+/* (mouse_native.c) the 4-byte-aligned places in the heap's used pages that hold len bytes of pat (len <= a page), at
+   most max of them; the number found */
+size_t hos_heap_find(const void *pat, size_t len, uint64_t *out, size_t max) {
+    const uint64_t pages = hos_heap_size / PAGE;
+    uint8_t *use = pages_in_use(pages);
+    if (!use || len < 4 || len > PAGE) { free(use); return 0; }
+    uint32_t first;
+    memcpy(&first, pat, 4);
+    size_t n = 0;
+    for (uint64_t i = 0; i < pages && n < max; i++) {
+        if (!use[i]) continue;
+        const uint8_t *p = (const uint8_t *)GP(HOS_HEAP_BASE + i * PAGE);
+        for (size_t o = 0; o + len <= PAGE && n < max; o += 4)
+            if (*(const uint32_t *)(p + o) == first && !memcmp(p + o, pat, len)) out[n++] = HOS_HEAP_BASE + i * PAGE + o;
+    }
+    free(use);
+    return n;
+}
+
+static void take_snapshot(void) {
+    const int64_t t0 = hos_now_ns();
+    drop_snapshot();
+    const uint64_t pages = hos_heap_size / PAGE;
+    uint8_t *use = pages_in_use(pages);
+    if (!use) { hos_log("camfind: no memory for the page map"); return; }
     size_t n = 0;
     for (uint64_t i = 0; i < pages; i++)
         if (use[i] && !page_zero((const uint8_t *)GP(HOS_HEAP_BASE + i * PAGE))) use[i] = 2, n++;

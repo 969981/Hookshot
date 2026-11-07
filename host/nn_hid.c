@@ -132,11 +132,8 @@ static void mouse_look_tick(void) {
    the centre as soon as the mouse stopped, taking the pick with it. The stick starts at the centre, stays where the
    mouse puts it (cut to length 1) and is centred again when L is let go, so the camera does not turn by itself after
    the wheel closes. */
-static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
-    static int64_t next_tick;
-    static int32_t shown[2];
-    static int captured, was_pointing;
-    static int invert = -1;
+static int invert = -1;
+static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
         invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
         hos_mouse_sens = 1.0;
@@ -151,6 +148,13 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
         const char *e = getenv("HOS_MOUSE_SENS");
         if (e && atof(e) > 0) hos_mouse_sens = atof(e);
     }
+}
+
+static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
+    static int64_t next_tick;
+    static int32_t shown[2];
+    static int captured, was_pointing;
+    mouse_setup();
     mouse_sens_keys();
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
@@ -443,8 +447,19 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     /* left button Y (attack), right button ZL (shield, lock on), while the mouse is captured; a button held when
        the capture began counts only after it was let go (the click that captures never reaches the game) */
     static int armed[2];
-    if (mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1))) {
-        stick_max(stick, mouse);
+    /* (hookshot) HOS_MOUSE_NATIVE=1: the mouse turns the camera itself (mouse_native.c), not the right stick */
+    static int native = -1;
+    if (native < 0) native = getenv("HOS_MOUSE_NATIVE") && atoi(getenv("HOS_MOUSE_NATIVE")) != 0;
+    int hos_mouse_native(void);
+    int mouse_on;
+    if (native) {
+        mouse_setup();
+        mouse_sens_keys();
+        mouse_on = hos_mouse_native();
+    } else
+        mouse_on = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
+    if (mouse_on) {
+        if (!native) stick_max(stick, mouse);
         const int vk[2] = {VK_LBUTTON, VK_RBUTTON}, b[2] = {B_Y, B_ZL};
         for (int i = 0; i < 2; i++) {
             if (!key(vk[i])) armed[i] = 1;

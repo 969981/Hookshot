@@ -31,12 +31,13 @@ import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LAUNCHER_VERSION = 2
+LAUNCHER_VERSION = 3
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(HERE)
 HOME = os.environ.get("HOOKSHOT_HOME") or os.path.dirname(TOOLS)
 CONFIG = os.path.join(HOME, "launcher.json")
 SOURCE_STATE = os.path.join(TOOLS, ".hookshot_source.json")
+BUILT_STATE = os.path.join(HOME, "launcher_built.json")   # (the commit the game was last built from)
 BACKUPS = os.path.join(HOME, "launcher_backups")
 DOWNLOADS = os.path.join(HOME, "launcher_download")
 SYNCED = ("gpu", "host", "nx2", "scripts", "third_party", "launcher")
@@ -95,6 +96,11 @@ def source_of(cfg, which=None):
 def installed():
     s = read_json(SOURCE_STATE, {})
     return {k: s.get(k) for k in ("repo", "branch", "sha", "date", "message", "updated")} if s.get("sha") else None
+
+
+def built():
+    b = read_json(BUILT_STATE, {})
+    return b if b.get("sha") else None
 
 
 # ---- GitHub ----
@@ -176,6 +182,7 @@ def sync(zip_path, commit, log):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "_" + (old.get("sha") or "unknown")[:7]
         backup = os.path.join(BACKUPS, stamp)
         counts = {"changed": 0, "added": 0, "removed": 0, "same": 0}
+        touched = []
         launcher_changed = False
 
         def keep(rel, dst, move):
@@ -202,10 +209,12 @@ def sync(zip_path, commit, log):
                 f.write(data)
             os.replace(dst + ".new", dst)
             launcher_changed |= rel.startswith("launcher/")
+            touched.append(rel)
         for rel in sorted(set(old.get("files", [])) - set(new)):
             dst = os.path.join(TOOLS, *rel.split("/"))
             if os.path.isfile(dst):
                 keep(rel, dst, move=True)
+                touched.append(rel)
                 counts["removed"] += 1
                 log("  removed  " + rel)
     write_json(SOURCE_STATE, dict(commit, updated=datetime.datetime.now().isoformat(timespec="seconds"), files=sorted(new)))
@@ -213,6 +222,8 @@ def sync(zip_path, commit, log):
         for d in sorted(os.listdir(BACKUPS))[:-3]:
             shutil.rmtree(os.path.join(BACKUPS, d), ignore_errors=True)
     counts["launcher"] = launcher_changed
+    counts["only_launcher"] = bool(touched) and all(r.startswith("launcher/") for r in touched)
+    counts["nothing"] = not touched
     return counts
 
 
@@ -324,6 +335,7 @@ class Job:
 
     def run(self, update, cfg, commit):
         try:
+            self.previous_sha = (installed() or {}).get("sha")
             if update:
                 self.stage("download")
                 repo, branch = source_of(cfg)
@@ -346,6 +358,12 @@ class Job:
                 with self.lock:
                     self.relaunch = c["launcher"]
                     self.message = ""
+                b = built()
+                if c["only_launcher"] and b and b.get("sha") == self.previous_sha:
+                    write_json(BUILT_STATE, dict(b, sha=commit["sha"], date=commit["date"], message=commit["message"]))
+                    for k in ("read", "lift", "compile", "finish"):
+                        self.stages[k] = "skipped"
+                    return self.finish("done", "Only the launcher changed: no rebuild needed. Restart the launcher to use it.")
             if self.cancelled:
                 return self.finish("cancelled", "Cancelled.")
             self.build(cfg)
@@ -388,6 +406,9 @@ class Job:
         if self.cancelled:
             self.finish("cancelled", "Cancelled.")
         elif p.returncode == 0 and done:
+            inst = installed()
+            if inst:
+                write_json(BUILT_STATE, dict(inst, built=datetime.datetime.now().isoformat(timespec="seconds")))
             self.finish("done", "The game is ready in " + done)
         else:
             self.finish("failed", error or "The build stopped (exit code %s). See the details." % p.returncode)
@@ -460,7 +481,7 @@ def state():
     repo, branch = source_of(cfg)
     update = bool(latest and (not inst or inst["sha"] != latest["sha"]))
     out = cfg["out"]
-    return {"version": LAUNCHER_VERSION, "settings": cfg, "languages": LANGUAGES, "installed": inst, "check": chk, "update": update,
+    return {"version": LAUNCHER_VERSION, "settings": cfg, "languages": LANGUAGES, "installed": inst, "built": built(), "check": chk, "update": update,
             "source": {"repo": repo, "branch": branch, "url": "https://github.com/%s/tree/%s" % (repo, branch)},
             "fork_url": "https://github.com/" + cfg["fork_repo"], "tools": TOOLS, "problem": settings_problem(cfg),
             "playable": bool(out) and os.path.isfile(os.path.join(out, "hookshot.exe")), "job": job.view()}
@@ -579,6 +600,7 @@ input,select{width:100%;font:inherit;padding:8px 10px;border-radius:8px;border:1
 
 <section class="card"><div class="row">
 <div class="k">Installed</div><div class="v" id="inst">…</div>
+<div class="k">Game built from</div><div class="v" id="built">…</div>
 <div class="k">Newest</div><div class="v" id="latest">…</div>
 <div class="k">Source</div><div class="v" id="src">…</div></div>
 <div id="notes"></div>
@@ -620,11 +642,13 @@ async function save(){const src=document.querySelector('input[name=source]:check
 const val=id=>document.getElementById(id).value;
 function render(){const s=S,j=s.job,c=s.check,run=j.state==="running";
  document.getElementById("inst").innerHTML=s.installed?commit(s.installed)+(s.installed.repo!==s.source.repo?`<div class="msg">from ${esc(s.installed.repo)}</div>`:""):'<span class="msg">Not recorded yet: the source came with the builder package.</span>';
- document.getElementById("latest").innerHTML=c.latest?commit(c.latest)+(s.update?'<span class="pill new">Update available</span>':'<span class="pill ok">Up to date</span>'):(c.busy?"Checking…":'<span class="msg">Not checked yet</span>');
+ document.getElementById("built").innerHTML=s.built?commit(s.built):'<span class="msg">Not recorded yet (the first build with this launcher records it)</span>';
+ document.getElementById("latest").innerHTML=c.latest?commit(c.latest)+(run?'<span class="pill ok">Installing…</span>':s.update?'<span class="pill new">Update available</span>':'<span class="pill ok">Up to date</span>'):(c.busy?"Checking…":'<span class="msg">Not checked yet</span>');
  document.getElementById("src").innerHTML=`<a href="${esc(s.source.url)}" target="_blank" rel="noopener">${esc(s.source.repo)} · ${esc(s.source.branch)}</a>`+(c.checked?` <span class="msg">checked ${esc(when(c.checked*1000))}</span>`:"");
  let n="";if(c.error)n+=`<p class="note bad">${esc(c.error)}</p>`;
  if(s.problem)n+=`<p class="note warn">${esc(s.problem)}</p>`;
  if(s.settings.source==="fork"&&c.ahead>0)n+=`<p class="note warn">NotRexed has ${c.ahead} commit${c.ahead>1?"s":""} your fork doesn't have yet. To bring them in, open <a href="${esc(s.fork_url)}" target="_blank" rel="noopener">your fork</a> and press <b>Sync fork</b>, or switch Settings to <b>Official only</b>.</p>`;
+ if(!run&&s.built&&s.installed&&s.built.sha!==s.installed.sha)n+=`<p class="note warn">The game was built from <code>${esc(s.built.sha.slice(0,7))}</code>, older than the build tools (<code>${esc(s.installed.sha.slice(0,7))}</code>): press <b>Rebuild only</b> to bring it up to date.</p>`;
  if(j.relaunch)n+='<p class="note warn">The launcher itself was updated: close it and start it again to use the new version.</p>';
  document.getElementById("notes").innerHTML=n;
  const go=document.getElementById("go");go.disabled=run||!!s.problem;go.textContent="Update & rebuild";
