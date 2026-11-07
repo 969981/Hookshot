@@ -482,10 +482,38 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     }
     case 0x21: { /* SendSyncRequest(session handle): (mkw-recomp) a service the runtime does not emulate. The request
-                    is in the thread's IPC buffer (TLS + 0); the answer is a CMIF success with zeroed outputs, as
-                    Eglantine's auto-stub does, so a lifted service client sees an empty, successful reply. */
+                    is in the thread's IPC buffer (TLS + 0); the answer is a success with zeroed outputs, as
+                    Eglantine's auto-stub does, so a lifted service client sees an empty, successful reply.
+                    (hookshot) "sm:" is TIPC (request id = command + 16, 12.0.0+): RegisterClient and GetServiceHandle are
+                    answered for real with a session handle, because nn::sf aborts the process when a service cannot be
+                    created (Raiders asks for "ngc:u", the profanity filter, at level load). */
         uint8_t *tls = (uint8_t *)GP(c->tpidrro_el0);
         const uint32_t w0 = *(uint32_t *)tls, w1 = *(uint32_t *)(tls + 4);
+        const uint32_t type = w0 & 0xFFFF;
+        static volatile LONG next;
+        if ((uint32_t)c->x[0] >= 0x7E000000u && (type == 16 || type == 17)) {   /* sm:: TIPC: RegisterClient, GetServiceHandle */
+            if (type == 16) {   /* RegisterClient: a bare result word */
+                memset(tls, 0, 0x40);
+                *(uint32_t *)tls = w0;
+                *(uint32_t *)(tls + 4) = 1;             /* 1 raw data word, no handle */
+                *(uint32_t *)(tls + 8) = 0;             /* result: success */
+                hos_log("ipc: sm::RegisterClient -> 0 (lr %#llx)", (unsigned long long)c->x[30]);
+            } else {            /* GetServiceHandle(ServiceName): a move handle */
+                char name[9] = "";
+                memcpy(name, tls + 8, 8);
+                const uint32_t h = 0x7E000000u | (uint32_t)InterlockedIncrement(&next);
+                memset(tls, 0, 0x40);
+                *(uint32_t *)tls = w0;
+                *(uint32_t *)(tls + 4) = 1 | (1u << 31);  /* 1 raw word, a special header */
+                *(uint32_t *)(tls + 8) = 1u << 5;         /* one move handle */
+                *(uint32_t *)(tls + 12) = h;
+                *(uint32_t *)(tls + 16) = 0;              /* result: success */
+                hos_log("ipc: sm::GetServiceHandle(\"%.8s\") -> session %#x (lr %#llx)", name, h,
+                        (unsigned long long)c->x[30]);
+            }
+            c->x[0] = R_OK;
+            return;
+        }
         /* the request's CMIF header ('SFCI', version, command id) after the HIPC header, 16-byte aligned */
         uint32_t cmd = 0;
         for (int off = 8; off < 0x40; off += 4)
@@ -495,9 +523,9 @@ void a64_svc(Ctx *c, uint32_t imm) {
             hos_log("ipc: handle %#x command %u (hipc %08x %08x, lr %#llx): answered empty", (uint32_t)c->x[0], cmd,
                     w0, w1, (unsigned long long)c->x[30]);
         memset(tls, 0, 0x100);
-        *(uint32_t *)(tls + 0) = 0;                 /* HIPC: type 0, no descriptors */
-        *(uint32_t *)(tls + 4) = 16;                /* 16 raw data words, no handle descriptor */
-        *(uint32_t *)(tls + 16) = 0x4F434653u;      /* CMIF response 'SFCO', version 0, result 0 */
+        *(uint32_t *)(tls + 0) = w0 & 0xFFFF;       /* HIPC: the request's type, no descriptors */
+        *(uint32_t *)(tls + 4) = 4;                 /* 4 raw data words, no handle descriptor */
+        *(uint32_t *)(tls + 8) = 0x4F434653u;       /* CMIF response 'SFCO', version 0, result 0 */
         c->x[0] = R_OK;
         return;
     }
