@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I le
 import kit
 import rtgen
 import toolchain
+import version
 
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
@@ -332,6 +333,10 @@ def main():
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
     fl = flags(gen, rt64, a.opt, not a.no_polls)
+    # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
+    # release name rebuilds them and nothing else)
+    stamp_def = version.define()
+    print("version: %s" % version.describe(), flush=True)
     # (the lifted chunks include only the guest model: the emulator ABI header is a dependency of the shim alone)
     deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (gen, rt64) for f in sorted(os.listdir(d))
                     if f.endswith(".h"))
@@ -385,7 +390,8 @@ def main():
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
-              (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []), host_deps) for s in host_srcs]
+              (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
+              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []), host_deps) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     if host_srcs:
         oflags = target() + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
@@ -448,7 +454,9 @@ def main():
         for src in vk_sources():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
-            vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"), vflags, vk_lib_deps if lib else vdeps))
+            vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
+                            vflags + ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
+                            vk_lib_deps if lib else vdeps))
         if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
             cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
                                        "-I" + os.path.join(kit.HERE, "..", "third_party", "stb")]

@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
+#define HOOKSHOT_VERSION "unknown"
+#endif
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -318,6 +321,7 @@ static int game_main(int argc, char **argv) {
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
+    hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
