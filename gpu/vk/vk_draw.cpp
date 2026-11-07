@@ -40,6 +40,7 @@
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 
 namespace mkwvk {
+uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 namespace {
 
 /// 32 lanes, where the stage can be held to it (workgroup_x: a compute stage's width, which full subgroups must divide)
@@ -437,7 +438,11 @@ uint32_t target_write_mask(const Program& p, const NvnState& s, int i) {
     for (const Stage& st : p.stages)
         if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) fs = &st;
     if (!fs || i >= 8 || !fs->info.stores_frag_color[i]) return 0;
-    return (s.chmask.mask >> (4 * i)) & 0xF;
+    // (amd-fix, Lichii #353) and none of the components it does not write: Vulkan writes undefined values there, AMD its
+    // export registers' garbage (NaN and saturated pixels above OoT's horizon, which the bloom spread). RX_VK_ALL_COMPONENTS=1: off
+    static const bool all = getenv("RX_VK_ALL_COMPONENTS") != nullptr;
+    const uint32_t written = fs->info.frag_color_components[i];
+    return (s.chmask.mask >> (4 * i)) & 0xF & (all || !written ? 0xFu : (uint32_t)written);
 }
 thread_local const Program* cur_program = nullptr;   // (the draw's, for its dynamic write masks)
 
@@ -853,6 +858,21 @@ VkSampler sampler_for(int id, bool compare) {
     ci.maxAnisotropy = std::clamp(p.aniso, 1.0f, dev.props.limits.maxSamplerAnisotropy);
     ci.compareEnable = compare && p.cmp_mode != 0;
     ci.compareOp = compare_op(p.cmp_func);
+    {   // (amd-fix) A depth-reference sample through a sampler that does not compare is undefined in Vulkan: NVIDIA's driver
+        // compares anyway, AMD's does not (OoT samples this way: compare mode 0, function 0). A shader that compares gets
+        // a comparing sampler: the game's function when it set one, LEQUAL otherwise. RX_VK_DREF_FROM_SAMPLER=1: as before
+        static const bool as_before = getenv("RX_VK_DREF_FROM_SAMPLER") != nullptr;
+        if (compare && !as_before && !ci.compareEnable) {
+            ci.compareEnable = VK_TRUE;
+            ci.compareOp = p.cmp_func >= 1 && p.cmp_func <= 8 ? compare_op(p.cmp_func) : VK_COMPARE_OP_LESS_OR_EQUAL;
+        }
+        static std::mutex lm;
+        static std::unordered_set<uint32_t> told;
+        std::lock_guard lg(lm);
+        if (compare && told.size() < 16 && told.insert((uint32_t)p.cmp_mode << 8 | p.cmp_func).second)
+            logf("vk: depth-compare sampler: the game's compare mode %u function %u -> compare %s op %d", p.cmp_mode, p.cmp_func,
+                 ci.compareEnable ? "on" : "off", (int)ci.compareOp);
+    }
     ci.minLod = std::max(0.0f, p.lod_min);
     // (no mipmap filter: the base level only, as NVN samples it)
     ci.maxLod = (p.minf == NVN_MIN_FILTER_NEAREST || p.minf == NVN_MIN_FILTER_LINEAR) ? ci.minLod + 0.25f
@@ -1292,15 +1312,25 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const size_t first = dw.bufs.size();
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t off = d.cbuf_offset + k * 16;
-                const uint64_t addr = driver_bank_word(s, (int)d.cbuf_index, ns, off) |
-                                      (uint64_t)driver_bank_word(s, (int)d.cbuf_index, ns, off + 4) << 32;
-                const uint64_t size = driver_bank_word(s, (int)d.cbuf_index, ns, off + 8);
+                // (amd-fix) through the stage's banks as its program reads them: a storage buffer named in c1 (the program's
+                // own constants) read 0 from the driver banks and was bound to nothing
+                const uint64_t addr = stage_cbuf_word(s, st, d.cbuf_index, off) |
+                                      (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
+                const uint64_t size = stage_cbuf_word(s, st, d.cbuf_index, off + 8);
                 const uint64_t base = addr & ~(salign - 1), n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
                 const auto t0 = std::chrono::steady_clock::now();
                 // (hookshot) a storage buffer table's entries (count > 1, Info::global_tables): the ones past the table's
                 // end are whatever the constant buffer holds there, bound only when they look like a buffer
                 const bool plausible = d.count == 1 || (size && size <= (256ull << 20) && host->gpu_guest(base));
                 BufferRef b = addr && plausible ? gpu_buffer_bind(base, n, d.is_written) : BufferRef{};
+                // (amd-fix) a table entry's region that does not fit its pool this moment (one remade larger, the region past
+                // its end) bound nothing, and the next frame bound it again: its reads flipped between the data and 0, the
+                // picture between bright and dark. Smaller, down to 1 MB, rather than nothing
+                if (!b.buffer && d.count > 1 && addr && plausible) {
+                    uint64_t m = n;
+                    if (const uint64_t end = gpu_pool_end(base); end > base) m = std::min<uint64_t>(m, end - base);
+                    for (; !b.buffer && m >= (1ull << 20); m = (m / 2) & ~3ull) b = gpu_buffer_bind(base, m, d.is_written);
+                }
                 if (d.count > 1) {   // (hookshot) a table entry bound one frame and not the next (or back), 60 of them
                     static std::mutex tm;
                     static std::unordered_map<uint64_t, std::pair<bool, uint64_t>> was;   // -> bound, its address
@@ -2432,9 +2462,11 @@ void probe_draw(const NvnState& s, const Program& p, int pass_draws) {
         for (const auto& d : st.info.storage_buffers_descriptors) {
             for (uint32_t k = 0; k < d.count && k < 8; k++) {
                 const uint32_t off = d.cbuf_offset + k * 16;
-                const uint64_t addr = driver_bank_word(s, (int)d.cbuf_index, ns, off) |
-                                      (uint64_t)driver_bank_word(s, (int)d.cbuf_index, ns, off + 4) << 32;
-                const uint64_t size = driver_bank_word(s, (int)d.cbuf_index, ns, off + 8);
+                // (amd-fix) through the stage's banks as its program reads them: a storage buffer named in c1 (the program's
+                // own constants) read 0 from the driver banks and was bound to nothing
+                const uint64_t addr = stage_cbuf_word(s, st, d.cbuf_index, off) |
+                                      (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
+                const uint64_t size = stage_cbuf_word(s, st, d.cbuf_index, off + 8);
                 static thread_local std::vector<uint8_t> sb;
                 const uint64_t n = std::min<uint64_t>(size, 4ull << 20);
                 sb.resize((size_t)n);
@@ -2510,10 +2542,22 @@ void probe_log(uint64_t f) {
     }
 }
 
+// (amd-fix, diagnosis) in a frame dump, the indirect mesh draws' arguments as the GPU has them: noted at the draw (inside
+// the pass, where no copy can be recorded) and copied out once the pass ends ("dump buffer ... mesh indirect")
+thread_local std::vector<std::pair<uint64_t, uint64_t>> dump_mesh_indirect;   // (program key, indirect address)
 void end_pass(VkCommandBuffer cmd) {
     if (!pass.open) return;
     vkCmdEndRendering(cmd);
     pass.open = false;
+    if (dump_on() && !dump_mesh_indirect.empty()) {
+        for (const auto& [key, addr] : dump_mesh_indirect) {
+            const BufferRef r = gpu_buffer_bind(addr, 16, false);
+            char what[80];
+            snprintf(what, sizeof what, "mesh indirect prog %016llx at %#llx", (unsigned long long)key, (unsigned long long)addr);
+            if (r.buffer) dump_buffer(cmd, r.buffer, r.offset, 16, what);
+        }
+        dump_mesh_indirect.clear();
+    }
     if (probe_on())
         for (int i = 0; i < pass.n; i++)
             if (pass.color[i] && pass.tex[i]) probe_image(cmd, pass.tex[i], pass.level[i], pass.layer[i], pass.prog, 'p', pass.draws);
@@ -2996,6 +3040,28 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (d.mesh) {
+        {   // (amd-fix, diagnosis) RX_VK_LOG_MESH_PROGS=1: each mesh program's first draw and every 600th, with what its
+            // indirect arguments hold in guest memory (0 groups: the culling pass before it left nothing)
+            static const bool per_prog = getenv("RX_VK_LOG_MESH_PROGS") != nullptr;
+            if (dump_on() && d.indirect && dump_mesh_indirect.size() < 256) dump_mesh_indirect.push_back({p.key, d.indirect});
+            if (per_prog) {
+                static std::mutex mm;
+                static std::unordered_map<uint64_t, uint64_t> seen;
+                uint64_t n;
+                {
+                    std::lock_guard lk(mm);
+                    n = seen[p.key]++;
+                }
+                if (n % 600 == 0 && seen.size() < 400) {
+                    uint32_t w[3] = {(uint32_t)d.groups[0], (uint32_t)d.groups[1], (uint32_t)d.groups[2]}, draws = (uint32_t)std::max(d.max, 1);
+                    if (d.indirect) host->gpu_read(d.indirect, w, sizeof w);
+                    if (d.count_addr) host->gpu_read(d.count_addr, &draws, 4);
+                    logf("vk: mesh prog %016llx draw #%llu frame %llu: groups %u %u %u, %u draws (max %d), indirect %#llx count %#llx; codes%s",
+                         (unsigned long long)p.key, (unsigned long long)n, (unsigned long long)texture_frame_no(), w[0], w[1], w[2],
+                         draws, d.max, (unsigned long long)d.indirect, (unsigned long long)d.count_addr, program_code_keys(s).c_str());
+                }
+            }
+        }
         {   // (RX_VK_LOG_MESH_DRAWS=1: how large each is, the largest so far, 400 lines)
             static const bool log_sizes = getenv("RX_VK_LOG_MESH_DRAWS") != nullptr;
             if (log_sizes) {
@@ -3710,6 +3776,30 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (dump_on())
         logf("vk: dump-in %03d dispatch %ux%ux%u prog %016llx:%s", dump_seq(), x, y, z, (unsigned long long)p.key,
              dump_inputs.c_str());
+    if (dump_on()) {   // (amd-fix, diagnosis) what a dispatch can reach: its storage and uniform buffers, its pointer table
+        char line[1800];
+        int n = snprintf(line, sizeof line, "vk: dump-reach %03d prog %016llx%s:", dump_seq(), (unsigned long long)p.key,
+                         !p.stages.empty() && p.stages[0].info.stores_global_memory ? " (stores global)" : "");
+        for (int i = 0; i < 16 && n < 1700; i++)
+            if (s.ssbo[5][i].addr)
+                n += snprintf(line + n, sizeof line - n, " sb%d %#llx+%#llx", i, (unsigned long long)s.ssbo[5][i].addr,
+                              (unsigned long long)s.ssbo[5][i].size);
+        for (int i = 0; i < 16 && n < 1700; i++)
+            if (s.ubo[5][i].addr)
+                n += snprintf(line + n, sizeof line - n, " ub%d %#llx+%#llx", i, (unsigned long long)s.ubo[5][i].addr,
+                              (unsigned long long)s.ubo[5][i].size);
+        if (!p.stages.empty()) {   // the translated program's own storage bindings: which constant-buffer word names each
+            const auto& sd = p.stages[0].info.storage_buffers_descriptors;
+            for (size_t i = 0; i < sd.size() && n < 1700; i++) {
+                const uint32_t off = sd[i].cbuf_offset;
+                const uint64_t a = stage_cbuf_word(s, p.stages[0], sd[i].cbuf_index, off) |
+                                   (uint64_t)stage_cbuf_word(s, p.stages[0], sd[i].cbuf_index, off + 4) << 32;
+                n += snprintf(line + n, sizeof line - n, " ssbo%zu=c%u+%#x%s%s->%#llx", i, sd[i].cbuf_index, off,
+                              sd[i].is_written ? "w" : "", sd[i].count > 1 ? "[t]" : "", (unsigned long long)a);
+            }
+        }
+        logf("%s", line);
+    }
     // (dispatches after other work wait for it: the WebGPU renderer's dispatches were ordered the same way by
     // wgpu's own tracking, and MKW's compute chains read what the one before wrote)
     static const bool no_order = getenv("RX_VK_NO_DISPATCH_ORDER") != nullptr;
