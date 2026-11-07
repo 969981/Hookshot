@@ -21,6 +21,7 @@ def load(name, path):
 
 make_game = load("release_metadata_make_game", ROOT / "nx2/make_game.py")
 packer = load("release_metadata_packer", ROOT / "scripts/package_builder.py")
+display_version = load("release_display_version", ROOT / "nx2/version.py")
 TAG = "foliage-linux-updater"
 SHA = "170ce53ca3d69309b3f5151a334136be8b4c38d6"
 
@@ -115,6 +116,17 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(archive.read("HookshotBuilder/tools/revision.txt").decode(), self.revision + "\n")
             self.assertEqual(archive.read("HookshotBuilder/tools/version.txt").decode(), TAG + "\n")
+            self.assertEqual(archive.read("HookshotBuilder/tools/VERSION").decode(), TAG + "\n")
+
+    def test_stale_display_version_is_replaced_by_packaged_tag(self):
+        tools = self.stage / "tools"
+        (tools / "VERSION").write_text("older-tag\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"HOOKSHOT_VERSION": ""}):
+            self.assertEqual(display_version.release(str(tools)), "older-tag")
+            self.package()
+            self.assertEqual(display_version.release(str(tools)), TAG)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.read("HookshotBuilder/tools/VERSION").decode(), TAG + "\n")
 
     def test_old_staged_source_cannot_receive_new_revision(self):
         (self.stage / "tools/host/runtime.c").write_text("old staged code", encoding="utf-8")

@@ -20,7 +20,7 @@ python -I scripts/package_builder.py --staged build/HookshotBuilder --tag RELEAS
 ```
 
 The publish target writes `builder-revision.txt`. The packer verifies that marker, the clean checkout, the tag target and staged
-build sources before writing `tools/version.txt` and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
+build sources before writing `tools/version.txt`, `tools/VERSION` (the displayed release name) and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
 GUI publish is rejected rather than stamped with today's revision. Upload that ZIP for the same tag. `revision.txt` identifies
 the source; it is not the digest of the ZIP containing it. When GitHub supplies a ZIP SHA256, the downloader verifies that external
 digest before extracting.

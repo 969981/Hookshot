@@ -105,6 +105,7 @@ def package(repo, staged, tag, output):
         raise ValueError("Build sources are missing from staging: " + ", ".join(missing[:5]))
     # These files identify the verified source tree, not the ZIP containing them.
     (tools / "version.txt").write_text(tag + "\n", encoding="utf-8", newline="\n")
+    (tools / "VERSION").write_text(tag + "\n", encoding="utf-8", newline="\n")
     (tools / "revision.txt").write_text(revision + "\n", encoding="utf-8", newline="\n")
     output.parent.mkdir(parents=True, exist_ok=True)
     created = False
@@ -112,7 +113,7 @@ def package(repo, staged, tag, output):
         with output.open("xb") as stream:
             created = True
             with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
-                paths = set(staged_files) | {tools / "version.txt", tools / "revision.txt"}
+                paths = set(staged_files) | {tools / "version.txt", tools / "VERSION", tools / "revision.txt"}
                 for path in sorted(paths):
                     data = path.read_bytes()
                     if path.is_relative_to(tools):
