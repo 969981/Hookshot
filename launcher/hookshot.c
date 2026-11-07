@@ -174,10 +174,11 @@ static int complete(void) {
     return 0;
 }
 
-/* ---- the build's progress, from make_game.py's @@ lines (both systems): the stage, how far the whole build is, the
-   time it has taken and about how long it has left ---- */
+/* ---- the build's progress, from make_game.py's @@ lines (both systems), then hookshot_rt --prepare-shaders's: the
+   stage, how far the whole build is, the time it has taken and about how long it has left ---- */
 static const struct { const char *id; double from, to, expect_s; } STAGES[] = {
-    {"read", 0.00, 0.06, 150}, {"lift", 0.06, 0.14, 180}, {"compile", 0.14, 0.97, 2400}, {"finish", 0.97, 1.00, 60}};
+    {"read", 0.00, 0.06, 150}, {"lift", 0.06, 0.14, 180}, {"compile", 0.14, 0.93, 2400}, {"finish", 0.93, 0.95, 60},
+    {"shaders", 0.95, 1.00, 120}};
 enum { NSTAGES = sizeof STAGES / sizeof *STAGES };
 
 typedef struct {
@@ -219,6 +220,7 @@ static int progress_line(Progress *p, const char *line) {
         snprintf(p->text, sizeof p->text, "%s", text ? text + 1 : id);
         p->frac = -1;
         p->stage_t0 = now_s();
+        p->done = 0;   /* (make_game.py's @@done, then the shaders' stage) */
     } else if (sscanf(line, "@@progress %lf", &f) == 1) {
         p->frac = f < 0 ? 0 : f > 1 ? 1 : f;
     } else if (!strncmp(line, "@@error ", 8)) {
@@ -289,8 +291,14 @@ static void feed(Feed *f, const char *data, size_t n) {
     }
 }
 
+/* one command's output ended (the log goes on: the shaders' step follows the build's) */
 static void feed_end(Feed *f) {
     if (f->npart) { f->part[f->npart] = 0; feed_line(f, f->part); f->npart = 0; }
+    if (f->log) fflush(f->log);
+}
+
+static void feed_close(Feed *f) {
+    feed_end(f);
     if (f->log) { fclose(f->log); f->log = NULL; }
 }
 
@@ -304,17 +312,32 @@ static void feed_open(Feed *f) {
 
 static const char DETAILS_HINT[] = "The whole output is in build.log beside Hookshot.";
 
+/* ---- after the build, the shaders (hookshot_rt --prepare-shaders, gpu/vk/vk_main.cpp): offered for OFFER_S seconds,
+   then started. Skipped, the runtime is told so by a file beside it, and builds each shader when first drawn (short
+   stutters) instead of preparing them all at its start. Never a failed build: with no usable Vulkan, or a step that
+   stops, the game prepares them at its first start as it would have. ---- */
+enum { OFFER_S = 10 };
+static const char OFFER_TEXT[] = "A minute or two. Skipped, the game builds each when first drawn: short stutters.";
+
+static void shaders_skipped(void) {
+    char p[PATH_CAP];
+    path(p, "hookshot_prepare_skipped");
+    FILE *f = fopen(p, "w");
+    if (f) { fputs("the shaders' preparation was skipped after the build: hookshot_rt --prepare-shaders does it\n", f); fclose(f); }
+}
+
 #ifdef _WIN32
 /* ---- Windows: a window with the stage, a progress bar and the times, and under them the build's output ("Show
    details", closed until asked for, or until the build stops on an error). Closing it stops the build. ---- */
 #include <commctrl.h>
-enum { WM_BUILD_LINE = WM_APP + 1, WM_BUILD_END, ID_DETAILS = 100, ID_CLOSE, TIMER_TICK = 1 };
+enum { WM_BUILD_LINE = WM_APP + 1, WM_BUILD_END, ID_DETAILS = 100, ID_CLOSE, ID_SKIP, TIMER_TICK = 1 };
+enum { BUILDING, OFFERING, SHADERS };   /* (the window's phases: make_game.py, the shaders offered, then prepared) */
 static struct {
-    HWND win, stage, bar, times, details, log, close;
+    HWND win, stage, bar, times, details, log, close, skip;
     HFONT font, mono;
     HANDLE proc, job, pipe;
     Feed f;
-    int running, open, result;
+    int running, open, result, phase, offer_left;
     int dpi;
 } w;
 
@@ -330,6 +353,7 @@ static void win_layout(void) {
     MoveWindow(w.times, m, y, width, px(20), TRUE); y += px(30);
     MoveWindow(w.details, m, y, px(130), px(28), TRUE);
     MoveWindow(w.close, r.right - m - px(100), y, px(100), px(28), TRUE);
+    MoveWindow(w.skip, r.right - m - px(208), y, px(100), px(28), TRUE);
     y += px(38);
     /* (sized when hidden too: an edit control lays its lines out for the size it has, and one left at 0 wide shows
        them shifted once opened) */
@@ -371,12 +395,83 @@ static void win_stop(void) {
     if (w.running) { TerminateJobObject(w.job, 1); w.running = 0; }
 }
 
+static DWORD WINAPI win_reader(void *arg);
+
+/* the command, its output through a pipe to the window (win_reader), in the job that ends it with the window */
+static int win_spawn(char *cmdline) {
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    HANDLE wr;
+    if (!CreatePipe(&w.pipe, &wr, &sa, 0)) return 0;
+    SetHandleInformation(w.pipe, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, here, &si, &pi)) {
+        CloseHandle(wr);
+        CloseHandle(w.pipe);
+        return 0;
+    }
+    CloseHandle(wr);
+    AssignProcessToJobObject(w.job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    if (w.proc) CloseHandle(w.proc);
+    w.proc = pi.hProcess;
+    w.running = 1;
+    if (w.win) CreateThread(NULL, 0, win_reader, NULL, 0, NULL);   /* (the first waits for the window) */
+    return 1;
+}
+
+static void win_offer_text(void) {
+    char t[64];
+    snprintf(t, sizeof t, "The game is built. Preparing its shaders in %d s", w.offer_left);
+    SetWindowTextA(w.stage, t);
+}
+
+static void win_shaders(void) {
+    char cmd[PATH_CAP + 64], rt[PATH_CAP];
+    path(rt, RUNTIME);
+    snprintf(cmd, sizeof cmd, "\"%s\" --prepare-shaders", rt);
+    w.phase = SHADERS;
+    ShowWindow(w.skip, SW_HIDE);
+    SetWindowTextA(w.close, "Skip");
+    if (!win_spawn(cmd)) { DestroyWindow(w.win); return; }   /* (the game prepares them at its first start) */
+    win_progress();
+}
+
+static void win_offer(void) {
+    w.phase = OFFERING;
+    w.offer_left = OFFER_S;
+    win_offer_text();
+    SetWindowTextA(w.times, OFFER_TEXT);
+    SetWindowTextA(w.close, "Start now");
+    ShowWindow(w.skip, SW_SHOW);
+}
+
+static void win_skip(void) {
+    win_stop();
+    shaders_skipped();
+    DestroyWindow(w.win);
+}
+
 static LRESULT CALLBACK win_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_SIZE: win_layout(); return 0;
-    case WM_TIMER: if (w.running) win_progress(); return 0;
+    case WM_TIMER:
+        if (w.running) win_progress();
+        else if (w.phase == OFFERING) {
+            if (--w.offer_left <= 0) win_shaders();
+            else win_offer_text();
+        }
+        return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == ID_DETAILS) win_set_open(!w.open);
+        else if (LOWORD(wp) == ID_SKIP) win_skip();
+        else if (LOWORD(wp) == ID_CLOSE && w.phase == OFFERING) win_shaders();
         else if (LOWORD(wp) == ID_CLOSE) SendMessageA(h, WM_CLOSE, 0, 0);
         return 0;
     case WM_BUILD_LINE: {
@@ -391,7 +486,8 @@ static LRESULT CALLBACK win_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         WaitForSingleObject(w.proc, INFINITE);
         GetExitCodeProcess(w.proc, &code);
         w.running = 0;
-        if (!code && !w.f.p.failed) { w.result = 0; DestroyWindow(h); return 0; }
+        if (w.phase == SHADERS) { DestroyWindow(h); return 0; }   /* (prepared, or left to the game's first start) */
+        if (!code && !w.f.p.failed) { w.result = 0; win_offer(); return 0; }
         if (!w.f.p.failed) {
             w.f.p.failed = 1;
             snprintf(w.f.p.error, sizeof w.f.p.error, "The build ended with code %lu.", code);
@@ -403,6 +499,7 @@ static LRESULT CALLBACK win_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CLOSE:
+        if (w.phase != BUILDING) { win_skip(); return 0; }
         if (w.running && MessageBoxA(h, "Stop building the game?", "Hookshot", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
         win_stop();
         DestroyWindow(h);
@@ -438,32 +535,12 @@ static int build_window(char *cmdline, const char *path_add) {
     snprintf(buf, sizeof buf, "%s;%s", path_add, cur);
     SetEnvironmentVariableA("PATH", buf);
 
-    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
-    HANDLE wr;
-    if (!CreatePipe(&w.pipe, &wr, &sa, 0)) return 1;
-    SetHandleInformation(w.pipe, HANDLE_FLAG_INHERIT, 0);
     w.job = CreateJobObjectA(NULL, NULL);   /* (the build's processes, clang's among them, end with it) */
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
     memset(&li, 0, sizeof li);
     li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     SetInformationJobObject(w.job, JobObjectExtendedLimitInformation, &li, sizeof li);
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    memset(&si, 0, sizeof si);
-    si.cb = sizeof si;
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = si.hStdError = wr;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, here, &si, &pi)) {
-        CloseHandle(wr);
-        return 1;
-    }
-    CloseHandle(wr);
-    AssignProcessToJobObject(w.job, pi.hProcess);
-    ResumeThread(pi.hThread);
-    CloseHandle(pi.hThread);
-    w.proc = pi.hProcess;
-    w.running = 1;
+    if (!win_spawn(cmdline)) return 1;
     w.result = 2;
     feed_open(&w.f);
     w.f.on_output = win_output;
@@ -494,6 +571,8 @@ static int build_window(char *cmdline, const char *path_add) {
     w.times = win_child("STATIC", "", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, w.font);
     w.details = win_child("BUTTON", "Show details", BS_PUSHBUTTON, ID_DETAILS, w.font);
     w.close = win_child("BUTTON", "Stop", BS_PUSHBUTTON, ID_CLOSE, w.font);
+    w.skip = win_child("BUTTON", "Skip", BS_PUSHBUTTON, ID_SKIP, w.font);
+    ShowWindow(w.skip, SW_HIDE);
     w.log = win_child("EDIT", "", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
                       0, w.mono);
     SendMessageA(w.log, EM_SETLIMITTEXT, 0, 0);
@@ -509,6 +588,7 @@ static int build_window(char *cmdline, const char *path_add) {
         DispatchMessageA(&m);
     }
     win_stop();
+    feed_close(&w.f);
     return w.result;
 }
 #else
@@ -557,6 +637,8 @@ static struct {
     GP (*button_new_with_label)(const char *);
     void (*button_set_label)(GP, const char *);
     void (*widget_show_all)(GP);
+    void (*widget_show)(GP);
+    void (*widget_hide)(GP);
     void (*widget_destroy)(GP);
     void (*main)(void);
     void (*main_quit)(void);
@@ -588,6 +670,7 @@ static int gtk_load(void) {
         F(text_buffer_get_end_iter, "gtk_text_buffer_get_end_iter"), F(text_buffer_insert, "gtk_text_buffer_insert"),
         F(text_buffer_create_mark, "gtk_text_buffer_create_mark"), F(button_new_with_label, "gtk_button_new_with_label"),
         F(button_set_label, "gtk_button_set_label"), F(widget_show_all, "gtk_widget_show_all"),
+        F(widget_show, "gtk_widget_show"), F(widget_hide, "gtk_widget_hide"),
         F(widget_destroy, "gtk_widget_destroy"), F(main, "gtk_main"), F(main_quit, "gtk_main_quit"),
         F(signal_connect_data, "g_signal_connect_data"), F(timeout_add, "g_timeout_add"), F(unix_fd_add, "g_unix_fd_add"),
 #undef F
@@ -600,11 +683,42 @@ static int gtk_load(void) {
     return gtk.init_check(NULL, NULL);
 }
 
+/* the command in its own process group (stopping it stops all of it), its output and errors on *out; no shell, so any
+   path works as it is */
+static pid_t spawn(char *const args[], int *out) {
+    int fd[2];
+    if (pipe(fd)) return -1;
+    const pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return -1; }
+    if (pid == 0) {
+        setpgid(0, 0);
+        dup2(fd[1], 1);
+        dup2(fd[1], 2);
+        close(fd[0]);
+        close(fd[1]);
+        execvp(args[0], args);
+        perror(args[0]);
+        _exit(127);
+    }
+    close(fd[1]);
+    fcntl(fd[0], F_SETFD, FD_CLOEXEC);
+    *out = fd[0];
+    return pid;
+}
+
+static pid_t spawn_shaders(int *out) {
+    static char rt[PATH_CAP];
+    path(rt, RUNTIME);
+    char *args[] = {rt, "--prepare-shaders", NULL};
+    return spawn(args, out);
+}
+
+enum { BUILDING, OFFERING, SHADERS, ENDED };   /* (the window's phases: make_game.py, the shaders offered, prepared) */
 static struct {
-    GP win, stage, bar, times, expander, buffer, view, mark, button;
+    GP win, stage, bar, times, expander, buffer, view, mark, button, skip;
     Feed f;
     pid_t pid;
-    int fd, running, result;
+    int fd, running, result, phase, offer_left;
 } g;
 
 static void g_progress(void) {
@@ -633,10 +747,43 @@ static void g_stop(void) {
     if (g.running) { kill(-g.pid, SIGTERM); waitpid(g.pid, NULL, 0); g.running = 0; }
 }
 
+static int g_readable(int fd, int cond, GP data);
+
+static void g_offer_text(void) {
+    char t[64];
+    snprintf(t, sizeof t, "The game is built. Preparing its shaders in %d s", g.offer_left);
+    gtk.label_set_text(g.stage, t);
+}
+
+static void g_shaders(void) {
+    g.phase = SHADERS;
+    gtk.widget_hide(g.skip);
+    gtk.button_set_label(g.button, "Skip");
+    g.pid = spawn_shaders(&g.fd);
+    if (g.pid < 0) { g.phase = ENDED; gtk.widget_destroy(g.win); return; }   /* (the game prepares them at its first start) */
+    g.running = 1;
+    gtk.unix_fd_add(g.fd, 1 | 16 | 8, g_readable, NULL);
+    g_progress();
+}
+
+static void g_offer(void) {
+    g.phase = OFFERING;
+    g.offer_left = OFFER_S;
+    g_offer_text();
+    gtk.label_set_text(g.times, OFFER_TEXT);
+    gtk.button_set_label(g.button, "Start now");
+    gtk.widget_show(g.skip);
+}
+
 static int g_tick(GP data) {
     (void)data;
+    if (g.phase == ENDED) return 0;
     if (g.running) g_progress();
-    return g.running;
+    else if (g.phase == OFFERING) {
+        if (--g.offer_left <= 0) g_shaders();
+        else g_offer_text();
+    }
+    return 1;
 }
 
 static int g_readable(int fd, int cond, GP data) {
@@ -646,10 +793,12 @@ static int g_readable(int fd, int cond, GP data) {
     if (n > 0) { feed(&g.f, buf, (size_t)n); return 1; }
     if (n < 0 && (errno == EINTR || errno == EAGAIN)) return 1;
     feed_end(&g.f);   /* (the build ended) */
+    close(fd);
     int status = 1;
     waitpid(g.pid, &status, 0);
     g.running = 0;
-    if (!g.f.p.failed && WIFEXITED(status) && !WEXITSTATUS(status)) { g.result = 0; gtk.widget_destroy(g.win); return 0; }
+    if (g.phase == SHADERS) { g.phase = ENDED; gtk.widget_destroy(g.win); return 0; }   /* (prepared, or left to the game) */
+    if (!g.f.p.failed && WIFEXITED(status) && !WEXITSTATUS(status)) { g.result = 0; g_offer(); return 0; }
     if (!g.f.p.failed) {
         g.f.p.failed = 1;
         snprintf(g.f.p.error, sizeof g.f.p.error, "The build ended with code %d.", WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
@@ -661,8 +810,17 @@ static int g_readable(int fd, int cond, GP data) {
     return 0;
 }
 
-static void g_close(void) { gtk.widget_destroy(g.win); }
-static void g_destroyed(void) { g_stop(); gtk.main_quit(); }
+static void g_close(void) {
+    if (g.phase == OFFERING) g_shaders();
+    else gtk.widget_destroy(g.win);   /* (while building: stops it; while preparing: skips) */
+}
+static void g_skip(void) { gtk.widget_destroy(g.win); }
+static void g_destroyed(void) {
+    if (g.phase == OFFERING || g.phase == SHADERS) shaders_skipped();
+    g.phase = ENDED;
+    g_stop();
+    gtk.main_quit();
+}
 
 /* 0 built; 2 stopped (said so in the window) */
 static int build_gtk(pid_t pid, int fd) {
@@ -704,17 +862,24 @@ static int build_gtk(pid_t pid, int fd) {
     g.mark = gtk.text_buffer_create_mark(g.buffer, NULL, iter, 0);   /* (right gravity: stays at the end) */
     gtk.container_add(scroll, g.view);
     gtk.container_add(g.expander, scroll);
+    GP buttons = gtk.box_new(0, 8);
+    gtk.widget_set_halign(buttons, 2 /* GTK_ALIGN_END */);
+    gtk.box_pack_end(box, buttons, 0, 0, 0);
+    g.skip = gtk.button_new_with_label("Skip");
+    gtk.box_pack_start(buttons, g.skip, 0, 0, 0);
     g.button = gtk.button_new_with_label("Stop");
-    gtk.widget_set_halign(g.button, 2 /* GTK_ALIGN_END */);
-    gtk.box_pack_end(box, g.button, 0, 0, 0);
+    gtk.box_pack_start(buttons, g.button, 0, 0, 0);
     gtk.signal_connect_data(g.button, "clicked", (void (*)(void))g_close, NULL, NULL, 0);
+    gtk.signal_connect_data(g.skip, "clicked", (void (*)(void))g_skip, NULL, NULL, 0);
     gtk.signal_connect_data(g.win, "destroy", (void (*)(void))g_destroyed, NULL, NULL, 0);
     gtk.timeout_add(1000, g_tick, NULL);
     gtk.unix_fd_add(fd, 1 | 16 | 8 /* G_IO_IN | G_IO_HUP | G_IO_ERR */, g_readable, NULL);
     g_progress();
     gtk.widget_show_all(g.win);
+    gtk.widget_hide(g.skip);
     gtk.main();
     g_stop();
+    feed_close(&g.f);
     return g.result;
 }
 
@@ -738,20 +903,33 @@ static void t_output(const char *line) {
     t_status();
 }
 static void t_progress(void) {
-    if (!t_tty && t.p.stage >= 0) fprintf(stderr, "Hookshot: %s\n", t.p.text);
+    static int said = -1;   /* (no terminal: each stage once) */
+    if (!t_tty && t.p.stage >= 0 && t.p.stage != said) fprintf(stderr, "Hookshot: %s\n", t.p.text);
+    said = t.p.stage;
     t_status();
 }
-static int build_terminal(pid_t pid, int fd, FILE *bar) {
-    feed_open(&t);
-    t_tty = isatty(2) && !bar;
-    t.on_output = bar ? NULL : t_output;
-    t.on_progress = t_progress;
-    int last_stage = -2, failed = 0;
+/* a line typed on the terminal, if one came: its first character ('\n' for Enter alone), else 0 */
+static int t_key(struct pollfd *in) {
+    if (in->fd < 0 || !(in->revents & POLLIN)) return 0;
+    char line[64];
+    const ssize_t n = read(in->fd, line, sizeof line);
+    if (n <= 0) { in->fd = -1; return 0; }
+    return line[0];
+}
+
+/* the command's output until it ends, the status line under it; shaders: a line starting with s skips them */
+static int t_follow(pid_t pid, int fd, FILE *bar, int shaders, int *skipped) {
+    int last_stage = -2;
+    struct pollfd pf[2] = {{fd, POLLIN, 0}, {shaders && t_tty ? 0 : -1, POLLIN, 0}};
     for (;;) {
-        struct pollfd pf = {fd, POLLIN, 0};
-        const int r = poll(&pf, 1, 1000);
+        const int r = poll(pf, 2, 1000);
         if (r < 0 && errno == EINTR) continue;
-        if (r > 0) {
+        if (t_key(&pf[1]) == 's') {
+            kill(-pid, SIGTERM);
+            *skipped = 1;
+            break;
+        }
+        if (r > 0 && pf[0].revents) {
             char buf[4096];
             const ssize_t n = read(fd, buf, sizeof buf);
             if (n < 0 && errno == EINTR) continue;
@@ -769,13 +947,64 @@ static int build_terminal(pid_t pid, int fd, FILE *bar) {
         }
     }
     feed_end(&t);
+    close(fd);
     if (t_tty) fprintf(stderr, "\n");
-    if (t.p.failed) fprintf(stderr, "Hookshot: the build stopped: %s\n%s\n", t.p.error, DETAILS_HINT);
-    failed = t.p.failed;
-    if (bar) { fprintf(bar, "100\n"); pclose(bar); }
     int status = 1;
     waitpid(pid, &status, 0);
-    return failed || !WIFEXITED(status) || WEXITSTATUS(status) ? 1 : 0;
+    return !t.p.failed && WIFEXITED(status) && !WEXITSTATUS(status);
+}
+
+static FILE *zenity_bar(void) {
+    const int zenity = (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")) && !isatty(2) && system("command -v zenity >/dev/null 2>&1") == 0;
+    return zenity ? popen("zenity --progress --title=Hookshot --text='Building the game' --auto-close --no-cancel 2>/dev/null", "w") : NULL;
+}
+
+static void zenity_end(FILE *bar) {
+    if (bar) { fprintf(bar, "100\n"); pclose(bar); }
+}
+
+static int build_terminal(pid_t pid, int fd) {
+    FILE *bar = zenity_bar();
+    feed_open(&t);
+    t_tty = isatty(2) && !bar;
+    t.on_output = bar ? NULL : t_output;
+    t.on_progress = t_progress;
+    int skipped = 0;
+    const int ok = t_follow(pid, fd, bar, 0, &skipped);
+    zenity_end(bar);
+    if (!ok) {
+        if (t.p.failed) fprintf(stderr, "Hookshot: the build stopped: %s\n%s\n", t.p.error, DETAILS_HINT);
+        feed_close(&t);
+        return 1;
+    }
+    /* the shaders: on a terminal offered first (Enter starts them now, s skips), else started */
+    if (t_tty && isatty(0)) {
+        fprintf(stderr, "Hookshot: the game is built. %s\nEnter starts preparing them now, s then Enter skips; they start "
+                        "by themselves in %d s.\n", OFFER_TEXT, OFFER_S);
+        struct pollfd in = {0, POLLIN, 0};
+        for (int left = OFFER_S * 10; left > 0; left--) {
+            if (poll(&in, 1, 100) > 0) {
+                const int k = t_key(&in);
+                if (k == 's') { shaders_skipped(); fprintf(stderr, "Hookshot: shaders skipped.\n"); feed_close(&t); return 0; }
+                if (k) break;
+            }
+        }
+        fprintf(stderr, "Hookshot: preparing the shaders (s then Enter skips).\n");
+    }
+    int out;
+    const pid_t sp = spawn_shaders(&out);
+    if (sp > 0) {
+        bar = zenity_bar();
+        t.on_output = bar ? NULL : t_output;
+        t_tty = isatty(2) && !bar;
+        if (!t_follow(sp, out, bar, 1, &skipped) && !skipped)
+            fprintf(stderr, "Hookshot: the shaders were not prepared now: %s\n",
+                    t.p.failed ? t.p.error : "the step stopped. The game prepares them at its first start.");
+        zenity_end(bar);
+        if (skipped) { waitpid(sp, NULL, 0); shaders_skipped(); fprintf(stderr, "Hookshot: shaders skipped.\n"); }
+    }
+    feed_close(&t);
+    return 0;
 }
 #endif
 
@@ -797,27 +1026,11 @@ static int build(const char *game) {
     snprintf(env_path, sizeof env_path, "%s:%s", llvm, getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin");
     setenv("PATH", env_path, 1);
     const int use_gtk = gtk_load();
-    int fd[2];
-    if (pipe(fd)) return 1;
-    const pid_t pid = fork();
+    char *args[] = {py, "-I", script, "--part", "game", "--target", "linux", (char *)kind, (char *)game, "--out", here, NULL};
+    int fd;
+    const pid_t pid = spawn(args, &fd);
     if (pid < 0) return 1;
-    if (pid == 0) {   /* (no shell: any path works as it is; its own process group, so that stopping it stops all of it) */
-        setpgid(0, 0);
-        dup2(fd[1], 1);
-        dup2(fd[1], 2);
-        close(fd[0]);
-        close(fd[1]);
-        char *args[] = {py, "-I", script, "--part", "game", "--target", "linux", (char *)kind, (char *)game, "--out", here, NULL};
-        execvp(py, args);
-        perror(py);
-        _exit(127);
-    }
-    close(fd[1]);
-    fcntl(fd[0], F_SETFD, FD_CLOEXEC);
-    if (use_gtk) return build_gtk(pid, fd[0]);
-    const int zenity = (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")) && !isatty(2) && system("command -v zenity >/dev/null 2>&1") == 0;
-    FILE *bar = zenity ? popen("zenity --progress --title=Hookshot --text='Building the game' --auto-close --no-cancel 2>/dev/null", "w") : NULL;
-    return build_terminal(pid, fd[0], bar);
+    return use_gtk ? build_gtk(pid, fd) : build_terminal(pid, fd);
 #endif
 }
 
