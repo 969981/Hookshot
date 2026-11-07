@@ -746,6 +746,8 @@ uint64_t disk_stamp() {
     // lost it)
     const uint64_t translator = HOOKSHOT_SHADER_STAMP;
     add(&translator, sizeof translator);
+    const uint32_t depth = host->depth_minus_w() != 0;
+    add(&depth, sizeof depth);
     for (char** e = _environ; e && *e; e++)
         for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
