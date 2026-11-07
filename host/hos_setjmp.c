@@ -35,7 +35,7 @@
 #endif
 
 #define DEPTH 256
-typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
+typedef struct { uint64_t rets[4]; volatile uint64_t target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
 typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
 static _Thread_local SjStack *stack;
 static _Thread_local uint64_t sj_target;
@@ -129,9 +129,18 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
     return s->buf;
 }
 
-uint64_t recomp_sj_target(void **buf) {
+__attribute__((noinline)) uint64_t recomp_sj_target(void **buf) {
+    /* After siglongjmp, automatic variables in the generated wrapper have
+       indeterminate values.  Do not use _sj (or rely only on TLS) here: the
+       slot is the state that was deliberately retained across the jump. */
     (void)buf;
-    return sj_target;
+    if (stack) {
+        for (int i = stack->depth - 1; i >= 0; i--) {
+            uint64_t target = __atomic_load_n(&stack->slot[i].target, __ATOMIC_ACQUIRE);
+            if (target) return target;
+        }
+    }
+    return __atomic_load_n(&sj_target, __ATOMIC_ACQUIRE);
 }
 
 void recomp_sj_pop(void **buf) {
@@ -150,8 +159,8 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
         if (InterlockedIncrement(&logged) <= 4)
             hos_log("longjmp to %#llx (value %llu, %d slots above dropped)", (unsigned long long)target,
                     (unsigned long long)c->x[0], stack->depth - 1 - i);
-        s->target = target;
-        sj_target = target;
+        __atomic_store_n(&s->target, target, __ATOMIC_RELEASE);
+        __atomic_store_n(&sj_target, target, __ATOMIC_RELEASE);
         stack->depth = i + 1;
         recomp_sj_longjmp(s->buf, 1);
     }
