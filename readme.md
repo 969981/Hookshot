@@ -143,7 +143,7 @@ To build from the command line you also need:
   game folder finds them there. Saves from an older version, in a `user` folder beside the game, are moved there the
   first time, and `saves-moved.txt` beside the game says where. `--user <folder>` uses another folder.
 - On Linux, the launcher adds Hookshot to your desktop's menus with its icon
-  (`~/.local/share/applications/io.github.gab9281.Hookshot.desktop`), and updates it if you move the folder. Set
+  (`~/.local/share/applications/io.github.NotRexed.Hookshot.desktop`), and updates it if you move the folder. Set
   `HOOKSHOT_NO_DESKTOP=1` to leave it out.
 - It compiles with half your processor's threads. With little memory, use fewer: set `HOOKSHOT_JOBS`, for example
   `HOOKSHOT_JOBS=3 ./hookshot`.

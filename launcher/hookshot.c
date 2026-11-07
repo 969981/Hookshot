@@ -1036,7 +1036,7 @@ static int build(const char *game) {
 
 #ifndef _WIN32
 /* Linux: the game in the desktop's menus, with its icon (hookshot.png here, scripts/package.py), as
-   $XDG_DATA_HOME/applications/io.github.gab9281.Hookshot.desktop: the name of the window's app id (host/linux/
+   $XDG_DATA_HOME/applications/io.github.NotRexed.Hookshot.desktop: the name of the window's app id (host/linux/
    display_sdl.c), so the compositor puts the icon on the window too. Written again when this folder moved;
    HOOKSHOT_NO_DESKTOP=1 leaves it out */
 static void desktop_entry(void) {
@@ -1058,8 +1058,8 @@ static void desktop_entry(void) {
     char want[PATH_CAP * 4];
     snprintf(want, sizeof want,
              "[Desktop Entry]\nType=Application\nName=Hookshot\nComment=The Legend of Zelda: Ocarina of Time, built on this PC\n"
-             "Exec=%s\nIcon=%s\nTerminal=false\nCategories=Game;\nStartupWMClass=io.github.gab9281.Hookshot\n", exec, icon);
-    snprintf(file, sizeof file, "%s/io.github.gab9281.Hookshot.desktop", dir);
+             "Exec=%s\nIcon=%s\nTerminal=false\nCategories=Game;\nStartupWMClass=io.github.NotRexed.Hookshot\n", exec, icon);
+    snprintf(file, sizeof file, "%s/io.github.NotRexed.Hookshot.desktop", dir);
     char have[sizeof want] = "";
     FILE *f = fopen(file, "r");
     if (f) {

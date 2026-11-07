@@ -23,7 +23,7 @@ volatile LONG64 hos_present_count;   /* (nvn_native.c: the game's presents) */
 void hos_sdl_identity(void) {
     static volatile LONG done;
     if (InterlockedExchange(&done, 1)) return;
-    SDL_SetAppMetadata("Hookshot", NULL, "io.github.gab9281.Hookshot");
+    SDL_SetAppMetadata("Hookshot", NULL, "io.github.NotRexed.Hookshot");
 }
 static SDL_Window *window;
 static int renderer;
