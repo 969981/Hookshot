@@ -1,0 +1,192 @@
+# (hookshot) The launcher's release folders, Windows and Linux, built and tested. NOT ACTIVE: GitHub runs only the
+# files in .github/workflows/, and this one is kept out of it on purpose. To turn it on:
+#
+#     git mv ci/github/release.yml .github/workflows/release.yml
+#
+# It then runs by hand (Actions > release > Run workflow) and on a v* tag, where it also drafts a GitHub release with
+# both folders attached (left as a draft: publishing stays a person's step).
+#
+#   deps          scripts/fetch-deps.sh: every dependency at its pinned version and sha256 (cached between runs)
+#   linux         the runtime (nx2/build.py --part runtime --target linux) and dist/Hookshot-linux (scripts/package.py)
+#   windows       the same on a Windows runner, natively: its Windows SDK and C library (no xwin, no licence accepted
+#                 for anyone here); the compiler is the release's own LLVM
+#   test-linux    the release folder in a bare Debian (no compiler, no Python, nothing but SDL2 a player has): its own
+#                 Python, compiler and helpers work, and its launcher runs a game build up to reading the game
+#   test-windows  the same in a bare Windows Server Core container (no Visual Studio, no SDK, no Python)
+#
+# There is no game in CI (nor may there be): the tests stop where the game is read, with a file that is not one, and
+# check that the build says so. A full build from a real .nup is the release checklist's step (docs/development.md).
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  JOBS: "4"
+
+jobs:
+  deps:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: work/deps/dl
+          key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
+      - run: scripts/fetch-deps.sh windows
+      - name: The Windows job's share
+        run: tar -cf deps-windows.tar work/deps/win-python work/deps/win-llvm work/deps/cpm third_party/sdl2/SDL2.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deps-windows
+          path: deps-windows.tar
+          retention-days: 1
+
+  linux:
+    runs-on: ubuntu-22.04   # (glibc 2.35: what the release asks of a player's system at least)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: work/deps/dl
+          key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
+      - run: scripts/fetch-deps.sh linux
+      - name: Headers the runtime builds against (SDL2, FreeType)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsdl2-dev libfreetype-dev pkg-config
+      - name: Runtime
+        run: |
+          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH" RX_CPM="$PWD/work/deps/cpm" OOT_WORK="$PWD/work" RX_RELEASE=1
+          work/deps/linux-python/bin/python3 -I nx2/build.py --part runtime --target linux --jobs "$JOBS"
+      - name: Release folder
+        run: |
+          export PATH="$PWD/work/deps/linux-llvm/bin:$PATH"
+          work/deps/linux-python/bin/python3 -I scripts/package.py --target linux --runtime work/runtime-linux \
+            --python work/deps/linux-python --llvm work/deps/linux-llvm
+          tar -C dist -czf Hookshot-linux.tar.gz Hookshot-linux   # (a tar keeps the links and the executable bits)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hookshot-linux
+          path: Hookshot-linux.tar.gz
+
+  windows:
+    needs: deps
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: deps-windows
+      - run: tar -xf deps-windows.tar
+        shell: bash
+      - name: Runtime
+        shell: pwsh
+        run: |
+          # (the release's LLVM has no clang++.exe: clang picks C++ from its own file name)
+          Copy-Item work\deps\win-llvm\bin\clang.exe work\deps\win-llvm\bin\clang++.exe
+          $env:PATH = "$PWD\work\deps\win-llvm\bin;$env:PATH"
+          $env:RX_CPM = "$PWD\work\deps\cpm"; $env:OOT_WORK = "$PWD\work"; $env:RX_RELEASE = "1"
+          work\deps\win-python\python.exe -I nx2\build.py --part runtime --target windows --jobs $env:JOBS
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Remove-Item work\deps\win-llvm\bin\clang++.exe
+      - name: Release folder
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\work\deps\win-llvm\bin;$env:PATH"
+          work\deps\win-python\python.exe -I scripts\package.py --target windows --runtime work\runtime-windows `
+            --python work\deps\win-python --llvm work\deps\win-llvm
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\Hookshot-windows -DestinationPath Hookshot-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hookshot-windows
+          path: Hookshot-windows.zip
+
+  test-linux:
+    needs: linux
+    runs-on: ubuntu-22.04
+    container: debian:bookworm-slim
+    steps:
+      - name: A player's system (SDL2, nothing to build with)
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends libsdl2-2.0-0
+          for t in cc gcc clang ld python3 python; do
+            if command -v "$t"; then echo "$t is here: this is not a system without build tools"; exit 1; fi
+          done
+      - uses: actions/download-artifact@v4
+        with:
+          name: Hookshot-linux
+      - run: tar -xzf Hookshot-linux.tar.gz
+      - name: The runtime's libraries (all there but the game module, which the build makes)
+        working-directory: Hookshot-linux
+        run: |
+          ldd hookshot_rt | tee ldd.txt
+          if grep "not found" ldd.txt | grep -v libhookshot_game.so; then exit 1; fi
+          ldd libhookshot_vk.so | grep "not found" && exit 1 || true
+      - name: Its Python, helpers and compiler
+        working-directory: Hookshot-linux
+        run: |
+          tools/python/bin/python3 -I -c "import ctypes, lz4, numpy, capstone, zstandard
+          ctypes.CDLL('tools/hookshot/third_party/a64-kit/lift/liba64emit.so')
+          ctypes.CDLL('tools/hookshot/third_party/zbic/zbic.so')
+          print('python ok')"
+          tools/python/bin/python3 -I tools/hookshot/nx2/make_game.py --help > /dev/null
+          printf 'int hookshot_probe(void) { return 1; }\n' > /tmp/probe.c
+          tools/llvm/bin/clang --target=x86_64-pc-linux-gnu -shared -fPIC -nostdlib -fuse-ld=lld -o /tmp/probe.so /tmp/probe.c
+          tools/llvm/bin/llvm-nm -D /tmp/probe.so | grep -q hookshot_probe && echo "clang + lld ok"
+      - name: The launcher's build, up to the game (with a file that is not one)
+        working-directory: Hookshot-linux
+        run: |
+          printf 'NOTANUP' > /tmp/fake.nup
+          env -i HOME=/tmp PATH=/nonexistent ./hookshot /tmp/fake.nup > build.txt 2>&1 && exit 1 || true
+          cat build.txt
+          grep -q "not a NUP package" build.txt
+
+  test-windows:
+    needs: windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Hookshot-windows
+      - run: Expand-Archive Hookshot-windows.zip -DestinationPath C:\t
+        shell: pwsh
+      - name: In a bare Windows (Server Core, no Visual Studio, no Windows SDK, no Python)
+        shell: pwsh
+        run: |
+          Set-Content -Path C:\t\test.cmd -Encoding ascii -Value @'
+          @echo off
+          cd /d C:\t\Hookshot-windows
+          where cl clang python 2>nul && (echo build tools are here & exit /b 1)
+          tools\python\python.exe -I -c "import ctypes, lz4, numpy, capstone, zstandard; ctypes.CDLL(r'tools\hookshot\third_party\a64-kit\lift\a64emit.dll'); ctypes.CDLL(r'tools\hookshot\third_party\zbic\zbic.dll'); print('python ok')" || exit /b 1
+          tools\python\python.exe -I tools\hookshot\nx2\make_game.py --help > nul || exit /b 1
+          echo int hookshot_probe(void) { return 1; } > C:\t\probe.c
+          tools\llvm\bin\clang.exe --target=x86_64-pc-windows-msvc -shared -nostdlib -fuse-ld=lld -Wl,/noentry -Wl,/export:hookshot_probe -o C:\t\probe.dll C:\t\probe.c || exit /b 1
+          echo clang + lld ok
+          echo NOTANUP> C:\t\fake.nup
+          rem (the launcher's own command, hookshot.c build(): its window would wait for a click here)
+          tools\python\python.exe -I tools\hookshot\nx2\make_game.py --part game --target windows --nup C:\t\fake.nup --out C:\t\Hookshot-windows > C:\t\build.txt 2>&1
+          type C:\t\build.txt
+          findstr /c:"not a NUP package" C:\t\build.txt || exit /b 1
+          '@
+          docker run --rm -v C:\t:C:\t mcr.microsoft.com/windows/servercore:ltsc2022 cmd /c C:\t\test.cmd
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-linux, test-windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Draft release with both folders
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "Hookshot $GITHUB_REF_NAME" \
+            --notes "Extract it all, run hookshot (hookshot.exe on Windows) and choose your .nup: the game is built once, on your PC." \
+            Hookshot-linux/Hookshot-linux.tar.gz Hookshot-windows/Hookshot-windows.zip
