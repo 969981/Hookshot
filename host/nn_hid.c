@@ -416,6 +416,10 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
+    {   /* (hookshot) HOS_CAMFIND=1: F6 runs the camera finder (camfind.c), which has the controls while it runs */
+        int hos_camfind(uint64_t *buttons, int32_t stick[4]);
+        if (hos_camfind(buttons, stick)) return;
+    }
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
