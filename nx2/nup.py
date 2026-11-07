@@ -20,11 +20,13 @@ A file that is itself zstd in the game (the romfs .zs files) is not one of those
 import argparse
 import os
 import shutil
+import stat
 import struct
 import sys
 
 
 ZSTD = b"\x28\xb5\x2f\xfd"
+WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL"} | {p + n for p in ("COM", "LPT") for n in "123456789¹²³"}
 
 
 def frame_content_size(head):
@@ -173,13 +175,43 @@ def pick_title(nup, want):
     raise SystemExit("no title %s" % want)
 
 
+def extraction_path(out, part, rel):
+    """A package path stays under its part, without following existing output links."""
+    parts = rel.split("/")
+    if (not rel or "\\" in rel or any(not p or p in (".", "..") or p[-1] in " ." or
+            any(c in '<>:"|?*' or ord(c) < 32 for c in p) or p.split(".")[0].rstrip(" ").upper() in WINDOWS_DEVICES
+            for p in parts)):
+        raise SystemExit("unsafe path in the package: %r" % rel)
+    root = os.path.realpath(os.path.abspath(out))
+    base = os.path.join(root, part)
+    dst = os.path.join(base, *parts)
+    if os.path.commonpath((os.path.normcase(base), os.path.normcase(os.path.abspath(dst)))) != os.path.normcase(base):
+        raise SystemExit("path leaves the extraction folder: %r" % rel)
+    at = root
+    paths = [at]
+    for p in (part, *parts):
+        at = os.path.join(at, p)
+        paths.append(at)
+    paths.append(dst + ".part")
+    for path in paths:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            raise SystemExit("extraction path is a link or reparse point: %s" % path)
+        if path == dst + ".part" and info.st_nlink > 1:
+            raise SystemExit("extraction temporary file has other hard links: %s" % path)
+    return dst
+
+
 def extract(nup, t, out, only=None, quiet=False):
     total = n = 0
     for part in ("exefs", "romfs"):
         if only and part != only:
             continue
         for rel, r in nup.walk(t[part]):
-            dst = os.path.join(out, part, *rel.split("/"))
+            dst = extraction_path(out, part, rel)
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
