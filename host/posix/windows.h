@@ -405,6 +405,32 @@ HANDLE GetStdHandle(DWORD which);
 BOOL GetConsoleMode(HANDLE h, DWORD *mode);
 DWORD GetFileAttributesA(LPCSTR path);
 #define GetFileAttributes GetFileAttributesA
+typedef enum { GetFileExInfoStandard, GetFileExMaxInfoLevel } GET_FILEEX_INFO_LEVELS;
+typedef struct {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD nFileSizeHigh, nFileSizeLow;
+} WIN32_FILE_ATTRIBUTE_DATA;
+static inline FILETIME posix_timespec_to_filetime(struct timespec t) {   /* (100 ns since 1601) */
+    const uint64_t v = ((uint64_t)t.tv_sec + 11644473600ULL) * 10000000ULL + (uint64_t)t.tv_nsec / 100;
+    FILETIME ft = { (DWORD)v, (DWORD)(v >> 32) };
+    return ft;
+}
+static inline BOOL GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS level, void *out) {
+    struct stat st;
+    if (level != GetFileExInfoStandard || !out || stat(path, &st) != 0) return FALSE;
+    WIN32_FILE_ATTRIBUTE_DATA *d = (WIN32_FILE_ATTRIBUTE_DATA *)out;
+    d->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    d->ftCreationTime = posix_timespec_to_filetime(st.st_ctim);
+    d->ftLastAccessTime = posix_timespec_to_filetime(st.st_atim);
+    d->ftLastWriteTime = posix_timespec_to_filetime(st.st_mtim);
+    d->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32);
+    d->nFileSizeLow = (DWORD)st.st_size;
+    return TRUE;
+}
+#define GetFileAttributesEx GetFileAttributesExA
+/* (only the hang dump's stack walk asks; a null check is all a POSIX build can do cheaply) */
+static inline BOOL IsBadReadPtr(const void *p, UINT_PTR n) { (void)n; return p == NULL; }
 BOOL CreateDirectoryA(LPCSTR path, void *attr);
 BOOL RemoveDirectoryA(LPCSTR path);
 BOOL DeleteFileA(LPCSTR path);
