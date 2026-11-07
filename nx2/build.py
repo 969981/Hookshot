@@ -100,8 +100,8 @@ def HOT_ORDER():
 
 
 def HOST_LIBS():   # (hookshot) per target: nx2/target.py
-    if not target.windows():   # (SDL2: the window, audio and controllers, host/linux)
-        return ["-lSDL2", "-lpthread", "-ldl", "-lm"]
+    if not target.windows():   # (SDL3: the window, audio and controllers, host/linux)
+        return ["-lSDL3", "-lpthread", "-ldl", "-lm"]
     return ["-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
 
 
@@ -399,10 +399,15 @@ def main():
                                            "-mcx16", "-DA64_POLLING"] + WRITE_TRACK + split
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
-    if not target.windows():   # (hookshot) host/linux: its windows.h first, SDL2's headers (the system's)
-        host_fl = ["-I" + HOST_LINUX] + host_fl + ["-D_GNU_SOURCE"] + (pkg_cflags("sdl2") or [])
+    if not target.windows():   # (hookshot) host/linux: its windows.h first, SDL3's headers (the system's)
+        host_fl = ["-I" + HOST_LINUX] + host_fl + ["-D_GNU_SOURCE"] + (pkg_cflags("sdl3") or [])
         host_deps += b"".join(open(os.path.join(HOST_LINUX, f), "rb").read() for f in sorted(os.listdir(HOST_LINUX))
                               if f.endswith(".h"))
+        for fl in pkg_cflags("sdl3") or ["-I/usr/include"]:   # (and SDL's version: its headers are not ours either)
+            ver = os.path.join(fl[2:], "SDL3", "SDL_version.h") if fl.startswith("-I") else ""
+            if os.path.exists(ver):
+                host_deps += open(ver, "rb").read()
+                break
     # (hookshot) the FFmpeg the host is compiled against, in its objects' keys: its headers are not ours, and an object
     # built against the system's (another major version, other codec numbers and struct layouts) was taken from the
     # cache for the bundled one: the AV1 movies opened as another codec, and the heap was written over
@@ -542,9 +547,9 @@ def main():
             dll, dst = os.path.join(WGPU, "lib", so), os.path.join(out, so)
             if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
                 shutil.copyfile(dll, dst)
-        # (hookshot) SDL2.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...). Linux: the system's
-        sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
-        sdl_dst = os.path.join(out, "SDL2.dll")
+        # (hookshot) SDL3.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...). Linux: the system's
+        sdl = os.path.join(kit.HERE, "..", "third_party", "sdl3", "SDL3.dll")
+        sdl_dst = os.path.join(out, "SDL3.dll")
         if win and os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
             import shutil
             shutil.copyfile(sdl, sdl_dst)

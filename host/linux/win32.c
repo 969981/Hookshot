@@ -22,7 +22,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 
 /* ---- errors ---- */
 static _Thread_local DWORD last_error;
@@ -884,7 +884,7 @@ HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *out) {
 BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *out) { return is_obj(h, K_FIND) && find_next((FindObj *)h, out); }
 BOOL FindClose(HANDLE h) { return CloseHandle(h); }
 
-/* ---- modules: a Windows name read as its Linux one (SDL2.dll, vulkan-1.dll, <name>.dll -> lib<name>.so) ---- */
+/* ---- modules: a Windows name read as its Linux one (SDL3.dll, vulkan-1.dll, <name>.dll -> lib<name>.so) ---- */
 DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap) {
     if (!cap) return 0;
     char p[PATH_MAX];
@@ -922,7 +922,7 @@ static const char *linux_name(const char *in, char *out) {
     const size_t dir = base ? (size_t)(base + 1 - p) : 0;
     base = base ? base + 1 : p;
     static const struct { const char *win, *lin; } known[] = {
-        {"sdl2.dll", "libSDL2-2.0.so.0"}, {"vulkan-1.dll", "libvulkan.so.1"}};
+        {"sdl3.dll", "libSDL3.so.0"}, {"vulkan-1.dll", "libvulkan.so.1"}};
     const size_t n = strlen(base);
     if (n < 4 || strcasecmp(base + n - 4, ".dll")) return strcpy(out, p);
     for (unsigned i = 0; i < sizeof known / sizeof *known; i++)
@@ -992,20 +992,29 @@ int WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR in, int n, LPSTR out, int 
 /* ---- waveOut on SDL's audio: the blocks written are played in order by SDL's callback, each marked done when it
    has been played out, as waveOut does ---- */
 typedef struct {
-    SDL_AudioDeviceID dev;
-    SDL_mutex *m;
+    SDL_AudioStream *stream;
+    SDL_Mutex *m;
     WAVEHDR *head, *tail;   /* queued, the playing one first */
     DWORD pos;              /* bytes of head played */
+    Uint8 silence;
 } WaveOut;
-static void wave_cb(void *user, Uint8 *out, int len) {
+/* (SDL asks for `want` more bytes when its device runs low: put in from the blocks, a block's end as it comes) */
+static void wave_cb(void *user, SDL_AudioStream *stream, int want, int total) {
+    (void)total;
     WaveOut *w = (WaveOut *)user;
     SDL_LockMutex(w->m);
-    while (len > 0) {
+    while (want > 0) {
         WAVEHDR *h = w->head;
-        if (!h) { memset(out, 0, (size_t)len); break; }   /* (behind: silence) */
-        const DWORD n = h->dwBufferLength - w->pos < (DWORD)len ? h->dwBufferLength - w->pos : (DWORD)len;
-        memcpy(out, h->lpData + w->pos, n);
-        out += n, len -= (int)n, w->pos += n;
+        if (!h) {   /* (behind: silence) */
+            Uint8 quiet[1024];
+            memset(quiet, w->silence, sizeof quiet);
+            for (; want > 0; want -= (int)sizeof quiet)
+                SDL_PutAudioStreamData(stream, quiet, want < (int)sizeof quiet ? want : (int)sizeof quiet);
+            break;
+        }
+        const DWORD n = h->dwBufferLength - w->pos < (DWORD)want ? h->dwBufferLength - w->pos : (DWORD)want;
+        SDL_PutAudioStreamData(stream, h->lpData + w->pos, (int)n);
+        want -= (int)n, w->pos += n;
         if (w->pos == h->dwBufferLength) {
             w->head = h->lpNext;
             if (!w->head) w->tail = NULL;
@@ -1018,24 +1027,22 @@ static void wave_cb(void *user, Uint8 *out, int len) {
 MMRESULT waveOutOpen(HWAVEOUT *out, UINT device, const WAVEFORMATEX *f, DWORD_PTR cb, DWORD_PTR inst, DWORD flags) {
     (void)device, (void)cb, (void)inst, (void)flags;
     *out = NULL;
-    if (!SDL_WasInit(SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO)) return MMSYSERR_ERROR;
+    void hos_sdl_identity(void);   /* (display_sdl.c: the name the mixer shows) */
+    hos_sdl_identity();
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");   /* (the small device buffer SDL2's spec asked for) */
+    if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) return MMSYSERR_ERROR;
     WaveOut *w = (WaveOut *)calloc(1, sizeof *w);
     w->m = SDL_CreateMutex();
-    SDL_AudioSpec want, have;
-    memset(&want, 0, sizeof want);
-    want.freq = (int)f->nSamplesPerSec;
-    want.format = f->wBitsPerSample == 16 ? AUDIO_S16SYS : AUDIO_U8;
-    want.channels = (Uint8)f->nChannels;
-    want.samples = 256;
-    want.callback = wave_cb;
-    want.userdata = w;
-    w->dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (!w->dev) {
+    const SDL_AudioSpec spec = {f->wBitsPerSample == 16 ? SDL_AUDIO_S16 : SDL_AUDIO_U8, (int)f->nChannels,
+                                (int)f->nSamplesPerSec};
+    w->silence = (Uint8)SDL_GetSilenceValueForFormat(spec.format);
+    w->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, wave_cb, w);
+    if (!w->stream) {
         SDL_DestroyMutex(w->m);
         free(w);
         return MMSYSERR_ERROR;
     }
-    SDL_PauseAudioDevice(w->dev, 0);
+    SDL_ResumeAudioStreamDevice(w->stream);
     *out = w;
     return MMSYSERR_NOERROR;
 }
@@ -1075,7 +1082,7 @@ MMRESULT waveOutReset(HWAVEOUT hw) {
 MMRESULT waveOutClose(HWAVEOUT hw) {
     WaveOut *w = (WaveOut *)hw;
     if (!w) return MMSYSERR_ERROR;
-    SDL_CloseAudioDevice(w->dev);
+    SDL_DestroyAudioStream(w->stream);   /* (its device closed with it) */
     SDL_DestroyMutex(w->m);
     free(w);
     return MMSYSERR_NOERROR;

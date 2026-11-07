@@ -1,4 +1,4 @@
-/* (hookshot) The game's window on Linux, on SDL2 (X11 or Wayland), in place of host/display.c: the renderer's
+/* (hookshot) The game's window on Linux, on SDL3 (Wayland first, else X11), in place of host/display.c: the renderer's
    surface (gpu/vk, through HosLinuxWindow: gpu/vk/vk_api.h). As display.c: HOS_HEADLESS=1, no window;
    HOS_WINDOW_SIZE=<w>x<h>, HOS_FULLSCREEN=1, HOS_WINDOW_NOACTIVATE=1; F11 fullscreen; a click captures the mouse
    (relative motion, read by nn_hid.c), Esc or leaving the window releases it; closing the window ends the run.
@@ -11,12 +11,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <windows.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 #include "../../gpu/render/rx.h"
 #include "../../gpu/vk/vk_api.h"
 
 volatile LONG64 hos_present_count;   /* (nvn_native.c: the game's presents) */
+
+/* The app's identity, before SDL starts anything (the boot's screen query, the audio, the window, whichever is first):
+   Wayland's app_id and X11's WM_CLASS, the desktop file's name, what the compositor and the mixer show */
+void hos_sdl_identity(void) {
+    static volatile LONG done;
+    if (InterlockedExchange(&done, 1)) return;
+    SDL_SetAppMetadata("Hookshot", NULL, "io.github.gab9281.Hookshot");
+}
 static SDL_Window *window;
 static int renderer;
 
@@ -31,28 +39,28 @@ static void mouse_capture(int on) {
     mouse_captured = on;
     InterlockedExchange(&mouse_dx, 0);
     InterlockedExchange(&mouse_dy, 0);
-    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+    if (window) SDL_SetWindowRelativeMouseMode(window, on != 0);
 }
 
 static int fullscreen;
 static void set_fullscreen(int on) {
     if (on == fullscreen || !window) return;
     fullscreen = on;
-    SDL_SetWindowFullscreen(window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    SDL_SetWindowFullscreen(window, on != 0);   /* (no mode set: the desktop's, borderless) */
     hos_log("display: %s", on ? "fullscreen (F11 for a window)" : "windowed");
 }
 
 /* what the Vulkan back end asks of the window */
 static int vk_surface(void *native, void *instance, uint64_t *surface) {
     VkSurfaceKHR s = 0;
-    if (!SDL_Vulkan_CreateSurface((SDL_Window *)native, (VkInstance)instance, &s)) {
+    if (!SDL_Vulkan_CreateSurface((SDL_Window *)native, (VkInstance)instance, NULL, &s)) {
         hos_log("display: no Vulkan surface: %s", SDL_GetError());
         return 0;
     }
     *surface = (uint64_t)s;
     return 1;
 }
-static void drawable_size(void *native, int *w, int *h) { SDL_Vulkan_GetDrawableSize((SDL_Window *)native, w, h); }
+static void drawable_size(void *native, int *w, int *h) { SDL_GetWindowSizeInPixels((SDL_Window *)native, w, h); }
 /* (asked from the render thread: SDL's window calls belong to the window's own, which pump() is) */
 static Uint32 fullscreen_event;
 static void ask_fullscreen(void *native, int on) {
@@ -83,28 +91,35 @@ static void pump(void) {
         default:
             if (fullscreen_event && e.type == fullscreen_event) set_fullscreen(e.user.code);
             break;
-        case SDL_QUIT:
+        case SDL_EVENT_QUIT:
             hos_log("display: window closed, exiting");
             hos_log_flush();
             ExitProcess(0);
-        case SDL_MOUSEBUTTONDOWN:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (e.button.button == SDL_BUTTON_LEFT && renderer && !mouse_captured) mouse_capture(1);
             break;
-        case SDL_MOUSEMOTION:
-            if (mouse_captured) {
-                InterlockedExchangeAdd(&mouse_dx, e.motion.xrel);
-                InterlockedExchangeAdd(&mouse_dy, e.motion.yrel);
+        case SDL_EVENT_MOUSE_MOTION:
+            if (mouse_captured) {   /* (SDL3's motion is in fractions of a pixel: the remainders kept for the next) */
+                static float rx, ry;
+                rx += e.motion.xrel, ry += e.motion.yrel;
+                const LONG dx = (LONG)rx, dy = (LONG)ry;
+                rx -= (float)dx, ry -= (float)dy;
+                InterlockedExchangeAdd(&mouse_dx, dx);
+                InterlockedExchangeAdd(&mouse_dy, dy);
             }
             break;
-        case SDL_KEYDOWN:
-            if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) mouse_capture(0);
-            if (e.key.keysym.scancode == SDL_SCANCODE_F11 && !e.key.repeat) set_fullscreen(!fullscreen);
+        case SDL_EVENT_KEY_DOWN:
+            if (e.key.scancode == SDL_SCANCODE_ESCAPE) mouse_capture(0);
+            if (e.key.scancode == SDL_SCANCODE_F11 && !e.key.repeat) set_fullscreen(!fullscreen);
             break;
-        case SDL_WINDOWEVENT:
-            if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST || e.window.event == SDL_WINDOWEVENT_LEAVE) mouse_capture(0);
-            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED && renderer) {
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+            mouse_capture(0);
+            break;
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            if (renderer) {
                 int w = 0, h = 0;
-                SDL_Vulkan_GetDrawableSize(window, &w, &h);
+                SDL_GetWindowSizeInPixels(window, &w, &h);
                 rx_resize(w, h);
             }
             break;
@@ -115,8 +130,9 @@ static void pump(void) {
 static DWORD WINAPI display_main(void *p) {
     (void)p;
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
-    if (getenv("HOS_WINDOW_NOACTIVATE")) SDL_SetHint("SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN", "1");
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+    if (getenv("HOS_WINDOW_NOACTIVATE")) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    hos_sdl_identity();
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         hos_log("display: no window (%s): the renderer draws offscreen", SDL_GetError());
         rx_start(NULL);
         SetEvent(renderer_up);
@@ -128,8 +144,7 @@ static DWORD WINAPI display_main(void *p) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = SDL_CreateWindow(HOS_GAME_TITLE, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, win_w, win_h,
-                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    window = SDL_CreateWindow(HOS_GAME_TITLE, win_w, win_h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         hos_log("display: no window (%s): the renderer draws offscreen", SDL_GetError());
         rx_start(NULL);
@@ -137,8 +152,9 @@ static DWORD WINAPI display_main(void *p) {
         return 0;
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
-    fullscreen_event = SDL_RegisterEvents(1);
-    if (fullscreen_event == (Uint32)-1) fullscreen_event = 0;
+    hos_log("display: SDL %d.%d.%d on %s", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
+            SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
+    fullscreen_event = SDL_RegisterEvents(1);   /* (0 when none is left) */
     surface_desc.native = window;
     renderer = rx_start(&surface_desc);
     if (!renderer) hos_log("display: no Vulkan renderer: the window stays black");
@@ -170,7 +186,7 @@ int GetClassNameA(HWND w, LPSTR out, int cap) {
 }
 BOOL GetClientRect(HWND w, RECT *r) {
     int x = 0, y = 0;
-    if (w) SDL_Vulkan_GetDrawableSize((SDL_Window *)w, &x, &y);
+    if (w) SDL_GetWindowSizeInPixels((SDL_Window *)w, &x, &y);
     r->left = r->top = 0;
     r->right = x, r->bottom = y;
     return w != NULL;
@@ -181,11 +197,13 @@ BOOL GetClientRect(HWND w, RECT *r) {
    kept; SDL counts the display thread's start as a second user) */
 int GetSystemMetrics(int index) {
     static volatile LONG tried;
-    if (!SDL_WasInit(SDL_INIT_VIDEO) && !InterlockedExchange(&tried, 1) && (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")))
+    if (!SDL_WasInit(SDL_INIT_VIDEO) && !InterlockedExchange(&tried, 1) && (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))) {
+        hos_sdl_identity();
         SDL_InitSubSystem(SDL_INIT_VIDEO);
-    SDL_DisplayMode m;
-    if (!SDL_WasInit(SDL_INIT_VIDEO) || SDL_GetDesktopDisplayMode(0, &m)) return 0;
-    return index == SM_CXSCREEN ? m.w : index == SM_CYSCREEN ? m.h : 0;
+    }
+    const SDL_DisplayMode *m = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay()) : NULL;
+    if (!m) return 0;
+    return index == SM_CXSCREEN ? m->w : index == SM_CYSCREEN ? m->h : 0;
 }
 
 static SDL_Scancode scancode_of(int vk) {
@@ -241,11 +259,11 @@ static SDL_Scancode scancode_of(int vk) {
 short GetAsyncKeyState(int vk) {
     if (!window) return 0;
     if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON) {
-        const Uint32 b = SDL_GetMouseState(NULL, NULL);
+        const SDL_MouseButtonFlags b = SDL_GetMouseState(NULL, NULL);
         const Uint32 want = vk == VK_LBUTTON ? SDL_BUTTON_LMASK : vk == VK_RBUTTON ? SDL_BUTTON_RMASK : SDL_BUTTON_MMASK;
         return (b & want) ? (short)0x8000 : 0;
     }
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
+    const bool *k = SDL_GetKeyboardState(NULL);
     int down;
     switch (vk) {   /* (either side, as Windows' VK_SHIFT / VK_CONTROL / VK_MENU) */
     case VK_SHIFT: down = k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]; break;

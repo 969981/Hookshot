@@ -621,7 +621,7 @@ uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_v
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t),
                         void *arg) { (void)rel, (void)base_dir, (void)fn, (void)arg; return 0; }   /* (mods.c) */
 int hos_mods_romfs(const char *rel, char *out, size_t cap) { (void)rel, (void)out, (void)cap; return 0; }
-/* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort; SDL2.dll beside the exe) */
+/* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort; SDL3.dll beside the exe) */
 
 /* TOTK's emulated GPU (gpu.c, its Maxwell command processor), which nvdrv.c and the debug commands call into: MKW
    has none (its NVN2 calls go to nvn_native.c), so a submission is only counted. */

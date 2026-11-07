@@ -5,7 +5,7 @@ RX_TARGET (or build.py / make_game.py --target):
   windows  the default: hookshot.exe + hookshot_vk.dll. On Windows as before; from a Linux PC a cross-build, with
            Microsoft's C library and Windows SDK in a /winsysroot-style folder (scripts/setup-winsysroot.sh, with xwin):
            RX_WINSYSROOT, or ~/.local/share/hookshot/winsysroot. Runs with Proton or Wine.
-  linux    a native ELF: hookshot + libhookshot_vk.so, on host/linux (Win32 over POSIX, the window and audio on SDL2).
+  linux    a native ELF: hookshot + libhookshot_vk.so, on host/linux (Win32 over POSIX, the window and audio on SDL3).
 """
 import os
 import shutil
@@ -69,6 +69,6 @@ def lld_link():
 # what the game folder holds beside the game's data, per target
 EXE = {"windows": "hookshot.exe", "linux": "hookshot"}
 VK = {"windows": "hookshot_vk.dll", "linux": "libhookshot_vk.so"}
-BESIDE = {"windows": ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"],
+BESIDE = {"windows": ["hookshot.exe", "hookshot_vk.dll", "SDL3.dll", "wgpu_native.dll"],
           "linux": ["hookshot", "libhookshot_vk.so", "libwgpu_native.so"]}
 BUILD_DIR = {"windows": "build", "linux": "build-linux"}   # (work/sa/<this>: the two targets' objects apart)

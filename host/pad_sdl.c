@@ -1,12 +1,13 @@
-/* Game controllers through SDL2 (third_party/sdl2/SDL2.dll, zlib license, loaded at run time): DualSense,
+/* Game controllers through SDL3 (third_party/sdl3/SDL3.dll, zlib license, loaded at run time): DualSense,
    DualShock 4, Switch Pro, Xbox and most other pads, over USB or Bluetooth. XInput alone sees only Xbox-style pads.
 
    A thread of its own (on Linux the window's, which runs SDL there too) opens every controller SDL knows (and ones
    plugged in later), polls them every 4 ms and keeps
-   the merged state; nn_hid.c ORs it into the input with XInput, keyboard and mouse. Without SDL2.dll nothing
-   changes. HOS_NO_SDL=1 leaves SDL out. Buttons map by position, as for XInput: the bottom face button is the
-   Switch's B (cross on a DualSense, A on an Xbox pad), the right one A, left Y, top X. */
+   the merged state; nn_hid.c ORs it into the input with XInput, keyboard and mouse. Without SDL3.dll nothing
+   changes. HOS_NO_SDL=1 leaves SDL out. Buttons map by position, as for XInput (and SDL3's own names): the bottom face
+   button is the Switch's B (cross on a DualSense, A on an Xbox pad), the right one A, left Y, top X. */
 #include "hos.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,52 +16,48 @@
 
 void hos_host_thread_register_self(const char *name);   /* hos_prof.c */
 
-/* the few SDL2 entry points used (SDL.h's types: SDL_GameController* is opaque, SDL_bool/Uint8/Sint16) */
-typedef int (*InitFn)(uint32_t);
-typedef int (*SetHintFn)(const char *, const char *);
-typedef int (*NumJoysticksFn)(void);
-typedef int (*IsGameControllerFn)(int);
-typedef void *(*OpenFn)(int);
+/* the few SDL3 entry points used (SDL.h's types: SDL_Gamepad* is opaque, SDL_JoystickID a Uint32, bool C's) */
+typedef bool (*InitFn)(uint32_t);
+typedef bool (*SetHintFn)(const char *, const char *);
+typedef uint32_t *(*GetGamepadsFn)(int *);
+typedef void *(*OpenFn)(uint32_t);
 typedef void (*CloseFn)(void *);
-typedef int (*GetAttachedFn)(void *);
+typedef bool (*ConnectedFn)(void *);
 typedef void (*UpdateFn)(void);
-typedef uint8_t (*GetButtonFn)(void *, int);
+typedef bool (*GetButtonFn)(void *, int);
 typedef int16_t (*GetAxisFn)(void *, int);
 typedef const char *(*NameFn)(void *);
-typedef void *(*GetJoystickFn)(void *);
-typedef int32_t (*InstanceIdFn)(void *);
-typedef int32_t (*DeviceInstanceIdFn)(int);
-typedef int (*RumbleFn)(void *, uint16_t, uint16_t, uint32_t);
+typedef uint32_t (*IdFn)(void *);
+typedef bool (*RumbleFn)(void *, uint16_t, uint16_t, uint32_t);
 typedef const char *(*GetErrorFn)(void);
+typedef void (*FreeFn)(void *);
 
 static struct {
     InitFn Init;
     SetHintFn SetHint;
-    NumJoysticksFn NumJoysticks;
-    IsGameControllerFn IsGameController;
+    GetGamepadsFn GetGamepads;
     OpenFn Open;
     CloseFn Close;
-    GetAttachedFn GetAttached;
+    ConnectedFn Connected;
     UpdateFn Update;
     GetButtonFn GetButton;
     GetAxisFn GetAxis;
     NameFn Name;
-    GetJoystickFn GetJoystick;
-    InstanceIdFn JoystickInstanceID;
-    DeviceInstanceIdFn JoystickGetDeviceInstanceID;
+    IdFn Id;
     RumbleFn Rumble;
     GetErrorFn GetError;
+    FreeFn Free;
 } sdl;
 
-enum { SDL_INIT_GAMECONTROLLER = 0x2000 };
+enum { SDL_INIT_GAMEPAD = 0x2000 };
 enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_BACK, BTN_GUIDE, BTN_START, BTN_LSTICK, BTN_RSTICK, BTN_LSHOULDER, BTN_RSHOULDER,
-       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_MISC1, BTN_N = 21 };
+       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT };   /* (SDL_GAMEPAD_BUTTON_SOUTH, _EAST, _WEST, _NORTH, ...) */
 enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT };
 /* nn_hid.c's button bits (B_A = 0 ...) */
 enum { H_A = 0, H_B, H_X, H_Y, H_LS, H_RS, H_L, H_R, H_ZL, H_ZR, H_PLUS, H_MINUS, H_LEFT, H_UP, H_RIGHT, H_DOWN };
 
 #define MAX_PADS 8
-static struct { void *gc; int32_t id; } pads[MAX_PADS];
+static struct { void *gc; uint32_t id; } pads[MAX_PADS];
 static SRWLOCK state_lock = SRWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
@@ -71,27 +68,25 @@ static int load(void) {
     char path[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
-    snprintf(path + n, sizeof path - n, "SDL2.dll");
+    snprintf(path + n, sizeof path - n, "SDL3.dll");
     HMODULE m = LoadLibraryA(path);
-    if (!m) m = LoadLibraryA("SDL2.dll");
+    if (!m) m = LoadLibraryA("SDL3.dll");
     if (!m) return 0;
 #define GET(field, name) if (!(*(FARPROC *)&sdl.field = GetProcAddress(m, name))) return 0
     GET(Init, "SDL_Init");
     GET(SetHint, "SDL_SetHint");
-    GET(NumJoysticks, "SDL_NumJoysticks");
-    GET(IsGameController, "SDL_IsGameController");
-    GET(Open, "SDL_GameControllerOpen");
-    GET(Close, "SDL_GameControllerClose");
-    GET(GetAttached, "SDL_GameControllerGetAttached");
-    GET(Update, "SDL_GameControllerUpdate");
-    GET(GetButton, "SDL_GameControllerGetButton");
-    GET(GetAxis, "SDL_GameControllerGetAxis");
-    GET(Name, "SDL_GameControllerName");
-    GET(GetJoystick, "SDL_GameControllerGetJoystick");
-    GET(JoystickInstanceID, "SDL_JoystickInstanceID");
-    GET(JoystickGetDeviceInstanceID, "SDL_JoystickGetDeviceInstanceID");
-    GET(Rumble, "SDL_GameControllerRumble");
+    GET(GetGamepads, "SDL_GetGamepads");
+    GET(Open, "SDL_OpenGamepad");
+    GET(Close, "SDL_CloseGamepad");
+    GET(Connected, "SDL_GamepadConnected");
+    GET(Update, "SDL_UpdateGamepads");
+    GET(GetButton, "SDL_GetGamepadButton");
+    GET(GetAxis, "SDL_GetGamepadAxis");
+    GET(Name, "SDL_GetGamepadName");
+    GET(Id, "SDL_GetGamepadID");
+    GET(Rumble, "SDL_RumbleGamepad");
     GET(GetError, "SDL_GetError");
+    GET(Free, "SDL_free");
 #undef GET
     return 1;
 }
@@ -106,12 +101,9 @@ static int32_t stick_value(int16_t v, int flip) {
 static int pads_start(void) {
     /* poll in the background, whatever window is in front (nn_hid.c decides when input counts) */
     sdl.SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
-    sdl.SetHint("SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "1");
-    sdl.SetHint("SDL_JOYSTICK_HIDAPI_PS4_RUMBLE", "1");
-    /* (the map below is by position; SDL2 reports Nintendo pads by their labels unless told not to, which put a Switch Pro
-       Controller's A, on the right, at the bottom button's place: A acted as B and X as Y: SkyboundTotk issue 12) */
-    sdl.SetHint("SDL_GAMECONTROLLER_USE_BUTTON_LABELS", "0");
-    if (sdl.Init(SDL_INIT_GAMECONTROLLER) != 0) {
+    /* (PlayStation pads' rumble: SDL3 turns their enhanced reports on when a rumble is first asked. Nintendo pads come
+       by position too, as the map below wants: SDL2 needed telling, or a Switch Pro Controller's A acted as B) */
+    if (!sdl.Init(SDL_INIT_GAMEPAD)) {
         hos_log("hid: SDL could not start its controller support: %s", sdl.GetError());
         return 0;
     }
@@ -129,27 +121,28 @@ static void pads_poll(void) {
         if (now >= next_scan) {   /* new controllers (and ones that went away) */
             next_scan = now + 1000000000LL;
             for (int i = 0; i < MAX_PADS; i++)
-                if (pads[i].gc && !sdl.GetAttached(pads[i].gc)) {
+                if (pads[i].gc && !sdl.Connected(pads[i].gc)) {
                     hos_log("hid: controller \"%s\" disconnected (SDL)", sdl.Name(pads[i].gc));
                     sdl.Close(pads[i].gc);
                     pads[i].gc = NULL;
                 }
-            const int nj = sdl.NumJoysticks();
-            for (int j = 0; j < nj; j++) {
-                if (!sdl.IsGameController(j)) continue;
-                const int32_t id = sdl.JoystickGetDeviceInstanceID(j);
+            int nj = 0;
+            uint32_t *ids = sdl.GetGamepads(&nj);
+            for (int j = 0; ids && j < nj; j++) {
+                const uint32_t id = ids[j];
                 int have = 0, slot = -1;
                 for (int i = 0; i < MAX_PADS; i++) {
                     if (pads[i].gc && pads[i].id == id) have = 1;
                     if (!pads[i].gc && slot < 0) slot = i;
                 }
                 if (have || slot < 0) continue;
-                void *gc = sdl.Open(j);
+                void *gc = sdl.Open(id);
                 if (!gc) continue;
                 pads[slot].gc = gc;
-                pads[slot].id = sdl.JoystickInstanceID(sdl.GetJoystick(gc));
+                pads[slot].id = sdl.Id(gc);
                 hos_log("hid: controller \"%s\" connected (SDL)", sdl.Name(gc));
             }
+            if (ids) sdl.Free(ids);
         }
         uint64_t b = 0;
         int32_t s[4] = {0};
@@ -212,7 +205,7 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
     if (!started && !InterlockedExchange(&started, 1)) {
         if (getenv("HOS_NO_SDL")) return 0;
         if (!load()) {
-            hos_log("hid: SDL2.dll not found next to the exe: only XInput controllers (Xbox pads) work");
+            hos_log("hid: SDL3.dll not found next to the exe: only XInput controllers (Xbox pads) work");
             return 0;
         }
 #ifdef _WIN32
