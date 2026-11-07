@@ -446,6 +446,7 @@ def main():
                       (linux_ffmpeg_flags("libs") if LINUX else []))
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
                            ["-o", exe] + link_flags + ["@" + rsp] + HOT_ORDER() + HOST_LIBS +
+                           (["-rdynamic"] if LINUX else []) +
                            (["-lSDL2"] if WINDOWS else linux_sdl_flags("libs")) + renderer_libs + media_libs +
                            (["-Wl,/nodefaultlib:clang_rt.profile.lib"] if WINDOWS and PGO == "gen" else []) +
                            ([os.path.join(kit.WORK, "hookshot.res")] if WINDOWS and os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +

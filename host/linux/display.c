@@ -277,32 +277,45 @@ static void *boot_tramp(void *p) {
     return NULL;
 }
 
+static void linux_display_setup(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        exit(1);
+    }
+    int win_w = 1280, win_h = 720;
+    if (getenv("HOS_WINDOW_SIZE")) {
+        int w = 0, h = 0;
+        if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
+    }
+    window = SDL_CreateWindow("Tears of the Kingdom", win_w, win_h,
+                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_VULKAN);
+    if (!window) {
+        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        exit(1);
+    }
+    if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) SDL_SetWindowFullscreen(window, true);
+    if (!fill_surface()) {
+        fprintf(stderr, "window has no Wayland or X11 surface\n");
+        exit(1);
+    }
+    if (!rx_start(&rxwin)) hos_log("display: renderer did not start; the window will stay blank");
+    display_up = 1;
+    pump();
+}
+
+static void *linux_pump_tramp(void *unused) {
+    (void)unused;
+    while (!guest_done) {
+        pump();
+        SDL_Delay(4);
+    }
+    return NULL;
+}
+
 void linux_display_enter(void (*boot)(void)) {
     const int headless = getenv("HOS_HEADLESS") != NULL;
     if (!headless) {
-        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
-            fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-            exit(1);
-        }
-        int win_w = 1280, win_h = 720;
-        if (getenv("HOS_WINDOW_SIZE")) {
-            int w = 0, h = 0;
-            if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
-        }
-        window = SDL_CreateWindow("Tears of the Kingdom", win_w, win_h,
-                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_VULKAN);
-        if (!window) {
-            fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-            exit(1);
-        }
-        if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) SDL_SetWindowFullscreen(window, true);
-        if (!fill_surface()) {
-            fprintf(stderr, "window has no Wayland or X11 surface\n");
-            exit(1);
-        }
-        if (!rx_start(&rxwin)) hos_log("display: renderer did not start; the window will stay blank");
-        display_up = 1;
-        pump();
+        linux_display_setup();
     }
     pthread_t th;
     pthread_attr_t a;
@@ -330,5 +343,11 @@ void hos_display_start(void) {
         return;
     }
     if (display_up) return;
-    fprintf(stderr, "hos_display_start called before the SDL window existed\n");
+    linux_display_setup();
+    pthread_t th;
+    if (pthread_create(&th, NULL, linux_pump_tramp, NULL)) {
+        fprintf(stderr, "cannot start the SDL event thread\n");
+        exit(1);
+    }
+    pthread_detach(th);
 }
