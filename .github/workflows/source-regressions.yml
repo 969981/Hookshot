@@ -10,6 +10,8 @@ on:
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_import_hold.py
+      - tests/test_rumble_refresh.py
+      - host/pad_sdl.c
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
       - .github/workflows/source-regressions.yml
@@ -22,6 +24,8 @@ on:
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
       - tests/test_import_hold.py
+      - tests/test_rumble_refresh.py
+      - host/pad_sdl.c
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
       - .github/workflows/source-regressions.yml
@@ -62,3 +66,6 @@ jobs:
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check controller rumble keeps going
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_rumble_refresh.py
