@@ -1,7 +1,9 @@
 """Offline profile of a thread sampled with HOS_SAMPLE + HOS_SAMPLE_FILE (host/mkw_glue.c, mkw-recomp work/prof.py): each line is a stack of
-module+offset frames, leaf first. Frames in hookshot_vk.dll / hookshot.exe are named from the linker maps beside them.
+module+offset frames, leaf first. Frames in the game module, the runtime and the renderer (hookshot_game.dll /
+libhookshot_game.so, hookshot_rt[.exe], hookshot_vk.dll / libhookshot_vk.so; hookshot.exe before the split) are named
+from the linker maps beside them (--maps <the folder the game was built into>; work/sa/build otherwise).
 
-    python -I scripts/prof.py work/runs/<run>/stacks.txt [top] [skip] [only]
+    python -I scripts/prof.py [--maps <dir>] work/runs/<run>/stacks.txt [top] [skip] [only]
     (skip: the first fraction of the samples, e.g. 0.5; only: samples with that function in their stack, e.g.
     bench_replay)
 
@@ -23,6 +25,49 @@ def load_map(path, base):
     return [a for a, _ in syms], [n for _, n in syms]
 
 
+# (hookshot) the split build: the lifted code in the game module, the host in the runtime, the renderer beside them;
+# Windows names (lld-link's /map, based at the preferred load address) and Linux ones (ld.lld's -Map, based at 0)
+GAME_MODULES = ("hookshot_game.dll", "libhookshot_game.so", "hookshot.exe")
+ELF_SYM = re.compile(r"^\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+\s+([A-Za-z_$][\w$.@]*)$")
+
+
+def map_of(mod, dirs):
+    """the linker map beside a module, in the first of dirs that has it: <stem>.map"""
+    stem = mod[:-4] if mod.endswith((".dll", ".exe")) else mod[:-3] if mod.endswith(".so") else mod
+    return next((os.path.join(d, stem + ".map") for d in dirs if os.path.exists(os.path.join(d, stem + ".map"))), None)
+
+
+def load_any_map(path):
+    """either kind of map, as offsets from the module's load base"""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        head = f.read(4096)
+    m = re.search(r"Preferred load address is ([0-9a-f]+)", head, re.I)
+    if m:
+        return load_map(path, int(m.group(1), 16))
+    syms = []
+    for line in open(path, encoding="utf-8", errors="replace"):
+        e = ELF_SYM.match(line)
+        if e and not e.group(2).startswith("."):
+            syms.append((int(e.group(1), 16), e.group(2)))
+    syms.sort()
+    return [a for a, _ in syms], [n for _, n in syms]
+
+
+def map_dirs(argv):
+    """--maps <dir> (repeatable) taken out of argv: where the modules' maps are (the folder the game was built into);
+    work/sa/build last"""
+    dirs, rest, i = [], [], 0
+    while i < len(argv):
+        if argv[i] == "--maps" and i + 1 < len(argv):
+            dirs.append(argv[i + 1])
+            i += 2
+        else:
+            rest.append(argv[i])
+            i += 1
+    argv[:] = rest
+    return dirs + [BUILD]
+
+
 def demangle(n):
     # ?name@ns@@... -> ns::name (enough to read)
     m = re.match(r"\?([^@]+)@([^@]*)@", n)
@@ -33,16 +78,16 @@ def demangle(n):
 
 
 def main():
+    dirs = map_dirs(sys.argv)
     path = sys.argv[1]
     top = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     skip = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
     only = sys.argv[4] if len(sys.argv) > 4 else None
     maps = {}
-    for mod in ("hookshot_vk.dll", "hookshot.exe"):
-        mp = os.path.join(BUILD, mod[:-4] + ".map")
-        if os.path.exists(mp):
-            base = 0x180000000 if mod.endswith(".dll") else 0x140000000
-            maps[mod] = load_map(mp, base)
+    for mod in GAME_MODULES + ("hookshot_vk.dll", "libhookshot_vk.so", "hookshot_rt.exe", "hookshot_rt"):
+        mp = map_of(mod, dirs)
+        if mp:
+            maps[mod] = load_any_map(mp)
 
     def name(frame):
         mod, _, off = frame.rpartition("+")
