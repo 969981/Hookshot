@@ -81,6 +81,11 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 
 A build takes about 40 minutes, and you can use your PC in the meantime.
 
+The Windows setup retains older installed and partial builder folders in
+`%LOCALAPPDATA%\HookshotBuilder\versions` so builds started by another version can finish. These folders can
+accumulate across updates; automatic cleanup still removes obsolete downloaded ZIP parts. Installing or repairing
+the same version remains a separate replacement operation.
+
 ### On Linux
 
 1. Download `Hookshot-<version>-x86_64.AppImage` from the Releases page (or the Linux AppImage workflow's artifact),

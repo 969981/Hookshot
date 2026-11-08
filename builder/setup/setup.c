@@ -210,11 +210,11 @@ static void write_small(const wchar_t *path, const char *text) {
     CloseHandle(f);
 }
 
-/* (as NX2navi's launcher keeps them: the version just installed and the one before it stay, older versions go, and so do downloads
-   the list no longer names; a part unchanged since the last release keeps its checksum and stays cached) */
+/* Older builders and their children may still use any installed version, including a legacy or partial folder.
+   Retain those folders; this costs disk space but avoids removing live build inputs. Only obsolete download archives go. */
 static void prune(const wchar_t *versions, const wchar_t *downloads, const char *tag, const Part *parts, int nparts) {
     wchar_t cur[MAX_PATH], prev[MAX_PATH], pat[MAX_PATH], p[MAX_PATH];
-    char was[128], before[128];
+    char was[128];
     swprintf(cur, MAX_PATH, L"%ls\\current.txt", versions);
     swprintf(prev, MAX_PATH, L"%ls\\previous.txt", versions);
     read_small(cur, was, sizeof was);
@@ -222,23 +222,9 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
         if (was[0]) write_small(prev, was);
         write_small(cur, tag);
     }
-    read_small(prev, before, sizeof before);
     WIN32_FIND_DATAW fd;
-    swprintf(pat, MAX_PATH, L"%ls\\*", versions);
-    HANDLE h = FindFirstFileW(pat, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-            char name[260];
-            WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL);
-            if (!strcmp(name, tag) || (before[0] && !strcmp(name, before))) continue;
-            swprintf(p, MAX_PATH, L"%ls\\%ls", versions, fd.cFileName);
-            rmtree(p);
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
     swprintf(pat, MAX_PATH, L"%ls\\*.zip", downloads);
-    h = FindFirstFileW(pat, &fd);
+    HANDLE h = FindFirstFileW(pat, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             char name[260];
