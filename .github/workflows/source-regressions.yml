@@ -10,6 +10,8 @@ on:
       - tests/test_check_no_compiler.py
       - builder/HookshotBuilder/Runner.cs
       - tests/test_builder_python.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -111,6 +113,8 @@ on:
       - tests/test_check_no_compiler.py
       - builder/HookshotBuilder/Runner.cs
       - tests/test_builder_python.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -274,6 +278,7 @@ jobs:
         run: python -I -B tests/test_finish_output.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
+<<<<<<< HEAD
       - name: Check setup payload retention on Windows
         if: runner.os == 'Windows'
         shell: cmd
@@ -313,6 +318,8 @@ jobs:
       - name: Compile Windows Builder
         if: runner.os == 'Windows'
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
+      - name: Check the CPU target follows the CPU
+        run: python -I -B tests/test_cpu_target.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
