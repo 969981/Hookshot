@@ -22,6 +22,8 @@ on:
       - tests/test_same_bind.py
       - tests/test_cpm_discovery.py
       - tests/test_failure_reason.py
+      - tests/test_setup_pruning.py
+      - builder/setup/setup.c
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -103,6 +105,8 @@ on:
       - tests/test_same_bind.py
       - tests/test_cpm_discovery.py
       - tests/test_failure_reason.py
+      - tests/test_setup_pruning.py
+      - builder/setup/setup.c
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -230,6 +234,25 @@ jobs:
         run: python -I -B tests/test_cpm_discovery.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
+      - name: Check setup payload retention on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          @echo off
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" (
+            echo Visual Studio locator not found.
+            exit /b 1
+          )
+          set "VSROOT="
+          for /f "usebackq delims=" %%i in (`call "%VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT (
+            echo Visual Studio 2022 C++ tools not found.
+            exit /b 1
+          )
+          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          python -I -B tests/test_setup_pruning.py --cc cl
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
