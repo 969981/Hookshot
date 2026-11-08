@@ -205,7 +205,10 @@ class ReusedSpaceTests(unittest.TestCase):
         self.assertEqual(facts[sha], (3, 1, 3, len("HookshotBuilder/tools/llvm-mingw/empty/\U00010437".encode("utf-16-le")) // 2))
 
     def test_offline_output_cannot_overwrite_any_input(self):
-        for output in [self.previous, next(self.archives.iterdir())]:
+        archive = next(self.archives.iterdir())
+        alias = self.base / "output-hardlink"
+        alias.hardlink_to(archive)
+        for output in [self.previous, archive, alias]:
             before = output.read_bytes()
             with self.assertRaisesRegex(ValueError, "separately"):
                 release.space(SimpleNamespace(list=self.previous, archives=self.archives, out=output))

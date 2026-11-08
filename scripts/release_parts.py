@@ -152,9 +152,10 @@ def space(a):
         facts.append((sha, producer.archive_space(archive, folder, old, new)))
     companion = producer.space_text(manifest, facts).encode("ascii")
     producer.read_space(manifest, companion)
-    if Path(a.out).resolve() in inputs:
+    output = Path(a.out)
+    if output.resolve() in inputs or (output.exists() and any(output.samefile(source) for source in inputs)):
         raise ValueError("Write the companion separately from the setup list and ZIPs.")
-    Path(a.out).write_bytes(companion)
+    output.write_bytes(companion)
     return 0
 
 
