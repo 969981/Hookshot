@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../builder/HookshotBuilder/BuildWorkers.cs" Link="BuildWorkers.cs"/>
+    <Compile Include="../../builder/HookshotBuilder/ReleaseIdentity.cs" Link="ReleaseIdentity.cs"/>
     <Compile Include="../../builder/HookshotBuilder/Runner.cs" Link="Runner.cs"/>
   </ItemGroup>
 </Project>
