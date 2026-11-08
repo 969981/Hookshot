@@ -4,8 +4,10 @@
 // (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the bottom
 // face button changes too, the right one closes. The game gets no gamepad input while it is open either.
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -144,6 +146,8 @@ Row rows[] = {
      "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
     {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
      "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
+    {"Loading animation", &opts.loading_screen, 0, 1, 1, tx_onoff,
+     "Displays an animated golden 3D Triforce in the center of the screen during zone transitions and scene loads."},
     {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -334,7 +338,7 @@ struct Bitmap {
     bool keyed = false;                   // (black is see-through: copied as the runs of pixels in between)
     std::vector<VkBufferImageCopy> runs;
 };
-Bitmap menu_bmp, fps_bmp;
+Bitmap menu_bmp, fps_bmp, loading_bmp;
 std::mutex bmp_mu;
 int scale_of(uint32_t h) { return std::max(1u, h / 720); }
 
@@ -555,6 +559,87 @@ void paint_fps(HDC dc, uint32_t w, uint32_t h, int s) {
     DeleteObject(label);
     DeleteObject(big);
 }
+const char* loading_text() {
+    return "LOADING...";
+}
+void paint_loading(HDC dc, uint32_t w, uint32_t h, int s) {
+    fill(dc, 0, 0, (int)w, (int)h, RGB(0, 0, 0));
+    SetBkMode(dc, TRANSPARENT);
+
+    const double PI = 3.14159265358979323846;
+    double angle = (GetTickCount64() % 2400) * (2.0 * PI / 2400.0);
+    double cosA = cos(angle);
+    double absCos = fabs(cosA);
+    if (absCos < 0.06) absCos = 0.06;
+
+    int cx = (int)w / 2;
+    int cy = 60 * s;
+    int w_tri = 56 * s;
+    int h_tri = 48 * s;
+    int w_half = w_tri / 2;
+
+    auto project = [&](int x, int y) -> POINT {
+        int px = cx + (int)std::round((x - cx) * cosA);
+        return {px, y};
+    };
+
+    int r1 = std::clamp((int)(255 * (0.65 + 0.35 * absCos)), 0, 255);
+    int g1 = std::clamp((int)(220 * (0.65 + 0.35 * absCos)), 0, 255);
+    int b1 = std::clamp((int)(40  * (0.65 + 0.35 * absCos)), 0, 255);
+
+    int r2 = std::clamp((int)(255 * (0.58 + 0.42 * absCos)), 0, 255);
+    int g2 = std::clamp((int)(210 * (0.58 + 0.42 * absCos)), 0, 255);
+    int b2 = std::clamp((int)(30  * (0.58 + 0.42 * absCos)), 0, 255);
+
+    int r3 = std::clamp((int)(255 * (0.72 + 0.28 * absCos)), 0, 255);
+    int g3 = std::clamp((int)(230 * (0.72 + 0.28 * absCos)), 0, 255);
+    int b3 = std::clamp((int)(50  * (0.72 + 0.28 * absCos)), 0, 255);
+
+    HPEN outline = CreatePen(PS_SOLID, std::max(1, s), RGB(255, 240, 140));
+    HGDIOBJ old_pen = SelectObject(dc, outline);
+
+    POINT top_pts[3] = {
+        project(cx, cy - h_tri),
+        project(cx - w_half, cy),
+        project(cx + w_half, cy)
+    };
+    HBRUSH b_top = CreateSolidBrush(RGB(r1, g1, b1));
+    HGDIOBJ old_b = SelectObject(dc, b_top);
+    Polygon(dc, top_pts, 3);
+
+    POINT left_pts[3] = {
+        project(cx - w_half, cy),
+        project(cx - w_tri, cy + h_tri),
+        project(cx, cy + h_tri)
+    };
+    HBRUSH b_left = CreateSolidBrush(RGB(r2, g2, b2));
+    SelectObject(dc, b_left);
+    Polygon(dc, left_pts, 3);
+
+    POINT right_pts[3] = {
+        project(cx + w_half, cy),
+        project(cx, cy + h_tri),
+        project(cx + w_tri, cy + h_tri)
+    };
+    HBRUSH b_right = CreateSolidBrush(RGB(r3, g3, b3));
+    SelectObject(dc, b_right);
+    Polygon(dc, right_pts, 3);
+
+    SelectObject(dc, old_b);
+    SelectObject(dc, old_pen);
+    DeleteObject(b_top);
+    DeleteObject(b_left);
+    DeleteObject(b_right);
+    DeleteObject(outline);
+
+    const char* msg = loading_text();
+    HFONT font = hard_font(14 * s, FW_BOLD);
+    HGDIOBJ old_font = SelectObject(dc, font);
+    SetTextAlign(dc, TA_CENTER | TA_TOP);
+    outlined(dc, cx, cy + h_tri + 16 * s, msg, RGB(255, 225, 90), s);
+    SelectObject(dc, old_font);
+    DeleteObject(font);
+}
 /// The tallest help text at scale s, in pixels: the menu keeps that height whichever row is selected
 int measure_help(int s) {
     HDC dc = CreateCompatibleDC(nullptr);
@@ -587,7 +672,7 @@ struct Upload {
     void* map = nullptr;
     uint64_t size = 0, version = 0;
 };
-Upload ups[2][3];   // (the menu's, the counter's; a frame in flight's each)
+Upload ups[3][3];   // (0: menu, 1: fps counter, 2: loading animation; a frame in flight's each)
 
 void copy_over(VkCommandBuffer cmd, VkImage dst, Bitmap& b, Upload& u, int x, int y, uint32_t w, uint32_t h) {
     std::lock_guard lk(bmp_mu);
@@ -661,7 +746,11 @@ void menu_set_gpu_count(int count) {
     }
 }
 
+std::atomic<bool> loading_active{false};
+
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+void menu_set_loading_active(bool active) { loading_active.store(active, std::memory_order_relaxed); }
+bool menu_loading_active() { return opts.loading_screen && loading_active.load(std::memory_order_relaxed); }
 
 void menu_note_frame(bool game_frame) {
     shown_frames.fetch_add(1, std::memory_order_relaxed);
@@ -818,7 +907,7 @@ void menu_tick() {
                 apply_preset(*r.value);
             } else {
                 *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-                if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device && r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y) {
+                if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device && r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.loading_screen) {
                     opts.preset = 0; // Custom
                     sync_preset_budgets(0);
                 }
@@ -840,6 +929,15 @@ void menu_tick() {
             gdi_draw(fps_bmp, 120u * scale, 54u * scale, paint_fps, scale);
         }
     }
+    if (menu_loading_active()) {
+        static uint64_t last_load_draw = 0;
+        uint64_t now_tick = GetTickCount64();
+        if (now_tick - last_load_draw >= 16) {
+            last_load_draw = now_tick;
+            loading_bmp.keyed = true;
+            gdi_draw(loading_bmp, 260u * scale, 180u * scale, paint_loading, scale);
+        }
+    }
 }
 
 void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h) {
@@ -857,6 +955,20 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         const uint32_t fw = fps_bmp.w;
         lk.unlock();
         if (fw) copy_over(cmd, dst, fps_bmp, ups[1][slot], (int)w - (int)fw - (int)(12 * cur_scale), (int)(10 * cur_scale), w, h);
+    }
+    if (menu_loading_active()) {
+        std::unique_lock lk(bmp_mu);
+        const uint32_t lw = loading_bmp.w, lh = loading_bmp.h;
+        lk.unlock();
+        if (lw && lh) {
+            VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+            mb.srcAccessMask = mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
+            vkCmdPipelineBarrier2(cmd, &di);
+            copy_over(cmd, dst, loading_bmp, ups[2][slot], (int)(w - lw) / 2, (int)(h - lh) / 2, w, h);
+        }
     }
     if (open_now.load(std::memory_order_relaxed)) {
         std::unique_lock lk(bmp_mu);

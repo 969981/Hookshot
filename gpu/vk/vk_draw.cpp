@@ -2999,10 +2999,13 @@ void probe_log(uint64_t f) {
 // (amd-fix, diagnosis) in a frame dump, the indirect mesh draws' arguments as the GPU has them: noted at the draw (inside
 // the pass, where no copy can be recorded) and copied out once the pass ends ("dump buffer ... mesh indirect")
 thread_local std::vector<std::pair<uint64_t, uint64_t>> dump_mesh_indirect;   // (program key, indirect address)
+std::atomic<int64_t> st_3d_draws{0};
 void end_pass(VkCommandBuffer cmd) {
     if (!pass.open) return;
     vkCmdEndRendering(cmd);
     pass.open = false;
+    if (pass.depth && pass.width >= 320 && pass.height >= 240)
+        st_3d_draws.fetch_add(pass.draws, std::memory_order_relaxed);
     if (dump_on() && !dump_mesh_indirect.empty()) {
         for (const auto& [key, addr] : dump_mesh_indirect) {
             const BufferRef r = gpu_buffer_bind(addr, 16, false);
@@ -5283,6 +5286,9 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 }
 int64_t draw_desc_reused() {
     return st_desc_reused;
+}
+int64_t draw_3d_take() {
+    return st_3d_draws.exchange(0, std::memory_order_relaxed);
 }
 
 void pipeline_cache_save(bool force) {

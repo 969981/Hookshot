@@ -78,6 +78,10 @@ typedef struct MkwVkHost {
     void (*bind)(int set, int button, int slot, int code);
     /// The guest camera aspect explicitly applied at startup (0: its default aspect)
     float (*aspect_ratio)(void);
+    /// Returns 1 when a scene or zone is loading from storage, 0 otherwise
+    int (*is_loading)(void);
+    /// Clears the loading state once the new 3D scene begins rendering
+    void (*clear_loading)(void);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */

@@ -145,4 +145,7 @@ uint32_t movie_reader_codec(MovieReader *r);   /* the stream's FourCC: 'VP90', '
 uint64_t hos_ticks(void);
 void hos_sleep_ns(int64_t ns);
 int64_t hos_now_ns(void);
+void hos_mark_loading(void);
+void hos_clear_loading(void);
+int hos_is_loading(void);
 #endif
