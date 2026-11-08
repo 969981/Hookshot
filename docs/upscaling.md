@@ -73,6 +73,32 @@ The replay rules in [design notes, section 4](design.md#4-the-lessons-from-mkw-a
 unchanged. In particular the inputs are read from the submitted dispatch's own descriptors during
 ordered replay, never from live guest memory.
 
+## The camera, read out of the game rather than guessed
+
+FSR's `device_to_view_depth` and `tan_half_fov` want the near plane and the vertical field of view,
+and camera-derived motion wants the view-projection. Both are available: sead's perspective
+projection object carries them, and its matrix update is already a patch site (`nx2/oot_wide.py`,
+main+`0x3485cc0`, which is the whole function `f_834a5cc0`).
+
+Reading that function's lifted C gives the layout, each offset from what the code does with it
+rather than from a guess:
+
+| offset | what it is | how the code shows it |
+|---|---|---|
+| `+0x98`, `+0x9C` | the near and far planes | loaded as a pair (`ldp s4, s3, [x0, #0x98]`), then **swapped by the byte at `+0x0A`** — a reversed-depth flag — before their difference is taken |
+| `+0x0A` | which way round the depth runs | selects between the two above |
+| `+0xAC` | `tan(fovy / 2)` | `1.0f / it` becomes the matrix's m11, which is `1 / tan(fovy/2)`. So the field of view is `2 * atan(it)` |
+| `+0xB0` | the aspect ratio | divided into m00, and the ultrawide patch stores its own ratio back here |
+| `+0xB4`, `+0xB8` | the projection's offsets | each doubled into m02 and m12 |
+
+`x0` is the projection object throughout that function and `x1` is the 4x4 it writes, so one
+injected block there can publish the near plane, the far plane and the field of view to host globals
+for the renderer to read, the way `hos_wide_ratio` already travels the other way.
+
+That removes the approximation the reference implementation settles for — it documents using "a
+typical near plane and vertical field of view" because DLSS hands it no camera — and it is the same
+data camera-derived motion needs.
+
 ## The input contract
 
 A temporal upscaler needs the network's own inputs, and it must only run when they are all present and
