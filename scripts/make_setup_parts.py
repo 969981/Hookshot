@@ -28,6 +28,36 @@ TOOLS_PARTS = ("python", "emsdk", "cpm", "third_party", "wgpu-native")   # (tool
 LLVM = ("552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f", 191037046,
         "llvm-mingw-20261104-ucrt-x86_64",
         "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip")
+# Central-directory facts for this exact external archive, after its declared rename.
+# These are logical file bytes, not allocated disk space or generated build files.
+LLVM_SPACE = {
+    "552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f":
+        (191037046, "llvm-mingw-20261104-ucrt-x86_64", 753120375, 9070, 9316, 118),
+}
+SPACE_NAME = "hookshot-setup-space.txt"
+
+
+def archive_space(path):
+    """Read the just-published ZIP's directory, without extracting or changing it."""
+    with zipfile.ZipFile(path) as archive:
+        entries = archive.infolist()
+        regular = [entry for entry in entries if not entry.is_dir()]
+        return (sum(entry.file_size for entry in regular), len(regular), len(entries),
+                max((len(entry.filename.rstrip("/").encode("utf-16-le")) // 2 for entry in entries), default=0))
+
+
+def llvm_space():
+    facts = LLVM_SPACE.get(LLVM[0])
+    if facts is None or facts[:2] != LLVM[1:3]:
+        raise ValueError("Record verified space metadata for this exact LLVM archive before publishing.")
+    return facts[2:]
+
+
+def space_text(manifest, records):
+    """A companion asset keeps all existing setup-list parsers compatible."""
+    lines = ["HookshotSetupSpace 1", "manifest " + hashlib.sha256(manifest).hexdigest()]
+    lines += ["space %s %d %d %d %d" % (sha, *facts) for sha, facts in records]
+    return "\n".join(lines) + "\n"
 
 
 def files_under(root, top):
@@ -76,6 +106,7 @@ def build_parts(package, tag, out, base=None, repo=None):
         gui_hashes = json.load(f)["files"]
     if Path(out).resolve().is_relative_to(Path(root).resolve()):
         raise ValueError("Write setup parts outside the staging folder.")
+    external_space = llvm_space()
     base = (base or "https://github.com/NotRexed/Hookshot/releases/download/builder-parts").rstrip("/")
     os.makedirs(out, exist_ok=True)
 
@@ -95,6 +126,7 @@ def build_parts(package, tag, out, base=None, repo=None):
             parts[t] = files_under(root, "tools/" + t)
     # Unknown lines are ignored by the standalone installer; the managed updater requires this capability and identity.
     lines = ["tag %s" % tag, "identity 1 %s" % revision]
+    sizes = []
     for name in ("app", "dotnet") + TOOLS_PARTS:
         if not parts.get(name):
             continue
@@ -104,11 +136,16 @@ def build_parts(package, tag, out, base=None, repo=None):
         os.replace(zp, named)
         zp = named
         lines.append("part %s %d . - - %s/%s" % (sha, size, base, os.path.basename(zp)))
+        sizes.append((sha, archive_space(zp)))
         print("%-12s %5d files %5d MB  %s" % (name, len(parts[name]), size >> 20, sha[:16]), flush=True)
     lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s" % LLVM)
+    sizes.append((LLVM[0], external_space))
     lines.append("run HookshotBuilder/HookshotBuilder.exe")
     with open(os.path.join(out, "hookshot-setup.txt"), "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
+    manifest = Path(out, "hookshot-setup.txt").read_bytes()
+    with open(os.path.join(out, SPACE_NAME), "w", encoding="utf-8", newline="\n") as f:
+        f.write(space_text(manifest, sizes))
     return revision
 
 
