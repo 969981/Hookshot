@@ -45,16 +45,17 @@ def main():
 ''' + actual + r'''
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 int main(int argc, char **argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 3);
     const char *expected = argv[1];
+    const char *module = argv[2];
     const size_t size = strlen(expected);
     CHECK(size > 8 && size < PATH_MAX);
     char path[PATH_MAX];
     const DWORD count = hos_game_path_a(path, sizeof path);
     CHECK(count == size && strcmp(path, expected) == 0);
     char direct[PATH_MAX];
-    CHECK(GetModuleFileNameA(NULL, direct, sizeof direct) == count);
-    CHECK(strcmp(path, direct) == 0);
+    CHECK(GetModuleFileNameA(NULL, direct, sizeof direct) == strlen(module));
+    CHECK(strcmp(direct, module) == 0);
     char short_path[10];
     memset(short_path, '?', sizeof short_path);
     CHECK(hos_game_path_a(short_path + 1, 8) == 7);
@@ -88,10 +89,12 @@ int main(int argc, char **argv) {
         for path in (flat, nested):
             path.parent.mkdir(parents=True)
             shutil.copy2(executable, path)
-            run([str(path), str(path.resolve())])
-        # Unlike Windows rebasing, Linux keeps the executable's path even when bin/ has a sibling image marker.
+            run([str(path), str(path.resolve()), str(path.resolve())])
+        # Packaged Linux builds now share the bin/ layout: game files live beside the launcher.
+        # GetModuleFileNameA must still report the real executable inside bin/.
         (nested.parent.parent / "image.bin").write_text("authored marker only", encoding="utf-8")
-        run([str(nested), str(nested.resolve())])
+        game_path = nested.parent.parent / nested.name
+        run([str(nested), str(game_path.resolve()), str(nested.resolve())])
 
 
 if __name__ == "__main__":
