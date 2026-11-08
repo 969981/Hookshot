@@ -1,7 +1,6 @@
-# Hookshot (oot-recomp)
+# Hookshot: development notes
 
-**Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's); the repository folder
-stays `oot-recomp`. The game builds as `hookshot.exe` + `hookshot_vk.dll`.
+**Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's). The game builds as `hookshot.exe` + `hookshot_vk.dll`.
 
 A static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake to native x86-64 Windows:
 the game's code lifted to C (NotRexed's a64-kit, Rexcomp's AArch64 kit), the Horizon OS and NVN2 implemented
@@ -11,13 +10,13 @@ paths it keeps so MKW's fixes apply here.
 **No game files are in this repository.** The dump is read where it lies (`work/dump.txt`); everything made from it
 (modules, image, lifted C, builds, runs) goes to `work/`, which git ignores.
 
-Status: the dump is read and lifted (100 % translated, the instruction test passes); the standalone build is next. Plan, stages and the lessons carried over from MKW: [DESIGN.md](DESIGN.md).
+Status and how to build the game: see the [readme](../readme.md). Plan, stages and the lessons carried over from MKW: [design.md](design.md).
 
 ## Use
 
-Requirements: Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` (2.1), `zstandard`; emsdk's clang at `C:\emsdk` (or `EMSDK`);
-for the Vulkan back end, Eden's CPM package cache (found in mkw-recomp's `work/eg` or `..\Eglantine\.cache\cpm`, or
-`RX_CPM`).
+Requirements: Python 3 with the packages in [`requirements.txt`](../requirements.txt) (`pip install -r requirements.txt`);
+llvm-mingw (`HOOKSHOT_MINGW`) on Windows, or `clang` and `lld` on Linux (the readme has the details; emsdk with Visual
+Studio is the old route, forced by `HOOKSHOT_MSVC=1`); for the Vulkan back end, a CPM package cache (`RX_CPM`).
 
 Run everything with `python -I` from this folder.
 
@@ -39,12 +38,14 @@ The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` m
 
 | Path | What |
 |---|---|
-| `DESIGN.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
+| `design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c` |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the exe falls back to, its op stream (`rx_nvn.h`), suyu's decoders |
-| `scripts/` | test runs and the profile reader |
+| `scripts/` | test runs and the profile reader (`scripts/linux/` builds the AppImage) |
+| `builder/` | Hookshot Builder, the GUI that runs the build (`HookshotBuilder` for Windows, `linux/` for Linux) |
+| `tests/` | game-free regression checks, run by CI (see [CONTRIBUTING.md](../CONTRIBUTING.md)) |
 | `third_party/` | a64-kit (unmodified), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only) |
 
 License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is

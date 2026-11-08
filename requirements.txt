@@ -1,0 +1,7 @@
+# Python packages the build needs (the versions the Linux AppImage ships; see scripts/linux/deps.sh).
+# Use Python 3 from python.org on Windows and run the tools with `python -I`.
+lz4==4.4.5
+numpy==2.5.4
+capstone==5.0.9
+unicorn>=2.1,<2.2
+zstandard==0.25.0

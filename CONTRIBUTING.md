@@ -57,7 +57,7 @@ about 10 GB of RAM.
    does not see packages installed there) and the pipeline's packages:
 
    ```powershell
-   python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
+   python -m pip install -r requirements.txt
    ```
 
 2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `HOOKSHOT_MINGW` to its
