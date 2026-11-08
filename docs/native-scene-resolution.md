@@ -73,6 +73,16 @@ without #329. The proposal is available for review with that dependency explicit
 Menu/area/mode transitions, handheld, ultrawide and other hardware remain
 unvalidated.
 
+A second isolated run on 2026-11-08 restored the existing #329 correction to
+the same `3f5b0aa` base (integration source fingerprint `9882ef6b`). Both profile
+edits executed, the native network report showed 2560x1440 input/output, and
+FSR 4.1.2 completed at least 2,520 dispatches with matched 2560x1440 color/depth/
+output guards. No FSR SDK error, dispatch failure or device-lost entry was
+observed in the snapshot, and the player approved the result. This verifies the
+combination at fixed 100% on that GPU; it does not establish that this branch
+alone fixes the cached scale. Later upstream merges are checked separately and
+are not covered by that gameplay session.
+
 The game-free tests compile the actual hook in a memory fixture and cover the
 disabled path, both profiles, table guards, all three modes, one-time resource
 refresh, normal subsequent transitions, patcher failure atomicity and repeated
