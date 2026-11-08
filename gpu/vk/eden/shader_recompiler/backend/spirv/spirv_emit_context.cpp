@@ -391,6 +391,27 @@ Id CasFunction(EmitContext& ctx, Operation operation, Id value_type) {
     return func;
 }
 
+// (hookshot, issue 17) A ceiling on a compare-exchange loop's attempts. Every attempt that fails does so because
+// another invocation's succeeded, so a contended word is always written in far fewer tries than this; the ceiling
+// only matters when the exchange never returns what it was given, as for a word out of bounds under robust buffer
+// access (seen on Intel Arc B390: no device loss, the frame never came back). One attempt counts: the condition to
+// leave the loop is success, or this many attempts made.
+constexpr u32 CAS_LOOP_MAX_TRIES = 1024;
+
+Id CasTriesVariable(EmitContext& ctx) {
+    const Id tries_var{ctx.AddLocalVariable(ctx.TypePointer(spv::StorageClass::Function, ctx.U32[1]),
+                                            spv::StorageClass::Function)};
+    ctx.OpStore(tries_var, ctx.u32_zero_value);
+    return tries_var;
+}
+
+Id CasLoopDone(EmitContext& ctx, Id tries_var, Id success) {
+    const Id tries{ctx.OpIAdd(ctx.U32[1], ctx.OpLoad(ctx.U32[1], tries_var), ctx.Const(1U))};
+    ctx.OpStore(tries_var, tries);
+    return ctx.OpLogicalOr(ctx.U1, success,
+                           ctx.OpUGreaterThanEqual(ctx.U1, tries, ctx.Const(CAS_LOOP_MAX_TRIES)));
+}
+
 Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_pointer,
            Id value_type, spv::Scope scope) {
     const bool is_shared{scope == spv::Scope::Workgroup};
@@ -418,6 +439,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
                                     : ctx.OpAccessChain(element_pointer, base, index)};
     ctx.OpStore(expected_var, ctx.OpLoad(ctx.U32[1], word_pointer));
+    const Id tries_var{CasTriesVariable(ctx)};
     ctx.OpBranch(loop_header);
     ctx.AddLabel(loop_header);
 
@@ -443,7 +465,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
                                                     new_word, expected)};
     ctx.OpStore(expected_var, atomic_res);
     const Id success{ctx.OpIEqual(ctx.U1, atomic_res, expected)};
-    ctx.OpBranchConditional(success, merge_block, loop_header);
+    ctx.OpBranchConditional(CasLoopDone(ctx, tries_var, success), merge_block, loop_header);
 
     ctx.AddLabel(merge_block);
     ctx.OpReturnValue(from_word(atomic_res));
@@ -496,6 +518,9 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     u32& texture_binding{is_unified ? bindings.unified : bindings.texture};
     u32& image_binding{is_unified ? bindings.unified : bindings.image};
     AddCapability(spv::Capability::Shader);
+    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex) {
+        wants_mesh_fallback = true;   // (before any DefineRescalingInputPushConstant, which is made once)
+    }
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
@@ -518,6 +543,32 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
         mesh_first_block_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
         mesh_first_member_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1]);
+        DefineRescalingInputPushConstant();
+    }
+    if (runtime_info.mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)) {
+        mesh_fallback = true;
+        wants_mesh_fallback = true;
+        // (the push block is made below, before DefineGlobalMemoryFunctions can ask for the page table: a fallback stage
+        // that follows pointers needs its member now, or the block would be made without it)
+        wants_guest_pages = program.info.uses_global_memory && profile.support_int64;
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        DefineRescalingInputPushConstant();
+    }
+    if (runtime_info.mesh_fallback_vertex) {   // (the generated vertex stage: pushes the records' address)
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        mesh_info = program.mesh;
         DefineRescalingInputPushConstant();
     }
     DefineMesh(program);
@@ -716,6 +767,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         const Id count{Const(size)};
         const Id word_pointer{OpAccessChain(shared_u32, shared_memory_u32, word_offset)};
         OpStore(expected_var, OpLoad(U32[1], word_pointer));
+        const Id tries_var{CasTriesVariable(*this)};
         OpBranch(loop_header);
 
         AddLabel(loop_header);
@@ -729,7 +781,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
                                                     u32_zero_value, new_value, old_value)};
         OpStore(expected_var, atomic_res);
         const Id success{OpIEqual(U1, atomic_res, old_value)};
-        OpBranchConditional(success, merge_block, loop_header);
+        OpBranchConditional(CasLoopDone(*this, tries_var, success), merge_block, loop_header);
 
         AddLabel(merge_block);
         OpReturn();
@@ -962,6 +1014,7 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     const Id expected_var{
         AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)};
     OpStore(expected_var, OpLoad(U32[1], pointer));
+    const Id tries_var{CasTriesVariable(*this)};
     const Id scope_device{Const(1u)};
     const Id ordering_relaxed{u32_zero_value};
     const Id body_label{OpLabel()};
@@ -981,7 +1034,7 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
                                                   ordering_relaxed, desired_value, expected_value)};
     OpStore(expected_var, actual_value);
     const Id store_successful{OpIEqual(U1, expected_value, actual_value)};
-    OpBranchConditional(store_successful, endloop_label, continue_label);
+    OpBranchConditional(CasLoopDone(*this, tries_var, store_successful), endloop_label, continue_label);
 
     AddLabel(endloop_label);
     OpReturn();
@@ -1168,7 +1221,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
             const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
             const Id ssbo_size{OpUConvert(U64, OpLoad(U32[1], ssbo_size_pointer))};
-            Id ssbo_end{OpIAdd(U64, ssbo_addr, ssbo_size)};
+            Id ssbo_end{OpIAdd(U64, unaligned_addr, ssbo_size)};
             // (EvilOOT) no further than what is bound: a buffer the back end could not bind is a null descriptor (length 0), and an
             // address in its range read 0 through it instead of going on to the page table (OoT's ambient light probes: 0, the
             // foliage and signs black)
@@ -1304,6 +1357,25 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpFunctionEnd();
             atomic_global_func_u32[i] = func_id;
         }
+        // (hookshot) ATOMG.CAS's: the comparator, then the value stored where the word equals it
+        const Id function_type{TypeFunction(U32[1], U64, U32[1], U32[1])};
+        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::DontInline, function_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id comparator{OpFunctionParameter(U32[1])};
+        const Id value{OpFunctionParameter(U32[1])};
+        const auto cas{[&](Id pointer) {
+            const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+            return OpAtomicCompareExchange(U32[1], pointer, scope, u32_zero_value, u32_zero_value, value, comparator);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { OpReturnValue(cas(ssbo_pointer)); });
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) OpReturnValue(cas(psb_member(U32[1], target)));
+            else OpReturnValue(u32_zero_value);
+        });
+        OpReturnValue(u32_zero_value);
+        OpFunctionEnd();
+        atomic_global_cas_func_u32 = func_id;
     }
     // (hookshot) 8- and 16-bit global stores: the aligned 32-bit word is changed in place with a compare-exchange loop, as
     // the storage buffers' narrow stores are (emit_spirv_memory.cpp). A plain load/store pair loses the other invocations'
@@ -1319,8 +1391,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         // (one variable in the entry block: OpVariable with Function storage must lead the function)
         const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
                                                spv::StorageClass::Function)};
+        const Id tries_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                            spv::StorageClass::Function)};
         const auto cas_loop{[&](Id pointer) {
             OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            OpStore(tries_var, u32_zero_value);
             const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
             const Id ordering_relaxed{u32_zero_value};
             const Id begin_label{OpLabel()};
@@ -1338,7 +1413,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                                                     ordering_relaxed, desired, expected)};
             OpStore(expected_var, actual);
             const Id success{OpIEqual(U1, expected, actual)};
-            OpBranchConditional(success, end_label, continue_label);
+            OpBranchConditional(CasLoopDone(*this, tries_var, success), end_label, continue_label);
             AddLabel(end_label);
             OpReturn();
             AddLabel(continue_label);
@@ -1357,6 +1432,51 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpFunctionEnd();
         write_global_cas_loop_func = func;
     }
+    // (hookshot) RED/ATOM.E.ADD.F32 at an address no buffer was tracked to: the 32-bit atomics' fallback, with the float
+    // sum made in a compare-exchange loop as the storage buffers' f32_add_cas does
+    if (info.stores_global_memory) {
+        const Id func_type{TypeFunction(F32[1], U64, F32[1])};
+        const Id func{OpFunction(F32[1], spv::FunctionControlMask::DontInline, func_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(F32[1])};
+        AddLabel();
+        const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                               spv::StorageClass::Function)};
+        const auto cas_loop{[&](Id pointer) {
+            OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
+            const Id ordering_relaxed{u32_zero_value};
+            const Id begin_label{OpLabel()};
+            const Id body_label{OpLabel()};
+            const Id continue_label{OpLabel()};
+            const Id end_label{OpLabel()};
+            OpBranch(begin_label);
+            AddLabel(begin_label);
+            OpLoopMerge(end_label, continue_label, spv::LoopControlMask::MaskNone);
+            OpBranch(body_label);
+            AddLabel(body_label);
+            const Id expected{OpLoad(U32[1], expected_var)};
+            const Id desired{OpBitcast(U32[1], OpFAdd(F32[1], OpBitcast(F32[1], expected), value))};
+            const Id actual{OpAtomicCompareExchange(U32[1], pointer, scope_device, ordering_relaxed,
+                                                    ordering_relaxed, desired, expected)};
+            OpStore(expected_var, actual);
+            const Id success{OpIEqual(U1, expected, actual)};
+            OpBranchConditional(success, end_label, continue_label);
+            AddLabel(end_label);
+            OpReturnValue(OpBitcast(F32[1], actual));
+            AddLabel(continue_label);
+            OpBranch(begin_label);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) cas_loop(psb_member(U32[1], target));
+            else OpReturnValue(ConstantNull(F32[1]));
+        });
+        OpReturnValue(ConstantNull(F32[1]));
+        OpFunctionEnd();
+        atomic_global_add_f32_func = func;
+    }
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
@@ -1371,7 +1491,10 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 5> members{};
+    if (Sirit::ValidId(rescaling_push_constants)) {
+        return;   // (the page table's call and the fallback's: one block)
+    }
+    boost::container::static_vector<Id, 12> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1395,6 +1518,12 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (wants_mesh_first) {
         members.push_back(U64);
         mesh_first_member_index = member_index++;
+    }
+    if (wants_mesh_fallback) {
+        members.push_back(U64);
+        mesh_fallback_payload_member_index = member_index++;
+        members.push_back(U64);
+        mesh_fallback_records_member_index = member_index++;
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
@@ -1422,6 +1551,17 @@ void EmitContext::DefineRescalingInputPushConstant() {
         MemberDecorate(push_constant_struct, mesh_first_member_index, spv::Decoration::Offset, MESH_FIRST_PUSH_OFFSET);
         MemberName(push_constant_struct, mesh_first_member_index, "mesh_first");
     }
+    if (wants_mesh_fallback) {
+        const std::array<std::pair<u32, u32>, 2> fallback_members{{
+            {mesh_fallback_payload_member_index, MESH_FALLBACK_PAYLOAD_PUSH_OFFSET},
+            {mesh_fallback_records_member_index, MESH_FALLBACK_RECORDS_PUSH_OFFSET},
+        }};
+        for (const auto& [member, offset] : fallback_members) {
+            MemberDecorate(push_constant_struct, member, spv::Decoration::Offset, offset);
+        }
+        MemberName(push_constant_struct, mesh_fallback_payload_member_index, "mesh_fallback_payload");
+        MemberName(push_constant_struct, mesh_fallback_records_member_index, "mesh_fallback_records");
+    }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
@@ -1429,6 +1569,17 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
     }
+}
+
+Id EmitContext::MeshFallbackWord(Id address) {
+    if (!Sirit::ValidId(mesh_fallback_word_ptr)) {
+        const Id block{TypeStruct(U32[1])};
+        Decorate(block, spv::Decoration::Block);
+        MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
+        mesh_fallback_word_ptr = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
+    }
+    const Id pointer_type{TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1])};
+    return OpAccessChain(pointer_type, OpConvertUToPtr(mesh_fallback_word_ptr, address), Const(0U));
 }
 
 void EmitContext::DefineRescalingInputUniformConstant() {
@@ -1967,6 +2118,9 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             }
         }
     }
+    if (runtime_info.mesh_fallback_vertex) {
+        vertex_index = DefineInput(*this, U32[1], true, spv::BuiltIn::VertexIndex);
+    }
     if (stage == Stage::TessellationEval) {
         for (size_t index = 0; index < info.uses_patches.size(); ++index) {
             if (!info.uses_patches[index]) {
@@ -1984,18 +2138,36 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    AddExtension("SPV_EXT_mesh_shader");
-    AddCapability(spv::Capability::MeshShadingEXT);
+    mesh_fallback = runtime_info.mesh_fallback;
+    if (!mesh_fallback) {
+        AddExtension("SPV_EXT_mesh_shader");
+        AddCapability(spv::Capability::MeshShadingEXT);
+    }
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
     // The task's output region, which its mesh workgroups read as their input region.
     const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
-    Name(mesh_payload, "task_payload");
-    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
-    if (stage == Stage::Task) {
-        return;
+    if (mesh_fallback) {
+        // Workgroup memory still holds the stage buffer while the program runs; the epilogue copies it out. The map
+        // and record buffers live in the pushed fallback buffers, one slot a workgroup. A mesh program with no task
+        // reads the workgroup index from its own payload, as NVN's hardware provides it.
+        const Id wg_pointer{TypePointer(spv::StorageClass::Workgroup, U32[1])};
+        if (stage == Stage::Task || !runtime_info.mesh_fallback_task) {
+            mesh_payload = DefineVariable(*this, payload_type, std::nullopt, spv::StorageClass::Workgroup);
+            Name(mesh_payload, "isbe_payload");
+            mesh_payload_u32 = wg_pointer;
+        }
+        if (stage == Stage::Task) {
+            return;
+        }
+    } else {
+        mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
+                                      spv::StorageClass::TaskPayloadWorkgroupEXT);
+        Name(mesh_payload, "task_payload");
+        mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+        if (stage == Stage::Task) {
+            return;
+        }
     }
     // Output attribute region: groups of 32 vertices, then groups of 32 primitives, one 32-word
     // line per attribute. The map region keeps one map byte per word.
@@ -2016,6 +2188,10 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_primitive_count =
         DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
     Name(mesh_primitive_count, "isbe_primitive_count");
+
+    if (mesh_fallback) {
+        return;   // (no mesh outputs here: the epilogue writes records)
+    }
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};

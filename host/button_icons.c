@@ -1,7 +1,7 @@
 /* (hookshot) Button icons for what the player plays with: keyboard and mouse, an Xbox, PlayStation 4 or 5 or Switch
    controller. The game draws every button prompt, text and HUD alike, with the private-use glyphs of one font,
    romfs:/Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs (U+E040 A to U+E06A). The builder (nx2/button_icons.py)
-   left beside the executable hookshot_icons.bin: that font, and a library of glyphs (a key cap for every key, the mouse,
+   left in the game folder hookshot_icons.bin: that font, and a library of glyphs (a key cap for every key, the mouse,
    each gamepad input by position for each family). When the game first opens the font, this makes it again with the
    glyphs of the family in use, for the controls as bound (host/nn_hid.c: A bound to Space shows Space, A bound to the
    bottom face button shows a cross on a PlayStation pad), and nn_fs.c gives the game that file instead.
@@ -25,6 +25,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"
+#include "hos_paths.h"   /* (the game folder's files: the game is bin\hookshot.exe beside them since the launcher came) */
 
 void hos_log(const char *fmt, ...);               /* hos_log.c (hos.h is not needed here: tests compile this alone) */
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
@@ -376,9 +377,9 @@ static int remake(const uint8_t *otf, size_t size, const uint16_t *gids, uint32_
 }
 
 /* ---- the family ---- */
-static int option_from_file(void) {   /* button_icons= in hookshot_options.ini beside the executable, -1 none */
+static int option_from_file(void) {   /* button_icons= in hookshot_options.ini in the game folder, -1 none */
     char path[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
+    DWORD n = hos_game_path_a(path, sizeof path);
     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
     snprintf(path + n, sizeof path - n, "hookshot_options.ini");
     FILE *f = fopen(path, "r");
@@ -448,14 +449,14 @@ int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 static int load_bin(void) {
     const char *e = getenv("HOS_BUTTON_ICONS");
     if (e && !strcmp(e, "0")) return 0;
-    DWORD n = GetModuleFileNameA(NULL, game_dir, sizeof game_dir);
+    DWORD n = hos_game_path_a(game_dir, sizeof game_dir);
     while (n && game_dir[n - 1] != '\\' && game_dir[n - 1] != '/') n--;
     game_dir[n] = 0;
     char path[MAX_PATH + 32];
     snprintf(path, sizeof path, "%shookshot_icons.bin", game_dir);
     FILE *f = fopen(path, "rb");
     if (!f) {
-        hos_log("button icons: no hookshot_icons.bin beside the executable (the builder makes it): the game's own");
+        hos_log("button icons: no hookshot_icons.bin in the game folder (the builder makes it): the game's own");
         return 0;
     }
     fseek(f, 0, SEEK_END);
@@ -522,7 +523,7 @@ static volatile LONG ready;      /* 0 not looked, 1 icons on, -1 off */
 static int made_state;           /* the font: 0 not made, 1 made, -1 none */
 static char made_path[MAX_PATH + 32];
 
-/* a file the game gets in place of one of its own: the data in a zstd frame of raw blocks, written beside the executable */
+/* a file the game gets in place of one of its own: the data in a zstd frame of raw blocks, written in the game folder */
 static int write_zs(const char *name, const uint8_t *d, size_t n, char *path, size_t cap) {
     Buf zs = {0};
     zstd_raw(&zs, d, n);

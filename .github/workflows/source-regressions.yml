@@ -5,7 +5,10 @@ on:
     branches: [main]
     paths:
       - nx2/nup.py
+      - nx2/test_nup_verify.py
       - nx2/make_game.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -27,10 +30,29 @@ on:
       - builder/linux/hookshot_builder.py
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
+      - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
+      - tests/test_invalidate_vcore.py
+      - tests/invalidate_vcore_test.cpp
+      - host/rx_backend.c
+      - host/hos_thread.c
+      - gpu/vk/vk_api.h
+      - gpu/render/rx_nvn.h
+      - gpu/render/nvn_api.h
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - tests/test_builder_status.py
+      - tests/test_sdl_audio_library.py
+      - tests/test_desktop_exec.py
+      - tests/test_text_speed.py
+      - tests/test_upscale_fallback.py
+      - nx2/test_cbuf_table_extent.py
+      - nx2/test_dump_ssbo_read.py
+      - nx2/test_mesh_dynamic_state.py
+      - host/posix/win32_posix.c
+      - nx2/oot_patches.py
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -48,6 +70,16 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_headless_sigterm.py
+      - tests/test_global_atomic_add_f32.py
+      - tests/test_lower_atomg_cas.py
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/atomic_operations_global_memory.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.inc
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.h
+      - gpu/vk/eden/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -56,6 +88,12 @@ on:
       - tests/test_bind_memo.py
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
+      - tests/test_prepare_cache_save.py
+      - tests/test_slow_frame_limit.py
+      - tests/test_3d_view_create_flags.py
+      - tests/test_present_trace.py
+      - host/nn_vi.c
+      - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
       - tests/test_same_draw.py
@@ -108,10 +146,19 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.h
+      - tests/test_mesh_fallback.py
       - tests/test_mesh_point_topology.py
+      - gpu/vk/vk_shader.h
+      - gpu/vk/vk_vma.cpp
       - tests/test_lower_depbar.py
       - tests/lower_depbar_test.cpp
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+      - tests/test_program_cache_reader.py
+      - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+      - tests/test_cas_loop_ceiling.py
+      - gpu/vk/vk_draw.cpp
+      - tests/test_equal_depth_margin.py
       - nx2/button_icons.py
       - host/button_icons.c
       - host/nn_fs.c
@@ -122,7 +169,10 @@ on:
     branches: [main]
     paths:
       - nx2/nup.py
+      - nx2/test_nup_verify.py
       - nx2/make_game.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -144,10 +194,29 @@ on:
       - builder/linux/hookshot_builder.py
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
+      - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
+      - tests/test_invalidate_vcore.py
+      - tests/invalidate_vcore_test.cpp
+      - host/rx_backend.c
+      - host/hos_thread.c
+      - gpu/vk/vk_api.h
+      - gpu/render/rx_nvn.h
+      - gpu/render/nvn_api.h
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - tests/test_builder_status.py
+      - tests/test_sdl_audio_library.py
+      - tests/test_desktop_exec.py
+      - tests/test_text_speed.py
+      - tests/test_upscale_fallback.py
+      - nx2/test_cbuf_table_extent.py
+      - nx2/test_dump_ssbo_read.py
+      - nx2/test_mesh_dynamic_state.py
+      - host/posix/win32_posix.c
+      - nx2/oot_patches.py
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -165,6 +234,16 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_headless_sigterm.py
+      - tests/test_global_atomic_add_f32.py
+      - tests/test_lower_atomg_cas.py
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/atomic_operations_global_memory.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.inc
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.h
+      - gpu/vk/eden/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -173,6 +252,12 @@ on:
       - tests/test_bind_memo.py
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
+      - tests/test_prepare_cache_save.py
+      - tests/test_slow_frame_limit.py
+      - tests/test_3d_view_create_flags.py
+      - tests/test_present_trace.py
+      - host/nn_vi.c
+      - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
       - tests/test_same_draw.py
@@ -225,10 +310,19 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.h
+      - tests/test_mesh_fallback.py
       - tests/test_mesh_point_topology.py
+      - gpu/vk/vk_shader.h
+      - gpu/vk/vk_vma.cpp
       - tests/test_lower_depbar.py
       - tests/lower_depbar_test.cpp
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+      - tests/test_program_cache_reader.py
+      - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+      - tests/test_cas_loop_ceiling.py
+      - gpu/vk/vk_draw.cpp
+      - tests/test_equal_depth_margin.py
       - nx2/button_icons.py
       - host/button_icons.c
       - host/nn_fs.c
@@ -262,11 +356,15 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Check read-only NUP verification
+        run: |
+          python -m pip install zstandard
+          python -I -B nx2/test_nup_verify.py
       - name: Check extraction boundaries
         run: python -I -B nx2/test_nup_paths.py
       - name: Check source-cache coherency
         run: python -I -B tests/test_make_game_cache.py
-      - name: Check Vulkan presentation rectangle
+      - name: Check Windows native source regressions
         if: runner.os == 'Windows'
         shell: cmd
         run: |
@@ -294,6 +392,8 @@ jobs:
           if errorlevel 1 exit /b 1
           "%TEMP%\present_rect_test.exe"
           if errorlevel 1 exit /b 1
+          python -I -B tests/test_invalidate_vcore.py --cxx cl
+          if errorlevel 1 exit /b 1
       - name: Check the Windows link's oldnames default
         run: python -I -B tests/test_msvc_oldnames.py
       - name: Check isolated child Unicode output
@@ -320,12 +420,45 @@ jobs:
       - name: Compile Windows Builder
         if: runner.os == 'Windows'
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
+      - name: Check the CPU target follows the CPU
+        run: python -I -B tests/test_cpu_target.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check the Linux builder's error sentences
+        run: python -I -B tests/test_builder_status.py
+      - name: Check Linux audio loads the SDL beside the game first
+        run: python -I -B tests/test_sdl_audio_library.py
+      - name: Check the Linux menu entry of a folder with % in its name
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_desktop_exec.py
+      - name: Check Text speed scales only when asked
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_text_speed.py --cc gcc
+      - name: Check the generic upscale fallback
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_upscale_fallback.py --cxx g++
+      - name: Check uniform ranges cover generated table reads
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_cbuf_table_extent.py --cxx g++
+      - name: Check SSBO diagnostics never read an unbound address
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_dump_ssbo_read.py --cxx g++
+      - name: Check mesh and vertex dynamic state changes
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_mesh_dynamic_state.py --cxx g++
+      - name: Check timeline fence values across the replay modes
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_timeline_modes.py --cxx g++
+      - name: Check the C++ library preflight
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_cpp_preflight.py --cxx g++
+      - name: Check invalidation releases its emulated core
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_invalidate_vcore.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
@@ -352,12 +485,21 @@ jobs:
         run: python -I -B tests/test_mesh_stage_buffer_zero.py
       - name: Check a mesh program with control topology 1 draws points
         run: python -I -B tests/test_mesh_point_topology.py
+      - name: Check the mesh shader fallback's compute stages
+        run: python -I -B tests/test_mesh_fallback.py
       - name: Check the replay clock skips the performance counter
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prof_clock.py
       - name: Check a pool span is reused without the lock
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pool_span.py
+      - name: Check a headless run ends on SIGTERM
+        run: python -I -B tests/test_headless_sigterm.py
+      - name: Check a global f32 atomic add has a SPIR-V fallback
+        run: python -I -B tests/test_global_atomic_add_f32.py
+      - name: Check ATOMG.CAS lowers and translates
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_lower_atomg_cas.py --cxx g++
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py
@@ -377,6 +519,18 @@ jobs:
         run: python -I -B tests/test_shader_census_cmd.py
       - name: Check the shader list has the game's compute programs
         run: python -I -B tests/test_shader_census.py
+      - name: Check shader preparation saves the pipeline cache
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_prepare_cache_save.py
+      - name: Check multi-second frames remain in the requested slow log
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_slow_frame_limit.py
+      - name: Check sampled 2D views of 3D images have the creation flag
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_3d_view_create_flags.py
+      - name: Check the optional native present-return trace
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_present_trace.py
       - name: Check the build's version stamp
         run: python -I -B nx2/test_version.py
       - name: Check the release changelog entry
@@ -431,6 +585,13 @@ jobs:
       - name: Check every dependency barrier form lowers
         if: runner.os == 'Linux'
         run: python -I -B tests/test_lower_depbar.py --cxx clang++
+      - name: Check a program cache record is read within its bytes
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_program_cache_reader.py
+      - name: Check compare-exchange loops end at a ceiling
+        run: python -I -B tests/test_cas_loop_ceiling.py
+      - name: Check the EQUAL depth margin
+        run: python -I -B tests/test_equal_depth_margin.py
       - name: Install zstandard for the button icons' test (the builder's Python has it)
         if: runner.os == 'Linux'
         run: python -m pip install zstandard==0.25.0
@@ -469,5 +630,5 @@ jobs:
         shell: bash
         run: |
           for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
-            spirv-val --target-env vulkan1.3 "$module"
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done

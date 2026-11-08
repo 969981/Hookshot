@@ -552,7 +552,11 @@ class Handler(BaseHTTPRequestHandler):
             job.cancel()
         elif action == "play":
             out = load_config()["out"]
-            exe = os.path.join(out, "hookshot.exe")
+            # the game itself: bin\hookshot.exe since NotRexed's launcher came (hookshot.exe in the folder is that launcher,
+            # whose Update installs the official release over this build); hookshot.exe in a folder built before
+            exe = os.path.join(out, "bin", "hookshot.exe")
+            if not os.path.isfile(exe):
+                exe = os.path.join(out, "hookshot.exe")
             if job.view()["state"] == "running":
                 error = "Wait for the build to finish."
             elif not os.path.isfile(exe):

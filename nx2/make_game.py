@@ -29,8 +29,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
-LINUX = os.name != "nt"
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
+import toolchain as _toolchain
+# (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
+# beside the builder), to run under Proton or copy to a Windows PC
+LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
+BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -150,8 +154,23 @@ def check_cache_paths(out, paths):
                  "Choose a different output folder." % path)
 
 
+def check_cpu():
+    """(linux) The AppImage's Vulkan back end (HOOKSHOT_VK_PREBUILT) is built for x86-64-v3 elsewhere
+    (scripts/linux/appimage.sh), while the game follows this PC (nx2/host_cpu.py): on a CPU without AVX2 it would stop at
+    its start. Said now, before the game is read, not 40 minutes in (issue 363)"""
+    if not os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("RX_MARCH"):
+        return
+    sys.path.insert(0, HERE)
+    from host_cpu import host_march
+    m = host_march()
+    if m != "x86-64-v3":
+        fail("Your processor has no AVX2 (it runs %s), and the AppImage's renderer needs it. Build Hookshot from source "
+             "instead (see the readme): a source build follows your processor." % m)
+
+
 def check(a, work):
     check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
+    check_cpu()
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
@@ -326,11 +345,25 @@ def default_jobs():
     mem = free_memory_gb()
     # (3.5 GB each: at 2 GB a player's compiler ran out of memory beside the others and died "due to signal", 2026-11-08; the
     # hot pieces, built with the play profile, take more than the rest. nx2/build.py also compiles a failed file again alone)
-    floor = max(1, min(4, cpus // 2))   # (as many as before at the least: Windows pages rather than fails)
+    # (issue 531) The Linux builder window too: it chose 80% of the total memory at 3.5 GB each, 7 compilers on a 16-thread PC
+    # with 32 GB where Windows ran 12, and the CPU sat at 29%. The floor is Windows' only: Windows pages rather than fails,
+    # Linux stops a compiler that does not fit (it is compiled again alone), so there the free memory alone decides.
+    floor = max(1, min(4, cpus // 2)) if os.name == "nt" else 1   # (as many as before at the least)
     jobs = cpus if mem is None else max(floor, min(cpus, int(mem // 2)))
     print("build: %d compilers at once (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
           % (jobs, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
     return jobs
+
+
+def chosen_jobs(given):
+    """--jobs when it is given (1 or more), else HOOKSHOT_JOBS, else what default_jobs chooses: worked out only when it is
+    needed, so the "compilers at once" line is the number the build uses"""
+    if given:
+        return given
+    try:
+        return requested_jobs(os.environ.get("HOOKSHOT_JOBS")) or default_jobs()
+    except ValueError as e:
+        fail(str(e))
 
 
 def bundled_mingw():
@@ -340,7 +373,7 @@ def bundled_mingw():
         return os.environ.get("HOOKSHOT_MINGW", "")
     if not os.environ.get("HOOKSHOT_MINGW"):
         here = os.path.join(ROOT, "llvm-mingw")
-        if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
+        if os.path.isfile(os.path.join(here, "bin", "clang" + (".exe" if os.name == "nt" else ""))):
             os.environ["HOOKSHOT_MINGW"] = here
         elif os.path.isdir(here):
             # (the folder is there and its compiler is not: an antivirus took it (false positives on unsigned tools), or the
@@ -378,6 +411,9 @@ def check_windows_sdk():
         return check_linux_compiler()
     if bundled_mingw():
         return check_mingw()
+    if CROSS:
+        fail("Building for Windows on Linux needs llvm-mingw: unpack its Linux release (github.com/mstorsjo/llvm-mingw) and set "
+             "HOOKSHOT_MINGW to its folder.")
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
     # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
@@ -490,15 +526,42 @@ def drop_stale_objects(work):
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    heads = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
-    stamp = hashlib.sha1(chr(10).join(heads).encode()).hexdigest()
+    found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
+
+    # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
+    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
+    # writes them with / where the folder has \: compared with / on both sides, each path's own spelling kept for the old stamp
+    mine = os.path.normcase(os.path.abspath(ROOT)).lower().replace(os.sep, "/")
+    ours = lambda h: h.replace(os.sep, "/").startswith(mine + "/")
+
+    def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
+        root = root.replace(os.sep, "/")
+        moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
+        return hashlib.sha1(chr(10).join(sorted(moved)).encode()).hexdigest()
+
+    rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
+    ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace").stdout.splitlines()[:1]
+    stamp = hashlib.sha1(chr(10).join(ver + rel).encode()).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
-            if f.read().strip() == stamp:
-                return
+            had = f.read().strip()
     except OSError:
-        pass
+        had = ""
+    if had == stamp:
+        return
+    # (a stamp an installed version of the builder wrote the old way: the same headers, in its own folder; kept, and written anew)
+    versions = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(ROOT))))
+    olds = {stamp_for(mine)}
+    if os.path.basename(versions).lower() == "versions" and os.path.isdir(versions):
+        for v in os.listdir(versions):
+            olds.add(stamp_for(os.path.normcase(os.path.join(versions, v, "HookshotBuilder", "tools")).lower()))
+    if had and had in olds:
+        print("the system headers are the same as the last build's (an earlier version of the builder): its objects are reused", flush=True)
+        with open(note, "w") as f:
+            f.write(stamp + chr(10))
+        return
     for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
         if os.path.isdir(sub):
             print("the system headers changed since the last build: its compiled objects are not reused (%s)" % sub, flush=True)
@@ -588,14 +651,18 @@ def main():
     p.add_argument("--romfs")
     p.add_argument("--exefs")
     p.add_argument("--out")
-    p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
-                   if LINUX else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
-    # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
-    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())
+    p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                                                  "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
+                   if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
+    # (--jobs or HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the builder windows pass neither unless asked to)
+    p.add_argument("--jobs", type=int, default=0, help="compilers at once (0, the default: as many as the free memory holds)")
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     a = p.parse_args()
+    if a.jobs < 0:
+        fail("--jobs must be 1 or more, or 0 for automatic.")
+    a.jobs = chosen_jobs(a.jobs)
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
@@ -613,6 +680,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
+    check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
     if not LINUX:
         check_windows_sdk()
     stop_stray_compilers(work, p.get_default("work"))
@@ -699,23 +767,57 @@ def main():
     if LINUX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
-    done = {"n": 0, "of": 1}
+    done = {"n": 0.0, "of": 1.0}
+    # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
+    # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
+    # builder said "452 minutes left" an hour from the end. Seconds per MB measured on a full build: the eight hot files (-O2,
+    # the play profile) 23.5, the other game files 3.4, the rest ~1.3 s each)
+    gen = os.path.join(work, "sa", "gen")
+
+    def cost(name, mb=None):
+        if mb is None:
+            try:
+                mb = os.path.getsize(os.path.join(gen, name)) / (1 << 20)
+            except OSError:
+                mb = 0
+        return 23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3
 
     def compiled(line):
         m = re.match(r"(\d+) files, ", line)
         if m:
-            done["of"] = int(m.group(1))
-        elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
-            done["n"] += 1
-            say("progress", "%.3f" % (done["n"] / done["of"]))
+            try:
+                ours = [f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c")]
+            except OSError:
+                ours = []
+            done["of"] = sum(cost(f) for f in ours) + max(0, int(m.group(1)) - len(ours)) * 1.3
+        else:
+            m = re.match(r"\s+(\S+)\s+(\d+) MB\s+\d+s", line)
+            if m:
+                done["n"] += cost(m.group(1))
+                say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
-    staged = [(os.path.join(built, n), os.path.join(out, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
+    # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
+    # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
+    # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
+    # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
+    staged = []
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    launcher = launcher if not LINUX and os.path.isfile(launcher) else None
+    game_dir = os.path.join(out, "bin") if launcher else out
+    os.makedirs(game_dir, exist_ok=True)
+    ffmpeg_dlls = [] if LINUX else sorted(f for f in os.listdir(built) if f.endswith(".dll") and f.startswith(("av", "sw")))
+    for n in BESIDE + ffmpeg_dlls:
+        src = os.path.join(built, n)
+        if os.path.exists(src):
+            staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    if launcher:
+        staged.append((launcher, os.path.join(out, "hookshot.exe")))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -731,6 +833,14 @@ def main():
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
+    if launcher:   # (a folder built before the launcher: its game's DLLs and map left the folder for bin\; hookshot.exe is the launcher now)
+        stale = sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
+        for n in BESIDE[1:] + stale + ["hookshot.map", "hookshot-game.exe"]:
+            try:
+                if os.path.isfile(os.path.join(out, n)):
+                    os.remove(os.path.join(out, n))
+            except OSError:
+                pass
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):

@@ -102,8 +102,9 @@ beside the game from an earlier build is moved there once.
 To choose how many files compile at once, launch the builder from a terminal with, for example,
 `HOOKSHOT_JOBS=2 ./Hookshot-<version>-x86_64.AppImage` (replace the filename with the one you downloaded).
 Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal. Use a positive whole number;
-`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder's automatic selection still
-uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
+`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder still uses `RX_JOBS` when set;
+otherwise it chooses as on Windows: one compiler per CPU thread, as many as the free memory holds at 2 GB each (a file
+whose compiler runs out of memory is compiled again alone). The `--cli` route also accepts `--jobs 2`.
 These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows.
@@ -166,6 +167,9 @@ To build from the command line you also need:
   it the build uses the clang from [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools
   and the Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
+- From Linux, the Windows game builds too: unpack llvm-mingw's Linux build (`ucrt-ubuntu-22.04-x86_64`), then run
+  `make_game.py` with `RX_TARGET=windows` and `HOOKSHOT_MINGW` set to its folder. The objects go to
+  `~/.cache/hookshot-builder-windows`, apart from the Linux game's. The game folder runs under Proton or on Windows.
 - The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
 - What the HookshotBuilder zip carries in its `tools` folder and a clone does not. The builder sets the variables
   below itself; from the command line, set them before you run `make_game.py`:

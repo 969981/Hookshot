@@ -236,9 +236,15 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
             char name[260];
             WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL);
-            if (!strcmp(name, tag) || (before[0] && !strcmp(name, before))) continue;
+            /* (issue 611: only the version installed stays; the one before was 1.3 GB nobody rolled back to. A folder still in use
+               (the builder that started this, closing; a build it left) cannot be renamed: it stays, and goes at a later run) */
+            (void)before;
+            if (!strcmp(name, tag)) continue;
             swprintf(p, MAX_PATH, L"%ls\\%ls", versions, fd.cFileName);
-            rmtree(p);
+            wchar_t gone[MAX_PATH];
+            swprintf(gone, MAX_PATH, L"%ls.gone", p);
+            if (wcslen(fd.cFileName) > 5 && !wcscmp(fd.cFileName + wcslen(fd.cFileName) - 5, L".gone")) rmtree(p);
+            else if (MoveFileW(p, gone)) rmtree(gone);
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
@@ -328,6 +334,12 @@ static int api_link_for(const char *url, char *out, int n) {
     return api_asset_url(repo, latest ? NULL : tag, name, out, n);
 }
 
+/* an answer worth trying again: none (no connection), a server error, a download cut off half way (200), a timeout, or the API's
+   rate limit (403/429) */
+static int retryable(DWORD status) {
+    return !status || status >= 500 || status == 200 || status == 408 || status == 429 || status == 403;
+}
+
 static const char *manifest_url(void) {
     static char u[1024];
     const char *e = getenv("HOOKSHOT_SETUP_LIST");
@@ -356,9 +368,12 @@ static DWORD WINAPI work(LPVOID unused) {
     Mem man = {0};
     /* (tried again on a server error or no answer: GitHub's release downloads answered 504 for an hour, 2026-11-08, and every
        start failed at once) */
-    static const int waits[] = {3, 6, 12, 20};
+    /* (low-vram, issue 558: 5 tries in 41 s were not enough while GitHub's site and API both failed on and off for hours; 8 tries
+       over ~3 minutes now, alternating the release link and the API's) */
+    static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
+    enum { TRIES = 8 };
     int ok = 0;
-    for (int attempt = 0; attempt <= 4 && !ok; attempt++) {
+    for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
         if (attempt) {
             status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
             Sleep(waits[attempt - 1] * 1000);
@@ -376,14 +391,14 @@ static DWORD WINAPI work(LPVOID unused) {
             ok = http_get(api, mem_sink, &man, 0, L"application/octet-stream") && man.p;
             if (!ok) g_http_status = first;
         }
-        if (!ok && g_http_status && g_http_status < 500) break;   /* (404 and the like: trying again changes nothing) */
+        if (!ok && !retryable(g_http_status)) break;   /* (404 and the like: trying again changes nothing) */
     }
     if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
                    L"https://github.com/NotRexed/Hookshot/releases/latest"
-             : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 5 times). This is on "
-                               L"GitHub's side: try again in a few minutes, or later today."
+             : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
+                               L"This is on GitHub's side: try again in a few minutes, or later today."
                              : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
@@ -424,7 +439,7 @@ static DWORD WINAPI work(LPVOID unused) {
                 wchar_t part[MAX_PATH];
                 swprintf(part, MAX_PATH, L"%ls.part", zip);
                 int got = 0;
-                for (int attempt = 0; attempt < 4 && !got; attempt++) {   /* (a server error or a dropped connection: again) */
+                for (int attempt = 0; attempt < TRIES && !got; attempt++) {   /* (a server error or a dropped connection: again) */
                     if (attempt) {
                         status(L"Part %d of %d: GitHub didn't answer (%lu). Trying again in %d s...", i + 1, nparts, g_http_status,
                                waits[attempt - 1]);
@@ -451,11 +466,13 @@ static DWORD WINAPI work(LPVOID unused) {
                     BCryptCloseAlgorithmProvider(a, 0);
                     InterlockedExchange(&g_percent, -1);
                     hex(d, 32, have);
-                    if (!got && g_http_status && g_http_status < 500) break;
+                    /* (a download cut off half way answered 200 and stopped the tries at once: only a definite no stops them) */
+                    if (!got && !retryable(g_http_status)) break;
                 }
-                if (!got) DeleteFileW(part), fail(g_http_status >= 500
-                    ? L"Downloading part %d of %d failed: GitHub's download servers are failing right now (tried 4 times). This is on "
-                      L"GitHub's side: try again in a few minutes, or later today."
+                if (!got) DeleteFileW(part), fail(retryable(g_http_status)
+                    ? L"Downloading part %d of %d failed: GitHub's download servers are failing right now (tried 8 times over 3 "
+                      L"minutes). This is on GitHub's side. The parts already downloaded are kept: run HookshotBuilder.exe again in a "
+                      L"few minutes and it carries on from here."
                     : L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
                 if (strcmp(have, p->sha)) DeleteFileW(part), fail(L"Part %d of %d did not download correctly (its checksum differs). Try again.", i + 1, nparts);
                 DeleteFileW(zip);
@@ -520,9 +537,58 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+/* (launch mode) "Hookshot Launcher.exe" in a game folder (nx2/make_game.py puts this file there under that name): the installed
+   builder opened as the game's launcher (--launch <that folder>: Play, and Update when a newer release is out), at once, with no
+   window, download or network of its own. With no builder installed yet, the setup runs as usual and then opens the launcher. */
+static int launch_installed(const wchar_t *args) {
+    wchar_t base[MAX_PATH], cur[MAX_PATH], exe[MAX_PATH], dir[MAX_PATH], cmd[4096];
+    if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base) != S_OK) return 0;
+    char tag[128] = "";
+    swprintf(cur, MAX_PATH, L"%ls\\HookshotBuilder\\versions\\current.txt", base);
+    read_small(cur, tag, sizeof tag);
+    if (!tag[0]) return 0;
+    wchar_t wtag[128];
+    MultiByteToWideChar(CP_UTF8, 0, tag, -1, wtag, 128);
+    swprintf(dir, MAX_PATH, L"%ls\\HookshotBuilder\\versions\\%ls\\HookshotBuilder", base, wtag);
+    swprintf(exe, MAX_PATH, L"%ls\\HookshotBuilder.exe", dir);
+    if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES) return 0;
+    swprintf(cmd, 4096, L"\"%ls\" %ls", exe, args);
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) return 0;
+    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    return 1;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     (void)prev;
     wcsncpy(g_cmdline, cmdline ? cmdline : L"", 2047);
+    {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(NULL, self, MAX_PATH);
+        const wchar_t *name = wcsrchr(self, L'\\');
+        name = name ? name + 1 : self;
+        if (!_wcsicmp(name, L"hookshot.exe") && !wcsstr(g_cmdline, L"--")) {   /* (the game folder's launcher) */
+            wchar_t *slash = wcsrchr(self, L'\\');
+            if (slash) *slash = 0;
+            swprintf(g_cmdline, 2047, L"--launch \"%ls\"", self);
+            if (launch_installed(g_cmdline)) return 0;
+            /* (no builder installed on this PC: the game itself, at once; nothing is downloaded to show a Play button) */
+            wchar_t game[MAX_PATH], cmd[MAX_PATH + 4];
+            swprintf(game, MAX_PATH, L"%ls\\bin\\hookshot.exe", self);
+            swprintf(cmd, MAX_PATH + 4, L"\"%ls\"", game);
+            STARTUPINFOW si = {sizeof si};
+            PROCESS_INFORMATION pi;
+            if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, self, &si, &pi)) {
+                CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+                return 0;
+            }
+            MessageBoxW(NULL, L"The game (bin\\hookshot.exe) is missing from this folder. Build it again with the Hookshot Builder.", L"Hookshot",
+                        MB_ICONERROR);
+            return 1;
+        }
+        if (wcsstr(g_cmdline, L"--launch") && launch_installed(g_cmdline)) return 0;
+    }
     INITCOMMONCONTROLSEX icc = {sizeof icc, ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&icc);
     WNDCLASSW wc = {0};
