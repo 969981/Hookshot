@@ -162,6 +162,10 @@ class PrecompileBackoffTests(unittest.TestCase):
             for key in ("INCLUDE", "LIB", "LIBPATH"):
                 env.pop(key, None)
             env["PATH"] = str(compiler.parent) + os.pathsep + str(Path(env["SYSTEMROOT"]) / "System32")
+        # Python's cached temp base and the C++ runtime's environment lookup may differ.
+        # Keep subprocesses in the same verified base without relaxing the native ownership guard.
+        for key in ("TMPDIR", "TEMP", "TMP"):
+            env[key] = str(cls.build.parent)
         cls.runtime_env = env
         command = [str(compiler), "-std=c++20", "-Wall", "-Wextra", "-Werror", "-DHAS_BACKOFF=" + str(int(has_backoff)),
                    str(source), "-o", str(cls.exe)]
