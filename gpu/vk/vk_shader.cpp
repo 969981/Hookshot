@@ -109,6 +109,10 @@ struct Code {
     std::vector<uint8_t> c1;
     uint32_t local[3]{};
     uint32_t shared_memory = 0;   // compute: bytes from the NVN2 control section (+0x64; klimovich008's PR 91)
+    // compute: its storage buffer table in c0, from the control section as vk_bank.cpp cs_layout reads it for the bound program
+    // (+0xa9 push words, +0xb1 uniform buffers, +0xb2 storage buffers, +0xb3 textures, +0xb6 images): for the shader
+    // precompile, which has no program bound
+    uint32_t cs_ssbo_at = 0, cs_ssbo = 0, cs_end = 0;
     uint32_t texture_bound = ~0u;   // the bank native TEX instructions name (~0: none; TEXS take the stage's own)
     bool isbe = false;              // an NVN2 task (stage 6) or mesh (stage 7) program: it writes the internal stage buffer
     // (task / mesh: control section +0x58 threads 15:0, payload bytes 31:16; +0x60 max primitives 15:0, max vertices
@@ -288,6 +292,13 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     if (!graphics) {
         std::memcpy(c.local, ctl + 0x58, 12);
         std::memcpy(&c.shared_memory, ctl + 0x64, 4);
+        // (c0: the counts at 0, the push area rounded to 16 bytes, then 16 bytes a uniform buffer and a storage buffer, 8 a
+        // texture and an image handle: vk_bank.cpp CsLayout. The sum is the bank size at +0xba for every program in the game)
+        const uint32_t push = ((uint32_t)ctl[0xa9] * 4 + 15) & ~15u;
+        const uint32_t ubo = ctl[0xb1], ssbo = ctl[0xb2], tex = ctl[0xb3], img = ctl[0xb6];
+        c.cs_ssbo_at = 0x10 + push + 16 * ubo;
+        c.cs_ssbo = ssbo;
+        c.cs_end = c.cs_ssbo_at + 16 * ssbo + 8 * tex + 8 * img;
     }
     c.ok = true;
     return c;
@@ -1096,7 +1107,15 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             Env env{s, *csc, Shader::Stage::Compute};
             {   // (EvilOOT) where this program's storage buffer table is in c0 (NVN2's layout, not Maxwell's 0x310)
                 uint32_t count = 0, end = 0;
-                const uint32_t base = compute_ssbo_table(s, &count, &end);
+                uint32_t base = compute_ssbo_table(s, &count, &end);
+                // (with no program bound, the shader precompile's, the program's own control section says where it is. Without
+                // this every compute program prepared before the game kept Maxwell's 0x310, where NVN2's c0 holds nothing, and
+                // the program cache gave the game that translation from then on, as compute programs have no variants: OoT's
+                // foliage culling left some of its draw lists empty, and the plants near Link had no leaves (issue 590; RX 7700S).
+                // Translated in play, with the program bound, they were right. RX_VK_CS_TABLE_SEED=0: as before)
+                static const bool from_code = !getenv("RX_VK_CS_TABLE_SEED") || atoi(getenv("RX_VK_CS_TABLE_SEED")) != 0;
+                if (!count && from_code && !s.prog.nstage && csc->cs_ssbo)
+                    base = csc->cs_ssbo_at, count = csc->cs_ssbo, end = csc->cs_end;
                 Shader::Optimization::g_nvn2_compute_ssbo_base = count ? base : 0;   // (no table found: Maxwell's, as before)
                 Shader::Optimization::g_nvn2_compute_ssbo_count = count ? count : 16;
                 Shader::Optimization::g_nvn2_compute_layout_end = count ? end : 0;
