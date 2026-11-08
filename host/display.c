@@ -137,7 +137,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL:   /* (hookshot) the menu's lists scroll (vk_menu.cpp) */
         if (rx_option(1, 0)) {
             void rx_option_set(int id, int value);
-            rx_option_set(10, (int)(short)HIWORD(wp));
+            rx_option_set(29, (int)(short)HIWORD(wp));
         }
         return 0;
     case WM_LBUTTONDOWN:

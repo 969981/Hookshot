@@ -1,6 +1,10 @@
 // The Insert menu. Drawn on the CPU (GDI text into a bitmap) and copied over the window's image at the last step of a present,
 // so it costs nothing while closed and it never touches the game's picture, nor what frame interpolation sees. Keys: Insert
 // opens and closes it, Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
+// (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the bottom
+// face button changes too, the right one closes, the shoulder buttons change tabs. The game gets no gamepad input while it is
+// open either. The mouse works it too. Its Keyboard and Controller tabs bind the Switch's buttons to keys and gamepad inputs,
+// which the host keeps (host/nn_hid.c: host->binding and bind).
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -58,7 +62,8 @@ const char* tx_sens(int v) {
     return b;
 }
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
-// (the controls' rows: the text function says which kind they are, kind_of; their values are opts.keys and opts.pads)
+// (the controls' rows: the text function says which kind they are, kind_of; they have no value of their own, their lo is the
+// control's number, HOS_SW_* or HOS_KEY_*, and the host keeps what it is bound to)
 const char* tx_keybind(int) { return ""; }
 const char* tx_padbind(int) { return ""; }
 const char* tx_reset(int) { return "Reset to defaults"; }
@@ -107,20 +112,28 @@ const char* vk_name(int vk) {
     snprintf(b, sizeof b, "Key %d", vk);
     return b;
 }
-/// a pad button by where it is (host/nn_hid.c's B_* bits): the same place on any pad
-const char* pad_name(int b) {
-    static const char* t[16] = {"Right face (A / B / Circle)", "Bottom face (B / A / Cross)", "Top face (X / Y / Triangle)",
-                                "Left face (Y / X / Square)", "Left stick press", "Right stick press", "L / LB / L1",
-                                "R / RB / R1", "ZL / LT / L2", "ZR / RT / R2", "+ / Start / Options", "- / Back / Share",
-                                "D-pad left", "D-pad up", "D-pad right", "D-pad down"};
-    return b >= 0 && b < 16 ? t[b] : "-";
+/// a gamepad input by where it is (HOS_PAD_*, SDL's order): the same place on any pad
+const char* pad_name(int p) {
+    static const char* t[HOS_PAD_N] = {"Bottom face (A / Cross)", "Right face (B / Circle)", "Left face (X / Square)",
+                                       "Top face (Y / Triangle)", "Back / Select / Share", "Home / Guide", "Start / Options",
+                                       "Left stick press", "Right stick press", "LB / L1", "RB / R1", "D-pad up",
+                                       "D-pad down", "D-pad left", "D-pad right", "LT / L2", "RT / R2"};
+    return p >= 0 && p < HOS_PAD_N ? t[p] : "-";
 }
+// (the controls, kept by the host: host/nn_hid.c reads them back from the file, pad_<name> and key_<name>)
+const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
+                                           "left", "up", "right", "down", "move_up", "move_down", "move_left",
+                                           "move_right", "cam_up", "cam_down", "cam_left", "cam_right"};
+bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
+int key_of(int control, int slot) { return can_bind() ? host->binding(HOS_BIND_KEY, control, slot) : 0; }
+int pad_of(int control) { return can_bind() ? host->binding(HOS_BIND_PAD, control, 0) : -1; }
 
 const char* tab_names[] = {"Display", "Performance", "Camera", "Keyboard", "Controller"};
 constexpr int kTabs = 5;
-#define KEY_HELP "Enter, A or a click on a key: press the new key or mouse button (Esc keeps the old one). Backspace clears it. " \
+#define KEY_HELP "Enter, the bottom face button or a click on a key: press the new key or mouse button (Esc keeps the old one). Backspace clears it. " \
                  "Left and right: the first or second key."
-#define PAD_HELP "Enter, A or a click: press the controller button that should do this (the menu itself keeps the usual buttons)."
+#define PAD_HELP "Enter, the bottom face button or a click: press the controller button that should do this (Home is the menu's). " \
+                 "Taking another button's input swaps the two. Delete clears it."
 
 Row rows[] = {
     {"Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
@@ -154,47 +167,50 @@ Row rows[] = {
      "The - and = keys change it in the game too.", 2},
     {"Invert vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
      "Swaps up and down for the mouse: moving it forward tilts the camera down.", 2},
-    {"Button A", opts.keys[0], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button B", opts.keys[1], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button X", opts.keys[2], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button Y", opts.keys[3], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button L", opts.keys[6], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button R", opts.keys[7], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button ZL", opts.keys[8], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Button ZR", opts.keys[9], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Plus", opts.keys[10], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Minus", opts.keys[11], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Left stick press", opts.keys[4], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Right stick press", opts.keys[5], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Move forward", opts.keys[16], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Move back", opts.keys[17], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Move left", opts.keys[18], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Move right", opts.keys[19], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Camera up", opts.keys[20], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Camera down", opts.keys[21], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Camera left", opts.keys[22], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"Camera right", opts.keys[23], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"D-pad left", opts.keys[12], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"D-pad up", opts.keys[13], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"D-pad right", opts.keys[14], 0, 0, 1, tx_keybind, KEY_HELP, 3},
-    {"D-pad down", opts.keys[15], 0, 0, 1, tx_keybind, KEY_HELP, 3},
+    {"Button A", nullptr, HOS_SW_A, HOS_SW_A, 1, tx_keybind, KEY_HELP, 3},
+    {"Button B", nullptr, HOS_SW_B, HOS_SW_B, 1, tx_keybind, KEY_HELP, 3},
+    {"Button X", nullptr, HOS_SW_X, HOS_SW_X, 1, tx_keybind, KEY_HELP, 3},
+    {"Button Y", nullptr, HOS_SW_Y, HOS_SW_Y, 1, tx_keybind, KEY_HELP, 3},
+    {"Button L", nullptr, HOS_SW_L, HOS_SW_L, 1, tx_keybind, KEY_HELP, 3},
+    {"Button R", nullptr, HOS_SW_R, HOS_SW_R, 1, tx_keybind, KEY_HELP, 3},
+    {"Button ZL", nullptr, HOS_SW_ZL, HOS_SW_ZL, 1, tx_keybind, KEY_HELP, 3},
+    {"Button ZR", nullptr, HOS_SW_ZR, HOS_SW_ZR, 1, tx_keybind, KEY_HELP, 3},
+    {"Plus", nullptr, HOS_SW_PLUS, HOS_SW_PLUS, 1, tx_keybind, KEY_HELP, 3},
+    {"Minus", nullptr, HOS_SW_MINUS, HOS_SW_MINUS, 1, tx_keybind, KEY_HELP, 3},
+    {"Left stick press", nullptr, HOS_SW_LS, HOS_SW_LS, 1, tx_keybind, KEY_HELP, 3},
+    {"Right stick press", nullptr, HOS_SW_RS, HOS_SW_RS, 1, tx_keybind, KEY_HELP, 3},
+    {"Move forward", nullptr, HOS_KEY_MOVE_UP, HOS_KEY_MOVE_UP, 1, tx_keybind, KEY_HELP, 3},
+    {"Move back", nullptr, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_DOWN, 1, tx_keybind, KEY_HELP, 3},
+    {"Move left", nullptr, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_LEFT, 1, tx_keybind, KEY_HELP, 3},
+    {"Move right", nullptr, HOS_KEY_MOVE_RIGHT, HOS_KEY_MOVE_RIGHT, 1, tx_keybind, KEY_HELP, 3},
+    {"Camera up", nullptr, HOS_KEY_CAM_UP, HOS_KEY_CAM_UP, 1, tx_keybind, KEY_HELP, 3},
+    {"Camera down", nullptr, HOS_KEY_CAM_DOWN, HOS_KEY_CAM_DOWN, 1, tx_keybind, KEY_HELP, 3},
+    {"Camera left", nullptr, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_LEFT, 1, tx_keybind, KEY_HELP, 3},
+    {"Camera right", nullptr, HOS_KEY_CAM_RIGHT, HOS_KEY_CAM_RIGHT, 1, tx_keybind, KEY_HELP, 3},
+    {"D-pad left", nullptr, HOS_SW_LEFT, HOS_SW_LEFT, 1, tx_keybind, KEY_HELP, 3},
+    {"D-pad up", nullptr, HOS_SW_UP, HOS_SW_UP, 1, tx_keybind, KEY_HELP, 3},
+    {"D-pad right", nullptr, HOS_SW_RIGHT, HOS_SW_RIGHT, 1, tx_keybind, KEY_HELP, 3},
+    {"D-pad down", nullptr, HOS_SW_DOWN, HOS_SW_DOWN, 1, tx_keybind, KEY_HELP, 3},
     {"Reset keys", nullptr, 0, 0, 1, tx_reset, "Puts every key and mouse button back as they came.", 3},
-    {"Button A", &opts.pads[0], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button B", &opts.pads[1], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button X", &opts.pads[2], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button Y", &opts.pads[3], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button L", &opts.pads[6], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button R", &opts.pads[7], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button ZL", &opts.pads[8], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Button ZR", &opts.pads[9], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Plus", &opts.pads[10], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Minus", &opts.pads[11], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Left stick press", &opts.pads[4], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"Right stick press", &opts.pads[5], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"D-pad left", &opts.pads[12], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"D-pad up", &opts.pads[13], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"D-pad right", &opts.pads[14], 0, 0, 1, tx_padbind, PAD_HELP, 4},
-    {"D-pad down", &opts.pads[15], 0, 0, 1, tx_padbind, PAD_HELP, 4},
+    {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
+     "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
+     "apps. The keyboard and mouse still need the game's window.", 4},
+    {"Button A", nullptr, HOS_SW_A, HOS_SW_A, 1, tx_padbind, PAD_HELP, 4},
+    {"Button B", nullptr, HOS_SW_B, HOS_SW_B, 1, tx_padbind, PAD_HELP, 4},
+    {"Button X", nullptr, HOS_SW_X, HOS_SW_X, 1, tx_padbind, PAD_HELP, 4},
+    {"Button Y", nullptr, HOS_SW_Y, HOS_SW_Y, 1, tx_padbind, PAD_HELP, 4},
+    {"Button L", nullptr, HOS_SW_L, HOS_SW_L, 1, tx_padbind, PAD_HELP, 4},
+    {"Button R", nullptr, HOS_SW_R, HOS_SW_R, 1, tx_padbind, PAD_HELP, 4},
+    {"Button ZL", nullptr, HOS_SW_ZL, HOS_SW_ZL, 1, tx_padbind, PAD_HELP, 4},
+    {"Button ZR", nullptr, HOS_SW_ZR, HOS_SW_ZR, 1, tx_padbind, PAD_HELP, 4},
+    {"Plus", nullptr, HOS_SW_PLUS, HOS_SW_PLUS, 1, tx_padbind, PAD_HELP, 4},
+    {"Minus", nullptr, HOS_SW_MINUS, HOS_SW_MINUS, 1, tx_padbind, PAD_HELP, 4},
+    {"Left stick press", nullptr, HOS_SW_LS, HOS_SW_LS, 1, tx_padbind, PAD_HELP, 4},
+    {"Right stick press", nullptr, HOS_SW_RS, HOS_SW_RS, 1, tx_padbind, PAD_HELP, 4},
+    {"D-pad left", nullptr, HOS_SW_LEFT, HOS_SW_LEFT, 1, tx_padbind, PAD_HELP, 4},
+    {"D-pad up", nullptr, HOS_SW_UP, HOS_SW_UP, 1, tx_padbind, PAD_HELP, 4},
+    {"D-pad right", nullptr, HOS_SW_RIGHT, HOS_SW_RIGHT, 1, tx_padbind, PAD_HELP, 4},
+    {"D-pad down", nullptr, HOS_SW_DOWN, HOS_SW_DOWN, 1, tx_padbind, PAD_HELP, 4},
     {"Reset buttons", nullptr, 0, 0, 1, tx_reset, "Puts every controller button back as it came.", 4},
 };
 constexpr int kRows = sizeof rows / sizeof rows[0];
@@ -203,7 +219,6 @@ constexpr int kMenuWidth = 540;   // (at a scale of 1: 720 lines)
 std::atomic<bool> open_now{false};
 int cur_tab = 0, selected = 0;    // (selected: the row's index in rows, on cur_tab)
 std::atomic<bool> menu_refresh{false};
-std::atomic<uint64_t> pad_now{0};
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
@@ -218,14 +233,25 @@ const char* ini_key(const Row& r) {
     return k;
 }
 void save() {
-    if (FILE* f = fopen(ini_path().c_str(), "w")) {
-        for (const Row& r : rows) {
-            if (r.text == tx_reset) continue;
-            if (r.text == tx_keybind) fprintf(f, "key_%s_1=%d\nkey_%s_2=%d\n", ini_key(r), r.value[0], ini_key(r), r.value[1]);
-            else if (r.text == tx_padbind) fprintf(f, "pad_%s=%d\n", ini_key(r), *r.value);
-            else fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+    // (hookshot) the controls are the host's: written from it, pad_<name>=<HOS_PAD_* position> and key_<name>=<code>,<code>;
+    // without it (no host table) the file's own lines are kept
+    std::string kept;
+    if (!can_bind())
+        if (FILE* f = fopen(ini_path().c_str(), "r")) {
+            char line[256];
+            while (fgets(line, sizeof line, f))
+                if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) kept += line;
+            fclose(f);
         }
+    if (FILE* f = fopen(ini_path().c_str(), "w")) {
+        for (const Row& r : rows)
+            if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
         fprintf(f, "options_version=2\n");   // (game_speed below 2 was only ever the old default, see menu_init)
+        if (!can_bind()) fputs(kept.c_str(), f);
+        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {
+            if (i < HOS_SW_N) fprintf(f, "pad_%s=%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
+            fprintf(f, "key_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
+        }
         fclose(f);
     }
 }
@@ -443,14 +469,14 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
             for (int slot = 0; slot < 2; slot++) {
                 hits.box[k][slot] = {cx + slot * (bw + 8 * s), mid - 13 * s, cx + slot * (bw + 8 * s) + bw, mid + 13 * s};
                 const bool waiting = capturing == list[k] && cap_slot == slot;
-                box(dc, hits.box[k][slot], waiting ? "Press a key" : vk_name(r.value[slot]), sel && sel_slot == slot, waiting, s);
+                box(dc, hits.box[k][slot], waiting ? "Press a key" : vk_name(key_of(r.lo, slot)), sel && sel_slot == slot, waiting, s);
             }
             break;
         }
         case K_PAD: {
             hits.box[k][0] = {cx, mid - 13 * s, cx + cw, mid + 13 * s};
             const bool waiting = capturing == list[k];
-            box(dc, hits.box[k][0], waiting ? "Press a button" : pad_name(*r.value), sel, waiting, s);
+            box(dc, hits.box[k][0], waiting ? "Press a button" : pad_name(pad_of(r.lo)), sel, waiting, s);
             break;
         }
         case K_ACTION:
@@ -506,8 +532,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     const int foot = help_top + 10 * s + help_px + 12 * s;
     fill(dc, 0, foot, W, (int)h - foot, kHead);
     SelectObject(dc, small);
-    text_at(dc, 16 * s, foot + 8 * s, "Mouse: click, drag, wheel   Keys: arrows, Tab, Enter   Pad: D-pad, A, B, L / R", kDim);
-    text_at(dc, 16 * s, foot + 26 * s, "Close: Esc, Insert, F1, or both sticks pressed in", kDim);
+    text_at(dc, 16 * s, foot + 8 * s, "Mouse: click, drag, wheel   Keys: arrows, Tab, Enter   Pad: D-pad, LB / RB", kDim);
+    text_at(dc, 16 * s, foot + 26 * s, "Close: Esc, Insert, F1, Home, or Back + Start", kDim);
     std::string ver = HOOKSHOT_VERSION;
     if (ver.find(" (") != std::string::npos) ver.resize(ver.find(" ("));
     text_at(dc, W - 16 * s - text_w(dc, ver.c_str()), foot + 26 * s, ver.c_str(), RGB(128, 114, 92));
@@ -618,20 +644,8 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            for (Row& r : rows) {
-                if (r.text == tx_reset) continue;
-                char k[48];
-                if (r.text == tx_keybind) {
-                    for (int slot = 0; slot < 2; slot++) {
-                        snprintf(k, sizeof k, "key_%s_%d", ini_key(r), slot + 1);
-                        if (!strcmp(line, k)) r.value[slot] = std::min(std::max(atoi(eq + 1), 0), 254);
-                    }
-                } else if (r.text == tx_padbind) {
-                    snprintf(k, sizeof k, "pad_%s", ini_key(r));
-                    if (!strcmp(line, k)) *r.value = std::min(std::max(atoi(eq + 1), -1), 15);
-                } else if (!strcmp(line, ini_key(r)))
-                    *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
-            }
+            for (Row& r : rows)   // (the controls' lines are the host's: host/nn_hid.c)
+                if (r.value && !strcmp(line, ini_key(r))) *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
@@ -758,9 +772,14 @@ bool repeat(bool down, int64_t now, int64_t& since, int64_t& next) {
     return false;
 }
 void reset_controls(int tab) {   // (the Reset rows: the controls of that tab as they came)
-    const Options fresh;
-    if (tab == 3) std::memcpy(opts.keys, fresh.keys, sizeof opts.keys);
-    else std::memcpy(opts.pads, fresh.pads, sizeof opts.pads);
+    if (!can_bind()) return;
+    host->bind(tab == 3 ? HOS_BIND_KEY : HOS_BIND_PAD, -2, 0, 0);
+    save();
+}
+void clear_control(const Row& r, int slot) {   // (Delete: the key, or the gamepad input, taken away)
+    if (!can_bind()) return;
+    if (r.text == tx_keybind) host->bind(HOS_BIND_KEY, r.lo, slot, 0);
+    else host->bind(HOS_BIND_PAD, r.lo, 0, -1);
     save();
 }
 /// activate a row: a switch or a choice steps; a key or a pad button waits for the new one; a reset resets
@@ -768,6 +787,7 @@ void activate(int row, int slot, int64_t now) {
     Row& r = rows[row];
     switch (kind_of(r)) {
     case K_KEY: case K_PAD:
+        if (!can_bind()) break;
         capturing = row, cap_slot = slot, cap_released = false, cap_until = now + 8000000000LL;
         break;
     case K_ACTION: reset_controls(r.tab); break;
@@ -778,11 +798,9 @@ void activate(int row, int slot, int64_t now) {
 std::atomic<int> wheel_notches{0};
 } // namespace
 
-void menu_pad(uint64_t buttons) { pad_now.store(buttons, std::memory_order_relaxed); }
-
 void menu_option_set(int id, int value) {
-    if (id == 10) { wheel_notches += value / 120; menu_refresh = true; return; }   // (host/display.c: the wheel, while open)
-    if (id == 4) opts.mouse_sens = std::min(std::max(value, 10), 500);
+    if (id == 29) { wheel_notches += value / 120; menu_refresh = true; return; }   // (host/display.c: the wheel, while open)
+    if (id == 20) opts.mouse_sens = std::min(std::max(value, 10), 500);
     else return;
     save();
     menu_refresh = true;
@@ -805,13 +823,16 @@ void menu_tick() {
         press[i] = down[i] && !held[i];
         held[i] = down[i];
     }
-    // (the Switch layout's bits, as host/nn_hid.c reads every pad, by position, before the Controller tab's changes:
-    // A 0, B 1, X 2, L 6, R 7, d-pad left 12, up 13, right 14, down 15)
-    const uint64_t pad = pad_now.load(std::memory_order_relaxed);
-    static uint64_t pad_was;
-    const uint64_t pad_press = pad & ~pad_was;
+    // the gamepads, by position (HOS_PAD_*: host/nn_hid.c, whatever they are bound to): Home, or Back and Start together,
+    // open and close it; the D-pad chooses and changes, the bottom face button is Enter, the right one Esc, the left one
+    // Delete, the shoulders change tabs
+    const uint32_t pad = mine && host && host->pad_raw ? host->pad_raw() : 0;
+    static uint32_t pad_was;
+    const uint32_t pad_press = pad & ~pad_was;
+    const uint32_t chord = 1u << HOS_PAD_BACK | 1u << HOS_PAD_START;
+    const bool chord_now = (pad & chord) == chord && (pad_was & chord) != chord;
     pad_was = pad;
-    auto bit = [](uint64_t b, int n) { return (b >> n & 1) != 0; };
+    auto bit = [](uint32_t b, int n) { return (b >> n & 1) != 0; };
     const int scale = scale_of(dev.swap_extent.height);
     bool changed = scale != cur_scale || menu_refresh.exchange(false);
     cur_scale = scale;
@@ -823,42 +844,43 @@ void menu_tick() {
             if ((vk >= 0xA0 && vk <= 0xA5) || vk == 0x5B || vk == 0x5C) continue;   // (and the Windows keys)   // (Shift, Ctrl, Alt as one key each)
             if (GetAsyncKeyState(vk) & 0x8000) { any_key = vk; break; }
         }
-        if (!cap_released) cap_released = !any_key && !pad;   // (the press that began it let go first)
+        const uint32_t pad_in = pad & ~(1u << HOS_PAD_GUIDE);   // (Home is the menu's)
+        if (!cap_released) cap_released = !any_key && !pad_in;   // (the press that began it let go first)
         else if (now > cap_until || (any_key == VK_ESCAPE)) capturing = -1;
-        else if (kind_of(r) == K_KEY && (any_key == VK_BACK || any_key == VK_DELETE)) r.value[cap_slot] = 0, save(), capturing = -1;
+        else if (any_key == VK_BACK || any_key == VK_DELETE) clear_control(r, cap_slot), capturing = -1;
         else if (kind_of(r) == K_KEY && any_key && any_key != VK_INSERT && any_key != VK_F1)
-            r.value[cap_slot] = any_key, save(), capturing = -1;
-        else if (kind_of(r) == K_PAD && pad)
-            for (int b = 0; b < 16; b++)
-                if (bit(pad, b)) { *r.value = b, save(), capturing = -1; break; }
+            host->bind(HOS_BIND_KEY, r.lo, cap_slot, any_key), save(), capturing = -1;
+        else if (kind_of(r) == K_PAD && pad_in)
+            for (int b = 0; b < HOS_PAD_N; b++)
+                if (bit(pad_in, b)) { host->bind(HOS_BIND_PAD, r.lo, 0, b), save(), capturing = -1; break; }
         if (capturing < 0) {   // (what was pressed is not also taken by the menu below)
             for (int i = 0; i < NKEYS; i++) press[i] = false, held[i] = true;
-            pad_was = ~0ULL;
+            pad_was = ~0u;
         }
         redraw_menu(scale);
         return;
     }
-    const bool sticks = bit(pad, 4) && bit(pad, 5) && (bit(pad_press, 4) || bit(pad_press, 5));   // (both sticks pressed in)
-    if (press[K_INSERT] || press[K_F1] || sticks) open_now = !open_now.load(), changed = true;
+    if (press[K_INSERT] || press[K_F1] || bit(pad_press, HOS_PAD_GUIDE) || chord_now) open_now = !open_now.load(), changed = true;
     if (open_now.load()) {
         static int64_t since[2], next[2];
-        const bool left = repeat(down[K_LEFT] || bit(pad, 12), now, since[0], next[0]);
-        const bool right = repeat(down[K_RIGHT] || bit(pad, 14), now, since[1], next[1]);
+        const bool left = repeat(down[K_LEFT] || bit(pad, HOS_PAD_LEFT), now, since[0], next[0]);
+        const bool right = repeat(down[K_RIGHT] || bit(pad, HOS_PAD_RIGHT), now, since[1], next[1]);
         if (rows[selected].tab != cur_tab) to_tab(cur_tab);
         if (const int n = wheel_notches.exchange(0)) wheel_scroll(n), changed = true;
-        if (press[K_ESC] || bit(pad_press, 1)) open_now = false, changed = true;
-        if (press[K_UP] || bit(pad_press, 13)) move_sel(-1), changed = true;
-        if (press[K_DOWN] || bit(pad_press, 15)) move_sel(+1), changed = true;
-        if (press[K_TAB] || bit(pad_press, 7)) to_tab(cur_tab + 1), changed = true;
-        if (bit(pad_press, 6)) to_tab(cur_tab - 1), changed = true;
+        if (press[K_ESC] || bit(pad_press, HOS_PAD_EAST)) open_now = false, changed = true;
+        if (press[K_UP] || bit(pad_press, HOS_PAD_UP)) move_sel(-1), changed = true;
+        if (press[K_DOWN] || bit(pad_press, HOS_PAD_DOWN)) move_sel(+1), changed = true;
+        if (press[K_TAB] || bit(pad_press, HOS_PAD_RSHOULDER)) to_tab(cur_tab + 1), changed = true;
+        if (bit(pad_press, HOS_PAD_LSHOULDER)) to_tab(cur_tab - 1), changed = true;
         Row& cur = rows[selected];
         if (left || right) {
             if (kind_of(cur) == K_KEY) sel_slot = right ? 1 : 0;
             else change(cur, right ? +1 : -1);
             changed = true;
         }
-        if ((press[K_BACK] || press[K_DEL] || bit(pad_press, 2)) && kind_of(cur) == K_KEY) cur.value[sel_slot] = 0, save(), changed = true;
-        if (press[K_ENTER] || bit(pad_press, 0)) activate(selected, sel_slot, now), changed = true;
+        if ((press[K_BACK] || press[K_DEL] || bit(pad_press, HOS_PAD_WEST)) && (kind_of(cur) == K_KEY || kind_of(cur) == K_PAD))
+            clear_control(cur, sel_slot), changed = true;
+        if (press[K_ENTER] || bit(pad_press, HOS_PAD_SOUTH)) activate(selected, sel_slot, now), changed = true;
 #ifdef _WIN32
         {   // the mouse: where it points in the menu's own pixels (the menu sits in the middle of the window's image)
             static POINT last{-1, -1};

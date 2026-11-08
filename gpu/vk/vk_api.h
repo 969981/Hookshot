@@ -15,7 +15,20 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 1
+#define MKWVK_API_VERSION 3
+
+/* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
+   the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
+   button first: A on an Xbox pad, cross on a DualSense) */
+enum { HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y, HOS_SW_LS, HOS_SW_RS, HOS_SW_L, HOS_SW_R, HOS_SW_ZL, HOS_SW_ZR,
+       HOS_SW_PLUS, HOS_SW_MINUS, HOS_SW_LEFT, HOS_SW_UP, HOS_SW_RIGHT, HOS_SW_DOWN, HOS_SW_N };
+enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, HOS_PAD_GUIDE, HOS_PAD_START,
+       HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
+       HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_N };
+enum { HOS_BIND_PAD, HOS_BIND_KEY };
+/* (hookshot) keys only (HOS_BIND_KEY): the left stick and the camera from the keyboard, after the Switch's buttons */
+enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
+       HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_N };
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -58,6 +71,15 @@ typedef struct MkwVkHost {
     uint64_t (*guest_alloc)(uint64_t size);
     /// (debugging) CPU writes to [guest, guest + size) logged with the writer's guest call stack (a page watch)
     void (*watch_guest_writes)(uint64_t guest, uint64_t size);
+    /* (hookshot) the gamepads' inputs held now (1 << HOS_PAD_*), whatever they are bound to: the Insert menu's
+       (host/nn_hid.c) */
+    uint32_t (*pad_raw)(void);
+    /* (hookshot) the controls, for the Insert menu's Controls page. button: the Switch's, HOS_SW_*; set HOS_BIND_PAD:
+       the gamepad input that presses it (a HOS_PAD_* position, -1 none; slot 0 only); set HOS_BIND_KEY: the keys that
+       do (Windows key codes, 0 none; slots 0 and 1; a mouse button's too, and HOS_KEY_* past the Switch's buttons).
+       bind with button -1: all back to their defaults; -2: only the set's (the gamepad's or the keys') */
+    int (*binding)(int set, int button, int slot);
+    void (*bind)(int set, int button, int slot, int code);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
@@ -95,14 +117,12 @@ typedef struct MkwVkRenderer {
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
-    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent,
-                                4: mouse sensitivity in percent, 5: mouse vertical inverted, 6: native mouse look,
-                                100 + action * 2 + slot: a key of the controls, 200 + button: the pad button for one (host/nn_hid.c) */
+    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows,
+                                20: the mouse's sensitivity in percent, 21: its vertical inverted, 22: native mouse look (host/nn_hid.c, mouse_native.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
-    /* (hookshot, the menu) the controllers' buttons (host/nn_hid.c's B_* bits) with each read: they open, close and work it */
-    void (*menu_pad)(uint64_t buttons);
-    /* (hookshot, the menu) a setting changed from the game's side (the - and = keys: the mouse's sensitivity), kept in the file */
+    /* (hookshot, the menu) from the game's side: 20 the mouse's sensitivity in percent (the - and = keys; kept in the file),
+       29 the mouse wheel while the menu is open (host/display.c, in WHEEL_DELTA units) */
     void (*option_set)(int id, int value);
 } MkwVkRenderer;
 

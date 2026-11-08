@@ -83,7 +83,7 @@ int hos_mouse_native(void) {
         hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE=0: the mouse as the right stick)");
     }
     int rx_option(int id, int otherwise);
-    const int invert = env_invert || rx_option(5, 0);   /* (the menu's Invert vertical) */
+    const int invert = env_invert || rx_option(21, 0);   /* (the menu's Invert vertical, option 21) */
     int32_t dx, dy;
     if (!hos_mouse_take(&dx, &dy)) return 0;
     if (InterlockedExchange(&busy, 1)) {   /* (another thread is at it: the motion waits for the next read) */
