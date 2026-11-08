@@ -63,7 +63,7 @@ static void fail(const wchar_t *fmt, ...) {
 /* ---- HTTPS GET into a sink, following redirects (GitHub's release links go to its download host) ---- */
 typedef int (*Sink)(void *user, const void *data, DWORD n);
 
-static int http_get(const char *url8, Sink sink, void *user, unsigned long long expect) {
+static int http_get(const char *url8, Sink sink, void *user, unsigned long long expect, const wchar_t *accept) {
     wchar_t url[1024];
     MultiByteToWideChar(CP_UTF8, 0, url8, -1, url, 1024);
     URL_COMPONENTS uc = {sizeof uc};
@@ -74,8 +74,15 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
     HINTERNET s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     if (!s) s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!s) return 0;
+    /* (explicit: a redirect from https must not fall back to clear text. GitHub answers a release file with a redirect to
+       release-assets.githubusercontent.com, whose cached target can be stale; the API's fresh one is used on a failure) */
+    DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    WinHttpSetOption(s, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof policy);
     HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
-    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+    LPCWSTR types[2] = {accept, NULL};
+    g_http_status = 0;
+    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER,
+                                         accept ? types : WINHTTP_DEFAULT_ACCEPT_TYPES,
                                          uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
                     : NULL;
     int ok = 0;
@@ -148,6 +155,123 @@ static int file_sha256(const wchar_t *path, char out[65]) {
     BCryptCloseAlgorithmProvider(a, 0);
     if (ok) hex(d, 32, out);
     return ok;
+}
+
+/* A GET whose whole answer is held in memory; a server error or a dropped connection is tried again. */
+static int http_get_mem(const char *url, Mem *m, const wchar_t *accept, int tries) {
+    for (int attempt = 0; attempt < tries; attempt++) {
+        free(m->p);
+        memset(m, 0, sizeof *m);
+        g_http_status = 0;
+        if (http_get(url, mem_sink, m, 0, accept)) return 1;
+        if (g_http_status == 404 ||
+            (g_http_status >= 400 && g_http_status < 500 && g_http_status != 408 && g_http_status != 429))
+            return 0;
+        if (attempt + 1 < tries) Sleep(1000u << attempt);
+    }
+    return 0;
+}
+
+/* The string after `"field"` in a JSON object (whitespace between is allowed). */
+static int json_value_after(const char *p, const char *end, char *out, int n) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+    if (p >= end || *p != ':') return 0;
+    for (p++; p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'); p++) {}
+    if (p >= end || *p != '"') return 0;
+    int i = 0;
+    for (p++; p < end && *p != '"'; p++) {
+        if (*p == '\\' && p + 1 < end) p++;
+        if (i + 1 < n) out[i++] = *p;
+    }
+    if (p >= end) return 0;
+    out[i] = 0;
+    return 1;
+}
+
+/* The URL of the asset called `name` in a GitHub release's JSON. */
+static int release_asset_from_json(const char *json, size_t len, const char *name, char *out, int n) {
+    const char *end = json + len, *asset = NULL;
+    char value[600];
+    for (const char *p = json; (p = strstr(p, "\"name\"")) && p < end; p += 6) {
+        if (json_value_after(p + 6, end, value, sizeof value) && !strcmp(value, name)) {
+            asset = p;
+            break;
+        }
+    }
+    if (!asset) return 0;
+    /* (in an asset object the API's own url comes before its name) */
+    const char *url = NULL;
+    for (const char *p = json; p + 5 <= asset; p++)
+        if (!strncmp(p, "\"url\"", 5)) url = p;
+    return url && json_value_after(url + 5, end, out, n);
+}
+
+/* The GitHub API's URL for one asset of a release (`tag` empty: the latest). Its answer is a fresh download link, unlike a
+   release page's link, which GitHub can answer with a cached 502/504. */
+static int release_asset_url(const char *repo, const char *tag, const char *name, char *out, int n) {
+    char api[1024];
+    if (tag && *tag) snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/tags/%s", repo, tag);
+    else snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/latest", repo);
+    Mem m = {0};
+    const int got = http_get_mem(api, &m, L"application/vnd.github+json", 2);
+    const int found = got && m.p && release_asset_from_json(m.p, m.n, name, out, n);
+    free(m.p);
+    return found;
+}
+
+/* .../releases/download/<tag>/<asset> -> the same asset through the API (a fresh redirect), when that is its form. */
+static int github_asset_url(const char *url, char *out, int n) {
+    static const char prefix[] = "https://github.com/";
+    char repo[512], tag[256], name[260];
+    if (strncmp(url, prefix, sizeof prefix - 1)) return 0;
+    const char *p = url + sizeof prefix - 1;
+    const char *repo_end = strchr(p, '/');
+    if (!repo_end || !repo_end[1]) return 0;
+    const char *after_repo = strchr(repo_end + 1, '/');
+    if (!after_repo || strncmp(after_repo, "/releases/download/", 19)) return 0;
+    const char *tag_start = after_repo + 19, *tag_end = strchr(tag_start, '/');
+    if (!tag_end) return 0;
+    const char *name_start = tag_end + 1, *name_end = strpbrk(name_start, "?#");
+    if (!name_end) name_end = name_start + strlen(name_start);
+    const size_t rl = (size_t)(after_repo - p), tl = (size_t)(tag_end - tag_start), nl = (size_t)(name_end - name_start);
+    if (!rl || !tl || !nl || rl >= sizeof repo || tl >= sizeof tag || nl >= sizeof name) return 0;
+    memcpy(repo, p, rl), repo[rl] = 0;
+    memcpy(tag, tag_start, tl), tag[tl] = 0;
+    memcpy(name, name_start, nl), name[nl] = 0;
+    return release_asset_url(repo, tag, name, out, n);
+}
+
+/* A part into <zip>, checked against its checksum; a transient answer is tried again, and a partial file never survives. */
+static int download(const char *url, const wchar_t *zip, const Part *p, const wchar_t *accept) {
+    wchar_t part[MAX_PATH];
+    swprintf(part, MAX_PATH, L"%ls.part", zip);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        FileSink fs;
+        BCRYPT_ALG_HANDLE a;
+        fs.f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        if (fs.f == INVALID_HANDLE_VALUE) return 0;
+        BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+        BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
+        const int got = http_get(url, file_sink, &fs, p->size, accept);
+        CloseHandle(fs.f);
+        unsigned char d[32];
+        BCryptFinishHash(fs.h, d, 32, 0);
+        BCryptDestroyHash(fs.h);
+        BCryptCloseAlgorithmProvider(a, 0);
+        InterlockedExchange(&g_percent, -1);
+        char have[65];
+        hex(d, 32, have);
+        if (got && !strcmp(have, p->sha)) {
+            DeleteFileW(zip);
+            return MoveFileW(part, zip) != 0;
+        }
+        DeleteFileW(part);
+        if (attempt == 2 || g_http_status == 404 ||
+            (g_http_status >= 400 && g_http_status < 500 && g_http_status != 408 && g_http_status != 429))
+            return 0;
+        Sleep(1000u << attempt);
+    }
+    return 0;
 }
 
 static int run_wait(wchar_t *cmd, const wchar_t *dir) {
@@ -282,12 +406,21 @@ static DWORD WINAPI work(LPVOID unused) {
     status(L"Looking for the latest Hookshot Builder...");
     Mem man = {0};
     g_http_status = 0;
-    if (!http_get(manifest_url(), mem_sink, &man, 0) || !man.p)
-        fail(g_http_status == 404
+    const char *list_override = getenv("HOOKSHOT_SETUP_LIST");
+    int got = http_get_mem(manifest_url(), &man, NULL, 3);
+    const DWORD first_status = g_http_status;
+    /* (GitHub's cached release-page redirect answered 504 for the list: the API's fresh redirect is the fallback) */
+    if (!got && !(list_override && *list_override)) {
+        char api[1024];
+        if (release_asset_url("NotRexed/Hookshot", NULL, "hookshot-setup.txt", api, sizeof api))
+            got = http_get_mem(api, &man, L"application/octet-stream", 3);
+    }
+    if (!got || !man.p)
+        fail((first_status == 404 ? first_status : g_http_status) == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
                    L"https://github.com/NotRexed/Hookshot/releases/latest"
-             : g_http_status ? L"GitHub answered with an error. Try again in a few minutes."
-                             : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
+             : first_status ? L"GitHub answered with an error. Try again in a few minutes."
+                           : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
     Part parts[MAX_PARTS];
@@ -325,26 +458,11 @@ static DWORD WINAPI work(LPVOID unused) {
             char have[65] = "";
             if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
                 status(L"Downloading part %d of %d (%llu MB)...", i + 1, nparts, p->size >> 20);
-                wchar_t part[MAX_PATH];
-                swprintf(part, MAX_PATH, L"%ls.part", zip);
-                FileSink fs;
-                BCRYPT_ALG_HANDLE a;
-                fs.f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-                if (fs.f == INVALID_HANDLE_VALUE) fail(L"Could not write to %ls.", downloads);
-                BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
-                BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
-                const int got = http_get(p->url, file_sink, &fs, p->size);
-                CloseHandle(fs.f);
-                unsigned char d[32];
-                BCryptFinishHash(fs.h, d, 32, 0);
-                BCryptDestroyHash(fs.h);
-                BCryptCloseAlgorithmProvider(a, 0);
-                InterlockedExchange(&g_percent, -1);
-                hex(d, 32, have);
-                if (!got) DeleteFileW(part), fail(L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
-                if (strcmp(have, p->sha)) DeleteFileW(part), fail(L"Part %d of %d did not download correctly (its checksum differs). Try again.", i + 1, nparts);
-                DeleteFileW(zip);
-                MoveFileW(part, zip);
+                int part_ok = download(p->url, zip, p, NULL);
+                char api[1024];
+                if (!part_ok && github_asset_url(p->url, api, sizeof api))
+                    part_ok = download(api, zip, p, L"application/octet-stream");
+                if (!part_ok) fail(L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
             }
             status(L"Unpacking part %d of %d...", i + 1, nparts);
             wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH];
