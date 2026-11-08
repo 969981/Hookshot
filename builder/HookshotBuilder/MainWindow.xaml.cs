@@ -68,6 +68,15 @@ public partial class MainWindow : Window
 
     async void Start()
     {
+        // (development) HOOKSHOT_TEST_SHORTCUTS=<game folder>: both shortcuts made for it, the result in the log beside the app, and out
+        if (Environment.GetEnvironmentVariable("HOOKSHOT_TEST_SHORTCUTS") is { Length: > 0 } testFolder)
+        {
+            Finder.Shortcuts(testFolder, true, true);
+            File.WriteAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "shortcut-test.txt"),
+                              $"desktop {File.Exists(Finder.DesktopLink)} start {File.Exists(Finder.StartLink)} error {Finder.ShortcutError}");
+            Application.Current.Shutdown();
+            return;
+        }
         Animate();
         var started = Stopwatch.StartNew();
         if (Environment.GetCommandLineArgs().Contains("--update"))
@@ -105,17 +114,21 @@ public partial class MainWindow : Window
     // (as NX2navi's launcher: whatever version the player opens, it checks the latest release and says what is there)
 
     BuilderMode mode = BuilderMode.Build;
-    string? latestTag;
+    string? latestTag, updateTarget;
     ReleaseIdentity? latestRelease;
     bool sourcePicked;   // (the player chose game files here: a build from them, even over a game that is up to date)
 
     async Task CheckLatestRelease()
     {
-        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG");
-        latestRelease = latestTag is { Length: > 0 }
-            ? ReleaseIdentity.Create(latestTag, Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_REVISION"))
-            : await Updater.LatestIdentity();
-        latestTag = latestRelease?.Tag ?? latestTag;
+        if (Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake)
+        {
+            latestTag = fake == "none" ? null : fake;
+            latestRelease = latestTag == null ? null : ReleaseIdentity.Create(latestTag,
+                Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_REVISION"));
+            return;
+        }
+        latestRelease = await Updater.LatestIdentity();
+        latestTag = latestRelease?.Tag ?? await Updater.LatestSetupTag();
     }
 
     /// The release a game folder was built with (its hookshot_version.txt), when it keeps its game files for updates
@@ -132,12 +145,15 @@ public partial class MainWindow : Window
         var game = installed.Tag;
         var tools = Tools.Find();
         var builder = tools?.Version;
-        mode = installed.Mode(latestRelease, builder, tools?.Identity, sourcePicked);
+        updateTarget = latestTag ?? builder;
+        mode = installed.Mode(latestRelease, builder, tools?.Identity, sourcePicked, updateTarget);
         switch (mode)
         {
             case BuilderMode.UpdateGame:
                 FilesTitle.Text = installed.Identity == null ? "Verify your game version" : "Update available";
-                FilesSub.Text = installed.Identity == null
+                FilesSub.Text = latestRelease == null
+                    ? $"Hookshot {updateTarget} may be available. Update must verify its source before rebuilding; the latest revision could not be checked yet."
+                    : installed.Identity == null
                     ? "This folder has no verified source revision. One update rebuilds it from its kept game files and records the version."
                     : $"A revised build of Hookshot {latestTag} is available. Update uses the files kept in your game folder, compiling only what changed.";
                 BuildButton.Content = installed.Identity == null ? "Verify and update" : "Update";
@@ -185,14 +201,16 @@ public partial class MainWindow : Window
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
         ShowPage(LaunchPage);
         await CheckLatestRelease();
-        if (latestRelease == null) LaunchStatus.Text = "Could not verify the latest source revision; you can still play";
-        else if (installed.UpdateAvailable(latestRelease))
+        updateTarget = latestTag ?? Tools.Find()?.Version;
+        if (installed.UpdateAvailable(latestRelease, updateTarget))
         {
-            LaunchStatus.Text = installed.Identity == null ? "Rebuild once to verify this folder's version" : $"Update available: {latestTag}";
+            LaunchStatus.Text = latestRelease == null ? $"Verify update: {updateTarget} (source not checked yet)"
+                : installed.Identity == null ? "Rebuild once to verify this folder's version" : $"Update available: {latestTag}";
             LaunchStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0xC8, 0xFF));
             LaunchStatus.FontWeight = FontWeights.SemiBold;
             LaunchUpdate.Visibility = Visibility.Visible;
         }
+        else if (latestRelease == null) LaunchStatus.Text = "Could not verify the latest source revision; you can still play";
         else if (installed.Current(latestRelease)) LaunchStatus.Text = "Up to date";
         else LaunchStatus.Text = "Build this folder again with a current Builder to verify or update its version";
     }
@@ -211,7 +229,7 @@ public partial class MainWindow : Window
         Process.Start(si);
     }
 
-    void LaunchUpdateClick(object sender, RoutedEventArgs e) => Updater.UpdateFolder(this, launchFolder, latestTag, fetched: false,
+    void LaunchUpdateClick(object sender, RoutedEventArgs e) => Updater.UpdateFolder(this, launchFolder, updateTarget, fetched: false,
         revision: latestRelease?.Revision);
 
     void LaunchPlayClick(object sender, RoutedEventArgs e)
@@ -580,7 +598,7 @@ public partial class MainWindow : Window
         {
             case BuilderMode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
                 SaveSettings();
-                Updater.UpdateFolder(this, OutPath.Text, latestTag, fetched: false, revision: latestRelease?.Revision);
+                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false, revision: latestRelease?.Revision);
                 return;
             case BuilderMode.Play:
                 finished = OutPath.Text;
@@ -798,7 +816,12 @@ public partial class MainWindow : Window
         if (!updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
             Finder.Shortcuts(finished, DesktopTick.IsChecked == true, StartTick.IsChecked == true);
         else if (updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
-            Finder.RefreshShortcuts(finished);   // (the ones the player has, onto the folder's launcher; none made)
+        {   // (the ones the player has, onto the folder's launcher; the boxes say which there are, and ticking one makes it)
+            DesktopTick.IsChecked = File.Exists(Finder.DesktopLink);
+            StartTick.IsChecked = File.Exists(Finder.StartLink);
+            Finder.RefreshShortcuts(finished);
+        }
+        if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
     }
 

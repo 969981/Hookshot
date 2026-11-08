@@ -162,6 +162,20 @@ static class NetworkTests
                 await Throws<InvalidDataException>(() => BuilderDownload.GetAsync(http, asset with { Api = apiAsset }, Path.Combine(root, "invalid" + bytes.Length), default, policy: Fast));
                 Check(handler.Calls.Count == 1, "digest or declared-size failures do not retry/fall back");
             }
+            using (var handler = new Handler((_, count, _) => Reply(count == 1 ? new(HttpStatusCode.ServiceUnavailable)
+                : Bytes(Encoding.UTF8.GetBytes("tag fallback-release\nidentity 1 " + new string('a', 40) + "\n")))))
+            using (var http = new HttpClient(handler))
+            {
+                Check(await LatestRelease.SetupTagAsync(http, default, Fast) == "fallback-release" && handler.Calls.Count == 2,
+                    "bounded setup-list fallback preserves a tag hint and transient retry");
+            }
+            foreach (var text in new[] { "tag one\ntag two\n", "no tag here\n", new string('x', 262145) })
+            {
+                using var handler = new Handler((_, _, _) => Reply(Bytes(Encoding.UTF8.GetBytes(text))));
+                using var http = new HttpClient(handler);
+                await Throws<InvalidDataException>(() => LatestRelease.SetupTagAsync(http, default, Fast));
+                Check(handler.Calls.Count == 1, "ambiguous/missing/oversized fallback metadata is not retried or trusted");
+            }
             var request = new UpdateRequest("C:/authored folder with spaces", "authored", new string('a', 40), true);
             var start = request.StartInfo("C:/authored builder/HookshotBuilder.exe");
             Check(!start.UseShellExecute && Path.GetFullPath(start.WorkingDirectory) == Path.GetFullPath("C:/authored builder") &&

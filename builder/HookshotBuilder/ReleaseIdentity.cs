@@ -98,6 +98,39 @@ sealed record LatestRelease(ReleaseIdentity Identity, ReleaseAsset? Zip, Release
     public const string SetupList = "hookshot-setup.txt";
     public string? Digest => Zip?.Digest;
 
+    /// The released download-service fallback is a tag hint only, never verified source identity.
+    public static async Task<string?> SetupTagAsync(HttpClient http, CancellationToken token, BuilderHttp.Policy? policy = null)
+    {
+        policy ??= BuilderHttp.Default;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                using var response = await BuilderHttp.OpenAsync(http,
+                    "https://github.com/NotRexed/Hookshot/releases/latest/download/" + SetupList, false, token, policy);
+                if (response.Content.Headers.ContentLength > 262144) throw new InvalidDataException("The setup list is too large.");
+                await using var stream = await response.Content.ReadAsStreamAsync(token);
+                using var bytes = new MemoryStream();
+                var buffer = new byte[4096];
+                for (int count; (count = await BuilderHttp.ReadAsync(stream, buffer, token, policy)) != 0;)
+                {
+                    if (bytes.Length + count > 262144) throw new InvalidDataException("The setup list is too large.");
+                    bytes.Write(buffer, 0, count);
+                }
+                var tags = Encoding.UTF8.GetString(bytes.ToArray()).Split('\n').Where(line => line.StartsWith("tag "))
+                    .Select(line => line[4..].Trim()).ToArray();
+                if (tags.Length != 1 || string.IsNullOrWhiteSpace(tags[0]) || tags[0].Any(char.IsControl))
+                    throw new InvalidDataException("The setup list has no unambiguous release tag.");
+                return tags[0];
+            }
+            catch (HttpRequestException error) when (BuilderHttp.Transient(error) && attempt == 0)
+            {
+                await Task.Delay(policy.Delays[0], token);
+            }
+        }
+        return null;
+    }
+
     public static async Task<LatestRelease> FetchAsync(HttpClient http, CancellationToken token,
         Action<string>? note = null, BuilderHttp.Policy? policy = null)
     {
