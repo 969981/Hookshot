@@ -17,6 +17,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
@@ -5397,6 +5398,81 @@ bool precompile_wanted() {
     if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
     return on;
 }
+
+// Startup failures are scoped to the programs and driver that attempted them. A normal return clears this marker;
+// two interrupted attempts leave it in place, so the next start uses the ordinary lazy pipeline builds instead.
+struct PrecompileBackoff {
+    std::string identity;
+    unsigned failures = 0;
+    bool exists = false, scoped = false;
+};
+static bool precompile_failure_count(const std::string& text, unsigned& count) {
+    if (text.empty()) return false;
+    count = 0;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        count = std::min(2u, count * 10 + (unsigned)(ch - '0'));
+    }
+    return true;
+}
+static PrecompileBackoff precompile_backoff_read(const std::string& path) {
+    PrecompileBackoff state;
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        state.exists = true;
+        state.failures = 1;   // (an older empty or incomplete marker)
+        char data[256];
+        const size_t n = fread(data, 1, sizeof data, f);
+        const bool whole = !ferror(f) && n < sizeof data;
+        fclose(f);
+        if (whole) {
+            std::istringstream in(std::string(data, n));
+            std::string magic, version, identity, count, extra;
+            if (in >> magic >> version >> identity >> count && !(in >> extra) &&
+                magic == "HookshotPrecompileBackoff" && version == "1" && precompile_failure_count(count, state.failures)) {
+                state.identity = std::move(identity);
+                state.scoped = true;
+            } else {
+                std::istringstream legacy(std::string(data, n));
+                if (!(legacy >> count) || legacy >> extra || !precompile_failure_count(count, state.failures)) state.failures = 1;
+            }
+        }
+    }
+    return state;
+}
+static std::string precompile_backoff_identity() {
+    char text[128];
+    int n = snprintf(text, sizeof text, "%016llx-%08x-%08x-%08x-", (unsigned long long)program_cache_stamp(),
+                     (unsigned)dev.props.vendorID, (unsigned)dev.props.deviceID, (unsigned)dev.props.driverVersion);
+    for (const uint8_t byte : dev.props.pipelineCacheUUID) n += snprintf(text + n, sizeof text - (size_t)n, "%02x", (unsigned)byte);
+    // build_graphics treats presence as true, including RX_VK_NOOPT=0. This switch is not in program_cache_stamp().
+    snprintf(text + n, sizeof text - (size_t)n, "-%u", getenv("RX_VK_NOOPT") != nullptr ? 1u : 0u);
+    return text;
+}
+static bool precompile_backoff_begin(const std::string& path, const std::string& identity) {
+    const PrecompileBackoff state = precompile_backoff_read(path);
+    const unsigned failures = state.scoped ? (state.identity == identity ? state.failures : 0u) : std::min(state.failures, 1u);
+    if (failures >= 2) {
+        logf("vk: precompile: two starts did not finish for these programs and this driver: left to lazy builds until that identity changes");
+        return false;
+    }
+    if (state.exists && !state.scoped)
+        logf("vk: precompile: an older interruption marker has no cache identity: trying once with the current identity recorded");
+    else if (failures)
+        logf("vk: the last start did not get through the precompile (closed, or it crashed there): trying it once more");
+    bool recorded = false;
+    if (FILE* f = fopen(path.c_str(), "wb")) {
+        const bool wrote = fprintf(f, "HookshotPrecompileBackoff 1\n%s %u\n", identity.c_str(), failures + 1) > 0;
+        recorded = fclose(f) == 0 && wrote;
+    }
+    if (!recorded) logf("vk: precompile: could not record failure backoff; continuing without persistent interruption protection");
+    return true;
+}
+static void precompile_backoff_complete(const std::string& path, const std::string& identity) {
+    const PrecompileBackoff state = precompile_backoff_read(path);
+    if (state.scoped && state.identity == identity && remove(path.c_str()) != 0)
+        logf("vk: precompile: could not clear its completed interruption marker");
+}
+
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): once for this translator
 void prepare_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -5501,25 +5577,16 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
 
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
-    // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
-    // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
-    // (two starts in a row, not one: closing the window while it ran counted as a crash, and the next start then skipped the
-    // precompile and compiled everything in play: "stuck at 99%, then fine on the second start", 2026-11-08)
+    // Notes are not the whole work list: cached compute programs are prepared even when there are no notes. Keep an exhausted
+    // marker for this cache/driver identity instead of dropping notes and retrying those computes on later starts.
     const std::string running = pipe_notes_path() + ".running";
-    int ended_inside = 0;
-    if (FILE* f = fopen(running.c_str(), "rb")) {
-        if (fscanf(f, "%d", &ended_inside) != 1) ended_inside = 1;
-        fclose(f);
-        if (ended_inside >= 2) {
-            remove(running.c_str());
-            remove(pipe_notes_path().c_str());
-            logf("vk: the last two starts did not get through the precompile: its notes are dropped");
-            return;
-        }
-        logf("vk: the last start did not get through the precompile (closed, or it crashed there): trying it once more");
-    }
-    if (FILE* f = fopen(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
-    struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
+    const std::string identity = precompile_backoff_identity();
+    if (!precompile_backoff_begin(running, identity)) return;
+    struct Done {
+        const std::string& path;
+        const std::string& identity;
+        ~Done() { precompile_backoff_complete(path, identity); }
+    } done_marker{running, identity};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes;
     std::unordered_set<uint64_t> wanted;
