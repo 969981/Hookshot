@@ -1,10 +1,11 @@
 # ROADMAP — save editor
 
-Status: **Phase 1 complete**. The container is decoded, the raw reader/writer
-and CLI work, a names/schema table can be generated and consumed, an edited
-copy loaded in the current build, and a subsequent in-game save produced valid
-`progress.sav` and `caption.sav` files (see below). Named game fields from the
-game's own schema, a GUI, and the optional in-game page are not done yet.
+Status: **Phase 1 complete; Phase 2 schema complete, field names partial.**
+The container is decoded, the raw reader/writer and CLI work, an edited copy
+was loaded and saved in the current build, and the game's own GameDataList is
+decoded into types/defaults/enums (~12,019 saved fields, 123 enum tables).
+Most field names are not in the GameDataList, so naming remains a curation
+task. A GUI and the optional in-game page are not done yet.
 
 ## Phase 0 — decode the container (done)
 
@@ -56,18 +57,30 @@ game's own schema, a GUI, and the optional in-game page are not done yet.
 
 ## Phase 2 — names and schema
 
-- [ ] Decode `romfs/GameData/GameDataList.Product.110.byml.zs` (BYML, zstd
-  dictionary id 1; dictionary not found in `romfs/`, `.hookshot_exefs/`, or
-  `hookshot.exe` yet).
-- [ ] If the dictionary cannot be located, dump the schema from the running
-  game or build a curated hash table by diffing saves.
-- [ ] Parse the GameDataList fields: `Hash`, type, `DefaultValue`,
-  `ArraySize`, `SaveFileIndex`, enum values.
-- [ ] Merge `scan` results and the curated table into a reproducible
-  `names.json` that users generate from their own game. (The `names` command
-  already does the merge/scan part; it needs the richer GameDataList types and
-  defaults.)
-- [ ] Populate enum labels from the GameDataList instead of hand entry.
+- [x] Decode `romfs/GameData/GameDataList.Product.110.byml.zs`. The zstd
+  dictionary id 1 ships in `romfs/Pack/ZsDic.pack.zs` (a plain zstd frame
+  around a SARC with four 128 KiB dictionaries). `extract_gamedata.py`
+  extracts dictionary 1 and writes the 1,462,888-byte BYML.
+- [x] Parse BYML v7 in stdlib code (`byml.py`, both `YB`/`BY` byte orders;
+  64-bit values, maps, arrays, hash maps, strings, binaries, nulls).
+- [x] Build the save schema (`gamedata.py`) from `RootNode.Data` and
+  `MetaData`: hash, type, `DefaultValue`, `ResetTypeValue`, `SaveFileIndex`,
+  `SaveFileDirectory`, array size, and `Values`/`RawValues` enum labels.
+  Product.110 yields ~12,019 saved fields and 123 enum tables; a save has
+  **0 type and 0 version mismatches** against it.
+- [x] Preserve the richer fields in `FieldInfo`/`load_schema` and in the
+  `names` output, so `--merge` keeps them.
+- [x] Merge `scan` results: `gamedata.py --scan-game main` names the printable
+  paths; the current build yields 12. `--merge` keeps a curated table.
+- [x] Enum labels are populated from `RawValues`; `dump`/`get` show them, e.g.
+  `0xB80C70A8 ... 0xBE69DE49 (Empty)`.
+
+### Phase 2 remaining
+
+- [ ] Field names for most hashes. The GameDataList has no `HashText`; only
+  ~12 paths are printable in this build. Curate the rest with `--merge` and
+  save-diff experiments. The type/default/enum schema is complete without
+  names.
 
 ## Phase 3 — useful fields
 

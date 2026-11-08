@@ -2,6 +2,8 @@
 *.sav
 save-backups/
 names.json
+*.schema.json
+GameDataList*.byml
 
 # Python
 __pycache__/

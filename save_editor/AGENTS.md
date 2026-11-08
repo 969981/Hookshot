@@ -30,12 +30,17 @@ together.
    depend on it either.
 7. **Don't guess field semantics.** A hash is not a name. If a feature needs
    a GameData name or enum, get it from the game's own resources or a
-   user-supplied table; otherwise expose the hash and the raw value.
-8. **Names are user-owned data.** A `names.json`/schema is generated from the
-   user's own game or hand-curated; it is gitignored and must not be bundled.
-   `load_schema` accepts a plain names map, the richer `{version, fields,
-   enums}` shape, a list of `{hash, name}`, and a text table. Keep all of
-   those working; `load_name_table` is a thin wrapper over it.
+   user-supplied table; otherwise expose the hash and the raw value. The
+   GameDataList gives types/defaults/enums but almost no field names; do not
+   invent names from values.
+8. **Names are user-owned data.** A `names.json`/schema (including the output
+   of `gamedata.py`) is generated from the user's own game or hand-curated; it
+   is gitignored and must not be bundled. `load_schema` accepts a plain names
+   map, the richer `{version, fields, enums}` shape, a list of
+   `{hash, name}`, and a text table. Keep all of those working;
+   `load_name_table` is a thin wrapper over it. `FieldInfo` also carries
+   `default`, `reset`, `save_file`, `save_file_index` and `size`; preserve
+   them through `names --merge`.
 9. **Auto-discovery stays predictable.** `find_schema` checks only
    `save_editor_names.json`, `names.json`, or `schema.json` in the account
    folder (or beside a standalone save), and in this folder. It deliberately
@@ -71,12 +76,16 @@ python -I -B save_editor/tests/test_cli.py
 python -I -B save_editor/tests/test_compare.py
 python -I -B save_editor/tests/test_schema_report.py
 python -I -B save_editor/tests/test_acceptance.py
+python -I -B save_editor/tests/test_byml.py
+python -I -B save_editor/tests/test_gamedata.py
 python -I -B tests/run_all.py save_editor
 ```
 
-The read-only helpers are `compare.py`, `schema_report.py` and
-`acceptance.py`. They must stay read-only: no `SaveFile.save`, no
-`backup_file`, no `names` generation, and no game launch.
+The read-only helpers are `compare.py`, `schema_report.py`, `acceptance.py`,
+`byml.py`, `gamedata.py` and `extract_gamedata.py`. They must stay read-only:
+no `SaveFile.save`, no `backup_file`, no generated schema committed, and no
+game launch. `extract_gamedata.py` may use Python 3.14's `compression.zstd` or
+the `zstandard` package; the core editor remains stdlib-only.
 
 The last command also picks up `save_editor/tests/test_*.py` through
 `tests/run_all.py`. Real-save coverage is opt-in via `HOOKSHOT_SAVE_DIR`

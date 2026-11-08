@@ -111,6 +111,42 @@ it from your own game.
 With a schema, `get`/`dump` show names and enum labels, and `set` accepts an
 enum label instead of a hash.
 
+### Full schema from the game
+
+The game's own `GameDataList` supplies every saved field's type, default,
+reset bits, save-file index, array size and enum labels. Its zstd frame uses
+dictionary id 1, which ships in `romfs/Pack/ZsDic.pack.zs`. Extract both and
+build the schema:
+
+```powershell
+python save_editor/extract_gamedata.py --romfs "I:\Hookshot\romfs" `
+  --out "$env:TEMP\GameDataList.Product.110.byml"
+
+python save_editor/gamedata.py "$env:TEMP\GameDataList.Product.110.byml" `
+  --revision 2982123 `
+  --scan-game "I:\Hookshot\.hookshot_exefs\main" `
+  --out "$env:TEMP\GameDataList.schema.json"
+```
+
+`extract_gamedata.py` needs Python 3.14's `compression.zstd` (the bundled
+builder Python has it) or the `zstandard` package. `gamedata.py` is
+stdlib-only.
+
+The result has ~12,000 saved fields and ~123 enum tables. Use it with
+`--names`/`--schema` on `dump`, `get`, `set`, `schema_report` and `acceptance`.
+The GameDataList does **not** carry most field names: `--scan-game` finds the
+few printable ones (12 in the current build), and `--merge` keeps names you
+curate later. Enum labels work without names, for example:
+
+```
+0xB80C70A8  Enum  PlayerStatus.AssignableItem.BottleInfo.BottleC.BottleItem
+             0xBE69DE49 (Empty)
+```
+
+`--all-fields` includes runtime-only GameData (`SaveFileIndex -1`); the default
+writes only fields that can appear in a save. `--no-defaults` omits
+`DefaultValue` for a smaller table.
+
 ### Editing
 
 `set` accepts:
@@ -154,6 +190,8 @@ edit should still be tested in game before relying on that.
 - In-place editing of bool/int/float/enum/uint and fixed strings.
 - `list`, `check`, `dump`, `get`, `set`, `hash`, `scan`, `names`, `backup`.
 - Name/schema tables (JSON or TSV), auto-discovery, and schema enum labels.
+- Full GameDataList schema: `extract_gamedata.py` (dictionary + BYML) and
+  `gamedata.py` (types, defaults, reset bits, save-file index, enums).
 - Read-only diagnostics: `compare`, `schema_report`, `acceptance`.
 - Atomic writes and automatic backups.
 
@@ -180,10 +218,9 @@ disagree on scene, spawn, or position.
 
 ## Not yet
 
-- A built-in named schema for this remake. The schema is in
-  `romfs/GameData/GameDataList.Product.110.byml.zs`, but it is zstd with
-  dictionary id 1; decoding it is a separate task (see `ROADMAP.md`). Until
-  then, use a `names`/`schema` table generated from your own game.
+- Field names for most hashes. The GameDataList has types/defaults/enums but
+  no `HashText`; `--scan-game` finds only a few printable paths. Curate the
+  rest with `--merge` or save-diff experiments.
 - Editing arrays, binaries, or growing the data area.
 - A GUI. The parser and CLI are intended to be the stable core.
 - Updating `caption.sav` together with `progress.sav` after a position/scene
@@ -258,6 +295,8 @@ python -I -B save_editor/tests/test_cli.py
 python -I -B save_editor/tests/test_compare.py
 python -I -B save_editor/tests/test_schema_report.py
 python -I -B save_editor/tests/test_acceptance.py
+python -I -B save_editor/tests/test_byml.py
+python -I -B save_editor/tests/test_gamedata.py
 python -I -B tests/run_all.py save_editor
 ```
 

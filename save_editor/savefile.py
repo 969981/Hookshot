@@ -196,6 +196,11 @@ class FieldInfo:
     name: str | None = None
     type_name: str | None = None
     enum: dict[int, str] = field(default_factory=dict)
+    default: Any = None
+    reset: int | None = None
+    save_file: str | None = None
+    save_file_index: int | None = None
+    size: int | None = None
 
 
 @dataclass
@@ -757,6 +762,16 @@ def load_schema(path: str | os.PathLike[str]) -> Schema:
                     info.type_name = str(value["type"])
                 if "enum" in value:
                     info.enum = _enum_map(value["enum"])
+                if "default" in value:
+                    info.default = value["default"]
+                if value.get("reset") is not None:
+                    info.reset = int(value["reset"])
+                if "save_file" in value:
+                    info.save_file = str(value["save_file"]) if value["save_file"] is not None else None
+                if value.get("save_file_index") is not None:
+                    info.save_file_index = int(value["save_file_index"])
+                if value.get("size") is not None:
+                    info.size = int(value["size"])
                 schema.fields[entry_hash] = info
             else:
                 raise ValueError(

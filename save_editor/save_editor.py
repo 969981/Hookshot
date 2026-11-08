@@ -670,6 +670,16 @@ def cmd_names(args: argparse.Namespace) -> int:
                 "0x%08X" % value: label
                 for value, label in sorted(info.enum.items())
             }
+        if info.default is not None:
+            item["default"] = info.default
+        if info.reset is not None:
+            item["reset"] = info.reset
+        if info.save_file is not None:
+            item["save_file"] = info.save_file
+        if info.save_file_index is not None:
+            item["save_file_index"] = info.save_file_index
+        if info.size is not None:
+            item["size"] = info.size
         fields["0x%08X" % entry_hash] = item
 
     payload: dict[str, Any] = {"version": schema.version, "fields": fields}
