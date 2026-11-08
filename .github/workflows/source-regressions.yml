@@ -62,6 +62,9 @@ on:
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
       - tests/test_slow_frame_limit.py
+      - tests/test_3d_view_create_flags.py
+      - tests/test_present_trace.py
+      - host/nn_vi.c
       - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
@@ -181,6 +184,9 @@ on:
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
       - tests/test_slow_frame_limit.py
+      - tests/test_3d_view_create_flags.py
+      - tests/test_present_trace.py
+      - host/nn_vi.c
       - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
@@ -387,6 +393,12 @@ jobs:
       - name: Check multi-second frames remain in the requested slow log
         if: runner.os == 'Linux'
         run: python -I -B tests/test_slow_frame_limit.py
+      - name: Check sampled 2D views of 3D images have the creation flag
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_3d_view_create_flags.py
+      - name: Check the optional native present-return trace
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_present_trace.py
       - name: Check the build's version stamp
         run: python -I -B nx2/test_version.py
       - name: Check the release changelog entry
