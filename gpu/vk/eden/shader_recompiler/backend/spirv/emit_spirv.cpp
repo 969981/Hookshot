@@ -133,6 +133,14 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
 
 void Traverse(EmitContext& ctx, IR::Program& program) {
     IR::Block* current_block{};
+    // (EvilOOT, RX_VK_BLOCK_PROBE=1 with RX_VK_MISS_LOG=1 and RX_VK_MISS_LOG_PROG=<key>: each block's entries counted, by
+    // invocation, in the miss log's words 128 + the block's index in program.blocks: IR::DumpProgram's "Block $n")
+    static const bool probe_env{std::getenv("RX_VK_BLOCK_PROBE") != nullptr};
+    const bool probe{probe_env && Sirit::ValidId(ctx.probe_log)};
+    const auto block_index{[&](const IR::Block* b) -> u32 {
+        const auto it{std::find(program.blocks.begin(), program.blocks.end(), b)};
+        return static_cast<u32>(it - program.blocks.begin());
+    }};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case IR::AbstractSyntaxNode::Type::Block: {
@@ -142,7 +150,16 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             }
             current_block = node.data.block;
             ctx.AddLabel(label);
+            bool probed{!probe};
             for (IR::Inst& inst : node.data.block->Instructions()) {
+                if (!probed && inst.GetOpcode() != IR::Opcode::Phi) {   // (after the phis: they must lead the block)
+                    probed = true;
+                    const u32 at{128U + std::min<u32>(block_index(node.data.block), 4000U)};
+                    const Id counter{ctx.OpAccessChain(ctx.storage_types.U32.element, ctx.probe_log, ctx.u32_zero_value,
+                                                       ctx.Const(at))};
+                    ctx.OpAtomicIAdd(ctx.U32[1], counter, ctx.Const(static_cast<u32>(spv::Scope::Device)), ctx.u32_zero_value,
+                                     ctx.Const(1U));
+                }
                 EmitInst(ctx, &inst);
             }
             break;
@@ -270,8 +287,9 @@ void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputVertices, program.mesh.max_vertices);
         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputPrimitivesEXT,
                              program.mesh.max_primitives);
-        ctx.AddExecutionMode(main, program.mesh.topology == 1 ? spv::ExecutionMode::OutputLinesEXT
-                                                              : spv::ExecutionMode::OutputTrianglesEXT);
+        ctx.AddExecutionMode(main, program.mesh.Corners() == 1   ? spv::ExecutionMode::OutputPoints
+                                   : program.mesh.Corners() == 2 ? spv::ExecutionMode::OutputLinesEXT
+                                                                 : spv::ExecutionMode::OutputTrianglesEXT);
         break;
     case Stage::TessellationControl:
         execution_model = spv::ExecutionModel::TessellationControl;
@@ -459,8 +477,10 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
             ctx.AddCapability(spv::Capability::ShaderViewportIndexLayerEXT);
         }
     }
-    if (!profile.support_vertex_instance_id &&
-        (info.loads[IR::Attribute::InstanceId] || info.loads[IR::Attribute::VertexId])) {
+    if ((!profile.support_vertex_instance_id &&
+         (info.loads[IR::Attribute::InstanceId] || info.loads[IR::Attribute::VertexId])) ||
+        info.loads[IR::Attribute::BaseInstance] || info.loads[IR::Attribute::BaseVertex] ||
+        info.loads[IR::Attribute::DrawID] || ctx.wants_mesh_first) {   // (hookshot: a task program's DrawIndex, its draw's first)
         ctx.AddExtension("SPV_KHR_shader_draw_parameters");
         ctx.AddCapability(spv::Capability::DrawParameters);
     }
@@ -480,6 +500,10 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
     if (info.uses_cooperative_matrix && !mma_software) {
         ctx.AddExtension("SPV_KHR_cooperative_matrix");
         ctx.AddCapability(spv::Capability::CooperativeMatrixKHR);
+        ctx.AddExtension("SPV_KHR_vulkan_memory_model");
+        ctx.AddCapability(spv::Capability::VulkanMemoryModel);
+        ctx.AddCapability(spv::Capability::VulkanMemoryModelDeviceScope);
+        ctx.SetMemoryModel(spv::MemoryModel::VulkanKHR);
     }
     if (info.uses_cooperative_matrix && mma_software) {   // (hookshot: DefineSoftwareMatrixFunction's)
         ctx.AddCapability(spv::Capability::GroupNonUniform);

@@ -50,6 +50,10 @@ int hos_gpu_pools(uint64_t (*out)[2], int max);
 uint32_t hos_gpu_maps_generation(void);
 uint32_t nvn_vmap_generation(void);
 uint64_t hos_reserved_cpus(void);   /* hos_thread.c */
+extern float hos_aspect_ratio;      /* hos_main.c: the guest camera aspect applied at startup, or 0 */
+uint32_t hos_pad_raw(void);         /* nn_hid.c: the gamepads and the controls, for the Insert menu */
+int hos_binding(int set, int button, int slot);
+void hos_bind(int set, int button, int slot, int code);
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);
 #endif
@@ -129,13 +133,14 @@ static uint64_t host_guest_alloc(uint64_t size) {
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* nvn_native.c */
 static void host_watch_guest_writes(uint64_t guest, uint64_t size) { hos_watch_guest_writes(hos_guest_base() + guest, size); }
+static float host_aspect_ratio(void) { return hos_aspect_ratio; }
 
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
     nvn_tex_level_offset, nvn_fmt_bpb, nvn_tex_level_tiles, nvn_tex_linear_stride, nvn_depth_minus_w, hos_gpu_pools,
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
-    host_watch_guest_writes,
+    host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -188,7 +193,7 @@ static void flush_early(void) {
 static const MkwVkRenderer *load_vulkan(const char *dll) {
     char path[MAX_PATH];
     const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-    char *slash = n ? strrchr(path, '\\') : NULL;
+    char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;   /* (linux: '/') */
     if (!slash) return NULL;
     strcpy(slash + 1, dll);
     HMODULE m = LoadLibraryA(path);
@@ -223,6 +228,12 @@ int rx_start(void *hwnd) {
     flush_early();
     return ok;
 }
+/* (hookshot) hookshot --prepare-shaders: the Vulkan back end started with no window and no game, which prepares
+   every shader in its start (gpu/vk/vk_main.cpp started_up) and is then let go. 0 when there is no usable Vulkan */
+int rx_prepare_shaders(void) {
+    const MkwVkRenderer *r = load_vulkan("hookshot_vk.dll");
+    return r && r->start(NULL);
+}
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
@@ -234,6 +245,7 @@ void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue) {
     else rx_nvn_submit(handles, n);
 }
 uint64_t rx_nvn_fence(void) { return vk ? vk->nvn_fence() : wgr_nvn_fence(); }
+uint64_t rx_nvn_fence_q(uint64_t queue) { return vk && vk->nvn_fence_q ? vk->nvn_fence_q(queue) : rx_nvn_fence(); }
 uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : wgr_nvn_pushed(); }
 uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : wgr_nvn_replayed(); }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {

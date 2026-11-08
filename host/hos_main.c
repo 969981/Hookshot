@@ -12,12 +12,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
+#define HOOKSHOT_VERSION "unknown"
+#endif
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
 #else
+#include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
+#endif
+/* (linux) the separator of the paths the executable's folder is joined with */
+#ifdef _WIN32
+#define SEP 92
+#define SEP_S "\\"
+#else
+#define SEP '/'
+#define SEP_S "/"
 #endif
 
 #ifdef A64_MEM_ZERO
@@ -116,8 +128,18 @@ static int reserve_guest(void) {
     hos_commit_init();
     return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE | watch, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
 #else
-    return mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) == (void *)A64_HOST_BASE;
+    /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
+       step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
+    void hos_commit_init(void);
+    hos_commit_init();   /* (the crash report) */
+    if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
+        return 0;
+    /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
+       collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
+       next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
+    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+    return 1;
 #endif
 }
 
@@ -142,69 +164,237 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
     call_guest_args(c, addr, sp, what);
 }
 
-float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
-int main(int argc, char **argv) {
-#ifdef _WIN32
-    {   // (hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the switches
-        // players are asked to test. Lines starting with # are notes)
-        char path[MAX_PATH + 32];
-        DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-        while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
-        memcpy(path + n, "hookshot_env.txt", 17);
-        FILE *f = fopen(path, "r");
+void hos_update_check(void);   /* (host/hos_update.c) */
+#ifndef _WIN32
+/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
+   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
+   cannot be moved keeps the old place. --user still wins. */
+static int is_dir(const char *p) {
+    const DWORD a = GetFileAttributesA(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+static int copy_tree(const char *from, const char *to) {
+    if (!is_dir(from)) {
+        FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
+        int ok = in && out;
+        char buf[1 << 16];
+        for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
+        ok = ok && in && !ferror(in);
+        if (in) fclose(in);
+        if (out && fclose(out)) ok = 0;
+        return ok;
+    }
+    if (!CreateDirectoryA(to, NULL) && !is_dir(to)) return 0;
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", from);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    int ok = 1;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            char a[MAX_PATH], b[MAX_PATH];
+            snprintf(a, sizeof a, "%s" SEP_S "%s", from, fd.cFileName);
+            snprintf(b, sizeof b, "%s" SEP_S "%s", to, fd.cFileName);
+            ok = copy_tree(a, b);
+        } while (ok && FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    return ok;
+}
+static void delete_tree(const char *p) {
+    if (!is_dir(p)) {
+        DeleteFileA(p);
+        return;
+    }
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", p);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            char a[MAX_PATH];
+            snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
+            delete_tree(a);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryA(p);
+}
+static const char *saves_dir(const char *beside) {
+    static char dir[MAX_PATH];
+    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
+    else if (home && home[0] == '/') {
+        snprintf(dir, sizeof dir, "%s/.local", home);
+        CreateDirectoryA(dir, NULL);
+        snprintf(dir, sizeof dir, "%s/.local/share", home);
+    } else return beside;
+    CreateDirectoryA(dir, NULL);
+    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
+    CreateDirectoryA(dir, NULL);
+    if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return dir;
+    int moved = 0, kept = 0;
+    do {
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        char from[MAX_PATH], to[MAX_PATH];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
+        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
+        if (GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES) kept++;
+        else if (MoveFileExA(from, to, 0)) moved++;
+        else if (copy_tree(from, to)) delete_tree(from), moved++;
+        else delete_tree(to), kept++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    if (kept) {
+        hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
+        return beside;
+    }
+    RemoveDirectoryA(beside);
+    if (moved) {
+        char note[MAX_PATH];
+        const char *sep = strrchr(beside, SEP);
+        snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
+        FILE *f = fopen(note, "w");
         if (f) {
-            char line[512];
-            while (fgets(line, sizeof line, f)) {
-                char *s = line;
-                if ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF) s += 3;   // (Notepad's BOM)
-                while (*s == ' ' || *s == 9) s++;
-                size_t len = strlen(s);
-                while (len && (s[len - 1] == 10 || s[len - 1] == 13 || s[len - 1] == ' ' || s[len - 1] == 9)) s[--len] = 0;
-                if (!len || *s == '#' || !strchr(s, '=')) continue;
-                _putenv(s);
-            }
+            fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
             fclose(f);
         }
+        hos_log("saves: moved from %s to %s", beside, dir);
     }
+    return dir;
+}
+#endif
+
+/* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
+   switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
+   before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made. */
+static void load_hookshot_env(void) {
+    char path[MAX_PATH + 32];
+    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+    memcpy(path + n, "hookshot_env.txt", 17);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        char *s = line;
+        if ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF) s += 3;   /* (Notepad's BOM) */
+        while (*s == ' ' || *s == 9) s++;
+        size_t len = strlen(s);
+        while (len && (s[len - 1] == 10 || s[len - 1] == 13 || s[len - 1] == ' ' || s[len - 1] == 9)) s[--len] = 0;
+        if (!len || *s == '#' || !strchr(s, '=')) continue;
+#ifdef _WIN32
+        _putenv(s);
+#else
+        char *eq = strchr(s, '=');
+        *eq = 0;
+        setenv(s, eq + 1, 1);
+#endif
+    }
+    fclose(f);
+}
+
+float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
+/* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
+volatile uint64_t hos_wide_out, hos_wide_scene;
+volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+/* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
+volatile int hos_occlusion_off;
+static void occlusion_switch(void) {
+    const char *e = getenv("HOOKSHOT_OCCLUSION_OFF");
+    hos_occlusion_off = e && e[0] == '1';
+    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
+}
+#ifdef _WIN32
+/* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
+   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
+__declspec(dllexport) unsigned long NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
+int main(int argc, char **argv) {
+#else
+static int game_main(int argc, char **argv) {
+#endif
+#ifdef _WIN32
+    load_hookshot_env();
+#endif
+    occlusion_switch();
+#ifdef _WIN32
     {   // (the whole process, not only the window's thread: the renderer asks the window's size from its own, and on a 4K screen at 150%
         // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
         typedef BOOL(WINAPI * SetAware)(void *);
         SetAware set = (SetAware)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
         if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
+#endif
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
             char path[MAX_PATH + 32];
             DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+            /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
+               crash sent in the new run's log, and the crash was gone) */
+            char from[MAX_PATH + 32], to[MAX_PATH + 32];
+            for (int k = 4; k >= 1; k--) {
+                if (k == 1) memcpy(from + n, "hookshot_log.txt", 17), memcpy(from, path, n);
+                else memcpy(from, path, n), snprintf(from + n, 32, "hookshot_log.%d.txt", k - 1);
+                memcpy(to, path, n), snprintf(to + n, 32, "hookshot_log.%d.txt", k);
+                MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
+            }
             memcpy(path + n, "hookshot_log.txt", 17);
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
-#endif
+    hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
+        else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
+#ifdef _WIN32
+            _putenv("HOOKSHOT_PREPARE_ONLY=1");
+#else
+            setenv("HOOKSHOT_PREPARE_ONLY", "1", 1);
+#endif
+            int rx_prepare_shaders(void);
+            if (rx_prepare_shaders()) {
+                printf("@@done shaders\n");
+                return 0;
+            }
+            printf("@@error no usable Vulkan here: the game prepares its shaders at its first start\n");
+            return 3;
+        }
         else if (!image) image = argv[i];
     }
     static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
         const DWORD len = GetModuleFileNameA(NULL, dir, MAX_PATH);
-        char *slash = len ? strrchr(dir, 92) : NULL;
+        char *slash = len ? strrchr(dir, SEP) : NULL;
         if (slash) {
             *slash = 0;
             SetCurrentDirectoryA(dir);
-            snprintf(beside_image, MAX_PATH, "%s\\image.bin", dir);
-            snprintf(beside_romfs, MAX_PATH, "%s\\romfs", dir);
-            snprintf(beside_user, MAX_PATH, "%s\\user", dir);
+            snprintf(beside_image, MAX_PATH, "%s" SEP_S "image.bin", dir);
+            snprintf(beside_romfs, MAX_PATH, "%s" SEP_S "romfs", dir);
+            snprintf(beside_user, MAX_PATH, "%s" SEP_S "user", dir);
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
+                hos_update_check();   /* (a game folder from the builder: is a newer release out? host/hos_update.c) */
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
+#ifndef _WIN32
+                if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
+#else
                 if (!hos_user_dir) hos_user_dir = beside_user;
+#endif
             }
         }
     }
@@ -250,18 +440,17 @@ int main(int argc, char **argv) {
         return 1;
     }
     hos_mem_init(hos_image_end);
-    {   /* (hookshot) HOS_ASPECT=<ratio> (2.3889 for 3440x1440): the one 16:9 constant in the game's data, read by the camera and the
-           scene setup, at the window's shape. The picture stays 16:9 and is stretched to the window, so the 3D keeps its proportions
-           and the HUD stretches with it. */
+    {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
+           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (Hor+:
+           the world wider at the sides), its 16:9 cameras the picture's ratio, the HUD, menus and movies the middle 16:9. Until now the
+           one 16:9 constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
-        uint8_t *at = (uint8_t *)A64_MEM + 0x83e6131cull;
-        float was, want = e ? (float)atof(e) : 0.0f;
-        memcpy(&was, at, 4);
-        if (!e) {   /* (the Insert menu's Ultrawide, off unless it says 1: the main monitor's shape) */
+        float want = e ? (float)atof(e) : 0.0f;
+        if (!e) {
             int on = 0;
             char path[MAX_PATH];
             const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = len ? strrchr(path, 92) : NULL;
+            char *slash = len ? strrchr(path, SEP) : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
                 FILE *o = fopen(path, "r");
@@ -273,20 +462,31 @@ int main(int argc, char **argv) {
                 }
             }
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-            if (on && sh > 0 && (float)sw / (float)sh > 1.8f) want = (float)sw / (float)sh;
+            if (on && sh > 0) want = (float)sw / (float)sh;
         }
-        if (want > 1.0f && was > 1.777f && was < 1.778f) {
-            memcpy(at, &want, 4);
-            hos_aspect_ratio = want;
-            hos_log("boot: aspect ratio %.4f in place of %.4f", want, was);
+        extern volatile uint64_t hos_wide_out, hos_wide_scene;
+        extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+        const double game = 16.0 / 9.0;
+        if (want > game * 1.01) {
+            double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want;
+            const unsigned oh = 1440, ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
+            const unsigned sh = 1080, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
+            hos_wide_out = (uint64_t)oh << 32 | ow;
+            hos_wide_scene = (uint64_t)sh << 32 | sw;
+            hos_wide_ratio = (float)ow / (float)oh;
+            hos_wide_squeeze = (float)(game / ((double)ow / oh));
+            hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
+            hos_aspect_ratio = hos_wide_ratio;
+            hos_log("boot: widescreen: picture %ux%u, scene %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", ow, oh, sw, sh,
+                    (double)hos_wide_ratio, hos_wide_squeeze * 100.0);
         } else if (want > 1.0f) {
-            hos_log("boot: aspect: the constant reads %.4f here: left alone", was);
+            hos_log("boot: widescreen: a %.4f screen is not wider than 16:9: the game's own picture", (double)want);
         }
     }
     hos_log("boot: image %zu MB at %#llx, %llu MB of memory for the game", n >> 20, IMAGE_BASE,
             (unsigned long long)(hos_total_memory >> 20));
     void hos_mods_init(const char *image_path);
-    hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files, exefs data patches) */
+    hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
 
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
@@ -320,3 +520,30 @@ int main(int argc, char **argv) {
     hos_log("nnMain returned");
     return 0;
 }
+
+#ifndef _WIN32
+/* (linux) The window belongs on the process's main thread (SDL), so the game runs on a thread of its own, with the
+   stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): host/posix/display_sdl.c */
+static int game_argc;
+static char **game_argv;
+static DWORD WINAPI game_thread(void *p) {
+    (void)p;
+    ExitProcess((UINT)game_main(game_argc, game_argv));
+}
+int main(int argc, char **argv) {
+    int hos_display_init(void);
+    void hos_display_loop(void);
+    load_hookshot_env();
+    game_argc = argc, game_argv = argv;
+    const int window = hos_display_init();
+    HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
+    if (!t) {
+        fprintf(stderr, "cannot start the game's thread\n");
+        return 1;
+    }
+    SetThreadDescription(t, L"Game");
+    if (window) hos_display_loop();   /* (does not return: the window's events until the process ends) */
+    WaitForSingleObject(t, INFINITE);
+    return 0;
+}
+#endif

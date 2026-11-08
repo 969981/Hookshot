@@ -4,7 +4,7 @@
    no emulated GPU, so the renderer is the only way to a picture.
    HOS_HEADLESS=1: no window (scripted runs; the renderer draws offscreen). Closing the window ends the run.
    HOS_WINDOW_NOACTIVATE=1: the window opens behind the one in front (test runs do not take the keyboard).
-   HOS_WINDOW_SIZE=<w>x<h>: the client area (default 1280x720 at 96 dpi). F11: fullscreen.
+   HOS_WINDOW_SIZE=<w>x<h>: the client area (default 1280x720 at 96 dpi). F11 or Alt+Enter: fullscreen.
    Mouse: a click in the window captures the mouse (hidden, kept in the window), Esc or leaving the window releases
    it (nn_hid.c reads its motion). */
 #include "hos.h"
@@ -113,6 +113,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == VK_ESCAPE) mouse_capture(w, 0);
         if (wp == VK_F11 && !(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
         return 0;
+    case WM_SYSKEYDOWN:   /* Alt+Enter, as on Linux (display_sdl.c); other Alt keys (Alt+F4) go on to Windows */
+        if (wp == VK_RETURN && (lp & (1 << 29))) {
+            if (!(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
+            return 0;
+        }
+        break;
+    case WM_SYSCHAR:   /* (its character: without this Windows beeps, as for an Alt key with no menu) */
+        if (wp == '\r') return 0;
+        break;
     case WM_APP + 7:   /* (the Insert menu's row) */
         set_fullscreen(w, (int)wp);
         return 0;
@@ -216,7 +225,7 @@ static DWORD WINAPI display_main(void *p) {
    shaders were being prepared (80 s on a first start) was lost: that run had no ambient light, black foliage and dark characters. The
    game itself goes on starting as it did: held at the start instead, it left holes in the ground */
 void hos_renderer_wait(void) {
-    if (getenv("HOS_NO_RENDERER_WAIT")) return;   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
+    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }   /* (=0: the wait, as without it) */   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
     if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
 }
 

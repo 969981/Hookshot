@@ -9,8 +9,8 @@ The layout (worked out from the file; little-endian):
     0x0b0  titles, 0x40 each: u64 title id, u32 root dir, u32 exefs dir, u32 romfs dir, u32 version, ...,
            u64 offset + u64 size of the title's metadata blob at +0x20
     then   dirs, 24 bytes each: u32 name offset, u32 name length, u32 first child, u32 children, u64 0
-    then   files, 80 bytes each: u32 name offset, u32 name length, u64 size, u64 data offset, u64 size again,
-           32-byte hash, 16 bytes 0
+    then   files, 80 bytes each: u32 name offset, u32 name length, u64 size, u64 data offset, u64 stored size,
+           32-byte hash, u8 codec (0 raw, 1 zstd), u8 flags, u16 reserved, 12 bytes reserved
     then   the child list, u32 each: a node index; below the dir count a dir, else (index - dirs) a file
     then   the name strings (not 0-terminated)
 The data of a file is stored as is at its data offset, or, in .nup files from newer dumpers, as a zstd frame whose content is the
@@ -51,6 +51,12 @@ class Nup:
         if h[:4] != b"NUP\x01":
             raise SystemExit("%s: not a NUP package (magic %r)" % (path, h[:4]))
         self.file_size = struct.unpack_from("<Q", h, 0x40)[0]
+        # (a package that ends early (a download or copy that did not finish) failed 30 minutes in as "short read in the
+        # package": said now, with the sizes)
+        have = os.fstat(self.f.fileno()).st_size
+        if self.file_size and have < self.file_size:
+            raise SystemExit("the .nup file is incomplete: it is %d MB, its header says %d MB. Download or copy it again "
+                             "(wait for the download to finish) and check that the drive had room" % (have >> 20, self.file_size >> 20))
         t = self.f.read(0x30)
         if t[:4] != b"TOC\x01":
             raise SystemExit("%s: no TOC at 0x80" % path)
@@ -72,7 +78,7 @@ class Nup:
         self.files = []
         for i in range(nf):
             no, nl, size, off, size2 = struct.unpack_from("<IIQQQ", meta, files_at + 80 * i)
-            self.files.append((no, nl, size, off, size2))
+            self.files.append((no, nl, size, off, size2, meta[files_at + 80 * i + 64]))
         nk = (strings_at - kids_at) // 4
         self.kids = struct.unpack_from("<%dI" % nk, meta, kids_at)
 
@@ -103,6 +109,8 @@ class Nup:
         """A file the package keeps compressed. A frame that states no size is tried: it is the file when it unpacks to the listed size.
         A .zs file is zstd in the game too, and three of them happen to hold exactly as much as they take: that one is packed only if
         what it holds is zstd again"""
+        if r[5] == 1:   # The TOC explicitly marks outer compression, even for a non-Zstd .zs payload.
+            return True
         self.f.seek(r[3])
         head = self.f.read(18)
         if head[:4] != ZSTD:
@@ -134,7 +142,7 @@ class Nup:
         self.f.seek(r[3])
         left = r[2]
         if packed:
-            left += 1 << 16   # (a frame of something that does not compress is a little larger than what it holds)
+            left = r[4] if r[5] == 1 else left + (1 << 16)   # explicit extents must not read the next member
             import zstandard
             d = zstandard.ZstdDecompressor().decompressobj()
             got = 0
@@ -149,13 +157,16 @@ class Nup:
                     break
                 g.write(out)
                 got += len(out)
+            if r[5] == 1 and not d.eof:
+                raise SystemExit("a compressed file ends before its frame completes")
             if got != r[2]:
                 raise SystemExit("a compressed file came out as %d bytes, %d expected" % (got, r[2]))
             return
         while left:
             b = self.f.read(min(left, 8 << 20))
             if not b:
-                raise SystemExit("short read in the package")
+                raise SystemExit("the .nup file ends early (short read at %d of %d MB): it is incomplete. Download or copy it again"
+                                 % (self.f.tell() >> 20, os.fstat(self.f.fileno()).st_size >> 20))
             g.write(b)
             left -= len(b)
 

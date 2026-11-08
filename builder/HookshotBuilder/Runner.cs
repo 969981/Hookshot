@@ -6,6 +6,9 @@ namespace HookshotBuilder;
 /// Where nx2/make_game.py and its Python are: a "tools" folder beside the app when packaged, or the source tree it sits in.
 sealed record Tools(string Root, string Python)
 {
+    /// Which release these tools are (tools/version.txt, written when the release is packed); null from the source tree
+    public string? Version => File.Exists(Path.Combine(Root, "version.txt")) ? File.ReadAllText(Path.Combine(Root, "version.txt")).Trim() : null;
+
     public static Tools? Find()
     {
         var at = AppContext.BaseDirectory;
@@ -27,6 +30,7 @@ sealed class Runner
 {
     readonly Tools tools;
     readonly List<string> args;
+    readonly int? workers;
     Process? process;
     string? error;
     bool cancelled;
@@ -34,13 +38,15 @@ sealed class Runner
     public event Action<string>? Line;
     public event Action<string?>? Finished;
 
-    public Runner(Tools tools, List<string> args)
+    public Runner(Tools tools, List<string> args, int? workers = null)
     {
         this.tools = tools;
         this.args = args;
+        if (workers is <= 0) throw new ArgumentOutOfRangeException(nameof(workers), "Build workers must be positive.");
+        this.workers = workers;
     }
 
-    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args)
+    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -51,6 +57,9 @@ sealed class Runner
             RedirectStandardError = true,
         };
         si.Environment["PYTHONIOENCODING"] = "utf-8";
+        BuildWorkers.Apply(si, workers);
+        // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
+        if (Environment.ProcessPath != null) si.Environment["HOOKSHOT_BUILDER_EXE"] = Environment.ProcessPath;
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
         var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native") };
         foreach (var (name, folder) in sets)
@@ -70,7 +79,7 @@ sealed class Runner
         {
             try
             {
-                using var p = Process.Start(Info(tools, args))!;
+                using var p = Process.Start(Info(tools, args, workers))!;
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
@@ -116,6 +125,10 @@ sealed class Runner
         }
         catch (Exception)
         {
+            // (the package's own Python missing: an antivirus took it, most often, after a false alarm on the download)
+            if (tools.Python == "python" && Directory.Exists(Path.Combine(tools.Root, "python")))
+                return (false, "The builder's own Python (tools/python/python.exe) is missing. Your antivirus probably removed it: restore it " +
+                               "from quarantine, or unpack the zip again into a folder your antivirus allows, then try again.");
             return (false, "Python was not found. Install Python 3 or use the full Hookshot Builder package.");
         }
     }

@@ -161,8 +161,8 @@ void MeshEpilogue(EmitContext& ctx) {
     for (u32 first = 0; first < mesh.max_primitives; first += threads) {
         const Id primitive{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
         If(ctx, ctx.OpULessThan(ctx.U1, primitive, count), [&] {
-            // Vertex indices: map bytes 4 + 3 * primitive (lines: 4 + 2 * primitive).
-            const u32 corners{mesh.topology == 1 ? 2U : 3U};
+            // Vertex indices: map bytes 4 + 3 * primitive (lines: 4 + 2 * primitive, points: 4 + primitive).
+            const u32 corners{mesh.Corners()};
             const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(corners)),
                                      ctx.Const(4U))};
             std::array<Id, 3> indices;
@@ -175,7 +175,9 @@ void MeshEpilogue(EmitContext& ctx) {
             }
             const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[corners])};
             ctx.OpStore(ctx.OpAccessChain(output_indices, ctx.mesh_primitive_indices, primitive),
-                        ctx.OpCompositeConstruct(ctx.U32[corners], std::span<const Id>(indices.data(), corners)));
+                        corners == 1 ? indices[0]   // (a point's index is a scalar)
+                                     : ctx.OpCompositeConstruct(ctx.U32[corners],
+                                                                std::span<const Id>(indices.data(), corners)));
             CopyLines(ctx, primitive, ctx.mesh_primitive_base, primitive_lines,
                       ctx.mesh_primitive_targets);
         });
@@ -187,6 +189,18 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
     const Id workgroup{
         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
     if (ctx.stage == Stage::Task) {
+        if (ctx.wants_mesh_first && Sirit::ValidId(ctx.rescaling_push_constants)) {
+            // (hookshot) + the draw's first workgroup: NVN draws [first, first + count). Without it every draw began at 0: the
+            // foliage's draws (first up to ~1900) drew the first records again and again, and the forest had no leaves
+            const Id table{ctx.OpLoad(ctx.U64, ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U64),
+                                                                  ctx.rescaling_push_constants, ctx.Const(ctx.mesh_first_member_index)))};
+            const Id draw{ctx.OpLoad(ctx.U32[1], ctx.draw_index)};
+            const Id at{ctx.OpIAdd(ctx.U64, table, ctx.OpUConvert(ctx.U64, ctx.OpIMul(ctx.U32[1], draw, ctx.Const(16U))))};
+            const Id member{ctx.OpAccessChain(ctx.mesh_first_member_pointer, ctx.OpConvertUToPtr(ctx.mesh_first_block_pointer, at),
+                                              ctx.Const(0U))};
+            const Id first{ctx.OpLoad(ctx.U32[1], member, spv::MemoryAccessMask::Aligned, 4U)};
+            return ctx.OpIAdd(ctx.U32[1], workgroup, first);
+        }
         return workgroup; // the input region holds the workgroup index (VERTEX_ID)
     }
     const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
@@ -230,6 +244,27 @@ void EmitMeshPrologue(EmitContext& ctx) {
     }
     if (ctx.stage != Stage::Mesh) {
         return;
+    }
+    // (local) The stage buffer's map and attribute regions start at zero, as they come out on NVIDIA: workgroup memory holds
+    // whatever the last workgroup on that unit left, and a vertex or an index byte the program left unwritten was that. On an
+    // RX 7700S the foliage drawn into the 2400 x 2400 shadow map around Link came out with hundreds of long thin triangles
+    // across the whole map (vertices from other meshlets' leftovers), dark lines on the ground, the water and Link that
+    // changed every frame. Zeroed, such a primitive is (0,0,0): no area. Straight-line stores, each clamped into its array
+    // (no branch: see below). RX_VK_MESH_NO_ZERO=1: as before
+    static const bool no_zero{std::getenv("RX_VK_MESH_NO_ZERO") != nullptr};
+    if (!no_zero && ctx.mesh_threads) {
+        const Id invocation{LocalInvocation(ctx)};
+        const auto zero_all = [&](Id array, u32 count) {
+            if (!Sirit::ValidId(array) || count == 0) {
+                return;
+            }
+            for (u32 first = 0; first < count; first += ctx.mesh_threads) {
+                const Id at{Clamped(ctx, ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first)), count)};
+                ctx.OpStore(SharedWord(ctx, array, at), ctx.u32_zero_value);
+            }
+        };
+        zero_all(ctx.mesh_map, ctx.mesh_map_bytes);
+        zero_all(ctx.mesh_attributes, ctx.mesh_attribute_words);
     }
     // Every invocation stores the zero: no branch here, the entry block's label is a phi
     // predecessor for later blocks.
