@@ -199,7 +199,8 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
-    optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    // (RX_VK_FORCE_MESH_FALLBACK=1, a test switch: VK_EXT_mesh_shader left off, so a GPU that has it runs the compute fallback)
+    if (!getenv("RX_VK_FORCE_MESH_FALLBACK")) optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);

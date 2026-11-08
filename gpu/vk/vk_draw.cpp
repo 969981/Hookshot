@@ -1035,8 +1035,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     for (const Stage& st : p.stages) {
-        if (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT))
-            continue;   // (hookshot: the fallback's dispatches are not graphics stages)
+        // (hookshot: the mesh fallback's dispatches are compute stages, not graphics ones. A native mesh program's task
+        // and mesh stages are its pre-rasterization stages: left out, its pipeline had a fragment stage alone, and the
+        // GPU faulted or hung at its draws (NVIDIA: Xid 109, then Xid 31 MMU faults and device lost))
+        if (st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) continue;
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = st.vk_stage;
         si.module = st.module;
