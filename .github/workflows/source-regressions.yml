@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
     paths:
+      - gpu/vk/fsr_camera.h
+      - gpu/vk/vk_fsr_native.cpp
+      - gpu/vk/vk_fsr_native.h
+      - gpu/vk/shaders/fsr_prepare.comp
+      - gpu/vk/shaders/fsr_prepare_comp_spv.h
+      - gpu/vk/shaders/fsr_resolve.comp
+      - gpu/vk/shaders/fsr_resolve_comp_spv.h
+      - third_party/fidelityfx/**
+      - tests/fsr_camera_test.cpp
+      - tests/test_fsr_camera.py
+      - tests/test_fsr_options.py
       - nx2/nup.py
       - nx2/make_game.py
       - nx2/build.py
@@ -119,6 +130,17 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - gpu/vk/fsr_camera.h
+      - gpu/vk/vk_fsr_native.cpp
+      - gpu/vk/vk_fsr_native.h
+      - gpu/vk/shaders/fsr_prepare.comp
+      - gpu/vk/shaders/fsr_prepare_comp_spv.h
+      - gpu/vk/shaders/fsr_resolve.comp
+      - gpu/vk/shaders/fsr_resolve_comp_spv.h
+      - third_party/fidelityfx/**
+      - tests/fsr_camera_test.cpp
+      - tests/test_fsr_camera.py
+      - tests/test_fsr_options.py
       - nx2/nup.py
       - nx2/make_game.py
       - nx2/build.py
@@ -404,6 +426,12 @@ jobs:
       - name: Check a repeated draw keeps its dynamic state
         if: runner.os == 'Linux'
         run: python -I -B tests/test_same_dyn.py
+      - name: Check FSR camera reprojection
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_fsr_camera.py --cxx g++
+      - name: Check FSR opt-in, platform gating and sharpening
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_fsr_options.py --cxx g++
       - name: Check upscale menu labels
         if: runner.os == 'Linux'
         run: python -I -B tests/test_upscale_label.py

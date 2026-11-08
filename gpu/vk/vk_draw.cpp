@@ -31,6 +31,7 @@
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_texture.h"
+#include "vk_fsr_native.h"
 #include "movie_upscale_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
@@ -2351,10 +2352,14 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
 }
 
 void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh) {
+    float fsr_jx = 0, fsr_jy = 0;
+    if (fsr_native_enabled()) fsr_native_draw(s, at.depth, at.width, at.height, fsr_jx, fsr_jy);
     float df[kDynF];
     uint32_t du[kDynU];
     uint8_t db[160];
     const int nb = dyn_pack(s, at, topo, mesh, df, du, db);
+    // The jitter is part of the cached dynamic state; leave the disabled path unchanged.
+    if (fsr_jx || fsr_jy) { df[0] += fsr_jx; df[1] += fsr_jy; }
     if (!dump_on() && last_dyn_valid && dyn_fast.on && dyn_fast.nb == nb &&
         dyn_same(df, kDynF, du, kDynU, db, nb, dyn_fast.fp, dyn_fast.up, dyn_fast.raw)) {
         pass.wm_or |= dyn_fast.wm0, pass.wm_n = dyn_fast.wm_n;   // (the pass trace still sees the masks)
@@ -2381,6 +2386,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+    if (fsr_jx || fsr_jy) { d.vp.x += fsr_jx; d.vp.y += fsr_jy; }
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
@@ -5209,6 +5215,25 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             for (const Texture* t : draw_sampled)
                 if (t && n < 860) n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
             logf("%s", line);
+        }
+    }
+    if (fsr_native_enabled()) {
+        // Verified native AA endpoints for OoT v131072. Resolve before the HUD is drawn.
+        if (p.key == 0x6637ac1d052d22d4ull) {
+            Texture* color = nullptr; uint32_t level = 0;
+            const VkImageView view = texture_view_of(driver_bank_word(s, 0, 5, 0xa8), VK_IMAGE_VIEW_TYPE_2D,
+                                                     ViewUse::Sample, VK_FORMAT_UNDEFINED, &color, &level);
+            if (!level) fsr_native_input(color, view);
+        } else if (p.key == 0x9dc98871eb7fc101ull || p.key == 0xfd029a317a9a4b94ull) {
+            Texture* output = nullptr; uint32_t level = 0;
+            const VkImageView view = texture_view_of(driver_bank_word(s, 0, 5, 0xd0), VK_IMAGE_VIEW_TYPE_2D,
+                                                     ViewUse::Storage, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &output, &level);
+            bool disturbed = false;
+            const bool replaced = !level && fsr_native_resolve(cmd, output, view, disturbed);
+            if (disturbed) {
+                descriptors_disturbed(); last_desc_valid = false; last_pipeline = VK_NULL_HANDLE;
+            }
+            if (replaced) return void(st_dispatches++);
         }
     }
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);

@@ -59,3 +59,9 @@ the script's existing exclusive interval is active; it is not a focus override.
 
 License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is
 GPL-3.0.
+
+## Experimental FSR Native AA
+
+The Windows Vulkan backend has an off-by-default [FSR 4 Native AA experiment](fsr-native-aa.md).
+That guide covers the optional AMD runtime, setup, diagnostic messages, local validation and known limits.
+It preserves the engine's rendering resolution and does not change graphics presets.

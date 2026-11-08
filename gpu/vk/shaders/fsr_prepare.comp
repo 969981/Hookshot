@@ -1,0 +1,29 @@
+#version 450
+// Camera motion, in pixels, excluding jitter; native game color before its neural AA.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D color_in;
+layout(binding = 1) uniform sampler2D depth_in;
+layout(binding = 2, rgba16f) uniform writeonly image2D color_out;
+layout(binding = 3, rg16f) uniform writeonly image2D motion_out;
+layout(push_constant) uniform P {
+    vec4 row0; vec4 row1; vec4 row2; vec4 row3;
+    ivec2 size; vec2 jitter; uint minus_w; uint reset;
+} pc;
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, pc.size))) return;
+    vec3 color = texelFetch(color_in, pixel, 0).rgb;
+    if (any(isnan(color)) || any(isinf(color))) color = vec3(0);
+    imageStore(color_out, pixel, vec4(clamp(color, vec3(0), vec3(65504)), 1));
+    float depth = texelFetch(depth_in, pixel, 0).r;
+    vec2 uv = (vec2(pixel) + 0.5 - pc.jitter) / vec2(pc.size);
+    vec4 clip = vec4(uv.x * 2 - 1, 1 - uv.y * 2, pc.minus_w != 0 ? depth * 2 - 1 : depth, 1);
+    vec4 previous = vec4(dot(pc.row0, clip), dot(pc.row1, clip), dot(pc.row2, clip), dot(pc.row3, clip));
+    vec2 motion = vec2(0);
+    if (pc.reset == 0 && previous.w > 1e-6) {
+        vec2 previous_uv = vec2(previous.x, -previous.y) / previous.w * 0.5 + 0.5;
+        motion = (previous_uv - uv) * vec2(pc.size);
+        if (any(isnan(motion)) || any(isinf(motion))) motion = vec2(0);
+    }
+    imageStore(motion_out, pixel, vec4(clamp(motion, -vec2(pc.size), vec2(pc.size)), 0, 0));
+}
