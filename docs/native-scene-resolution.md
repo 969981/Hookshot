@@ -10,6 +10,14 @@ graphics profiles. It is disabled by default. It does not force a window size,
 select a different graphics mode or change antialiasing, textures or frame
 generation. It can be used independently of an FSR experiment.
 
+This removes only the base multiplier. Reaching a deterministic fixed 100% also
+requires the separate stale-scale refresh proposed in
+[PR #329](https://github.com/NotRexed/Hookshot/pull/329), enabled with
+`HOS_FIX_RES=1`, or an equivalent upstream fix. A current-main test without that
+dependency changed both base tables but still rendered a 1920x1080 scene into
+a 2560x1440 output. This branch alone is therefore not a complete fixed-1440p
+solution. The #329 patch is not copied into this contribution.
+
 ## Trying it
 
 Re-lift and build the branch from your own supported dump so the generated code
@@ -58,10 +66,12 @@ The initial local prototype ran on Windows, RX 9070 XT, driver 32.0.32015.7029,
 in Kokiri Forest near Saria. Before this hook, renderer logs showed 2048x1152;
 after it, color/depth/Native AA dispatches reached 2560x1440 and the player
 reported clearer detail. That prototype also carried the fixed-scale refresh
-from #329 and the separate FSR experiment. It is not yet standalone gameplay
-validation of this branch on current main. Keep the proposal a draft until that
-test and menu/area/mode transitions are covered. Handheld, ultrawide and other
-hardware remain unvalidated.
+from #329 and the separate FSR experiment. The isolated current-main test
+confirmed the table changes and was visually approved by the player, but logged
+1920x1080 -> 2560x1440 with no FSR context: it did not validate fixed native 1440p
+without #329. The proposal is available for review with that dependency explicit.
+Menu/area/mode transitions, handheld, ultrawide and other hardware remain
+unvalidated.
 
 The game-free tests compile the actual hook in a memory fixture and cover the
 disabled path, both profiles, table guards, all three modes, one-time resource
