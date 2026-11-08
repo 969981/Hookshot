@@ -232,6 +232,15 @@ key_a=69,13
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
 `rs` `left` `up` `right` `down`. A button the file leaves out keeps its default.
 
+## Button icons
+
+The game's button prompts and HUD show the buttons of what you play with: keyboard and mouse keys (as bound), or the
+buttons of an Xbox, PlayStation 4, PlayStation 5 or Switch controller (as bound, by position). With **Button icons** on
+Auto (Insert menu, Controller tab) it is the controller connected when the game starts, or keyboard and mouse when
+there is none; the setting can also fix one family. The game reads the icons at its start, so a change shows from the
+next start. `HOS_BUTTON_ICONS=0` keeps the game's own; `keyboard`, `xbox`, `ps4`, `ps5` or `switch` sets one. The builder
+makes the icons from your game files (`hookshot_icons.bin`); a mod that replaces the External font wins over them.
+
 ## Mods
 
 Put mods in a `mods` folder beside `hookshot.exe` (or point `HOS_MODS` at another folder), in the layout emulators

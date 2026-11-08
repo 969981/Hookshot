@@ -38,6 +38,10 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_icons(int v) {
+    static const char* t[] = {"Auto (restart)", "Keyboard (restart)", "Xbox (restart)", "PlayStation (restart)", "Switch (restart)"};
+    return t[std::min(std::max(v, 0), 4)];
+}
 const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
@@ -251,6 +255,10 @@ Row rows[] = {
     {"D-pad right", nullptr, HOS_SW_RIGHT, HOS_SW_RIGHT, 1, tx_keybind, KEY_HELP, 3},
     {"D-pad down", nullptr, HOS_SW_DOWN, HOS_SW_DOWN, 1, tx_keybind, KEY_HELP, 3},
     {"Reset keys", nullptr, 0, 0, 1, tx_reset, "Puts every key and mouse button back as they came.", 3},
+    {"Button icons", &opts.button_icons, 0, 4, 1, tx_icons,
+     "The buttons the game shows in its prompts and HUD. Auto: the controller connected when the game starts, keyboard and "
+     "mouse keys when there is none. Keys follow the Keyboard tab, controller buttons the Controller tab. Applies at the "
+     "next start.", 4},
     {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window.", 4},

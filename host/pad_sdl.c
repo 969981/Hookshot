@@ -33,6 +33,7 @@ typedef int32_t (*InstanceIdFn)(void *);
 typedef int32_t (*DeviceInstanceIdFn)(int);
 typedef int (*RumbleFn)(void *, uint16_t, uint16_t, uint32_t);
 typedef const char *(*GetErrorFn)(void);
+typedef int (*GetTypeFn)(void *);
 
 static struct {
     InitFn Init;
@@ -51,6 +52,7 @@ static struct {
     DeviceInstanceIdFn JoystickGetDeviceInstanceID;
     RumbleFn Rumble;
     GetErrorFn GetError;
+    GetTypeFn GetType;   /* (SDL 2.0.12 and later; without it the name says) */
 } sdl;
 
 enum { SDL_INIT_GAMECONTROLLER = 0x2000 };
@@ -60,7 +62,9 @@ enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_BACK, BTN_GUIDE, BTN_START, BTN_LSTICK, B
 enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT };
 
 #define MAX_PADS 8
-static struct { void *gc; int32_t id; uint16_t rumble_lo, rumble_hi; int64_t rumble_ns; } pads[MAX_PADS];
+static struct { void *gc; int32_t id; uint16_t rumble_lo, rumble_hi; int64_t rumble_ns; int family; } pads[MAX_PADS];
+static volatile LONG first_scan_done;   /* (button_icons.c waits for the first look at what is connected) */
+static volatile LONG sdl_started, sdl_missing;
 static SRWLOCK state_lock = SRWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
@@ -93,6 +97,27 @@ static int load(void) {
     GET(Rumble, "SDL_GameControllerRumble");
     GET(GetError, "SDL_GetError");
 #undef GET
+    *(FARPROC *)&sdl.GetType = GetProcAddress(m, "SDL_GameControllerGetType");
+    return 1;
+}
+
+/* a controller's family for its button icons (host/button_icons.c): 1 Xbox, 2 PlayStation 4, 3 PlayStation 5, 4 Switch.
+   SDL's type, or the name when SDL is older; a pad of no known family (generic, Stadia, Luna, Shield) has Xbox's layout */
+static int family_of(void *gc) {
+    if (sdl.GetType) {
+        switch (sdl.GetType(gc)) {
+        case 3: case 4: return 2;            /* PS3, PS4 */
+        case 7: return 3;                    /* PS5 */
+        case 5: case 11: case 12: case 13: return 4;   /* Switch Pro, Joy-Con left, right, pair */
+        case 1: case 2: return 1;            /* Xbox 360, Xbox One */
+        default: break;
+        }
+    }
+    const char *n = sdl.Name(gc);
+    if (!n) return 1;
+    if (strstr(n, "DualSense") || strstr(n, "PS5")) return 3;
+    if (strstr(n, "PS4") || strstr(n, "DualShock") || strstr(n, "PS3")) return 2;
+    if (strstr(n, "Nintendo") || strstr(n, "Pro Controller") || strstr(n, "Joy-Con")) return 4;
     return 1;
 }
 
@@ -154,12 +179,14 @@ static void pads_poll(void) {
                 if (have || slot < 0) continue;
                 void *gc = sdl.Open(j);
                 if (!gc) continue;
+                pads[slot].family = family_of(gc);   /* (before gc: hos_sdl_pad_family reads the two together) */
                 pads[slot].gc = gc;
                 pads[slot].id = sdl.JoystickInstanceID(sdl.GetJoystick(gc));
                 pads[slot].rumble_lo = pads[slot].rumble_hi = 0;
                 pads[slot].rumble_ns = 0;
                 hos_log("hid: controller \"%s\" connected (SDL)", sdl.Name(gc));
             }
+            InterlockedExchange(&first_scan_done, 1);
         }
         uint64_t b = 0;
         int32_t s[4] = {0};
@@ -194,7 +221,10 @@ static void pads_poll(void) {
 static DWORD WINAPI pad_main(void *arg) {
     (void)arg;
     hos_host_thread_register_self("gamepads (SDL)");
-    if (!pads_start()) return 0;
+    if (!pads_start()) {
+        InterlockedExchange(&sdl_missing, 1);
+        return 0;
+    }
     for (;;) {
         pads_poll();
         Sleep(4);
@@ -209,19 +239,24 @@ static volatile LONG pads_loaded;
 void hos_sdl_pads_pump(void) {
     static int state;   /* 0 not started, 1 polling, -1 not available */
     if (!state && pads_loaded) state = pads_start() ? 1 : -1;
+    if (state < 0) InterlockedExchange(&sdl_missing, 1);
     if (state > 0) pads_poll();
 }
 #endif
 
 /* The controllers' merged state (nn_hid.c): ORs their inputs in (1 << HOS_PAD_*), keeps the larger stick
    deflections; returns how many controllers SDL has open. Starts the SDL thread on the first call. */
-int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
-    static volatile LONG started;
-    if (!started && !InterlockedExchange(&started, 1)) {
-        if (getenv("HOS_NO_SDL")) return 0;
+static void sdl_start_once(void) {
+    if (sdl_started || InterlockedExchange(&sdl_started, 1)) return;
+    {
+        if (getenv("HOS_NO_SDL")) {
+            InterlockedExchange(&sdl_missing, 1);
+            return;
+        }
         if (!load()) {
             hos_log("hid: SDL2.dll not found next to the exe: only XInput controllers (Xbox pads) work");
-            return 0;
+            InterlockedExchange(&sdl_missing, 1);
+            return;
         }
 #ifdef _WIN32
         CreateThread(NULL, 0, pad_main, NULL, 0, NULL);
@@ -232,6 +267,24 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
             CreateThread(NULL, 0, pad_main, NULL, 0, NULL);   /* (no window: nothing else pumps SDL) */
 #endif
     }
+}
+
+/* The family of the first controller SDL has open (1 Xbox, 2 PS4, 3 PS5, 4 Switch), 0 none: starts SDL if nothing has yet
+   and waits up to wait_ms for its first look at what is connected (host/button_icons.c, at the game's start) */
+int hos_sdl_pad_family(int wait_ms) {
+    sdl_start_once();
+    for (int t = 0; t < wait_ms && !first_scan_done && !sdl_missing; t += 10) Sleep(10);
+    int f = 0;
+    AcquireSRWLockShared(&state_lock);
+    for (int i = 0; i < MAX_PADS && !f; i++)
+        if (pads[i].gc) f = pads[i].family;
+    ReleaseSRWLockShared(&state_lock);
+    return f;
+}
+
+int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
+    sdl_start_once();
+    if (sdl_missing) return 0;
     AcquireSRWLockShared(&state_lock);
     const int n = state_count;
     *buttons |= state_buttons;

@@ -90,6 +90,11 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
       - tests/test_mesh_stage_buffer_zero.py
+      - nx2/button_icons.py
+      - host/button_icons.c
+      - host/nn_fs.c
+      - third_party/fonttools/fonttools-4.60.1-py3-none-any.whl
+      - tests/test_button_icons.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -180,6 +185,11 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
       - tests/test_mesh_stage_buffer_zero.py
+      - nx2/button_icons.py
+      - host/button_icons.c
+      - host/nn_fs.c
+      - third_party/fonttools/fonttools-4.60.1-py3-none-any.whl
+      - tests/test_button_icons.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -347,6 +357,12 @@ jobs:
       - name: Check the game launcher
         if: runner.os == 'Linux'
         run: python -I -B tests/test_hookshot_launch.py
+      - name: Install zstandard for the button icons' test (the builder's Python has it)
+        if: runner.os == 'Linux'
+        run: python -m pip install zstandard==0.25.0
+      - name: Check the button icons' library and the font made from it
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_button_icons.py
 
   spirv-global16:
     name: SPIR-V global halfword lowering

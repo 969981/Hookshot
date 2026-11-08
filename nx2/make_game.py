@@ -675,6 +675,11 @@ def main():
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    # (hookshot) the button icons' library: keyboard, mouse, Xbox, PlayStation and Switch glyphs for the game's prompts
+    # (host/button_icons.c at the start). Without it the game shows its own Switch buttons: not worth stopping a build for
+    if subprocess.call(PY + [os.path.join(HERE, "button_icons.py"), romfs, "--out", os.path.join(out, "hookshot_icons.bin")],
+                       stdout=sys.stderr):
+        print("the button icons were not made: the game will show its own Switch buttons", flush=True)
     seed_pipelines(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:

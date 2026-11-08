@@ -37,6 +37,7 @@ static void mount(const char *name, const char *root, int writable) {
 }
 
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
+int hos_button_icons_romfs(const char *rel, char *out, size_t cap);   /* button_icons.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
@@ -51,7 +52,9 @@ static int host_path(const char *guest, char *out, size_t cap, int *writable) {
         if (strlen(mounts[i].name) == n && !strncmp(mounts[i].name, guest, n)) {
             const char *rest = colon + 1;
             while (*rest == '/') rest++;
-            if (mounts[i].writable || !hos_mods_romfs(rest, out, cap)) snprintf(out, cap, "%s/%s", mounts[i].root, rest);
+            /* (a mod's file first, then the button icons' font, then the game's own) */
+            if (mounts[i].writable || (!hos_mods_romfs(rest, out, cap) && !hos_button_icons_romfs(rest, out, cap)))
+                snprintf(out, cap, "%s/%s", mounts[i].root, rest);
             if (writable) *writable = mounts[i].writable;
             ok = 1;
             break;

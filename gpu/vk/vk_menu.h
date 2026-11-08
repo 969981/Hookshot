@@ -22,6 +22,7 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    int button_icons = 0; // 0 auto, 1 keyboard, 2 Xbox, 3 PlayStation, 4 Switch (host/button_icons.c reads the file)
     int mouse_native = 1; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
     int mouse_sens = 100; // percent: 0.1 degrees a count at 100 (host/mouse_native.c)
     int mouse_invert = 0; // up and down swapped
