@@ -1,4 +1,4 @@
-name: macOS checks
+name: macOS build
 
 on:
   push:
@@ -29,9 +29,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
+  build:
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -70,7 +70,44 @@ jobs:
           python -I -B tests/test_make_game_cache.py
           python -I -B tests/test_cpm_discovery.py
 
+      - name: Prepare Vulkan headers
+        run: |
+          mkdir -p "$RUNNER_TEMP/cpm"
+          fetch() {
+            local repo="$1" tag="$2" name="$3"
+            curl --fail --location --retry 3 \
+              "https://github.com/${repo}/archive/refs/tags/${tag}.tar.gz" \
+              -o "$RUNNER_TEMP/${name}.tar.gz"
+            mkdir -p "$RUNNER_TEMP/cpm/${name}/${tag}"
+            tar -xzf "$RUNNER_TEMP/${name}.tar.gz" \
+              -C "$RUNNER_TEMP/cpm/${name}/${tag}" --strip-components=1
+          }
+          fetch KhronosGroup/Vulkan-Headers v1.4.345 vulkanheaders
+          fetch KhronosGroup/SPIRV-Headers vulkan-sdk-1.4.341.0 spirv-headers
+          fetch GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator v3.3.0 vulkanmemoryallocator
+
+      - name: Build macOS Vulkan renderer
+        env:
+          PATH: /opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:/usr/bin:/bin
+          RX_CPM: ${{ runner.temp }}/cpm
+          RX_VK_ONLY: '1'
+          RX_RELEASE: '1'
+        run: |
+          python -I nx2/build.py --standalone --jobs "$(sysctl -n hw.ncpu)"
+          test -f work/sa/build/hookshot_vk.dylib
+          file work/sa/build/hookshot_vk.dylib
+          otool -L work/sa/build/hookshot_vk.dylib
+
       - name: Check POSIX compatibility layer
         run: |
           "$(brew --prefix llvm)/bin/clang" -fsyntax-only -std=gnu11 \
             -Ihost/posix host/posix/win32_posix.c
+
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hookshot-macos-${{ runner.arch }}
+          path: |
+            work/sa/build/hookshot_vk.dylib
+            work/sa/build/hookshot_vk.dylib.map
+          if-no-files-found: error
