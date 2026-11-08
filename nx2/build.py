@@ -530,7 +530,8 @@ def main():
         t = time.time()
         # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)
         r = subprocess.run([cc] + target() + (["-fuse-ld=lld"] if LINUX else []) +
-                           ["-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
+                           ["-o", exe, "-Wl,-Map=" + exe + ".map" if LINUX else "-Wl,-map," + exe + ".map",
+                            "-Wl,--gc-sections" if LINUX else "-Wl,-dead_strip",
                             "-Wl,--export-dynamic-symbol=hos_posix_*" if LINUX else "-Wl,-export_dynamic", "@" + rsp] + HOT_ORDER() +
                            (["-fprofile-instr-generate"] if PGO == "gen" else []) +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
@@ -593,7 +594,8 @@ def main():
         if POSIX_BUILD:
             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
                 *(["-fuse-ld=lld"] if LINUX else []), "-dynamiclib" if MACOS else "-shared", "-o", vdll,
-                "-Wl,-Map=" + vdll + ".map", "-Wl,--gc-sections",
+                "-Wl,-Map=" + vdll + ".map" if LINUX else "-Wl,-map," + vdll + ".map",
+                "-Wl,--gc-sections" if LINUX else "-Wl,-dead_strip",
                 *(["-Wl,-Bsymbolic", "-static-libstdc++", "-static-libgcc"] if LINUX else []),
                 "@" + vrsp, *HOST_LIBS]
         else:
