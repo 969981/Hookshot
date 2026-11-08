@@ -40,6 +40,7 @@ ARGS = {
     "nx2/test_mesh_dynamic_state.py": ["--cxx", "g++"],
     "nx2/test_timeline_modes.py": ["--cxx", "g++"],
     "nx2/test_bc_storage_views.py": ["--headers", "{vulkan_headers}"],
+    "nx2/test_unsigned_image_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_mesh_first_types.py": ["--headers", "{spirv_headers}"],
     "nx2/test_texture_init_barrier.py": ["--headers", "{vulkan_headers}"],
     "nx2/test_default_point_size.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
@@ -62,6 +63,7 @@ SKIP = {
     "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
     # (a GPU)
     "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
+    "nx2/test_unsigned_image_types.py": ({"windows"}, "needs spirv-val: checked on Linux"),
     # (Linux only)
     "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
