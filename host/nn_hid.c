@@ -6,13 +6,12 @@
    Keyboard (totk-pc-recomp's layout): WASD left stick, arrows or IJKL right stick (camera), Space X (jump), E A
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
-   while the game's window is in front (the key state is global). The left stick's and the camera's keys can be
-   changed too (HOS_KEY_*), and a mouse button can be any button's key.
-   Mouse (after a click in the window, display.c; Esc releases): its motion turns the camera itself (mouse_native.c;
-   as the right stick, mouse panning, mouse_stick, while no camera is found or with the menu's Mouse camera "As the
-   stick" / HOS_MOUSE_NATIVE=0), left button Y (attack), right button ZL (shield, lock on) by default; its buttons
-   count only while it is captured. - and = change its sensitivity (x0.8 / x1.25, kept by the menu, Camera tab);
-   HOS_MOUSE_SENS=<x> sets it, HOS_MOUSE_INVERT_Y=1 flips up/down (and the menu's Invert vertical).
+   while the game's window is in front (the key state is global).
+   Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
+   mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
+   the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
+   x1.25, shown in the title bar, kept by the Insert menu's Mouse sensitivity row); HOS_MOUSE_SENS=<x> sets it,
+   HOS_MOUSE_INVERT_Y=1 (or the menu's Invert mouse vertical) flips up/down.
 
    Controllers count only while the game's window is in front, like the keyboard, unless the Insert menu's "Controller in
    background" is on (or HOS_INPUT_BACKGROUND=1; =0 keeps them to the window in front whatever the menu says): then a
@@ -51,28 +50,6 @@ int rx_option(int id, int otherwise);
 static int key(int vk) { return !rx_option(1, 0) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
-int hos_mouse_stats(long *reports, long *taken, long *absolute, long *click_count);   /* display.c */
-
-/* (diagnostics, the mouse that did nothing for one player) every 5 s while the mouse did anything: what the window had (reports,
-   clicks), what reached the stick, and the right stick the game was given */
-extern double hos_mouse_sens;
-static long long mouse_moved_x, mouse_moved_y;
-static int32_t mouse_shown_peak, stick_given_peak;
-static void mouse_report(void) {
-    static int64_t next;
-    const int64_t now = hos_now_ns();
-    if (now < next) return;
-    next = now + 5000000000LL;
-    long reports, taken, absolute, click_count;
-    const int captured = hos_mouse_stats(&reports, &taken, &absolute, &click_count);
-    if (reports || click_count || captured || mouse_moved_x || mouse_moved_y)
-        hos_log("mouse: in 5 s: %ld clicks, %ld raw reports (%ld while captured, %ld absolute), moved %lld,%lld; mouse stick up to %d, "
-                "right stick given to the game up to %d; %s, sensitivity %.2f",
-                click_count, reports, taken, absolute, mouse_moved_x, mouse_moved_y, (int)mouse_shown_peak, (int)stick_given_peak,
-                captured ? "captured" : "not captured", hos_mouse_sens);
-    mouse_moved_x = mouse_moved_y = 0;
-    mouse_shown_peak = stick_given_peak = 0;
-}
 
 /* The captured mouse's sensitivity (mouse_stick below): - and = change it, kept in <user>/mouse_sens.txt */
 double hos_mouse_sens = 0;   /* (display.c shows it in the title) */
@@ -85,26 +62,34 @@ static void mouse_sens_save(void) {
     if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
 }
 
+/* The Insert menu keeps the sensitivity (its Mouse sensitivity row, option 7, in percent), read with each read; - and =
+   change it there. HOS_MOUSE_SENS still wins, and then - and = keep it in <user>/mouse_sens.txt as before. A value in
+   mouse_sens.txt from before is moved into the menu once, while the menu's is still its default; the file is renamed
+   mouse_sens.txt.moved then, so the menu's value is not replaced by it again at a later start */
 void rx_option_set(int id, int value);
-static int sens_from_env = -1;
+static int sens_from_file;   /* (mouse_setup: <user>/mouse_sens.txt was there) */
 static void mouse_sens_keys(void) {
-    static int prev_minus, prev_plus;
-    /* (hookshot) the menu keeps the sensitivity (Camera tab; hookshot_options.ini), in percent, option 20: read with each
-       read; - and = change it there. HOS_MOUSE_SENS still wins. Before: <user>/mouse_sens.txt, moved into the menu once */
-    if (sens_from_env < 0) {
-        sens_from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
-        if (!sens_from_env && hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(20, 100) == 100)
-            rx_option_set(20, (int)lround(hos_mouse_sens * 100));
+    static int prev_minus, prev_plus, from_env = -1;
+    if (from_env < 0) {
+        from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
+        if (!from_env && sens_from_file && rx_option(7, -1) >= 0) {   /* (the menu is there to take it) */
+            if (hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(7, 100) == 100)
+                rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+            char from[512], to[520];
+            snprintf(from, sizeof from, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
+            snprintf(to, sizeof to, "%s.moved", from);
+            remove(to);
+            if (rename(from, to)) hos_log("hid: %s could not be renamed after its move into the menu", from);
+        }
     }
-    if (!sens_from_env) hos_mouse_sens = rx_option(20, 100) / 100.0;
+    if (!from_env) hos_mouse_sens = rx_option(7, 100) / 100.0;
     const int minus = key(VK_OEM_MINUS) || key(VK_SUBTRACT), plus = key(VK_OEM_PLUS) || key(VK_ADD);
     if ((minus && !prev_minus) || (plus && !prev_plus)) {
         hos_mouse_sens *= minus && !prev_minus ? 0.8 : 1.25;
         if (hos_mouse_sens < 0.1) hos_mouse_sens = 0.1;
         if (hos_mouse_sens > 5) hos_mouse_sens = 5;
-        if (sens_from_env) mouse_sens_save();
-        else rx_option_set(20, (int)lround(hos_mouse_sens * 100));
-        hos_log("mouse: sensitivity %.2f", hos_mouse_sens);
+        if (from_env) mouse_sens_save();
+        else rx_option_set(7, (int)lround(hos_mouse_sens * 100));
     }
     prev_minus = minus;
     prev_plus = plus;
@@ -160,7 +145,7 @@ static void mouse_look_tick(void) {
 static int invert = -1;
 static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
-        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;   /* (and the menu's Invert vertical, read in mouse_stick) */
+        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
         hos_mouse_sens = 1.0;
         char path[512];
         snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
@@ -169,6 +154,7 @@ static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse
             double v;
             if (fscanf(f, "%lf", &v) == 1 && v > 0) hos_mouse_sens = v;
             fclose(f);
+            sens_from_file = 1;
         }
         const char *e = getenv("HOS_MOUSE_SENS");
         if (e && atof(e) > 0) hos_mouse_sens = atof(e);
@@ -181,15 +167,13 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     static int captured, was_pointing;
     mouse_setup();
     mouse_sens_keys();
-    static int env_invert = -1;
+    static int env_invert = -1;   /* (HOS_MOUSE_INVERT_Y, or the menu's Invert mouse vertical, option 8) */
     if (env_invert < 0) env_invert = invert;
-    invert = env_invert || rx_option(21, 0);
+    invert = env_invert || rx_option(8, 0);
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
         int32_t dx, dy;
         captured = hos_mouse_take(&dx, &dy);
-        mouse_moved_x += dx;
-        mouse_moved_y += dy;
         if (pointing != was_pointing) look_x = look_y = 0, was_pointing = pointing;
         if (!captured) look_x = look_y = 0;
         else if (pointing) {
@@ -214,10 +198,6 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     if (!captured) return 0;
     *rx = shown[0];
     *ry = shown[1];
-    {
-        const int32_t m = abs(shown[0]) > abs(shown[1]) ? abs(shown[0]) : abs(shown[1]);
-        if (m > mouse_shown_peak) mouse_shown_peak = m;
-    }
     return 1;
 }
 
@@ -396,25 +376,19 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
 /* ---- (hookshot) the controls: the gamepad input (by position) and the keys that press each Switch button, from
    hookshot_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
-   first use; what the file leaves out keeps its default.
-   (fork) Keys only, after the Switch's buttons (HOS_KEY_*): the left stick's and the camera's directions. A key can be
-   a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts only while the mouse is captured. The fork's
-   first menu wrote key_<row>_1/_2 and pad_<row> lines (its pad_ values were Switch buttons, not positions): its keys
-   are taken over, its pad_ lines left alone, until the menu saves the file again ---- */
+   first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
+   stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
+   only while the mouse is captured ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
                                                   "cam_right"};
-static const char *const old_names[HOS_KEY_N] = {
-    "button_a", "button_b", "button_x", "button_y", "left_stick_press", "right_stick_press", "button_l", "button_r",
-    "button_zl", "button_zr", "plus", "minus", "d-pad_left", "d-pad_up", "d-pad_right", "d-pad_down", "move_forward",
-    "move_back", "move_left", "move_right", "camera_up", "camera_down", "camera_left", "camera_right"};
 static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
-/* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus;
-   (left button Y, attack, and right button ZL, shield and lock-on, as before; then WASD the left stick, the arrows or
+/* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus; the
+   mouse's left button Y, attack, and right button ZL, shield and lock-on, as before; WASD the left stick, the arrows or
    IJKL the camera) */
 static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
@@ -422,14 +396,12 @@ static const unsigned char key_default[HOS_KEY_N][2] = {
     {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
 static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
-static void binds_default_set(int set) {
+static void binds_default(void) {
     for (int i = 0; i < HOS_KEY_N; i++) {
-        if (set != HOS_BIND_KEY && i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
-        if (set != HOS_BIND_PAD)
-            for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+        if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
+        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
     }
 }
-static void binds_default(void) { binds_default_set(-1); }
 
 static void binds_load(void) {
     static volatile LONG state;   /* 0 not read, 1 being read, 2 read */
@@ -450,25 +422,15 @@ static void binds_load(void) {
     int changed = 0;
     if (f) {
         char line[80];
-        int old_format = 0;   /* (the fork's first menu's file: key_plus_1 is in it) */
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "key_plus_1=", 11)) old_format = 1;
-        rewind(f);
+        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            const int pad = !old_format && !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
-            for (int i = 0; old_format && keys && i < HOS_KEY_N; i++) {   /* key_<row>_1 and _2 */
-                const size_t n = strlen(old_names[i]);
-                if (strncmp(line + 4, old_names[i], n) || line[4 + n] != '_' || (line[5 + n] != '1' && line[5 + n] != '2') ||
-                    line[6 + n])
-                    continue;
-                const int v = atoi(eq + 1);
-                key_bind[i][line[5 + n] - '1'] = v > 0 && v < 256 ? v : 0;
-                changed++;
-            }
-            for (int i = 0; (pad || keys) && !old_format && i < HOS_KEY_N; i++) {
+            if (!strcmp(line, "options_version")) version = atoi(eq + 1);
+            const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
+            had_keys |= keys;
+            for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
                 changed++;
                 if (pad) {
@@ -483,6 +445,17 @@ static void binds_load(void) {
             }
         }
         fclose(f);
+        /* An options file from before version 3 wrote key_y and key_zl without the mouse's buttons, which pressed Y and ZL
+           by themselves then: they go into the second slot when it is empty and no other control has them */
+        if (version < 3 && had_keys) {
+            static const int mouse_to[2][2] = {{HOS_SW_Y, VK_LBUTTON}, {HOS_SW_ZL, VK_RBUTTON}};
+            for (int m = 0; m < 2; m++) {
+                int taken = 0;
+                for (int i = 0; i < HOS_KEY_N; i++)
+                    for (int k = 0; k < 2; k++) taken |= key_bind[i][k] == mouse_to[m][1];
+                if (!taken && !key_bind[mouse_to[m][0]][1]) key_bind[mouse_to[m][0]][1] = mouse_to[m][1];
+            }
+        }
     }
     if (changed) hos_log("hid: %d controls from hookshot_options.ini", changed);
     InterlockedExchange(&state, 2);
@@ -497,8 +470,8 @@ int hos_binding(int set, int button, int slot) {
    without); a key moved to it is taken from the others */
 void hos_bind(int set, int button, int slot, int code) {
     binds_load();
-    if (button < 0) {   /* (-1 every control, -2 the set's: the menu's Reset rows) */
-        binds_default_set(button == -2 ? set : -1);
+    if (button < 0) {
+        binds_default();
         return;
     }
     if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
@@ -583,6 +556,9 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
             const int a = thumb[i] < -32767 ? -32767 : thumb[i];
             v[i] = (a > 7849 || a < -7849) ? a : 0;
         }
+        int rx_option(int id, int otherwise);
+        if (rx_option(16, 0)) v[2] = -v[2];
+        if (rx_option(17, 0)) v[3] = -v[3];
         stick_max(s, v);
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
@@ -610,8 +586,8 @@ static int pads_in_background(const char *env, int menu) {
 #define VK_XBUTTON1 0x05
 #define VK_XBUTTON2 0x06
 #endif
-/* (fork) a mouse button counts only while the mouse is captured, and one held when the capture began only after it was let
-   go (the click that captures never reaches the game) */
+/* A mouse button counts only while the mouse is captured, and one held when the capture began only after it was let go
+   (the click that captures never reaches the game) */
 static int mouse_vk_slot(int vk) {
     return vk == VK_LBUTTON ? 0 : vk == VK_RBUTTON ? 1 : vk == VK_MBUTTON ? 2 : vk == VK_XBUTTON1 ? 3 : vk == VK_XBUTTON2 ? 4 : -1;
 }
@@ -620,8 +596,9 @@ static void mouse_buttons_arm(int captured) {   /* (once a read) */
     static const int vks[5] = {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
     for (int i = 0; i < 5; i++) mouse_armed[i] = captured && (mouse_armed[i] || !key(vks[i]));
 }
-/* whether a control's key is down: keys always, mouse buttons only with mouse (captured and armed) */
-static int bound_down(int i, int mouse) {   /* (kmap_down: Enter with Alt is fullscreen, not Plus) */
+/* whether a control's key is down: a key always (kmap_down: not Enter with Alt), a mouse button only with mouse (captured
+   and armed) */
+static int bound_down(int i, int mouse) {
     for (int k = 0; k < 2; k++) {
         const int vk = (int)key_bind[i][k];
         if (vk <= 0) continue;
@@ -632,14 +609,9 @@ static int bound_down(int i, int mouse) {   /* (kmap_down: Enter with Alt is ful
 }
 
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
-    int played_pad = 0;   /* (a controller's buttons or sticks this read: the button icons follow it) */
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
-    {   /* (hookshot) HOS_CAMFIND=1: F6 runs the camera finder (camfind.c), which has the controls while it runs */
-        int hos_camfind(uint64_t *buttons, int32_t stick[4]);
-        if (hos_camfind(buttons, stick)) return;
-    }
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
@@ -650,6 +622,11 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
     if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
+    {   /* (hookshot) HOS_CAMFIND=1: F6 runs the camera finder (camfind.c), which has the controls while it runs */
+        int hos_camfind(uint64_t *buttons, int32_t stick[4]);
+        if (hos_camfind(buttons, stick)) return;
+    }
+    int played_pad = 0;   /* (hookshot: a controller's buttons or sticks this read: the button icons follow it) */
     /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
        player's: it counts with the game's window behind another one, so a test run can drive the game on one
        monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
@@ -670,7 +647,6 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         uint64_t pb = 0;
         int32_t ps[4] = {0};
         pads_read(&pb, ps);
-        played_pad = pb || abs(ps[0]) > 12000 || abs(ps[1]) > 12000 || abs(ps[2]) > 12000 || abs(ps[3]) > 12000;
         static int after_menu;
         if (rx_option(1, 0)) after_menu = 1;
         else if (after_menu && !pad_raw_now) after_menu = 0;
@@ -678,48 +654,47 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
             *buttons |= pb;
             stick_max(stick, ps);
         }
+        played_pad = pb || abs(ps[0]) > 12000 || abs(ps[1]) > 12000 || abs(ps[2]) > 12000 || abs(ps[3]) > 12000;
     }
-    binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons after the mouse, below) */
+    binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons once its capture is known) */
     uint64_t key_buttons = 0;
     for (int i = 0; i < HOS_SW_N; i++)
         if (bound_down(i, 0)) key_buttons |= 1ULL << i;
     *buttons |= key_buttons;
     int32_t mouse[4] = {0};
-    /* (hookshot) the mouse turns the camera itself (mouse_native.c); as the right stick while no camera is found, or
-       always with the menu's Mouse camera "As the stick" (option 22) or HOS_MOUSE_NATIVE=0 */
-    const char *native_env = getenv("HOS_MOUSE_NATIVE");
-    const int native = native_env ? atoi(native_env) != 0 : rx_option(22, 1);
+    /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
+       stick; also the stick while no camera has been found (mouse_native.c gives the motion back) */
+    static const char *native_env;
+    static int native_looked;
+    if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
+    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
     int hos_mouse_native(void);
-    int mouse_on = 0, as_stick = !native;
+    int captured = 0, as_stick = !native;
     if (native) {
         mouse_setup();
         mouse_sens_keys();
-        mouse_on = hos_mouse_native();
-        if (mouse_on < 0) as_stick = 1;
+        captured = hos_mouse_native();
+        if (captured < 0) captured = 0, as_stick = 1;
     }
-    if (as_stick) mouse_on = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
-    if (mouse_on && as_stick) stick_max(stick, mouse);
-    mouse_buttons_arm(mouse_on != 0);
-    if (mouse_on)
+    if (as_stick) {
+        captured = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
+        if (captured) stick_max(stick, mouse);
+    }
+    mouse_buttons_arm(captured);
+    if (captured)
         for (int i = 0; i < HOS_SW_N; i++)
             if (bound_down(i, 1)) *buttons |= 1ULL << i, key_buttons |= 1ULL << i;
     /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default) */
-    const int m = mouse_on != 0;
-    const int cx = bound_down(HOS_KEY_CAM_RIGHT, m) - bound_down(HOS_KEY_CAM_LEFT, m),
-              cy = bound_down(HOS_KEY_CAM_UP, m) - bound_down(HOS_KEY_CAM_DOWN, m);
-    const int32_t keys[4] = {(bound_down(HOS_KEY_MOVE_RIGHT, m) - bound_down(HOS_KEY_MOVE_LEFT, m)) * 32767,
-                             (bound_down(HOS_KEY_MOVE_UP, m) - bound_down(HOS_KEY_MOVE_DOWN, m)) * 32767, cx * 32767,
-                             cy * 32767};
+    const int cx = bound_down(HOS_KEY_CAM_RIGHT, captured) - bound_down(HOS_KEY_CAM_LEFT, captured),
+              cy = bound_down(HOS_KEY_CAM_UP, captured) - bound_down(HOS_KEY_CAM_DOWN, captured);
+    const int32_t keys[4] = {(bound_down(HOS_KEY_MOVE_RIGHT, captured) - bound_down(HOS_KEY_MOVE_LEFT, captured)) * 32767,
+                             (bound_down(HOS_KEY_MOVE_UP, captured) - bound_down(HOS_KEY_MOVE_DOWN, captured)) * 32767,
+                             cx * 32767, cy * 32767};
     stick_max(stick, keys);
-    {   /* (hookshot) the button icons follow the device played with (button_icons_live.c); F8 goes round them */
+    {   /* (hookshot) the button icons follow the device played with; F8 goes round them (button_icons_live.c) */
         void hos_button_icons_input(int pad, int keys, int f8);
         hos_button_icons_input(played_pad, key_buttons || keys[0] || keys[1] || keys[2] || keys[3], key(VK_F8));
     }
-    {
-        const int32_t g = abs(stick[2]) > abs(stick[3]) ? abs(stick[2]) : abs(stick[3]);
-        if (g > stick_given_peak) stick_given_peak = g;
-    }
-    mouse_report();
 }
 
 static void vibration_send(uint64_t handle, uint64_t value);

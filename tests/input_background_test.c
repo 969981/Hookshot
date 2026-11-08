@@ -16,8 +16,7 @@ typedef intptr_t LONG_PTR;
 typedef struct { uint64_t x[32]; } Ctx;
 enum { GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000,
        VK_MENU = 0x12, VK_RETURN = 0x0d, VK_LEFT = 0x25, VK_UP, VK_RIGHT, VK_DOWN,
-       VK_LBUTTON = 1, VK_RBUTTON = 2, VK_MBUTTON = 4, VK_XBUTTON1 = 5, VK_XBUTTON2 = 6,
-       VK_F8 = 0x77 };   /* (fork: F8 goes round the button icons) */
+       VK_LBUTTON = 1, VK_RBUTTON = 2, VK_MBUTTON = 4, VK_XBUTTON1 = 5, VK_XBUTTON2 = 6, VK_F8 = 0x77 };
 static int front, menu_background, bootstrap_polls, pad_merges, key_queries, mouse_queries, focus_queries, commands;
 typedef int64_t LONG64;
 volatile LONG64 hos_present_count = 1000;
@@ -29,7 +28,7 @@ LONG64 InterlockedCompareExchange64(volatile LONG64 *p, LONG64 value, LONG64 exp
     return old;
 }
 static int64_t now_ns = 10000000000LL, sampling;
-static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (fork: the keys-only controls after the Switch's buttons) */
+static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
 static unsigned char *memory;
 static char last_log[256];
 volatile int64_t hos_hid_last_read;
@@ -61,20 +60,19 @@ void pads_read(uint64_t *buttons, int32_t stick[4]) {
 }
 void binds_load(void) {
     key_bind[B_X][0] = 'P';
-    /* (fork) the left stick's and the camera's keys are bindings too: the defaults (WASD, the arrows) */
+    /* (the left stick's and the camera's keys are bindings too: the defaults, WASD and the arrows) */
     key_bind[HOS_KEY_MOVE_UP][0] = 'W', key_bind[HOS_KEY_MOVE_DOWN][0] = 'S', key_bind[HOS_KEY_MOVE_LEFT][0] = 'A';
     key_bind[HOS_KEY_MOVE_RIGHT][0] = 'D', key_bind[HOS_KEY_CAM_UP][0] = VK_UP, key_bind[HOS_KEY_CAM_DOWN][0] = VK_DOWN;
     key_bind[HOS_KEY_CAM_LEFT][0] = VK_LEFT, key_bind[HOS_KEY_CAM_RIGHT][0] = VK_RIGHT;
 }
-/* (fork) the camera finder, the native mouse look (no camera found: the motion goes to mouse_stick) and the mouse's
-   sensitivity and report, which read_input calls */
-int hos_camfind(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }
+/* the native mouse look (no camera found: the motion goes to mouse_stick) and the mouse's sensitivity, which
+   read_input calls */
 int hos_mouse_native(void) { return -1; }
+/* (hookshot) the camera finder (camfind.c: off unless HOS_CAMFIND=1) and the button icons (button_icons_live.c) */
+int hos_camfind(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }
+void hos_button_icons_input(int pad, int keys, int f8) { (void)pad; (void)keys; (void)f8; }
 static void mouse_setup(void) {}
 static void mouse_sens_keys(void) {}
-static void mouse_report(void) {}
-void hos_button_icons_input(int pad, int keys, int f8) { (void)pad; (void)keys; (void)f8; }   /* (button_icons_live.c) */
-static int32_t stick_given_peak;
 int mouse_stick(int32_t *x, int32_t *y, int held) { (void)x; (void)y; (void)held; mouse_queries++; return 0; }
 void rx_request_frame_dump(void) { commands++; }
 void rx_set_screenshot_ms(int64_t ms) { (void)ms; commands++; }

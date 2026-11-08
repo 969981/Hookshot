@@ -3,9 +3,6 @@
 // game_module_path answers as GetModuleFileNameA(nullptr, ...) does, with the folder's path when the exe is in a "bin" folder
 // beside image.bin.
 #pragma once
-#include <cstring>
-// (first in vk_main.cpp, vk_menu.cpp, vk_draw.cpp and vk_shader.cpp: without these, windows.h's min and max macros break
-// std::min and std::max there, and rpcndr.h's "small" breaks a variable of that name; vk_loader.h asks the same)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -13,6 +10,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#undef min
+#undef max
+#include <cstring>
 
 namespace mkwvk {
 inline DWORD game_module_path(char* buf, DWORD size) {
