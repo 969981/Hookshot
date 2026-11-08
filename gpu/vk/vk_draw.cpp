@@ -1059,6 +1059,25 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // (-13 here) or takes minutes on some Ocarina shaders it builds in seconds unoptimized (Lichii #200, #210).
         static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
         if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        // (from PR 430, YunaraDebugs: on AMD the task and mesh programs (OoT's foliage culling, following pointers through its
+        // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
+        // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
+        // without it on AMD. RX_VK_MESH_OPT=1: with it, as the others)
+        static const bool amd = [] {
+            VkPhysicalDeviceProperties pr{};
+            vkGetPhysicalDeviceProperties(dev.physical, &pr);
+            return pr.vendorID == 0x1002;
+        }();
+        static const bool mesh_opt = getenv("RX_VK_MESH_OPT") != nullptr;
+        if (amd && !mesh_opt) {
+            bool mesh = false;
+            for (const Stage& st : p.stages) mesh |= (st.vk_stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
+            if (mesh) {
+                ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+                static std::atomic<int> told{0};
+                if (told++ < 1) logf("vk: task and mesh programs built without the driver's optimizer (AMD; RX_VK_MESH_OPT=1: with it)");
+            }
+        }
     }
     const VkResult r = guarded_graphics(part >= 0 ? VK_NULL_HANDLE : pcache, &ci, &pl);
     if (part >= 0) {
@@ -2075,7 +2094,8 @@ void checkpoints_report() {
         if (i >= (1u << 16)) continue;
         const Checkpoint& k = checkpoints[i];
         auto kind = [](char c) {
-            return c == 'd' ? "draw of program" : c == 'c' ? "dispatch of program" : c == 'm' ? "mirror sync of pool"
+            return c == 'd' ? "draw of program" : c == 'c' ? "dispatch of program" : c == 'i' ? "INDIRECT dispatch of program"
+                 : c == 'm' ? "mirror sync of pool"
                  : c == 'b' ? "write-back of pool" : c == 'u' ? "upload of texture" : c == 'g' ? "GPU unswizzle of texture"
                  : "?";
         };
@@ -2114,6 +2134,7 @@ struct Pass {
     uint64_t first_prog = 0;
     VkFormat format0 = VK_FORMAT_UNDEFINED;
     std::vector<const Texture*> sampled;   // (rendered textures its draws sampled: a target among them is a hazard)
+    uint16_t sampled_targets = 0;          // (colour i bit i, depth bit 8: targets earlier draws sampled)
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
 };
 thread_local Pass pass;
@@ -2247,7 +2268,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     pass.draws = 0, pass.format0 = at.n ? at.color_format[0] : at.depth_format;
     pass.wm_or = 0, pass.wm_n = 0;
     pass.clears = 0, pass.first_prog = 0;
-    pass.sampled.clear(), pass.written = 0;
+    pass.sampled.clear(), pass.sampled_targets = 0, pass.written = 0;
     vkCmdBeginRendering(cmd, &ri);
     pass.open = true;
     st_passes++;
@@ -2383,6 +2404,24 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         if (units > 0 && at.n == 0 && at.width == at.height && at.width <= 768 && at.depth) {
             d.bias[0] += units, d.bias[2] += slope;
             d.bias_en = true;
+        }
+        // (amd-fix, 11-07) the sun's shadow cascades (square, depth only, past 768): RX_VK_CASCADE_BIAS=<units>,<slope> added;
+        // RX_VK_LOG_CASCADE_BIAS=1: what the game asks for them
+        if (at.n == 0 && at.width == at.height && at.width > 768 && at.depth) {
+            static float cu = 0, cs = 0;
+            static const bool parsed = [] {
+                if (const char* e = getenv("RX_VK_CASCADE_BIAS")) sscanf(e, "%f,%f", &cu, &cs);
+                return true;
+            }();
+            (void)parsed;
+            static const bool log_on = getenv("RX_VK_LOG_CASCADE_BIAS") != nullptr;
+            static int logged;
+            if (log_on && logged < 40) {
+                logged++;
+                logf("vk: cascade %ux%u bias: enabled %d units %g clamp %g slope %g", at.width, at.height, (int)d.bias_en,
+                     d.bias[0], d.bias[1], d.bias[2]);
+            }
+            if (cu != 0 || cs != 0) d.bias[0] += cu, d.bias[2] += cs, d.bias_en = true;
         }
     }
     d.cull = sw().no_cull ? VK_CULL_MODE_NONE
@@ -2617,6 +2656,9 @@ void clear_after_draws(VkCommandBuffer cmd) {
 }
 
 int64_t st_pass_hazards;
+bool writes_sampled_target(uint16_t writes, uint16_t sampled_targets) {
+    return (writes & sampled_targets) != 0;
+}
 /// A draw that samples a target this pass already wrote, or writes a target an earlier draw of this pass sampled: in
 /// a pass of its own, after a full barrier (begin_pass makes it), as for the clears above: in one pass the GPU orders
 /// the targets' writes with each other only, not with the draws' texture reads of them. (A draw that samples a target
@@ -2641,11 +2683,8 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
         const int k = slot_of(t);
         if (k >= 0 && (pass.written >> k & 1) && !(writes >> k & 1)) { kind = "samples a target the pass wrote"; break; }
     }
-    if (!kind)
-        for (const Texture* t : pass.sampled) {
-            const int k = slot_of(t);
-            if (k >= 0 && (writes >> k & 1)) { kind = "writes a target an earlier draw sampled"; break; }
-        }
+    if (!kind && writes_sampled_target(writes, pass.sampled_targets))
+        kind = "writes a target an earlier draw sampled";
     if (!kind) return writes;
     static int logged;
     if (logged++ < 8)
@@ -3799,7 +3838,9 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     mesh_conv_buf = VK_NULL_HANDLE;
     static const bool raw = getenv("RX_VK_MESH_IND_RAW") && atoi(getenv("RX_VK_MESH_IND_RAW")) != 0;
     static const uint32_t word = getenv("RX_VK_MESH_IND_COUNT_WORD") ? (uint32_t)atoi(getenv("RX_VK_MESH_IND_COUNT_WORD")) & 3 : 0;
-    if (raw || !d.mesh || !d.indirect) return false;
+    // (amd-fix: the rewrite with the firsts in the draw does it, RX_VK_MESH_ARGS; this one drew every draw from its first 0)
+    static const bool rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
+    if (raw || rewrite || !d.mesh || !d.indirect) return false;
     const uint32_t n = (uint32_t)std::clamp(d.max, 1, 4096);
     const uint32_t stride = d.stride > 0 ? (uint32_t)d.stride : 8;
     const BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)(n - 1) * stride + 4 * (word + 1), false);
@@ -4069,9 +4110,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     BufferRef mesh_args{};
     uint32_t mesh_args_at = 0;
     // (RX_VK_MESH_ARGS=1: rewritten {count, 1, 1, first}. Off: it did not bring the canopies back, and it ends the pass at each draw)
-    static const bool mesh_rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;
+    // (amd-fix, 11-07: on by default with the firsts (RX_VK_MESH_FIRST), the canopies back; RX_VK_MESH_ARGS=0: off. A single indirect
+    // draw has no stride of its own: its entry is NVN's 16 bytes, taken as 8 the first was never copied)
+    static const bool mesh_rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
     if (mesh_rewrite && d.mesh && d.indirect) {   // (out of the pass: a copy cannot be made in one)
-        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs), stride = d.stride ? (uint32_t)d.stride : 8u;
+        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs), stride = d.stride ? (uint32_t)d.stride : 16u;
         BufferRef src = gpu_buffer_bind(d.indirect, (uint64_t)n * stride, false);
         if (!src) SKIP_HERE();
         if (mesh_args_ready()) {
@@ -4091,9 +4134,37 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 }
                 logf("vk: mesh counts: %u of 4096 not zero, largest %u, sum %llu", nonzero, most, (unsigned long long)sum);
             }
+            {   // (amd-fix, RX_VK_LOG_MESH_PERPROG=1, diagnosis: per mesh program, the counts and firsts the GPU wrote, 4096 to 8192 entries ago)
+                static const bool per_prog = getenv("RX_VK_LOG_MESH_PERPROG") != nullptr;
+                if (per_prog) {
+                    static std::vector<uint64_t> prog_at(kMeshArgs);
+                    static uint32_t last_window = 0;
+                    static int windows_told = 0;
+                    const uint32_t window = mesh_args_at / 4096;
+                    if (window != last_window && mesh_args_at >= 8192 && windows_told < 40) {
+                        last_window = window;
+                        windows_told++;
+                        struct Agg { uint32_t entries = 0, nonzero = 0, most = 0, first_most = 0; uint64_t sum = 0; };
+                        std::map<uint64_t, Agg> agg;
+                        for (uint32_t i = mesh_args_at - 8192; i < mesh_args_at - 4096; i++) {
+                            Agg& a = agg[prog_at[i]];
+                            const uint32_t v = mesh_args_words[i * 4];
+                            a.entries++, a.nonzero += v != 0, a.most = std::max(a.most, v), a.sum += v;
+                            a.first_most = std::max(a.first_most, mesh_args_words[i * 4 + 3]);
+                        }
+                        for (const auto& [k, a] : agg)
+                            logf("vk: mesh perprog window %u prog %016llx: %u entries, %u not zero, largest %u, sum %llu, largest first %u", window,
+                                 (unsigned long long)k, a.entries, a.nonzero, a.most, (unsigned long long)a.sum, a.first_most);
+                    }
+                    for (uint32_t i = 0; i < n; i++) prog_at[(mesh_args_at + i) % kMeshArgs] = p.key;
+                }
+            }
             for (uint32_t i = 0; i < n; i++) {
                 copies.push_back({src.offset + i * stride + word * 4, (VkDeviceSize)(mesh_args_at + i) * 16, 4});
-                if (stride >= 16) copies.push_back({src.offset + i * stride + 12, (VkDeviceSize)(mesh_args_at + i) * 16 + 12, 4});   // (first)
+                // (the first: NVN2's entry is {count, first}. Word 3 is the culling pass's own (an atomic max, read back as "70 0 0 70",
+                // "60 0 0 950"): taken as the first, it sent the draws past the records. RX_VK_MESH_FIRST_WORD=<n>)
+                static const uint32_t first_word = getenv("RX_VK_MESH_FIRST_WORD") ? (uint32_t)atoi(getenv("RX_VK_MESH_FIRST_WORD")) : 1u;
+                if (stride >= 8) copies.push_back({src.offset + i * stride + first_word * 4, (VkDeviceSize)(mesh_args_at + i) * 16 + 12, 4});
             }
             vkCmdCopyBuffer(cmd, src.buffer, mesh_args_buffer, (uint32_t)copies.size(), copies.data());
             full_barrier(cmd);
@@ -4104,8 +4175,15 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     probe_draw(s, p, pass.draws);   // (hookshot: RX_VK_PROBE)
     pass.prog = p.key;
     if (!pass.first_prog) pass.first_prog = p.key;
-    for (const Texture* t : gfx_sampled)
-        if (std::find(pass.sampled.begin(), pass.sampled.end(), t) == pass.sampled.end()) pass.sampled.push_back(t);
+    for (const Texture* t : gfx_sampled) {
+        if (std::find(pass.sampled.begin(), pass.sampled.end(), t) != pass.sampled.end()) continue;
+        pass.sampled.push_back(t);
+        int slot = -1;
+        for (int i = 0; i < at.n; i++)
+            if (at.color[i] == t) { slot = i; break; }
+        if (slot < 0 && at.depth == t) slot = 8;
+        if (slot >= 0) pass.sampled_targets |= (uint16_t)(1u << slot);
+    }
     pass.written |= writes;
     if (pl != last_pipeline) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
     if (!same_desc) {
@@ -4730,6 +4808,7 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
     }
     auto blank = std::make_unique<NvnState>();
     blank->nvattr = 16;
+    pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0};
     const auto worker = [&] {
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
@@ -4752,9 +4831,12 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
                     ci.layout = p->layout;
                     if (getenv("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
                     VkPipeline pl = VK_NULL_HANDLE;
-                    if (guarded_compute(VK_NULL_HANDLE, &ci, &pl) == VK_SUCCESS && pl) {
+                    // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
+                    // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
+                    if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
                         vkDestroyPipeline(dev.device, pl, nullptr);
                         libs++;
+                        pcache_built_since_save++;
                     }
                 }
                 if (!p->failed && warm && !p->compute) {
@@ -4796,15 +4878,22 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
     // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
+    // (two starts in a row, not one: closing the window while it ran counted as a crash, and the next start then skipped the
+    // precompile and compiled everything in play: "stuck at 99%, then fine on the second start", 2026-11-08)
     const std::string running = pipe_notes_path() + ".running";
+    int ended_inside = 0;
     if (FILE* f = fopen(running.c_str(), "rb")) {
+        if (fscanf(f, "%d", &ended_inside) != 1) ended_inside = 1;
         fclose(f);
-        remove(running.c_str());
-        remove(pipe_notes_path().c_str());
-        logf("vk: the last start did not get through the precompile: its notes are dropped");
-        return;
+        if (ended_inside >= 2) {
+            remove(running.c_str());
+            remove(pipe_notes_path().c_str());
+            logf("vk: the last two starts did not get through the precompile: its notes are dropped");
+            return;
+        }
+        logf("vk: the last start did not get through the precompile (closed, or it crashed there): trying it once more");
     }
-    if (FILE* f = fopen(running.c_str(), "wb")) fclose(f);
+    if (FILE* f = fopen(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
     struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes;
@@ -4976,8 +5065,61 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         }
     }
     Program& p = const_cast<Program&>(*cp);
-    ParLock plk(!p.layout || !p.compute_pipeline);
-    ensure_layout(p);
+    if (!p.layout) {
+        ParLock lk;
+        ensure_layout(p);
+    }
+    // (the compute pipeline is compiled on a worker, not here with the recording lock held: AMD's compiler took 15-23 s on the
+    // culling programs, every recording thread stopped behind it and the screen stayed black after the opening (6950 XT, RX 6600,
+    // 2026-11-08). The dispatch waits up to 50 ms for it, which covers NVIDIA's compiles; one still compiling after that is left
+    // out until it is ready, as graphics draws are. RX_VK_COMPUTE_WAIT=1: waited for, as before)
+    static const bool compute_wait = getenv("RX_VK_COMPUTE_WAIT") != nullptr;
+    if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
+        int none = 0;
+        if (p.compute_state.compare_exchange_strong(none, 1)) {
+            { ParLock lk; pcache_init(); }
+            const Program* job = &p;
+            jobs_push([job] {
+                Program& q = const_cast<Program&>(*job);
+                VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                ci.stage.module = q.stages[0].module;
+                ci.stage.pName = "main";
+                pin_subgroup(ci.stage, q.workgroup[0]);
+                ci.layout = q.layout;
+                static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
+                if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+                const auto t0 = std::chrono::steady_clock::now();
+                VkPipeline made = VK_NULL_HANDLE;
+                if (const VkResult r = guarded_compute(pcache, &ci, &made); r != VK_SUCCESS || !made) {
+                    static std::atomic<int> told{0};
+                    if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)q.key, (int)r);
+                    q.failed = true;
+                } else {
+                    q.compute_pipeline = made;
+                }
+                const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+                if (ms >= 200) logf("vk: compute pipeline of %016llx: SLOW compile, %lld ms (on a worker)", (unsigned long long)q.key, (long long)ms);
+                st_pipeline_us += ms * 1000;
+                st_pipelines++;
+                pcache_built_since_save++;
+                q.compute_state.store(2, std::memory_order_release);
+            }, true);
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        while (p.compute_state.load(std::memory_order_acquire) != 2 &&
+               std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        if (p.compute_state.load(std::memory_order_acquire) != 2) {
+            static std::atomic<int> told{0};
+            if (told++ < 40) logf("vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
+            st_pending_skips++;
+            return;
+        }
+        if (p.failed || !p.compute_pipeline) SKIP_HERE();
+    }
+    ParLock plk(!p.compute_pipeline);
     if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
         pcache_init();
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -5115,6 +5257,13 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         if (indirect) {
             BufferRef args = gpu_buffer_bind(indirect, 12, false);
             if (!args) SKIP_HERE();
+            checkpoint(cmd, p, 'i');   // (a device lost's report names it: a grid read from GPU memory)
+            if (dump_on() && dump_ssbo_wanted(p.key)) {   // (RX_VK_DUMP_SSBO: the grid as the GPU holds it, and where)
+                char what[128];
+                snprintf(what, sizeof what, "%03d prog %016llx indirect grid at %#llx", dump_seq(), (unsigned long long)p.key,
+                         (unsigned long long)indirect);
+                dump_buffer(cmd, args.buffer, args.offset, 12, what);
+            }
             vkCmdDispatchIndirect(cmd, args.buffer, args.offset);
         } else {
             vkCmdDispatch(cmd, x, y, z);

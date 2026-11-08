@@ -220,6 +220,10 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     return 1;
 }
 
+/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, host/display.c and
+   host/posix/display_sdl.c). tests/test_alt_enter.py */
+static int kmap_down(int vk, int (*down)(int)) { return down(vk) && !(vk == VK_RETURN && down(VK_MENU)); }
+
 static int game_in_front(void) {
     DWORD pid = 0;
     HWND w = GetForegroundWindow();
@@ -601,12 +605,12 @@ static void mouse_buttons_arm(int captured) {   /* (once a read) */
     for (int i = 0; i < 5; i++) mouse_armed[i] = captured && (mouse_armed[i] || !key(vks[i]));
 }
 /* whether a control's key is down: keys always, mouse buttons only with mouse (captured and armed) */
-static int bound_down(int button, int mouse) {
+static int bound_down(int i, int mouse) {   /* (kmap_down: Enter with Alt is fullscreen, not Plus) */
     for (int k = 0; k < 2; k++) {
-        const int vk = (int)key_bind[button][k];
+        const int vk = (int)key_bind[i][k];
         if (vk <= 0) continue;
         const int m = mouse_vk_slot(vk);
-        if (m >= 0 ? mouse && mouse_armed[m] && key(vk) : key(vk)) return 1;
+        if (m >= 0 ? mouse && mouse_armed[m] && key(vk) : kmap_down(key_bind[i][k], key)) return 1;
     }
     return 0;
 }
