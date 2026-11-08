@@ -6,6 +6,8 @@ namespace HookshotBuilder;
 /// Where nx2/make_game.py and its Python are: a "tools" folder beside the app when packaged, or the source tree it sits in.
 sealed record Tools(string Root, string Python)
 {
+    // Also used by the redesigned report and update header; a display tag alone is not update identity.
+    public string? Version => File.Exists(Path.Combine(Root, "version.txt")) ? File.ReadAllText(Path.Combine(Root, "version.txt")).Trim() : null;
     /// Packaged tag and source revision; null for legacy/unidentified source trees.
     public ReleaseIdentity? Identity => ReleaseIdentity.Read(Root);
 

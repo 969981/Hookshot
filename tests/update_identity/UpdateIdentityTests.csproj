@@ -10,5 +10,10 @@
   <ItemGroup>
     <Compile Include="../../builder/HookshotBuilder/ReleaseIdentity.cs" Link="ReleaseIdentity.cs" />
     <Compile Include="../../builder/HookshotBuilder/BuilderArchive.cs" Link="BuilderArchive.cs" />
+    <Compile Include="../../builder/HookshotBuilder/BuilderContents.cs" Link="BuilderContents.cs" />
+    <Compile Include="../../builder/HookshotBuilder/BuilderDownload.cs" Link="BuilderDownload.cs" />
+    <Compile Include="../../builder/HookshotBuilder/SetupManifest.cs" Link="SetupManifest.cs" />
+    <Compile Include="../../builder/HookshotBuilder/UpdatePreparation.cs" Link="UpdatePreparation.cs" />
+    <Compile Include="../../builder/HookshotBuilder/UpdateRequest.cs" Link="UpdateRequest.cs" />
   </ItemGroup>
 </Project>

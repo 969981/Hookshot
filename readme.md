@@ -27,7 +27,7 @@ console's system software is reimplemented, and the Switch 2 graphics are rebuil
 **on your PC, from your own copy of the game**.
 <br>
 
-Discord: https://discord.gg/EajnD2AJD9 Please use the hookshot-discussion channel, as the main point of the discord is for webports, not my work
+Discord: https://discord.gg/DVQQJphbBf
 <br>
 
 > [!IMPORTANT]
@@ -115,7 +115,7 @@ with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`s
 ### Updating to a newer release
 
 A new release is not a patch to your game folder: the game is built again from your copy, with the new code. Your
-saves and settings are kept.
+saves and settings are kept. What changed in each release is in [changelog.txt](changelog.txt).
 
 1. Close the game.
 2. To be safe, copy your saves somewhere first: the `user` folder beside `hookshot.exe` on Windows, or
@@ -208,6 +208,7 @@ and changes, the bottom face button changes too, and the right one closes the me
 | FPS counter | Off, On |
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
+Upscaling and Sharpness also work when Frame generation is Off.
 
 ### Controls
 
@@ -275,8 +276,6 @@ builds published under the same tag can be offered to players.
 Hookshot exists thanks to the work of many people:
 
 - **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
-- **EvilBoyce** (Discord: evilmfkr, [fork](https://github.com/evilmfkr/Hookshot)): Ocarina of Time's foliage culling, ambient
-  light, water and fog fixes, the freeze after Load, the exposure flashes, and the rendering diagnostics tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.

@@ -28,5 +28,11 @@
   <Target Name="WriteBuilderRevision" AfterTargets="Publish" Condition="'$(SourceRevisionId)' != ''">
     <WriteLinesToFile File="$(PublishDir)builder-revision.txt" Lines="$(SourceRevisionId)" Overwrite="true" Encoding="UTF-8" />
   </Target>
+  <!-- Inter (SIL Open Font License, Fonts/Inter-LICENSE.txt) and the hookshot, inside the app -->
+  <ItemGroup>
+    <Resource Include="Fonts\*.ttf" />
+    <Resource Include="Images\hookshot.png" />
+    <None Include="Fonts\Inter-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
 </Project>

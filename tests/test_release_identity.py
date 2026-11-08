@@ -1,5 +1,7 @@
 """Authored metadata/staging fixtures only: no game, download or compiler."""
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +23,7 @@ def load(name, path):
 
 make_game = load("release_metadata_make_game", ROOT / "nx2/make_game.py")
 packer = load("release_metadata_packer", ROOT / "scripts/package_builder.py")
+setup_parts = load("release_setup_parts", ROOT / "scripts/make_setup_parts.py")
 display_version = load("release_display_version", ROOT / "nx2/version.py")
 TAG = "foliage-linux-updater"
 SHA = "170ce53ca3d69309b3f5151a334136be8b4c38d6"
@@ -123,6 +126,56 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(archive.read("HookshotBuilder/tools/revision.txt").decode(), self.revision + "\n")
             self.assertEqual(archive.read("HookshotBuilder/tools/version.txt").decode(), TAG + "\n")
             self.assertEqual(archive.read("HookshotBuilder/tools/VERSION").decode(), TAG + "\n")
+            identity = json.loads(archive.read("HookshotBuilder/builder-identity.json"))
+            self.assertEqual(identity["revision"], self.revision)
+            self.assertEqual(identity["tag"], TAG)
+            self.assertEqual(set(identity["files"]), {"HookshotBuilder.exe", "HookshotBuilder.dll"})
+            for name, digest in identity["files"].items():
+                self.assertEqual(digest, hashlib.sha256(archive.read("HookshotBuilder/" + name)).hexdigest())
+
+    def test_parts_share_the_publisher_guard_and_gui_identity(self):
+        out = self.output.parent / "parts"
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
+            self.assertEqual(setup_parts.build_parts(self.stage, TAG, out, repo=self.repo), self.revision)
+        manifest = (out / "hookshot-setup.txt").read_text(encoding="utf-8")
+        self.assertIn("identity 1 " + self.revision + "\n", manifest)
+        app = next(out.glob("HookshotBuilder-app-*.zip"))
+        with zipfile.ZipFile(app) as archive:
+            self.assertIn("HookshotBuilder/builder-identity.json", archive.namelist())
+            self.assertEqual(archive.read("HookshotBuilder/tools/revision.txt").decode(), self.revision + "\n")
+        self.assertIn(hashlib.sha256(app.read_bytes()).hexdigest(), manifest)
+        first = {p.name: p.read_bytes() for p in out.iterdir()}
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
+            setup_parts.build_parts(self.stage, TAG, out, repo=self.repo)
+        self.assertEqual(first, {p.name: p.read_bytes() for p in out.iterdir()})
+
+    def test_parts_reject_stale_gui_before_stamping(self):
+        self.gui_revision.side_effect = lambda path: SHA if path.suffix == ".exe" else self.revision
+        out = self.output.parent / "parts"
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
+            with self.assertRaisesRegex(ValueError, "GUI was compiled"):
+                setup_parts.build_parts(self.stage, TAG, out, repo=self.repo)
+        self.assertFalse(out.exists())
+        self.assertFalse((self.stage / "builder-identity.json").exists())
+
+    def test_parts_recheck_gui_bytes_written_and_clean_failed_part(self):
+        out = self.output.parent / "parts"
+        write = setup_parts.write_zip
+        def changed(path, root, names, sources, gui_hashes):
+            (self.stage / "HookshotBuilder.exe").write_bytes(b"changed after the publisher guard")
+            return write(path, root, names, sources, gui_hashes)
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged), \
+                mock.patch.object(setup_parts, "write_zip", side_effect=changed):
+            with self.assertRaisesRegex(ValueError, "GUI changed during packaging"):
+                setup_parts.build_parts(self.stage, TAG, out, repo=self.repo)
+        self.assertEqual(list(out.iterdir()), [])
+
+    def test_dirty_packaging_script_cannot_publish_the_recorded_revision(self):
+        path = self.repo / "scripts/make_setup_parts.py"
+        path.parent.mkdir()
+        path.write_text("# uncommitted publisher change\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Commit the build sources"):
+            self.package()
 
     def test_stale_display_version_is_replaced_by_packaged_tag(self):
         tools = self.stage / "tools"
