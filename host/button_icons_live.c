@@ -9,7 +9,11 @@
    When: with the Insert menu's Button icons on Auto, the last device played with (nn_hid.c: a controller's buttons or
    sticks, or a bound key or mouse button); F8 goes round the families whatever the setting (to see them). Glyphs the game
    drew before stay as they were until it draws them again (its glyph cache): how soon that is, is what this is for to
-   find out. HOS_BUTTON_ICONS_LIVE=0 leaves the icons as they were at the start. */
+   find out. HOS_BUTTON_ICONS_LIVE=0 leaves the icons as they were at the start.
+
+   The font may be in memory as the file has it, XORed with its key (bfotf: the game may read it through that), as well
+   as plain: both are looked for, and a copy found XORed is read and written XORed. The first test found neither (0
+   copies); the log says now which, if any, was found. A search that finds nothing is not run again within 10 s. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +22,7 @@
 #include <windows.h>
 
 int hos_button_icons_started(int *follow);                                       /* button_icons.c */
+uint32_t hos_button_icons_key(void);                                             /* button_icons.c */
 size_t hos_heap_find(const void *pat, size_t len, uint64_t *out, size_t max);    /* camfind.c */
 int hos_sdl_pad_family(int wait_ms);                                             /* pad_sdl.c */
 void hos_host_thread_register_self(const char *name);                            /* hos_main.c */
@@ -26,33 +31,55 @@ void hos_host_thread_register_self(const char *name);                           
 enum { FAMILIES = 5, MAX_COPIES = 4 };
 static const char *const names[FAMILIES] = {"keyboard and mouse", "Xbox", "PlayStation 4", "PlayStation 5", "Switch"};
 
-static uint64_t copies[MAX_COPIES];   /* where the hkic tables are (the font may be in memory more than once) */
+typedef struct { uint64_t at; uint32_t key; } Copy;   /* key: 0 for a plain copy, the font's key for one as the file has it */
+static Copy copies[MAX_COPIES];   /* where the hkic tables are (the font may be in memory more than once) */
 static volatile LONG ncopies, searching, wanted = -1, current = -1;
+static volatile LONG64 searched_at;   /* when a search that found nothing ended (hos_now_ns), 0: none */
 static SRWLOCK lock = SRWLOCK_INIT;
 
-static uint32_t rd32(uint64_t a) { const uint8_t *p = (const uint8_t *)GP(a); return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
-static uint16_t rd16(uint64_t a) { const uint8_t *p = (const uint8_t *)GP(a); return (uint16_t)(p[0] << 8 | p[1]); }
-static void wr32(uint64_t a, uint32_t v) { uint8_t *p = (uint8_t *)GP(a); p[0] = (uint8_t)(v >> 24), p[1] = (uint8_t)(v >> 16), p[2] = (uint8_t)(v >> 8), p[3] = (uint8_t)v; }
+/* the byte at x of the hkic table at c (sfnt tables are 4-aligned in the font, so x - c.at's low bits are the key's byte) */
+static uint8_t kb(const Copy *c, uint64_t x) { return (uint8_t)(c->key >> (8 * (3 - ((x - c->at) & 3)))); }
+static uint32_t rd32(const Copy *c, uint64_t x) {
+    const uint8_t *p = (const uint8_t *)GP(x);
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) v = v << 8 | (uint8_t)(p[i] ^ kb(c, x + i));
+    return v;
+}
+static uint16_t rd16(const Copy *c, uint64_t x) {
+    const uint8_t *p = (const uint8_t *)GP(x);
+    return (uint16_t)((p[0] ^ kb(c, x)) << 8 | (p[1] ^ kb(c, x + 1)));
+}
+static void wr32(const Copy *c, uint64_t x, uint32_t v) {
+    uint8_t *p = (uint8_t *)GP(x);
+    for (int i = 0; i < 4; i++) p[i] = (uint8_t)((v >> (8 * (3 - i))) ^ kb(c, x + i));
+}
 
-static int valid(uint64_t a) {
-    return a && !memcmp(GP(a), MARKER, 16) && rd32(a + 16) == FAMILIES && rd32(a + 24) <= 64;
+static void marker_as(uint32_t key, uint8_t out[16]) {   /* the marker as a copy XORed with key holds it */
+    for (int i = 0; i < 16; i++) out[i] = (uint8_t)(MARKER[i] ^ (key >> (8 * (3 - (i & 3)))));
+}
+
+static int valid(const Copy *c) {
+    uint8_t m[16];
+    marker_as(c->key, m);
+    return c->at && !memcmp(GP(c->at), m, 16) && rd32(c, c->at + 16) == FAMILIES && rd32(c, c->at + 24) <= 64;
 }
 
 /* every icon codepoint of the hkic at a to family f's glyph */
-static void point(uint64_t a, int f) {
-    const uint32_t n = rd32(a + 24);
+static void point(const Copy *c, int f) {
+    const uint64_t a = c->at;
+    const uint32_t n = rd32(c, a + 24);
     const uint64_t gl = a + 32, rel = gl + ((FAMILIES * n * 2 + 3) & ~3u);
     for (uint32_t i = 0; i < n; i++) {
-        const int32_t r = (int32_t)rd32(rel + i * 4);
-        if (r) wr32((uint64_t)((int64_t)a + r), rd16(gl + ((uint64_t)f * n + i) * 2));
+        const int32_t r = (int32_t)rd32(c, rel + i * 4);
+        if (r) wr32(c, (uint64_t)((int64_t)a + r), rd16(c, gl + ((uint64_t)f * n + i) * 2));
     }
-    wr32(a + 28, (uint32_t)f);
+    wr32(c, a + 28, (uint32_t)f);
 }
 
 static void apply(int f) {   /* (lock held) */
     int done = 0;
     for (LONG i = 0; i < ncopies; i++)
-        if (valid(copies[i])) point(copies[i], f), done++;
+        if (valid(&copies[i])) point(&copies[i], f), done++;
     if (done) {
         InterlockedExchange(&current, f);
         hos_log("button icons: now %s (%d %s)", names[f], done, done == 1 ? "copy of the font" : "copies of the font");
@@ -63,15 +90,26 @@ static DWORD WINAPI search(void *arg) {
     (void)arg;
     hos_host_thread_register_self("button icons (search)");
     const int64_t t0 = hos_now_ns();
-    uint64_t at[MAX_COPIES];
-    const size_t n = hos_heap_find(MARKER, 16, at, MAX_COPIES);
+    const uint32_t key = hos_button_icons_key();
+    uint64_t at[2][MAX_COPIES];
+    size_t n[2] = {hos_heap_find(MARKER, 16, at[0], MAX_COPIES), 0};
+    if (key) {
+        uint8_t m[16];
+        marker_as(key, m);
+        n[1] = hos_heap_find(m, 16, at[1], MAX_COPIES);
+    }
     AcquireSRWLockExclusive(&lock);
-    LONG k = 0;
-    for (size_t i = 0; i < n; i++)
-        if (valid(at[i])) copies[k++] = at[i];
+    LONG k = 0, kind[2] = {0, 0};
+    for (int x = 0; x < 2; x++)
+        for (size_t i = 0; i < n[x] && k < MAX_COPIES; i++) {
+            const Copy c = {at[x][i], x ? key : 0};
+            if (valid(&c)) copies[k++] = c, kind[x]++;
+        }
     InterlockedExchange(&ncopies, k);
-    hos_log("button icons: the font found in the game's memory %ld time(s) in %.0f ms", (long)k, (hos_now_ns() - t0) / 1e6);
+    hos_log("button icons: the font found in the game's memory %ld time(s) plain, %ld time(s) as the file has it (XORed), "
+            "in %.0f ms", (long)kind[0], (long)kind[1], (hos_now_ns() - t0) / 1e6);
     if (k && wanted >= 0) apply((int)wanted);
+    InterlockedExchange64(&searched_at, k ? 0 : hos_now_ns());
     ReleaseSRWLockExclusive(&lock);
     InterlockedExchange(&searching, 0);
     return 0;
@@ -91,10 +129,11 @@ static void want(int f) {
     if (f == current) return;
     AcquireSRWLockExclusive(&lock);
     int ok = 0;
-    for (LONG i = 0; i < ncopies && !ok; i++) ok = valid(copies[i]);
+    for (LONG i = 0; i < ncopies && !ok; i++) ok = valid(&copies[i]);
     if (ok) apply(f);
     ReleaseSRWLockExclusive(&lock);
-    if (!ok && !InterlockedExchange(&searching, 1))   /* (not found yet, or the game moved it: look again) */
+    const int64_t last = searched_at;   /* (a search found nothing: not again for 10 s, each is a second of a core) */
+    if (!ok && (!last || hos_now_ns() - last >= 10000000000ll) && !InterlockedExchange(&searching, 1))
         if (!CreateThread(NULL, 0, search, NULL, 0, NULL)) InterlockedExchange(&searching, 0);
 }
 

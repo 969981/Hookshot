@@ -686,6 +686,14 @@ int hos_button_icons_romfs(const char *rel, char *out, size_t cap) {
 
 /* (host/button_icons_live.c) the family the font was made with, -1 if none was given to the game; *follow: Auto (the icons
    follow the device played with), not a family the menu or HOS_BUTTON_ICONS fixed */
+/* (button_icons_live.c) the font's key, for a copy of the font in memory as the file has it; 0 before the font was made */
+uint32_t hos_button_icons_key(void) {
+    AcquireSRWLockShared(&made_lock);
+    const uint32_t k = made_state > 0 ? font_key : 0;
+    ReleaseSRWLockShared(&made_lock);
+    return k;
+}
+
 int hos_button_icons_started(int *follow) {
     AcquireSRWLockShared(&made_lock);
     const int f = made_state > 0 ? start_family : -1;

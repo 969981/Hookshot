@@ -135,6 +135,60 @@ int main(void) {
 """
 
 
+LIVE_HARNESS = r"""
+#include <pthread.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <windows.h>
+static uint8_t *mem;
+static size_t mem_n;
+static uint32_t key;
+void hos_log(const char *f, ...) { va_list a; va_start(a, f); vfprintf(stderr, f, a); va_end(a); fputc('\n', stderr); }
+int64_t hos_now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
+size_t hos_heap_find(const void *pat, size_t len, uint64_t *out, size_t max) {
+    size_t n = 0;
+    for (size_t o = 0; o + len <= mem_n && n < max; o += 4)
+        if (!memcmp(mem + o, pat, len)) out[n++] = (uint64_t)(uintptr_t)(mem + o);
+    return n;
+}
+int hos_button_icons_started(int *follow) { *follow = 0; return 0; }
+uint32_t hos_button_icons_key(void) { return key; }
+int hos_sdl_pad_family(int wait_ms) { (void)wait_ms; return 0; }
+void hos_host_thread_register_self(const char *name) { (void)name; }
+void hos_button_icons_input(int pad, int keys, int f8);
+typedef struct { LPTHREAD_START_ROUTINE fn; void *arg; } Start;
+static void *trampoline(void *p) { Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL; }
+HANDLE CreateThread(void *attr, SIZE_T stack, LPTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id) {
+    (void)attr, (void)stack, (void)flags, (void)id;
+    Start *s = malloc(sizeof *s);
+    s->fn = fn, s->arg = arg;
+    pthread_t t;
+    if (pthread_create(&t, NULL, trampoline, s)) return NULL;
+    pthread_detach(t);
+    return (HANDLE)1;
+}
+int main(int argc, char **argv) {   /* in out key presses: the file as the game has it in memory, F8 pressed that often */
+    FILE *f = fopen(argv[1], "rb");
+    fseek(f, 0, SEEK_END), mem_n = (size_t)ftell(f), fseek(f, 0, SEEK_SET);
+    mem = aligned_alloc(4096, (mem_n + 4095) & ~(size_t)4095);
+    if (fread(mem, 1, mem_n, f) != mem_n) return 2;
+    fclose(f);
+    key = (uint32_t)strtoul(argv[3], NULL, 0);
+    for (int i = 0; i < atoi(argv[4]); i++) {
+        hos_button_icons_input(0, 0, 1), hos_button_icons_input(0, 0, 0);
+        usleep(300000);   /* (the first press looks for the font on a thread of its own) */
+    }
+    f = fopen(argv[2], "wb");
+    fwrite(mem, 1, mem_n, f), fclose(f);
+    return 0;
+}
+"""
+
 def bounds(font, code):
     gs, cmap = font.getGlyphSet(), font.getBestCmap()
     bp = BoundsPen(gs)
@@ -269,6 +323,48 @@ class ButtonIconsTests(unittest.TestCase):
         base = TTFont(io.BytesIO(self.external))
         self.assertEqual(drawing(switched, 0xE05E), drawing(base, 0xE05E))       # (the sticks on a pad: the game's)
         self.assertEqual(drawing(switched, 0x20), drawing(base, 0x20))           # (other characters untouched)
+
+    def test_live_copies(self):
+        """host/button_icons_live.c itself, on the font as the game may hold it: plain, and as the file has it (XORed with
+        its key, after the 8-byte header). Three F8 presses go keyboard -> Xbox -> PS4 -> PS5 (the first finds the font on
+        its thread, the others write at once); read back, A is the PS5 circle (it was the E key)"""
+        if sys.platform == "win32":
+            self.skipTest("host/posix's windows.h stands in for Windows here")
+        cc = shutil.which("gcc") or shutil.which("clang")
+        if not cc:
+            self.skipTest("no C compiler")
+        self.font_for(0, "keyboard")
+        otf = bytes(self.last_otf) + bytes(-len(self.last_otf) % 4)
+        k = struct.pack(">I", KEY)
+        base = TTFont(io.BytesIO(self.external))
+        with tempfile.TemporaryDirectory(prefix="hookshot-live-") as tmp:
+            tmp = Path(tmp)
+            (tmp / "hos.h").write_text("#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
+                                       "#define GP(a) ((void *)(uintptr_t)(a))\n"
+                                       "void hos_log(const char *fmt, ...);\nint64_t hos_now_ns(void);\n")
+            shutil.copy(ROOT / "host" / "button_icons_live.c", tmp / "live.c")   # (beside the stand-in hos.h)
+            (tmp / "harness.c").write_text(LIVE_HARNESS, encoding="utf-8")
+            exe = tmp / "live"
+            build = subprocess.run([cc, "-std=gnu11", "-O1", "-g", "-Wall", "-pthread", "-I", str(tmp),
+                                    "-I", str(ROOT / "host" / "posix"), str(tmp / "live.c"), str(tmp / "harness.c"),
+                                    "-o", str(exe)], text=True, capture_output=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            for xored in (False, True):
+                with self.subTest(xored=xored):
+                    body = bytes(b ^ k[i & 3] for i, b in enumerate(otf)) if xored else otf
+                    (tmp / "in").write_bytes(b"\0" * 8 + body)
+                    run = subprocess.run([str(exe), str(tmp / "in"), str(tmp / "out"), hex(KEY), "3"], text=True,
+                                         capture_output=True, timeout=60)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn("1 time(s) as the file has it" if xored else "1 time(s) plain", run.stderr)
+                    self.assertIn("now PlayStation 5", run.stderr)
+                    out = (tmp / "out").read_bytes()[8:]
+                    if xored:
+                        out = bytes(b ^ k[i & 3] for i, b in enumerate(out))
+                    switched = TTFont(io.BytesIO(out))
+                    circle = bounds(switched, 0xE040)
+                    self.assertAlmostEqual(circle[2] - circle[0], 560, delta=2)
+                    self.assertEqual(drawing(switched, 0x20), drawing(base, 0x20))   # (other characters untouched)
 
     def test_playstation(self):
         font = self.font_for(3, "ps5")
