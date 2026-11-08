@@ -31,6 +31,7 @@ on:
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -149,6 +150,7 @@ on:
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -328,6 +330,9 @@ jobs:
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check timeline fence values across the replay modes
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_timeline_modes.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
