@@ -132,10 +132,12 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
-    /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
-       collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
-       next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
-    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+    /* (issue 312) Transparent huge pages as the system has them. MADV_NOHUGEPAGE here made RADV slower, not faster: amdgpu
+       checks every page of the imported (userptr) memory at each submission, ~0.5 ms a GB even untouched, and in 4 KB pages
+       that check took 3x as long (1.25 -> 3.8 ms of queue submit a frame at the title, 8-10 -> 3-5 fps in Kokiri; RX 7900 GRE,
+       Mesa 26.2.6, kernel 7.3, THP "always"). The submissions' count is the cost: see batch_on in gpu/vk/vk_replay.cpp.
+       HOS_THP=0: no huge pages in the guest window (MADV_NOHUGEPAGE), as 40c3f851 had it */
+    if (getenv("HOS_THP") && !strcmp(getenv("HOS_THP"), "0")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
     return 1;
 #endif
 }
