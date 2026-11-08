@@ -464,8 +464,19 @@ NV(nvnSamplerPoolSetDebugLabel) {}
 NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_samp *)P(2))->p); }
 
 /* ---- textures ---- */
-#define TB(p) ((nvn_tex_builder *)(p))
-#define CTB(p) ((const nvn_tex_builder *)(p))
+/* (hookshot) A texture builder of no address: a scratch one instead, said once. The game passed 0 after a long freeze (the
+   ocarina note sheet's first build, combat in Hyrule Field) and nvnTextureBuilderSetSwizzle read A64_MEM + 0x5c (issue 500);
+   a builder set up wrongly is a missing texture, not a crash. As PR 510 for memory pools. */
+static nvn_tex_builder *tb_or_scratch(void *p, uint64_t lr) {
+    static nvn_tex_builder scratch;
+    if (p) return (nvn_tex_builder *)p;
+    static volatile LONG told;
+    if (InterlockedIncrement(&told) <= 4) hos_log("nvn: a texture builder of no address (lr %#llx): a scratch one", (unsigned long long)lr);
+    memset(&scratch, 0, sizeof scratch);
+    return &scratch;
+}
+#define TB(p) tb_or_scratch((p), c->x[30])
+#define CTB(p) ((const nvn_tex_builder *)tb_or_scratch((p), c->x[30]))
 #define TX(p) ((nvn_tex *)(p))
 #define CTX(p) ((const nvn_tex *)(p))
 NV(nvnTextureBuilderSetDefaults) {
@@ -979,7 +990,10 @@ static uint64_t held_count(void) { return (uint64_t)nheld; }
 
 NV(nvnQueueFenceSync) {
     held_init();
-    nvn_sync *s = (nvn_sync *)P(1); s->fenced = 1; s->fence = rx_nvn_fence() + held_count();
+    nvn_sync *s = (nvn_sync *)P(1); s->fenced = 1;
+    /* (hookshot) the queue's own work: with nothing held, its last submission (a wait for it no longer waits for another
+       queue's work stopped at an event wait) */
+    s->fence = held_count() ? rx_nvn_fence() + held_count() : rx_nvn_fence_q((uint64_t)(uintptr_t)P(0));
     if (sync_log()) hos_log("nvn: FenceSync %p -> %llu (lr %#llx)", (void *)s, (unsigned long long)s->fence, (unsigned long long)c->x[30]);
 }
 /* (the GPU waits the game makes: count and time by kind, logged every 5 s) */

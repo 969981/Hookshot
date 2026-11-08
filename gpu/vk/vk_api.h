@@ -123,6 +123,8 @@ typedef struct MkwVkRenderer {
                                 20: the mouse's sensitivity in percent, 21: its vertical inverted, 22: native mouse look (host/nn_hid.c, mouse_native.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
+    /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
+    uint64_t (*nvn_fence_q)(uint64_t queue);
     /* (hookshot, the menu) from the game's side: 20 the mouse's sensitivity in percent (the - and = keys; kept in the file),
        29 the mouse wheel while the menu is open (host/display.c, in WHEEL_DELTA units) */
     void (*option_set)(int id, int value);
