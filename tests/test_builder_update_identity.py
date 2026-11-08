@@ -19,8 +19,11 @@ def main():
                       "-p:BaseOutputPath=" + (work / "bin").as_posix() + "/"]
         subprocess.run([args.dotnet, "restore", str(project), "--configfile",
                         str(project.parent / "NuGet.Config"), *properties], cwd=ROOT, check=True)
-        subprocess.run([args.dotnet, "run", "--project", str(project), "--configuration", "Release",
-                        "--no-restore", *properties], cwd=ROOT, check=True)
+        subprocess.run([args.dotnet, "build", str(project), "--configuration", "Release", "--no-restore",
+                        "-maxcpucount:1", "-nodeReuse:false", *properties], cwd=ROOT, check=True)
+        assembly = work / "bin/Release/net8.0/UpdateIdentityTests.dll"
+        assert assembly.is_file(), "The actual managed fixture was not built into its isolated output."
+        subprocess.run([args.dotnet, str(assembly)], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":
