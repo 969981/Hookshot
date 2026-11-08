@@ -299,6 +299,7 @@ static void load_hookshot_env(void) {
 }
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
+float hos_camera_aspect = 0;  /* (the game's perspective cameras' shape, 0 their own 16:9: nx2/oot_ultrawide.py) */
 #ifdef _WIN32
 /* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -415,14 +416,13 @@ static int game_main(int argc, char **argv) {
         return 1;
     }
     hos_mem_init(hos_image_end);
-    {   /* (hookshot) HOS_ASPECT=<ratio> (2.3889 for 3440x1440): the one 16:9 constant in the game's data, read by the camera and the
-           scene setup, at the window's shape. The picture stays 16:9 and is stretched to the window, so the 3D keeps its proportions
-           and the HUD stretches with it. */
-        const char *e = getenv("HOS_ASPECT");
-        uint8_t *at = (uint8_t *)A64_MEM + 0x83e6131cull;
-        float was, want = e ? (float)atof(e) : 0.0f;
-        memcpy(&was, at, 4);
-        if (!e) {   /* (the Insert menu's Ultrawide, off unless it says 1: the main monitor's shape) */
+    {   /* (hookshot) The camera's shape. Ultrawide (the Insert menu, the widest monitor's shape) or HOS_UW_ASPECT=<ratio>
+           (2.3889 for 3440x1440): hos_camera_aspect, which the lifted code's projections read (nx2/oot_ultrawide.py): every
+           16:9 perspective projection is widened to it, Hor+, and the movies are drawn in a centred 16:9 rectangle. The
+           picture stays 16:9 and is stretched to the window, so the 3D keeps its proportions. */
+        const char *e = getenv("HOS_UW_ASPECT");
+        float want = e ? (float)atof(e) : 0.0f;
+        if (!e) {   /* (the Insert menu's Ultrawide, off unless it says 1) */
             int on = 0;
             char path[MAX_PATH];
             const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -440,10 +440,21 @@ static int game_main(int argc, char **argv) {
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
             if (on && sh > 0 && (float)sw / (float)sh > 1.8f) want = (float)sw / (float)sh;
         }
+        if (want > 1.8f && want < 8.0f) {
+            hos_camera_aspect = want;
+            hos_aspect_ratio = want;
+            hos_log("boot: camera aspect %.4f (Hor+, in place of 16:9)", want);
+        }
+    }
+    {   /* (hookshot) HOS_ASPECT=<ratio>: the 16:9 constant TOTKPort's ultrawide changed. Ocarina's cameras do not read it
+           (issue 297); kept as a test. */
+        const char *e = getenv("HOS_ASPECT");
+        uint8_t *at = (uint8_t *)A64_MEM + 0x83e6131cull;
+        float was, want = e ? (float)atof(e) : 0.0f;
+        memcpy(&was, at, 4);
         if (want > 1.0f && was > 1.777f && was < 1.778f) {
             memcpy(at, &want, 4);
-            hos_aspect_ratio = want;
-            hos_log("boot: aspect ratio %.4f in place of %.4f", want, was);
+            hos_log("boot: the 16:9 constant %.4f in place of %.4f", want, was);
         } else if (want > 1.0f) {
             hos_log("boot: aspect: the constant reads %.4f here: left alone", was);
         }

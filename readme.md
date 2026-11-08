@@ -49,7 +49,7 @@ of the game.
 | Performance without frame generation | ⚠️ About 50 fps walking, not yet a steady 60 |
 | Models with missing pieces (doors, fences, parts of trees) | ✅ Fixed where tested, more play needed |
 | Stutter when entering new areas | ⚠️ Still happens, mostly the first time |
-| Ultrawide | ⚠️ The 3D keeps its shape, but the HUD is stretched and the picture is softer |
+| Ultrawide | ⚠️ Hor+: the cameras widen to the monitor and the movies stay 16:9 in the middle, but the HUD is stretched and the picture is softer |
 | Hyrule Field and the rest of the game | ❓ Not tested yet |
 | AMD and Intel cards | ❓ Never tested |
 
@@ -204,7 +204,7 @@ and changes, the bottom face button changes too, and the right one closes the me
 | Sharpness | 0 to 100% |
 | Game speed | Per frame, Real time |
 | Handheld profile | Off, On |
-| Ultrawide | 16:9, Monitor's shape |
+| Ultrawide | 16:9, Monitor's shape (the widest monitor; `HOS_UW_ASPECT=<ratio>` in `hookshot_env.txt` sets it by hand) |
 | FPS counter | Off, On |
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.

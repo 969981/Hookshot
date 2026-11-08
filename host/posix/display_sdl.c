@@ -47,6 +47,7 @@ static struct {
     uint32_t (*GetMouseState)(int *, int *);
     int (*SetRelativeMouseMode)(int);
     int (*GetDesktopDisplayMode)(int, SdlDisplayMode *);
+    int (*GetNumVideoDisplays)(void);
     int (*Vulkan_CreateSurface)(void *, void *, void *);
     void (*Vulkan_GetDrawableSize)(void *, int *, int *);
     void (*SetWindowTitle)(void *, const char *);
@@ -80,6 +81,7 @@ static int load_sdl(void) {
     GET(GetMouseState, "SDL_GetMouseState");
     GET(SetRelativeMouseMode, "SDL_SetRelativeMouseMode");
     GET(GetDesktopDisplayMode, "SDL_GetDesktopDisplayMode");
+    GET(GetNumVideoDisplays, "SDL_GetNumVideoDisplays");
     GET(Vulkan_CreateSurface, "SDL_Vulkan_CreateSurface");
     GET(Vulkan_GetDrawableSize, "SDL_Vulkan_GetDrawableSize");
     GET(SetWindowTitle, "SDL_SetWindowTitle");
@@ -187,8 +189,14 @@ int hos_display_init(void) {
         hos_log("display: SDL_Init: %s: no window", sdl.GetError());
         return 0;
     }
-    SdlDisplayMode m;
-    if (!sdl.GetDesktopDisplayMode(0, &m)) hos_posix_window[1] = m.w, hos_posix_window[2] = m.h;
+    /* (the widest screen's size: the Ultrawide option's monitor, also beside a laptop's own panel, which SDL lists first) */
+    const int screens = sdl.GetNumVideoDisplays();
+    for (int i = 0; i < (screens > 0 ? screens : 1); i++) {
+        SdlDisplayMode m;
+        if (sdl.GetDesktopDisplayMode(i, &m) || m.w <= 0 || m.h <= 0) continue;
+        if (!hos_posix_window[2] || (long long)m.w * hos_posix_window[2] > (long long)hos_posix_window[1] * m.h)
+            hos_posix_window[1] = m.w, hos_posix_window[2] = m.h;
+    }
     sdl_ready = 1;
     return 1;
 }

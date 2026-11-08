@@ -174,6 +174,8 @@ def main():
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone)
         import oot_patches
         oot_patches.apply(gen)
+        import oot_ultrawide
+        oot_ultrawide.apply(gen)
         a64_rtgen.write(gen)
         if a.standalone:
             start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
