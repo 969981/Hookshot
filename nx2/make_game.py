@@ -298,7 +298,7 @@ def check_macos_toolchain():
     if not shutil.which("lipo"):
         fail("Install Xcode Command Line Tools to verify macOS dependency architectures.")
     for library in (sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
-        r = subprocess.run(["lipo", "-verify_arch", "x86_64", library],
+        r = subprocess.run(["lipo", library, "-verify_arch", "x86_64"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode:
             fail("macOS dependency must contain x86_64 code for Rosetta: %s" % library)

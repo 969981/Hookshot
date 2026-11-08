@@ -25,7 +25,7 @@ jobs:
         run: |
           printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/macos-probe.c"
           clang --target=x86_64-apple-macos10.15 "$RUNNER_TEMP/macos-probe.c" -o "$RUNNER_TEMP/macos-probe"
-          lipo -verify_arch x86_64 "$RUNNER_TEMP/macos-probe"
+          lipo "$RUNNER_TEMP/macos-probe" -verify_arch x86_64
 
       - name: Compile macOS POSIX host shims
         run: |
