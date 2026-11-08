@@ -1,0 +1,76 @@
+name: macOS checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - host/**
+      - nx2/**
+      - third_party/a64-kit/**
+      - tests/**
+      - readme.md
+      - .github/workflows/macos.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - host/**
+      - nx2/**
+      - third_party/a64-kit/**
+      - tests/**
+      - readme.md
+      - .github/workflows/macos.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install macOS dependencies
+        run: |
+          brew install ffmpeg llvm molten-vk sdl2
+          python -m pip install --disable-pip-version-check \
+            capstone lz4 numpy "unicorn>=2.1,<2.2" zstandard
+
+      - name: Check macOS platform selection
+        run: |
+          python - <<'PY'
+          import importlib
+          import sys
+          sys.platform = "darwin"
+          build = importlib.import_module("nx2.build")
+          game = importlib.import_module("nx2.make_game")
+          assert build.POSIX_BUILD and build.MACOS and build.EXE == "hookshot"
+          assert build.VK_LIB == "hookshot_vk.dylib"
+          assert game.BESIDE[0] == "hookshot"
+          assert "hookshot_vk.dylib" in game.BESIDE
+          PY
+
+      - name: Check Python sources
+        run: |
+          python -m py_compile nx2/build.py nx2/make_game.py
+          python -I -B nx2/test_nup_paths.py
+          python -I -B tests/test_make_game_cache.py
+          python -I -B tests/test_cpm_discovery.py
+
+      - name: Check POSIX compatibility layer
+        run: |
+          "$(brew --prefix llvm)/bin/clang" -fsyntax-only -std=gnu11 \
+            -Ihost/posix host/posix/win32_posix.c
