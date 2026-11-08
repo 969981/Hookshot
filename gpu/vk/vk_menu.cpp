@@ -509,11 +509,14 @@ void gdi_draw(Bitmap& out, uint32_t w, uint32_t h, void (*paint)(HDC, uint32_t, 
     GdiFlush();
     if (const char* dir = &out == &menu_bmp ? getenv("RX_VK_MENU_DUMP") : nullptr) {   // (test runs: each drawing of the menu, as menu_<n>.bmp)
         static int n = 0;
-        char path[MAX_PATH];
-        snprintf(path, sizeof path, "%s\\menu_%03d.bmp", dir, n++);
-        if (FILE* f = fopen(path, "wb")) {
-            BITMAPFILEHEADER fh{0x4d42, (DWORD)(sizeof fh + sizeof bi.bmiHeader + w * h * 4), 0, 0, (DWORD)(sizeof fh + sizeof bi.bmiHeader)};
-            fwrite(&fh, sizeof fh, 1, f), fwrite(&bi.bmiHeader, sizeof bi.bmiHeader, 1, f), fwrite(bits, 4, (size_t)w * h, f);
+        char path[1024];
+        snprintf(path, sizeof path, "%s/menu_%03d.bmp", dir, n++);
+        if (FILE* f = fopen(path, "wb")) {   // (the 14-byte file header and the 40-byte info header, little-endian: 32-bit, top-down)
+            uint8_t hd[54] = {'B', 'M'};
+            auto put = [&](int at, uint32_t v, int bytes) { for (int i = 0; i < bytes; i++) hd[at + i] = (uint8_t)(v >> (8 * i)); };
+            put(2, 54 + w * h * 4, 4), put(10, 54, 4), put(14, 40, 4), put(18, w, 4), put(22, (uint32_t)-(int32_t)h, 4), put(26, 1, 2),
+                put(28, 32, 2);
+            fwrite(hd, 1, sizeof hd, f), fwrite(bits, 4, (size_t)w * h, f);
             fclose(f);
         }
     }

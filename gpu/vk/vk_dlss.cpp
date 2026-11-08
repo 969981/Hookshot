@@ -15,7 +15,6 @@
 #include <sl.h>
 #include <sl_dlss.h>
 #include <sl_helpers_vk.h>
-#include <sl_security.h>   // (its functions are defined in it: this file only)
 #include <softpub.h>
 #include <wintrust.h>
 
@@ -118,7 +117,8 @@ std::optional<Version> read_version(const fs::path& path) {
                    LOWORD(info->dwFileVersionLS)};
 }
 
-/// A valid Authenticode signature from NVIDIA Corporation (the DLSS models)
+/// A valid Authenticode signature from NVIDIA Corporation (sl.interposer.dll and the DLSS models). The plain WinVerifyTrust
+/// API: Streamline's sl_security.h needs WINTRUST_SIGNATURE_SETTINGS, which older mingw headers do not have
 bool signed_by_nvidia(const fs::path& path) {
     std::error_code ec;
     const std::wstring file_path = fs::absolute(path, ec).wstring();
@@ -294,7 +294,7 @@ bool dlss_start() {
         logf("vk: dlss: %s is not signed by NVIDIA", u8(model).c_str());
         return off("nvngx_dlss.dll not signed by NVIDIA");
     }
-    if (!sl::security::verifyEmbeddedSignature(interposer.c_str())) {
+    if (!signed_by_nvidia(interposer)) {
         logf("vk: dlss: %s is not signed by NVIDIA; not loading it", u8(interposer).c_str());
         return off("sl.interposer.dll not signed by NVIDIA");
     }
