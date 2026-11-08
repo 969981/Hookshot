@@ -34,3 +34,9 @@ Hookshot's NVIDIA DLSS (`vk/vk_dlss.cpp`, the DLSS part of `vk/vk_draw.cpp`, `vk
 `host_shaders/ocarina_*.comp`; Eden Emulator Project, GPL-3.0-or-later; Lichii credits Duck912's Eglantine work).
 `third_party/streamline/` is NVIDIA Streamline v2.14.16's headers (MIT, `license.txt`); its DLLs and NVIDIA's DLSS are
 loaded from the user's PC at run time and are not vendored.
+
+Hookshot's AMD FSR 4.1 (`vk/vk_fsr4.cpp`, the FSR and jitter parts of `vk/vk_draw.cpp`, the `fsr` paths of
+`vk/shaders/dlss_*.comp`) is ported from madebyjordan's FSR 4.1 work on Lichii's OoT branch (`renderer_vulkan/vk_fsr4_upscaler.cpp`,
+`vk_rasterizer.cpp`'s Ocarina jitter, `host_shaders/ocarina_*.comp`; GPL-3.0-or-later). `third_party/fidelityfx/` is AMD's
+FSR API headers from FidelityFX SDK v2.4.0 (MIT, `LICENSE.md`); AMD's signed DLLs are loaded from the user's PC at run time
+and are not vendored.

@@ -34,6 +34,7 @@ struct Options {
     int dlss = 0;         // the game's gameplay upscale through NVIDIA DLSS (vk_dlss.cpp); read once, at the start (RX_DLSS=0/1 over it)
     int dlss_mode = 3;    // the render size with DLSS on: 0 Ultra Performance .. 3 Quality, 4 DLAA (dlss_render_size)
     int dlss_preset = 3;  // DLSS's model: 0 J, 1 K, 2 L, 3 M; applies at once (RX_DLSS_PRESET=J..M over it)
+    int fsr4 = 0;         // (hookshot-amd) the gameplay upscale through AMD FSR 4.1 (vk_fsr4.cpp) when DLSS is off; at once (RX_FSR4=0/1 over it)
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
