@@ -27,6 +27,27 @@ the composited frame, after the HUD. A temporal upscaler there has no depth, no 
 baked into its history. That is why the existing interpolator block-matches: it has nothing better to
 work from.
 
+## What the baseline actually is
+
+Measured before any of this changes anything, because it decides whether an upscaler is worth
+having here at all. Linux, RTX 5060 Ti, driver 615.71.09, headless under Xvfb, a warmed shader
+cache, the opening and Kokiri Forest:
+
+| | |
+|---|---|
+| Frame rate | **57-60 fps**, held over 33,600 presents in one run and 9,000 in another |
+| A frame | 1106 draws (0 skipped), 99 dispatches, 148 passes |
+| Scene | 1536x864 internal, resolved by the game's own network into a 2048x1152 scene |
+| Present | 2560x1440 |
+
+So **Ocarina already runs at its target frame rate**, and an upscaler is not what gets it there.
+What one would buy is a higher internal resolution at the same frame rate, or headroom in the areas
+this run did not reach. That is worth knowing before spending more effort on it: the argument for
+FSR or DLSS here is image quality at a given cost, not frames.
+
+The same numbers also say the obvious thing about where the time goes: 1106 draws and 148 passes a
+frame at 60 fps is not an upscaler-shaped problem.
+
 ## Correction: the game's network is not a temporal upscaler
 
 **A run settles this, and it contradicts the section above.** With the per-network log reading the
