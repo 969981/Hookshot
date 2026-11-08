@@ -204,10 +204,12 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_MOUSE_LEAVE:
                     mouse_capture(0);
                     break;
-                case HOS_SDL_EV_KEY_DOWN:
+                case HOS_SDL_EV_KEY_DOWN: {
+                    const int scancode = e.scancode, mod = e.mod;
                     if (e.scancode == 41) mouse_capture(0);   /* Esc */
-                    if (!e.repeat && (e.scancode == 68 || (e.scancode == 40 && (e.mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
+                    if (!e.repeat && (scancode == 68 || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
                     break;
+                }
                 case HOS_SDL_EV_MOUSE_DOWN:
                     if (renderer && !mouse_captured) mouse_capture(1);
                     break;
