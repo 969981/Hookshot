@@ -153,7 +153,7 @@ What a new build keeps and what it replaces in the game folder:
 To build from the command line you also need:
 
 - Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`:
-  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`
+  `pip install -r requirements.txt`
   Use Python from python.org: the Microsoft Store's Python installs packages where `python -I` does not look.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), with `HOOKSHOT_MINGW` set to its folder. Without
   it the build uses the clang from [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools
