@@ -78,16 +78,195 @@ public partial class MainWindow : Window
             Updater.FromCommandLine(this);
             return;
         }
+        if (LaunchArg() is { } launchFolder)   // (Hookshot Launcher.exe in the game folder)
+        {
+            SplashText.Text = "Starting Hookshot…";
+            await Task.Delay(700);
+            ShowMain();
+            ShowLauncher(launchFolder);
+            return;
+        }
         SplashText.Text = "Looking for your game files…";
         var found = await Task.Run(Finder.FindDumps);
         dumps.AddRange(found);
         SplashText.Text = found.Count switch { 0 => "No game files found yet", 1 => "Found 1 game file", _ => $"Found {found.Count} game files" };
         var wait = 1700 - (int)started.ElapsedMilliseconds;
         if (wait > 0) await Task.Delay(wait);
+        ApplySettings();
         FillDumps();
         ShowMain();
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
         CheckAll();
+        await CheckLatestRelease();
+        RefreshMode();
+    }
+
+    // ================= what the button does: build, update the game, play it, or get the newer builder =================
+    // (as NX2navi's launcher: whatever version the player opens, it checks the latest release and says what is there)
+
+    BuilderMode mode = BuilderMode.Build;
+    string? latestTag;
+    ReleaseIdentity? latestRelease;
+    bool sourcePicked;   // (the player chose game files here: a build from them, even over a game that is up to date)
+
+    async Task CheckLatestRelease()
+    {
+        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG");
+        latestRelease = latestTag is { Length: > 0 }
+            ? ReleaseIdentity.Create(latestTag, Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_REVISION"))
+            : await Updater.LatestIdentity();
+        latestTag = latestRelease?.Tag ?? latestTag;
+    }
+
+    /// The release a game folder was built with (its hookshot_version.txt), when it keeps its game files for updates
+    static string? GameVersion(string folder)
+    {
+        var game = GameInstallation.Read(folder);
+        return game.CanRebuild ? game.Tag : null;
+    }
+
+    void RefreshMode()
+    {
+        if (BuildButton == null || updating || runner != null) return;
+        var installed = OutPath.Text.Length > 2 ? GameInstallation.Read(OutPath.Text) : new GameInstallation(null, null, false);
+        var game = installed.Tag;
+        var tools = Tools.Find();
+        var builder = tools?.Version;
+        mode = installed.Mode(latestRelease, builder, tools?.Identity, sourcePicked);
+        switch (mode)
+        {
+            case BuilderMode.UpdateGame:
+                FilesTitle.Text = installed.Identity == null ? "Verify your game version" : "Update available";
+                FilesSub.Text = installed.Identity == null
+                    ? "This folder has no verified source revision. One update rebuilds it from its kept game files and records the version."
+                    : $"A revised build of Hookshot {latestTag} is available. Update uses the files kept in your game folder, compiling only what changed.";
+                BuildButton.Content = installed.Identity == null ? "Verify and update" : "Update";
+                break;
+            case BuilderMode.Play:
+                FilesTitle.Text = installed.Current(latestRelease) ? "Your game is up to date" : "Your game is ready to play";
+                FilesSub.Text = installed.Current(latestRelease)
+                    ? $"{game} is the latest version. Pick game files below only to build it again from scratch."
+                    : "The installed source revision could not be verified. You can play; rebuild with a current Builder to verify the version.";
+                BuildButton.Content = "Play";
+                break;
+            case BuilderMode.UpdateBuilder:
+                FilesTitle.Text = "Build your game";
+                FilesSub.Text = $"A revised Hookshot Builder {latestTag} is available: update it first, then build.";
+                BuildButton.Content = "Update builder";
+                break;
+            default:
+                FilesTitle.Text = "Build your game";
+                FilesSub.Text = "Pick your game files and where the game goes. Hookshot does the rest, once.";
+                BuildButton.Content = "Build the game";
+                break;
+        }
+        BuildButton.IsEnabled = mode != BuilderMode.Build || (SourceReady && OutPath.Text.Length > 2);
+        AboutText.Visibility = mode is BuilderMode.Build ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ---- the launcher: Hookshot Launcher.exe in a game folder starts this with --launch <folder> (builder/setup/setup.c) ----
+    string launchFolder = "";
+
+    static string? LaunchArg()
+    {
+        var a = Environment.GetCommandLineArgs();
+        var i = Array.IndexOf(a, "--launch");
+        return i >= 0 && i + 1 < a.Length ? a[i + 1].TrimEnd('\\', '/') : null;
+    }
+
+    async void ShowLauncher(string folder)
+    {
+        launchFolder = folder;
+        OutPath.Text = folder;
+        StepPill.Visibility = Visibility.Collapsed;
+        var installed = GameInstallation.Read(folder);
+        var game = installed.Tag;
+        LaunchVersion.Text = (game != null ? $"Hookshot {game}" : "Hookshot") + " · " + folder;
+        LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
+        ShowPage(LaunchPage);
+        await CheckLatestRelease();
+        if (latestRelease == null) LaunchStatus.Text = "Could not verify the latest source revision; you can still play";
+        else if (installed.UpdateAvailable(latestRelease))
+        {
+            LaunchStatus.Text = installed.Identity == null ? "Rebuild once to verify this folder's version" : $"Update available: {latestTag}";
+            LaunchStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0xC8, 0xFF));
+            LaunchStatus.FontWeight = FontWeights.SemiBold;
+            LaunchUpdate.Visibility = Visibility.Visible;
+        }
+        else if (installed.Current(latestRelease)) LaunchStatus.Text = "Up to date";
+        else LaunchStatus.Text = "Build this folder again with a current Builder to verify or update its version";
+    }
+
+    /// The game in a folder: bin\hookshot.exe below its launcher (hookshot.exe), or hookshot.exe in a folder built before the launcher
+    static string GameExe(string folder)
+    {
+        return GameInstallation.Executable(folder);
+    }
+
+    /// (the launcher already checked for updates: the game does not ask again)
+    static void StartGame(string folder)
+    {
+        var si = new ProcessStartInfo(GameExe(folder)) { UseShellExecute = false, WorkingDirectory = folder };
+        si.Environment["HOOKSHOT_NO_UPDATE_CHECK"] = "1";
+        Process.Start(si);
+    }
+
+    void LaunchUpdateClick(object sender, RoutedEventArgs e) => Updater.UpdateFolder(this, launchFolder, latestTag, fetched: false,
+        revision: latestRelease?.Revision);
+
+    void LaunchPlayClick(object sender, RoutedEventArgs e)
+    {
+        StartGame(launchFolder);
+        Application.Current.Shutdown();
+    }
+
+    void LaunchFolderClick(object sender, RoutedEventArgs e) =>
+        Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
+
+    // ---- what the player chose last time (the install folder, the game files): builder-settings.json beside the versions ----
+    sealed class BuilderSettings
+    {
+        public string? Out { get; set; }
+        public string? Nup { get; set; }
+        public string? Romfs { get; set; }
+        public string? Exefs { get; set; }
+    }
+    static string SettingsPath => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
+
+    void ApplySettings()
+    {
+        BuilderSettings? s = null;
+        try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
+        if (s == null) return;
+        if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
+        if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
+        {
+            romfs = s.Romfs;
+            exefs = s.Exefs;
+            DumpList.Children.Insert(0, new TextBlock { Text = $"Using the folders {romfs} and {exefs} (as last time)", Style = (Style)FindResource("Note"),
+                                                        Margin = new Thickness(16, 12, 16, 12) });
+        }
+        else if (s.Nup != null && File.Exists(s.Nup))
+        {
+            if (!dumps.Any(d => string.Equals(d.Path, s.Nup, StringComparison.OrdinalIgnoreCase)))
+            {
+                var info = new FileInfo(s.Nup);
+                dumps.Insert(0, new Dump(info.FullName, "Last time", info.Length, info.LastWriteTime));
+            }
+            chosenNup = s.Nup;
+        }
+    }
+
+    void SaveSettings()
+    {
+        try
+        {
+            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs };
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
+            File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
+        }
+        catch (Exception) { }
     }
 
     /// (development) HOOKSHOT_UI_PREVIEW=build|ready|problem|update: one screen with made-up progress, nothing run
@@ -113,7 +292,7 @@ public partial class MainWindow : Window
                 ShowProblem("Files of the builder's own compiler are missing (clang.exe in tools\\llvm-mingw\\bin).", tools: true);
                 break;
             case "update":
-                BeginUpdate(OutPath.Text);
+                BeginUpdate(OutPath.Text, "honest-eta");
                 rows["download"].Done(); rows["download"].Small("3 MB · build tools unchanged");
                 rows["read"].Begin(); rows["read"].Done();
                 rows["lift"].Begin(); rows["lift"].Done();
@@ -198,7 +377,7 @@ public partial class MainWindow : Window
 
     void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage })
+        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage })
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         page.Opacity = 0;
         page.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(250)));
@@ -283,6 +462,7 @@ public partial class MainWindow : Window
 
     void Choose(string path)
     {
+        sourcePicked = true;
         chosenNup = path;
         romfs = exefs = null;
         Refresh();
@@ -293,6 +473,7 @@ public partial class MainWindow : Window
         var info = new FileInfo(path);
         if (!dumps.Any(d => string.Equals(d.Path, info.FullName, StringComparison.OrdinalIgnoreCase)))
             dumps.Insert(0, new Dump(info.FullName, where, info.Length, info.LastWriteTime));
+        sourcePicked = true;
         chosenNup = info.FullName;
         romfs = exefs = null;
         FillDumps();
@@ -322,6 +503,7 @@ public partial class MainWindow : Window
         {
             SpaceText.Text = "Needs 60 GB";
         }
+        RefreshMode();
     }
 
     void Dropped(object sender, DragEventArgs e)
@@ -362,6 +544,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "That exefs folder has no file named main.", "Hookshot");
             return;
         }
+        sourcePicked = true;
         romfs = r;
         exefs = x;
         chosenNup = null;
@@ -391,8 +574,31 @@ public partial class MainWindow : Window
 
     // ================= 2: the build =================
 
-    void StartBuild(object sender, RoutedEventArgs e)
+    async void StartBuild(object sender, RoutedEventArgs e)
     {
+        switch (mode)
+        {
+            case BuilderMode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
+                SaveSettings();
+                Updater.UpdateFolder(this, OutPath.Text, latestTag, fetched: false, revision: latestRelease?.Revision);
+                return;
+            case BuilderMode.Play:
+                finished = OutPath.Text;
+                Play(sender, e);
+                return;
+            case BuilderMode.UpdateBuilder:
+                SaveSettings();
+                BuildButton.IsEnabled = false;
+                BuildButton.Content = "Getting the new builder…";
+                try { await Updater.RunLatestSetup(this, Array.Empty<string>()); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message + " You can also download HookshotBuilder.exe from the releases page.", "Hookshot");
+                    RefreshMode();
+                }
+                return;
+        }
+        SaveSettings();
         var tools = Tools.Find();
         if (tools == null)
         {
@@ -537,7 +743,7 @@ public partial class MainWindow : Window
             left = rest > 90 ? $"About {(int)Math.Round(rest / 60)} minutes left" : "About a minute left";
         }
         else left = updating ? "Working…" : "Usually about 45 minutes";
-        BuildNote.Text = updating ? $"{left}. Your current game stays as it is until the new one is complete."
+        BuildNote.Text = updating ? $"{left}{(left.EndsWith("…") ? "" : ".")} Your current game stays as it is until the new one is complete."
                                   : $"{left} · your PC stays usable";
     }
 
@@ -591,6 +797,8 @@ public partial class MainWindow : Window
         ReadyNote.Text = $"{(updating ? "Updated" : "Built")} in {Span(elapsed.Elapsed)} · {finished}";
         if (!updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
             Finder.Shortcuts(finished, DesktopTick.IsChecked == true, StartTick.IsChecked == true);
+        else if (updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
+            Finder.RefreshShortcuts(finished);   // (the ones the player has, onto the folder's launcher; none made)
         ShowPage(ReadyPage);
     }
 
@@ -606,7 +814,7 @@ public partial class MainWindow : Window
 
     void Play(object sender, RoutedEventArgs e)
     {
-        Process.Start(new ProcessStartInfo(System.IO.Path.Combine(finished, "hookshot.exe")) { UseShellExecute = true, WorkingDirectory = finished });
+        StartGame(finished);
         WindowState = WindowState.Minimized;
     }
 
@@ -689,15 +897,13 @@ public partial class MainWindow : Window
 
     CancellationTokenSource? download;
 
-    public void BeginUpdate(string folder)
+    public void BeginUpdate(string folder, string? tag)
     {
         updating = true;
         OutPath.Text = folder;
         finished = "";
-        var a = Environment.GetCommandLineArgs();
-        var i = Array.IndexOf(a, "--tag");
-        var to = i >= 0 && i + 1 < a.Length ? a[i + 1] : "the latest version";
-        var from = Tools.Find()?.Version;
+        var to = tag ?? "the latest version";
+        var from = GameVersion(folder) ?? Tools.Find()?.Version;
         StepPill.Visibility = Visibility.Collapsed;
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;

@@ -7,12 +7,11 @@ sealed record UpdateRequest(string Folder, string? Tag, string? Revision, bool F
 {
     public ProcessStartInfo StartInfo(string executable)
     {
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
-        start.ArgumentList.Add("--update"); start.ArgumentList.Add(Folder);
-        if (Tag != null) { start.ArgumentList.Add("--tag"); start.ArgumentList.Add(Tag); }
-        if (Revision != null) { start.ArgumentList.Add("--revision"); start.ArgumentList.Add(Revision); }
-        if (Fetched) start.ArgumentList.Add("--fetched");
-        return start;
+        var args = new List<string> { "--update", Folder };
+        if (Tag != null) { args.Add("--tag"); args.Add(Tag); }
+        if (Revision != null) { args.Add("--revision"); args.Add(Revision); }
+        if (Fetched) args.Add("--fetched");
+        return BuilderLaunch.StartInfo(executable, args);
     }
 
     public static UpdateRequest? Parse(string[] args)
@@ -37,5 +36,15 @@ sealed record UpdateRequest(string Folder, string? Tag, string? Revision, bool F
         if (folder == null || (fetched && tag == null) || (revision != null && ReleaseIdentity.Create(tag, revision) == null))
             throw new InvalidDataException("The update handoff has no valid folder or release identity.");
         return new(folder, tag, revision, fetched);
+    }
+}
+
+static class BuilderLaunch
+{
+    public static ProcessStartInfo StartInfo(string executable, IEnumerable<string> args)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
+        foreach (var arg in args) start.ArgumentList.Add(arg);
+        return start;
     }
 }
