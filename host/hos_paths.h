@@ -6,9 +6,11 @@
 #pragma once
 #include <string.h>
 #include <wchar.h>
-#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
-
+#ifdef _WIN32
 static inline DWORD hos_game_path_a(char *buf, DWORD size) {
     DWORD n = GetModuleFileNameA(NULL, buf, size);
     if (!n || n >= size) return n;

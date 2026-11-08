@@ -45,8 +45,7 @@ jobs:
           python -c "import platform; assert platform.machine() == 'arm64', platform.machine()"
           clang -target arm64-apple-macos13.3 -mcpu=apple-m1 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
-            host/posix/win32_posix.c host/hos_main.c host/rx_backend.c host/hos_setjmp.c \
-            host/hos_thread.c host/hos_svc.c host/nn_os_sync.c
+            host/posix/win32_posix.c host/hos_main.c host/rx_backend.c host/hos_setjmp.c
           clang -target arm64-apple-macos13.3 -mcpu=apple-m1 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
             host/posix/display_sdl.c host/posix/macos_stubs.c

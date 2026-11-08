@@ -1251,7 +1251,14 @@ static struct sigaction previous[32];
 static pthread_mutex_t handlers_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void context_from(CONTEXT *c, const ucontext_t *uc) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    const arm_thread_state64_t *g = &uc->uc_mcontext->__ss;
+    c->Rax = g->__x[0], c->Rcx = g->__x[1], c->Rdx = g->__x[2], c->Rbx = g->__x[3];
+    c->Rsp = g->__sp, c->Rbp = g->__fp, c->Rsi = g->__x[4], c->Rdi = g->__x[5];
+    c->R8 = g->__x[6], c->R9 = g->__x[7], c->R10 = g->__x[8], c->R11 = g->__x[9];
+    c->R12 = g->__x[10], c->R13 = g->__x[11], c->R14 = g->__x[12], c->R15 = g->__x[13];
+    c->Rip = g->__pc, c->EFlags = g->__cpsr, c->ContextFlags = CONTEXT_FULL;
+#elif defined(__APPLE__)
     const x86_thread_state64_t *g = &uc->uc_mcontext->__ss;
     c->Rax = g->__rax, c->Rcx = g->__rcx, c->Rdx = g->__rdx, c->Rbx = g->__rbx;
     c->Rsp = g->__rsp, c->Rbp = g->__rbp, c->Rsi = g->__rsi, c->Rdi = g->__rdi;
@@ -1268,7 +1275,14 @@ static void context_from(CONTEXT *c, const ucontext_t *uc) {
 #endif
 }
 static void context_to(ucontext_t *uc, const CONTEXT *c) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    arm_thread_state64_t *g = &uc->uc_mcontext->__ss;
+    g->__x[0] = c->Rax, g->__x[1] = c->Rcx, g->__x[2] = c->Rdx, g->__x[3] = c->Rbx;
+    g->__sp = c->Rsp, g->__fp = c->Rbp, g->__x[4] = c->Rsi, g->__x[5] = c->Rdi;
+    g->__x[6] = c->R8, g->__x[7] = c->R9, g->__x[8] = c->R10, g->__x[9] = c->R11;
+    g->__x[10] = c->R12, g->__x[11] = c->R13, g->__x[12] = c->R14, g->__x[13] = c->R15;
+    g->__pc = c->Rip, g->__cpsr = c->EFlags;
+#elif defined(__APPLE__)
     x86_thread_state64_t *g = &uc->uc_mcontext->__ss;
     g->__rax = c->Rax, g->__rcx = c->Rcx, g->__rdx = c->Rdx, g->__rbx = c->Rbx;
     g->__rsp = c->Rsp, g->__rbp = c->Rbp, g->__rsi = c->Rsi, g->__rdi = c->Rdi;
@@ -1296,7 +1310,9 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
     rec.ExceptionAddress = (void *)(uintptr_t)ctx.Rip;
     if (sig == SIGSEGV || sig == SIGBUS) {
         rec.NumberParameters = 2;
-#ifdef __APPLE__
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+        rec.ExceptionInformation[0] = (uc->uc_mcontext->__es.__esr & (1u << 6)) ? 1 : 0;
+#elif defined(__APPLE__)
         rec.ExceptionInformation[0] = (uc->uc_mcontext->__es.__err & 2) ? 1 : 0;
 #else
         rec.ExceptionInformation[0] = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;   /* (1: a write) */
