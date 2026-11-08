@@ -16,7 +16,8 @@ static class BuilderContents
         catch (JsonException error) { throw new InvalidDataException("The builder GUI identity manifest is malformed.", error); }
     }
 
-    public static async Task ValidateAsync(string root, ReleaseIdentity expected, CancellationToken token = default)
+    public static async Task ValidateAsync(string root, ReleaseIdentity expected, CancellationToken token = default,
+                                           byte[]? publishedManifest = null)
     {
         foreach (var path in new[] { root, Path.Combine(root, "tools"), Path.Combine(root, "tools/version.txt"),
                                     Path.Combine(root, "tools/revision.txt"), Path.Combine(root, ManifestName) })
@@ -27,6 +28,8 @@ static class BuilderContents
         var manifest = Path.Combine(root, ManifestName);
         if (!File.Exists(manifest) || new FileInfo(manifest).Length > 65536)
             throw new InvalidDataException("This builder has no supported GUI identity manifest. Download a revision-aware release.");
+        if (publishedManifest != null && !(await File.ReadAllBytesAsync(manifest, token)).AsSpan().SequenceEqual(publishedManifest))
+            throw new InvalidDataException("The installed GUI manifest differs from the verified release archive.");
         using var doc = Parse(await File.ReadAllTextAsync(manifest, token));
         var data = doc.RootElement;
         if (data.ValueKind != JsonValueKind.Object) throw new InvalidDataException("The builder GUI identity manifest is invalid.");

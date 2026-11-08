@@ -29,7 +29,9 @@ EXE or managed DLL. Upload that ZIP for the same tag. `revision.txt` identifies
 the source; it is not the digest of the ZIP containing it. Both packaging routes use the same staged-source and compiled-GUI guard.
 They also write `builder-identity.json`, containing the tag/revision and SHA256 of the EXE and managed DLL. Its own hash is excluded.
 These GUI hashes are checked before launch and whenever an installed builder is reused. Refreshing version/revision text files cannot
-make a stale GUI match the verified package. When GitHub supplies an asset SHA256, the downloader verifies that digest too.
+make a stale GUI match the verified package. Reuse also compares the local GUI manifest with the manifest in the verified release archive;
+rewriting both local GUI bytes and local hash metadata cannot make them the published builder. When GitHub supplies an asset SHA256,
+the downloader verifies that digest too.
 
 The setup list includes `identity 1 <full source revision>` alongside its existing tag, parts and run fields. The standalone setup
 ignores that additional line, so its UI and Repair flow are unchanged. The managed updater reads the list itself, downloads only missing

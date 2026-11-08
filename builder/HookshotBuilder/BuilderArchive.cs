@@ -5,6 +5,28 @@ namespace HookshotBuilder;
 
 static class BuilderArchive
 {
+    static async Task<byte[]> PublishedManifestAsync(IReadOnlyList<(string Zip, SetupPart? Part)> archives, CancellationToken token)
+    {
+        byte[]? result = null;
+        foreach (var item in archives)
+        {
+            if (item.Part?.IsLlvm == true) continue;
+            using var zip = ZipFile.OpenRead(item.Zip);
+            foreach (var entry in zip.Entries.Where(e => e.FullName == "HookshotBuilder/" + BuilderContents.ManifestName))
+            {
+                var type = (entry.ExternalAttributes >> 16) & 0xF000;
+                if (result != null || entry.Length > 65536 || type != 0 && type != 0x8000 || (entry.ExternalAttributes & 0x400) != 0)
+                    throw new InvalidDataException("The release has an invalid or repeated GUI identity manifest.");
+                result = new byte[checked((int)entry.Length)];
+                await using var input = entry.Open();
+                await input.ReadExactlyAsync(result, token);
+                var extra = new byte[1];
+                if (await input.ReadAsync(extra, token) != 0) throw new InvalidDataException("The GUI identity manifest exceeds its declared size.");
+            }
+        }
+        return result ?? throw new InvalidDataException("The release archive has no GUI identity manifest.");
+    }
+
     static string SafePath(string path)
     {
         if (path.Length == 0 || path.Contains('\\') || path.Contains(':') || path.Any(char.IsControl))
@@ -61,7 +83,7 @@ static class BuilderArchive
         {
             if (ReleaseIdentity.Read(Path.Combine(target, "tools")) != expected)
                 throw new IOException("An existing builder folder contains a different build; it was left unchanged.");
-            await BuilderContents.ValidateAsync(target, expected, token);
+            await BuilderContents.ValidateAsync(target, expected, token, await PublishedManifestAsync(archives, token));
             return target;
         }
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(target))!);

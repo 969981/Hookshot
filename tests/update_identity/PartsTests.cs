@@ -133,6 +133,8 @@ static class PartsTests
             Check(f.Api.Calls["https://fixture.invalid/app.zip"] == 2, "corrupt cache fetched again");
             File.WriteAllText(Path.Combine(f.Target, "HookshotBuilder.exe"), "stale GUI with fresh markers");
             await Throws<InvalidDataException>(() => f.Prepare());
+            await StampGui(f.Target, Identity);
+            await Throws<InvalidDataException>(() => f.Prepare());
         }
         using (var f = new Fixture()) { f.Configure(manifest: false, zip: true); await f.Prepare(); }
         using (var f = new Fixture()) { f.Configure(zip: true, legacy: true); await f.Prepare(); Check(f.Api.Calls.ContainsKey("https://fixture.invalid/full.zip"), "legacy list full-ZIP fallback"); }
