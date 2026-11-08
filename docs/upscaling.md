@@ -114,9 +114,20 @@ unmodified. There are two integration routes, and they are not interchangeable:
 - *The FidelityFX SDK sources*, where the upscaler's passes are recorded from AMD's MIT shader sources and no runtime
   library is needed at all. This is the route that works on Linux as well as Windows.
 
-A second copy of FidelityFX in this tree would be worse than either. Whichever route a backend takes, it should build
-on the vendored copy #577 is adding rather than add its own folder, and declare that dependency the way #577 declares
-its own.
+This tree takes the **SDK-source route**, under `third_party/fidelityfx-sdk/` with its provenance note: AMD's GPU
+headers and the eight upscaler passes from SDK v1.1.4, unmodified, MIT. No runtime library is needed and none is
+included, and the same code path serves Windows and Linux.
+
+The eleven variants (the eight passes, plus wave-free pyramids and a sharpening accumulate) are compiled by
+`scripts/fsr3_shaders.py` into `gpu/vk/shaders/fsr3_*_comp_spv.h` and **checked in**, like every other shader here, so
+a clone still builds with no glslang. `tests/test_fsr3_shaders.py` recompiles them all and compares, so the headers
+and their sources cannot drift apart, and validates each module. That costs about 1.3 MB of generated hex in the
+repository; generating them at build time instead would remove that at the price of a glslang dependency for every
+build, and is the maintainer's call rather than something to decide in a patch.
+
+Note that #577 vendors AMD's *API* headers under `third_party/fidelityfx/` for the other route. The two folders are
+different things — API headers against a runtime library, versus GPU sources compiled here — but if both land, one of
+them should go.
 
 **DLSS.** The Streamline headers are MIT and can be vendored the same way. **The runtime libraries are
 not**, must not be committed, and must not be bundled in a release. The user supplies them, or the

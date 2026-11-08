@@ -33,6 +33,7 @@ ARGS = {
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_upscale_contract.py": ["--cxx", "g++", "--headers", "{vulkan_headers}"],
     "tests/test_upscale_seam.py": ["--cxx", "g++"],
+    "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
@@ -100,6 +101,7 @@ def find_tools():
         "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
+        "glslang": which("glslangValidator", "glslang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 
