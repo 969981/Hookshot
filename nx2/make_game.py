@@ -764,15 +764,16 @@ def main():
     # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
+    staged = []
     launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
     launcher = launcher if not LINUX and os.path.isfile(launcher) else None
     game_dir = os.path.join(out, "bin") if launcher else out
     os.makedirs(game_dir, exist_ok=True)
-    staged = [(os.path.join(built, n), os.path.join(game_dir, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
+    for n in BESIDE:
+        src = os.path.join(built, n)
+        if os.path.exists(src):
+            staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
-    icon = os.path.join(ROOT, "assets", "hookshot.png")
-    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
-        staged.append((icon, os.path.join(out, "hookshot.png")))
     if launcher:
         staged.append((launcher, os.path.join(out, "hookshot.exe")))
     for src, dst in staged:
@@ -801,6 +802,9 @@ def main():
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    icon = os.path.join(ROOT, "assets", "hookshot.png")
+    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
+        shutil.copy2(icon, os.path.join(out, "hookshot.png"))
     seed_pipelines(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
