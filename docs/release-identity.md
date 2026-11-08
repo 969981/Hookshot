@@ -17,6 +17,8 @@ $revision = git rev-parse HEAD
 dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj -c Release -o build/HookshotBuilder -p:SourceRevisionId=$revision
 # Stage dependencies and the current tools/source files in build/HookshotBuilder/tools.
 python -I scripts/package_builder.py --staged build/HookshotBuilder --tag RELEASE_TAG --out build/HookshotBuilder.zip
+# Or publish checksum-addressed parts, including the supported setup list:
+python -I scripts/make_setup_parts.py build/HookshotBuilder RELEASE_TAG build/setup-parts
 ```
 
 The publish target writes `builder-revision.txt`. The packer runs on Windows and verifies that marker against the source revision
@@ -24,8 +26,18 @@ embedded in both GUI files' Win32 ProductVersion at compilation, as well as the 
 build sources before writing `tools/version.txt`, `tools/VERSION` (the displayed release name) and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
 GUI publish is rejected rather than stamped with today's revision. Refreshing the sidecar with `--no-build` cannot bless an old
 EXE or managed DLL. Upload that ZIP for the same tag. `revision.txt` identifies
-the source; it is not the digest of the ZIP containing it. When GitHub supplies a ZIP SHA256, the downloader verifies that external
-digest before extracting.
+the source; it is not the digest of the ZIP containing it. Both packaging routes use the same staged-source and compiled-GUI guard.
+They also write `builder-identity.json`, containing the tag/revision and SHA256 of the EXE and managed DLL. Its own hash is excluded.
+These GUI hashes are checked before launch and whenever an installed builder is reused. Refreshing version/revision text files cannot
+make a stale GUI match the verified package. Reuse also compares the local GUI manifest with the manifest in the verified release archive;
+rewriting both local GUI bytes and local hash metadata cannot make them the published builder. When GitHub supplies an asset SHA256,
+the downloader verifies that digest too.
+
+The setup list includes `identity 1 <full source revision>` alongside its existing tag, parts and run fields. The standalone setup
+ignores that additional line, so its UI and Repair flow are unchanged. The managed updater reads the list itself, downloads only missing
+or invalid SHA-addressed ZIP parts, and applies the declared LLVM top-directory relocation inside a fresh owned staging folder. It never
+downloads or executes the thin setup EXE. Archive paths, links, duplicate files, destinations and renames are checked before installation.
+The complete ZIP remains a fallback when available; a legacy setup list can use that path only if the ZIP has supported package identity.
 
 ## Installation and compatibility
 
@@ -42,6 +54,10 @@ that complete identity matches a fresh GitHub result. Missing package identity, 
 verification, or a release changed during download cannot bypass validation. Existing game files are not rebuilt until validation
 succeeds. Both lightweight and annotated Git tags are resolved, with a bounded annotated-tag chain.
 
+Releases without revision-aware setup metadata and without a supported full ZIP cannot be accepted automatically. This includes legacy
+installer-only packages: install/rebuild manually with a revision-aware package once available. The updater does not infer the source of
+downloaded bytes from the current tag or run an older bootstrap to bypass missing metadata.
+
 Skipping an offer skips one tag/revision pair. A corrected source revision can be offered again. Downloaded builders use separate
 identity-specific directories, so a corrected same-tag package does not replace the directory of the running builder.
 
@@ -54,3 +70,6 @@ users. The Linux runtime's automatic update offer remains out of scope.
 Game-free checks are `tests/test_release_identity.py`, `tests/check_update_identity_c.py` and
 `tests/update_identity/UpdateIdentityTests.csproj`. Their inputs are authored metadata, source files and ZIPs; they do not read games
 or run the GUI. The native negative control retains the previous tag-only decision and must fail the corrected-source case.
+Managed tests exercise actual download/preparation code against an offline HTTP handler, including manifest-only releases, ZIP fallback,
+hash caches, truncation, release changes, malformed handoffs, LLVM relocation, archive boundaries and stale GUI bytes. A separate local
+check keeps a real old GUI binary immutable and confirms it is rejected against fresh markers and the new GUI manifest without execution.

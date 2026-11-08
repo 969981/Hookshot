@@ -61,28 +61,47 @@ sealed record ReleaseIdentity(string Tag, string Revision)
     }
 }
 
-sealed record LatestRelease(ReleaseIdentity Identity, string Url, long Size, string? Digest)
+sealed record ReleaseAsset(string Url, long Size, string? Digest)
+{
+    public static ReleaseAsset Read(JsonElement asset)
+    {
+        var url = asset.GetProperty("browser_download_url").GetString();
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.UserInfo.Length != 0)
+            throw new InvalidDataException("The release download URL is invalid.");
+        var size = asset.GetProperty("size").GetInt64();
+        if (size <= 0) throw new InvalidDataException("The release download size is invalid.");
+        string? digest = asset.TryGetProperty("digest", out var value) ? value.GetString() : null;
+        if (digest != null && (digest.Length != 71 || !digest.StartsWith("sha256:", StringComparison.Ordinal) ||
+                              !digest[7..].All(Uri.IsHexDigit)))
+            throw new InvalidDataException("The release download digest is invalid.");
+        return new(url!, size, digest?.ToLowerInvariant());
+    }
+}
+
+sealed record LatestRelease(ReleaseIdentity Identity, ReleaseAsset? Zip, ReleaseAsset? Manifest)
 {
     public const string Api = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest";
     public const string Asset = "HookshotBuilder.zip";
+    public const string SetupList = "hookshot-setup.txt";
+    public string? Digest => Zip?.Digest;
 
     public static async Task<LatestRelease> FetchAsync(HttpClient http, CancellationToken token)
     {
         using var doc = JsonDocument.Parse(await http.GetStringAsync(Api, token));
         var tag = doc.RootElement.GetProperty("tag_name").GetString();
         if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("The release has no tag.");
-        var assets = doc.RootElement.GetProperty("assets").EnumerateArray()
-            .Where(a => a.GetProperty("name").GetString() == Asset).ToArray();
-        if (assets.Length != 1) throw new InvalidDataException("The latest release has no unique " + Asset + ". It may still be uploading.");
-        var asset = assets[0];
-        var url = asset.GetProperty("browser_download_url").GetString();
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https")
-            throw new InvalidDataException("The release download URL is invalid.");
-        string? digest = asset.TryGetProperty("digest", out var value) ? value.GetString() : null;
-        if (digest != null && (digest.Length != 71 || !digest.StartsWith("sha256:", StringComparison.Ordinal) ||
-                              !digest[7..].All(Uri.IsHexDigit)))
-            throw new InvalidDataException("The release download digest is invalid.");
+        ReleaseAsset? Find(string name)
+        {
+            var matches = doc.RootElement.GetProperty("assets").EnumerateArray()
+                .Where(a => a.GetProperty("name").GetString() == name).ToArray();
+            if (matches.Length > 1) throw new InvalidDataException("The release has duplicate " + name + " assets.");
+            return matches.Length == 0 ? null : ReleaseAsset.Read(matches[0]);
+        }
+        var zip = Find(Asset);
+        var manifest = Find(SetupList);
+        if (zip == null && manifest == null)
+            throw new InvalidDataException("The latest release has no builder archive or setup list. It may still be uploading.");
         var identity = await ReleaseIdentity.ResolveAsync(tag, (path, ct) => http.GetStringAsync(path, ct), token);
-        return new(identity, url!, asset.GetProperty("size").GetInt64(), digest?.ToLowerInvariant());
+        return new(identity, zip, manifest);
     }
 }

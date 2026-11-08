@@ -43,8 +43,9 @@ static class Test
         File.WriteAllText(Path.Combine(tools, "revision.txt"), identity.Revision + "\n");
     }
 
-    static async Task Main()
+    static async Task Main(string[] args)
     {
+        if (args.Length == 3) { await PartsTests.VerifyRealOldGui(args[0], args[1], args[2]); return; }
         var old = ReleaseIdentity.Create(Tag, Old)!;
         var next = ReleaseIdentity.Create(Tag, Next)!;
         Check("same tag corrected source differs", old != next);
@@ -91,6 +92,8 @@ static class Test
             var stage = Path.Combine(temp, "stage", "HookshotBuilder");
             Stamp(Path.Combine(stage, "tools"), next);
             File.WriteAllText(Path.Combine(stage, "HookshotBuilder.exe"), "authored fixture, not executable");
+            File.WriteAllText(Path.Combine(stage, "HookshotBuilder.dll"), "authored fixture, not a managed assembly");
+            await PartsTests.StampGui(stage, next);
             var archive = Path.Combine(temp, "builder.zip");
             ZipFile.CreateFromDirectory(Path.GetDirectoryName(stage)!, archive);
             var oldFolder = Path.Combine(temp, old.CacheName);
@@ -110,5 +113,6 @@ static class Test
         }
         finally { Directory.Delete(temp, true); }
         Console.WriteLine("update identity: Builder/ref/fetched/archive checks passed");
+        await PartsTests.Run();
     }
 }

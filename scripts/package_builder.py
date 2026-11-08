@@ -5,6 +5,7 @@ download, compiler or game build is run here. See docs/release-identity.md.
 """
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -72,16 +73,15 @@ def embedded_revision(path):
     raise ValueError("The builder has no supported compile-time source revision: " + str(path))
 
 
-def package(repo, staged, tag, output):
-    repo, staged, output = Path(repo).resolve(), Path(staged).resolve(), Path(output).resolve()
+def verify_staged(repo, staged, tag):
+    """One publisher guard for full ZIPs and checksum-cached setup parts."""
+    repo, staged = Path(repo).resolve(), Path(staged).resolve()
     if not tag or tag != tag.strip() or len(tag.encode("utf-8")) > 127 or any(ord(c) < 32 or ord(c) == 127 for c in tag):
         raise ValueError("A valid release tag is required.")
     try:
         git(repo, "check-ref-format", "refs/tags/" + tag)
     except subprocess.CalledProcessError as error:
         raise ValueError("A valid Git release tag is required.") from error
-    if output.exists() or output.is_relative_to(staged):
-        raise ValueError("Choose a new ZIP outside the staging folder.")
     revision = git(repo, "rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("The checkout has no supported source revision.")
@@ -91,7 +91,8 @@ def package(repo, staged, tag, output):
         raise ValueError("Create the release tag at this source revision before packaging.") from error
     if tagged != revision:
         raise ValueError("The release tag does not identify this source revision.")
-    changes = git(repo, "status", "--porcelain", "-z", "--untracked-files=all", "--", *TREES, "builder/HookshotBuilder")
+    changes = git(repo, "status", "--porcelain", "-z", "--untracked-files=all", "--", *TREES, "builder/HookshotBuilder",
+                  "builder/setup", "scripts/package_builder.py", "scripts/make_setup_parts.py")
     for change in changes.split("\0"):
         if not change:
             continue
@@ -142,26 +143,49 @@ def package(repo, staged, tag, output):
         raise ValueError("Build sources are missing from staging: " + ", ".join(missing[:5]))
     # These files identify the verified source tree, not the ZIP containing them.
     (tools / "version.txt").write_text(tag + "\n", encoding="utf-8", newline="\n")
+    (tools / "VERSION").write_text(tag + "\n", encoding="utf-8", newline="\n")
     (tools / "revision.txt").write_text(revision + "\n", encoding="utf-8", newline="\n")
+    identity = staged / "builder-identity.json"
+    identity.write_text(json.dumps({"format": 1, "tag": tag, "revision": revision,
+        "files": {name: hashlib.sha256((staged / name).read_bytes()).hexdigest()
+                  for name in ("HookshotBuilder.exe", "HookshotBuilder.dll")}}, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    return revision, sources, set(staged_files) | {tools / "version.txt", tools / "VERSION", tools / "revision.txt", identity}
+
+
+def package(repo, staged, tag, output):
+    repo, staged, output = Path(repo).resolve(), Path(staged).resolve(), Path(output).resolve()
+    if output.exists() or output.is_relative_to(staged):
+        raise ValueError("Choose a new ZIP outside the staging folder.")
+    revision, sources, paths = verify_staged(repo, staged, tag)
+    gui_hashes = json.loads((staged / "builder-identity.json").read_text(encoding="utf-8"))["files"]
     output.parent.mkdir(parents=True, exist_ok=True)
     created = False
     try:
         with output.open("xb") as stream:
             created = True
             with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
-                paths = set(staged_files) | {tools / "version.txt", tools / "revision.txt"}
                 for path in sorted(paths):
-                    data = path.read_bytes()
-                    if path.is_relative_to(tools):
-                        name = path.relative_to(tools).as_posix()
-                        if name in sources and not source_matches(data, sources[name], path.suffix in TEXT_SUFFIXES or not path.suffix):
-                            raise ValueError("A staged source changed during packaging: " + name)
+                    data = verified_bytes(path, staged, sources, gui_hashes)
                     archive.writestr("HookshotBuilder/" + path.relative_to(staged).as_posix(), data)
     except BaseException:
         if created:
             output.unlink()
         raise
     return revision
+
+
+def verified_bytes(path, staged, sources, gui_hashes):
+    """Check the bytes actually written, including a source/GUI changed after the initial staging check."""
+    path, staged = Path(path), Path(staged)
+    data = path.read_bytes()
+    tools = staged / "tools"
+    if path.is_relative_to(tools):
+        name = path.relative_to(tools).as_posix()
+        if name in sources and not source_matches(data, sources[name], path.suffix in TEXT_SUFFIXES or not path.suffix):
+            raise ValueError("A staged source changed during packaging: " + name)
+    if path.parent == staged and path.name in gui_hashes and hashlib.sha256(data).hexdigest() != gui_hashes[path.name]:
+        raise ValueError("A staged GUI changed during packaging: " + path.name)
+    return data
 
 
 if __name__ == "__main__":
