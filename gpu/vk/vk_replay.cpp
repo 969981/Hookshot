@@ -245,6 +245,153 @@ Recording& begin_recording(uint64_t value) {
     draw_begin_recording(r.slot, r.cmd, value);
     return r;
 }
+// ---- (local) write-backs by DMA (vk_memory.cpp): the graphics queue's submits signal gfx_tl; a transfer submit waits for
+// one, copies its write-backs out of the staging ring into guest memory, and signals the timeline (and xfer_tl). Every
+// timeline signal goes this way while it is on, in submission order, so a value is never reached before an older
+// submission's copies are in guest memory ----
+VkSemaphore gfx_tl = VK_NULL_HANDLE, xfer_tl = VK_NULL_HANDLE;
+uint64_t gfx_value = 0, xfer_value = 0;
+VkCommandPool xfer_pool = VK_NULL_HANDLE;
+constexpr int kXferCmds = 32;
+struct XferCmd {
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    uint64_t value = 0;   // (the transfer submit that last used it)
+};
+XferCmd xfer_cmds[kXferCmds];
+int xfer_next = 0;
+bool xfer_ready = false;
+bool make_timeline(VkSemaphore& s) {
+    VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    si.pNext = &ti;
+    return vkCreateSemaphore(dev.device, &si, nullptr, &s) == VK_SUCCESS;
+}
+void xfer_init() {
+    if (!dev.xfer_queue) return;
+    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pi.queueFamilyIndex = dev.xfer_family;
+    if (!make_timeline(gfx_tl) || !make_timeline(xfer_tl) || vkCreateCommandPool(dev.device, &pi, nullptr, &xfer_pool) != VK_SUCCESS) {
+        logf("vk: write-backs by DMA: no transfer submits (setup failed): on the queue, as before");
+        return;
+    }
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = xfer_pool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    for (XferCmd& x : xfer_cmds)
+        if (vkAllocateCommandBuffers(dev.device, &ai, &x.cmd) != VK_SUCCESS) return;
+    xfer_ready = true;
+}
+}   // namespace
+bool wb_dma_on() { return xfer_ready; }
+uint64_t xfer_done() {
+    uint64_t v = 0;
+    if (xfer_tl && vkGetSemaphoreCounterValue(dev.device, xfer_tl, &v) != VK_SUCCESS) return 0;
+    return v;
+}
+VkResult xfer_wait(uint64_t value) {
+    if (!xfer_tl || !value) return VK_SUCCESS;
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &xfer_tl;
+    wi.pValues = &value;
+    // (20 s, not forever: a value no submit will signal (a failed one) is a failure here, not a hang)
+    const VkResult r = vkWaitSemaphores(dev.device, &wi, 20000000000ull);
+    if (r != VK_SUCCESS) {
+        static int told;
+        if (told++ < 8) logf("vk: write-backs by DMA: waiting for transfer submit %llu ended with %d", (unsigned long long)value, (int)r);
+    }
+    return r;
+}
+namespace {
+
+/// (local) The submit of a recording when write-backs go by DMA: the graphics part signals gfx_tl, the transfer part waits
+/// for it, copies the write-backs and signals the timeline (when signal_value) and xfer_tl. present_mu held
+/// gfx_ok: whether the graphics part was submitted (the recording's slot follows it, whatever the transfer part did)
+VkResult submit_with_xfer(Recording& r, VkSubmitInfo2& si, const std::vector<DmaCopy>& dma, bool signal_value, uint64_t value,
+                          bool& gfx_ok) {
+    VkSemaphoreSubmitInfo gs{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    gs.semaphore = gfx_tl;
+    gs.value = ++gfx_value;
+    gs.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    si.signalSemaphoreInfoCount = 1;
+    si.pSignalSemaphoreInfos = &gs;
+    const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
+    gfx_ok = res == VK_SUCCESS;
+    if (res != VK_SUCCESS) {
+        gfx_value--;   // (not signalled: the next one takes the value)
+        return res;
+    }
+    XferCmd& x = xfer_cmds[xfer_next];
+    xfer_next = (xfer_next + 1) % kXferCmds;
+    bool cmd_ok = !dma.empty() && xfer_wait(x.value) == VK_SUCCESS;   // (its last use done; else no copies: the fallback below)
+    if (cmd_ok) {
+        vkResetCommandBuffer(x.cmd, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(x.cmd, &bi);
+        std::vector<VkBufferCopy> runs;
+        for (size_t i = 0; i < dma.size();) {
+            const VkBuffer dst = dma[i].dst;
+            runs.clear();
+            for (; i < dma.size() && dma[i].dst == dst; i++) runs.push_back(dma[i].c);
+            vkCmdCopyBuffer(x.cmd, memory_dma_ring(), dst, (uint32_t)runs.size(), runs.data());
+        }
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};   // (the copies visible to the host and to later work)
+        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        d.memoryBarrierCount = 1;
+        d.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(x.cmd, &d);
+        vkEndCommandBuffer(x.cmd);
+    }
+    VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    wait.semaphore = gfx_tl;
+    wait.value = gs.value;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphoreSubmitInfo sig[2]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
+    sig[0].semaphore = xfer_tl;
+    sig[0].value = ++xfer_value;
+    sig[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    sig[1].semaphore = timeline;
+    sig[1].value = value;
+    sig[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cb.commandBuffer = x.cmd;
+    VkSubmitInfo2 xi{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    xi.waitSemaphoreInfoCount = 1;
+    xi.pWaitSemaphoreInfos = &wait;
+    xi.commandBufferInfoCount = cmd_ok ? 1 : 0;
+    xi.pCommandBufferInfos = &cb;
+    xi.signalSemaphoreInfoCount = signal_value ? 2 : 1;
+    xi.pSignalSemaphoreInfos = sig;
+    // (copies to make but no command buffer for them (the device lost while waiting for one): the fallback below)
+    VkResult xr = dma.empty() || cmd_ok ? vkQueueSubmit2(dev.xfer_queue, 1, &xi, VK_NULL_HANDLE) : VK_ERROR_DEVICE_LOST;
+    if (xr != VK_SUCCESS) {   // (the values signalled all the same, on the graphics queue, so nothing waits for them forever;
+        // the copies are lost: guest memory misses this submission's write-backs)
+        static int failures;
+        if (failures++ < 8) logf("vk: transfer submit %llu failed (%d): its write-backs lost", (unsigned long long)xfer_value, (int)xr);
+        // (after the older transfer submits too: values are signalled in order, and none is reached before their copies)
+        VkSemaphoreSubmitInfo waits2[2] = {wait, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
+        waits2[1].semaphore = xfer_tl;
+        waits2[1].value = xfer_value - 1;
+        waits2[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        xi.waitSemaphoreInfoCount = xfer_value > 1 ? 2 : 1;
+        xi.pWaitSemaphoreInfos = waits2;
+        xi.commandBufferInfoCount = 0;
+        xr = vkQueueSubmit2(dev.queue, 1, &xi, VK_NULL_HANDLE);
+    } else if (!dma.empty()) {
+        x.value = xfer_value;
+    }
+    memory_dma_tag(xfer_value);
+    return xr;
+}
+
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
     const bool uploads = texture_uploads_recorded();
     gpu_time_end(r);
@@ -263,6 +410,9 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     si.pCommandBufferInfos = cb;
     si.signalSemaphoreInfoCount = signal_value ? 1 : 0;
     si.pSignalSemaphoreInfos = signal_value ? &signal : nullptr;
+    // (local) write-backs by DMA: its copies (and any timeline signal) through the transfer queue
+    std::vector<DmaCopy> dma;
+    if (wb_dma_on()) memory_take_dma(dma);
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
     if (batch_on()) {
         if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now();
@@ -276,8 +426,15 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         return;
     }
     PROF(PROF_QSUBMIT);
-    const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
-    r.submitted = res == VK_SUCCESS;
+    bool gfx_ok = false;
+    VkResult res;
+    if (wb_dma_on() && (signal_value || !dma.empty())) {
+        res = submit_with_xfer(r, si, dma, signal_value, signal.value, gfx_ok);
+    } else {
+        res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
+        gfx_ok = res == VK_SUCCESS;
+    }
+    r.submitted = gfx_ok;
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: submit %llu failed (%d)", (unsigned long long)r.value, (int)res);
     if (res == VK_ERROR_DEVICE_LOST) checkpoints_report();
@@ -1579,11 +1736,32 @@ uint64_t oldest_unfinished() {
         if (q.blocked()) m = std::min(m, q.oldest());
     return m;
 }
+// ---- (local) Releases while queues are stopped: kept until the stopped work has gone on, instead of making it go at once
+// (drain 1). Made to go early, a queue's work ran before the work it waits for, and about every 13th frame in Kokiri a pass read
+// what was not there yet: the ground fog came out thinner for that frame (the fog flickering). The stopped work runs as before,
+// at its wait, a present or hold_ms; the release follows it. RX_VK_RELEASE_DRAIN=1: as before ----
+void do_texture_released(const nvn_tex* t);
+void do_program_released(const nvn_prog* p);
+std::vector<nvn_tex> held_tex_releases;    // (sync_order_mu)
+std::vector<nvn_prog> held_prog_releases;  // (sync_order_mu)
+std::atomic<int64_t> st_held_releases{0};
+bool hold_releases() {
+    static const bool v = !getenv("RX_VK_RELEASE_DRAIN") || atoi(getenv("RX_VK_RELEASE_DRAIN")) == 0;
+    return v;
+}
 void update_blocked() {
     int n = 0;
     for (const auto& [queue, q] : qruns) n += q.blocked();
     if (n && !blocked_n.load()) blocked_since = std::chrono::steady_clock::now();
     blocked_n = n;
+    if (!n && (!held_tex_releases.empty() || !held_prog_releases.empty())) {   // (the stopped work has gone on: its releases now)
+        std::vector<nvn_tex> ts;
+        std::vector<nvn_prog> ps;
+        ts.swap(held_tex_releases);
+        ps.swap(held_prog_releases);
+        for (const nvn_tex& t : ts) do_texture_released(&t);
+        for (const nvn_prog& p : ps) do_program_released(&p);
+    }
 }
 void log_order_stats() {
     logf("vk: queues ordered by their events: %lld submissions stopped at a wait, %lld went on once it was reached, %lld "
@@ -1925,6 +2103,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
         static const bool off = getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
         bool ever = false;
         if (!off && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
+            memory_note_readback(host->gpu_guest(gpu), size);   // ((local) the CPU may write it back: memory_rb_refresh)
             static std::atomic<int64_t> calls{0}, waited{0}, ns{0};
             const auto w0 = std::chrono::steady_clock::now();
             bool w = false;
@@ -1951,6 +2130,27 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 const int64_t n = waited.exchange(0);
                 logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each", (long long)n,
                      n ? ns.exchange(0) / (double)n / 1e6 : 0.0);
+            }
+        }
+    }
+    {   // ((local, diagnostics) RX_VK_LOG_READBACK_FILE=<path>: while that file exists, every invalidate with what the CPU now
+        // reads (after the wait above): its range, whether a write-back ever reached it, the submission that last did and the
+        // GPU's completed value. For the exposure meter: a steady sum, or 0 / 2x frames)
+        static const char* trig = getenv("RX_VK_LOG_READBACK_FILE");
+        static std::atomic<int64_t> checked_at{-1};
+        static std::atomic<bool> on{false};
+        static std::atomic<int> n{0};
+        if (trig) {
+            const int64_t pn = presents_now;
+            if (checked_at.exchange(pn) != pn) on = GetFileAttributesA(trig) != INVALID_FILE_ATTRIBUTES;
+            if (on && size && n++ < 30000) {
+                uint32_t w[8]{};
+                host->gpu_read(gpu, w, std::min<uint64_t>(sizeof w, size));
+                bool ever = false;
+                const uint64_t v = memory_writeback_value(host->gpu_guest(gpu), size, &ever);
+                logf("vk: rb %lld %#llx +%#llx ever %d last %llu done %llu | %08x %08x %08x %08x %08x %08x %08x %08x", (long long)pn,
+                     (unsigned long long)gpu, (unsigned long long)size, (int)ever, (unsigned long long)v, (unsigned long long)completed(),
+                     w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
             }
         }
     }
@@ -3139,6 +3339,14 @@ void texture_released_of(const nvn_tex* t) {
     if (!t) return;
     tex_pages_add(t, -1);
     if (!async_on()) {
+        if (hold_releases() && sync_waits_on()) {   // ((local) after the stopped work that may use it, when it goes on)
+            std::lock_guard lk(sync_order_mu);
+            if (blocked_n.load()) {
+                held_tex_releases.push_back(*t);
+                if (++st_held_releases % 2000 == 1) logf("vk: releases kept for stopped work: %lld", (long long)st_held_releases.load());
+                return;
+            }
+        }
         sync_drain(1);   // (after the stopped work that may use it)
         return do_texture_released(t);
     }
@@ -3149,6 +3357,14 @@ void texture_released_of(const nvn_tex* t) {
 void program_released_locked(const nvn_prog* p) {
     if (!p) return;
     if (!async_on()) {
+        if (hold_releases() && sync_waits_on()) {   // ((local) as texture releases)
+            std::lock_guard lk(sync_order_mu);
+            if (blocked_n.load()) {
+                held_prog_releases.push_back(*p);
+                st_held_releases++;
+                return;
+            }
+        }
         sync_drain(1);
         return do_program_released(p);
     }
@@ -3212,6 +3428,7 @@ bool replay_start() {
     tsi.pNext = &ti;
     if (vkCreateSemaphore(dev.device, &tsi, nullptr, &timeline) != VK_SUCCESS) return false;
     if (vkCreateSemaphore(dev.device, &tsi, nullptr, &batch_tl) != VK_SUCCESS) batch_tl = VK_NULL_HANDLE;
+    xfer_init();   // (local) write-backs by DMA
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pi.queueFamilyIndex = dev.queue_family;
     pi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;

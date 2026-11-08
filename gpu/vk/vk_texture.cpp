@@ -1549,6 +1549,7 @@ VkCommandBuffer upload_command_buffer() {
     return upload_cmd();
 }
 bool texture_uploads_recorded() {
+    if (memory_rb_refresh(up_cmd)) up_used = true;   // ((local) readback pages from guest memory, last of the uploads)
     memory_table_flush();   // (vk_memory.cpp: the page table's changes, after this recording's mirror copies)
     if (up_used) full_barrier(up_cmd);   // (before the recording that reads them)
     return up_used;
@@ -1660,6 +1661,32 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         }
         tex->upload_gen = gen;
         return tex;
+    }
+    {   // ((local) RX_VK_DUMP_TEX_AT=<frame>, with RX_VK_WATCH_RANGE: at that texture frame, the guest memory of the textures
+        // sampled there (linear 1-byte formats) written beside the log as text_<address>_<w>x<h>.pgm: what the game wrote)
+        static const uint64_t at = getenv("RX_VK_DUMP_TEX_AT") ? strtoull(getenv("RX_VK_DUMP_TEX_AT"), nullptr, 10) : 0;
+        static const std::pair<uint64_t, uint64_t> range = [] {
+            unsigned long long a = 0, b = 0;
+            if (const char* e = getenv("RX_VK_WATCH_RANGE")) sscanf(e, "%llx:%llx", &a, &b);
+            return std::pair<uint64_t, uint64_t>{a, b};
+        }();
+        static std::unordered_map<uint64_t, bool> dumped;
+        if (at && frame_no >= at && frame_no < at + 3 && tex->gpu >= range.first && tex->gpu < range.second && tex->bpb == 1 &&
+            tex->height && dumped.emplace(tex->gpu, true).second) {
+            std::vector<uint8_t> b((size_t)tex->guest_size);
+            if (host->gpu_read(tex->gpu, b.data(), b.size())) {
+                const uint64_t pitch = tex->guest_size / tex->height;
+                char name[96];
+                snprintf(name, sizeof name, "text_%llx_%ux%u.pgm", (unsigned long long)tex->gpu, tex->width, tex->height);
+                if (FILE* f = fopen(name, "wb")) {
+                    fprintf(f, "P5\n%u %u\n255\n", tex->width, tex->height);
+                    for (uint32_t y = 0; y < tex->height; y++) fwrite(b.data() + y * pitch, 1, tex->width, f);
+                    fclose(f);
+                }
+                logf("vk: dumped %s (pitch %llu, uploaded %d, upload gen %u, gen now %u)", name, (unsigned long long)pitch,
+                     (int)tex->uploaded, tex->upload_gen, memory_generation());
+            }
+        }
     }
     {   // (RX_VK_REUPLOAD_DIM=<w>x<h> (debugging): textures that size uploaded whole again every frame: is what a
         // sampled texture misses in guest memory, unseen by the write tracking, or not there at all?)
@@ -2198,6 +2225,8 @@ bool texture_gpu_written_in(uint64_t lo, uint64_t size) {
 int texture_flush_to_guest(uint64_t lo, uint64_t size) {
     const uint64_t hi = lo + size;
     const auto t0 = std::chrono::steady_clock::now();
+    // (local) texels written into guest memory here: write-backs by DMA there land first, not over them later
+    memory_dma_wait(lo, size);
     std::vector<Texture*> todo;
     for (auto& kv : textures) {
         Texture* t = kv.second.get();
@@ -2492,7 +2521,24 @@ bool texture_resident(Texture* tex, uint32_t first, uint32_t count) {
 void texture_rendered(Texture* tex) {
     if (!tex) return;
     if (tex->sparse && !tex->first_render_frame) texture_resident(tex, 0, tex->layers);   // (rendered into: all of it)
-    if (!tex->first_render_frame) tex->first_render_frame = frame_no;
+    if (!tex->first_render_frame) {
+        tex->first_render_frame = frame_no;
+        // ((local) RX_VK_DUMP_ON_TARGET=<w>x<h>: a render target that size rendered the first time: this frame and the next
+        // three dumped (once, the first such target): what the game draws into its cached menu panels)
+        static unsigned tw = 0, th = 0;
+        static const bool parsed = [] {
+            if (const char* e = getenv("RX_VK_DUMP_ON_TARGET")) sscanf(e, "%ux%u", &tw, &th);
+            return true;
+        }();
+        (void)parsed;
+        static bool armed = false;
+        if (tw && !armed && tex->width == tw && tex->height == th) {
+            armed = true;
+            logf("vk: %ux%u target #%u %#llx rendered first at texture frame %llu: dumping from present %llu", tw, th, tex->id,
+                 (unsigned long long)tex->gpu, (unsigned long long)frame_no, (unsigned long long)(frame_no - 1));
+            dump_request((int64_t)frame_no - 1, 4);
+        }
+    }
     // (its storage's range as the GPU's, once a frame: render targets only. Copies and storage writes registered it
     // too, and a texture made later over such storage (MKW's terrain tiles reuse the slots of a pool) was not uploaded
     // and kept the placeholder it was made with)
@@ -2522,6 +2568,7 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     if (storage) texture_gpu_wrote(t->gpu, size);
     static std::unordered_map<uint64_t, VkBufferView> views;
     const uint64_t key = mix(mix(t->gpu, (uint64_t)f << 1 | storage), size);
+    memory_dma_wait(t->gpu, size);   // (local) a view of guest memory, used again: write-backs by DMA there done first, each time
     auto it = views.find(key);
     if (it != views.end()) return it->second;
     BufferRef b = gpu_buffer(t->gpu, size);

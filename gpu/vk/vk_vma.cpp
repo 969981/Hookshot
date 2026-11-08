@@ -120,6 +120,20 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
 void flush_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaFlushAllocation(vma, allocation, 0, size);
 }
+bool create_buffer_shared(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation) {
+    const uint32_t families[2] = {dev.queue_family, dev.xfer_family};
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = size;
+    bi.usage = usage;
+    if (dev.xfer_family != UINT32_MAX && dev.xfer_family != dev.queue_family) {
+        bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bi.queueFamilyIndexCount = 2;
+        bi.pQueueFamilyIndices = families;
+    }
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    return vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, nullptr) == VK_SUCCESS;
+}
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);
 }

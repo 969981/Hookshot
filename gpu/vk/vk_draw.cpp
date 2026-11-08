@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <cstdio>
 #include <cstring>
@@ -629,7 +631,308 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
     return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
 }
 #endif
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
+
+// ---- (local) The driver's optimizer, raced. AMD's proprietary compiler fails some of Ocarina's shaders with it on (-13 on graphics
+// pipeline 5fa56485a6b07619, Hookshot PR 166) and takes minutes over others it builds in seconds without it (Lichii #200: 6 and 18
+// minutes on two compute shaders); a draw or a dispatch waiting on such a build held the game, and RX_VK_NOOPT=1 (no optimizer for
+// any pipeline) cost the GPU time of all the others. So each pipeline is built with the optimizer on a thread of its own, waited for
+// RX_VK_OPT_BUDGET_MS (1500; -1: as long as it takes). One that fails, or is not done by then, is built again without the optimizer
+// for the game to go on with; an optimized one that comes in later takes its place, and stays in the driver's cache for the next start.
+// RX_VK_NOOPT=1 still builds every pipeline without it ----
+bool noopt_all() {
+    static const bool on = getenv("RX_VK_NOOPT") != nullptr;
+    return on;
+}
+int opt_budget_ms() {
+    static const int ms = getenv("RX_VK_OPT_BUDGET_MS") ? atoi(getenv("RX_VK_OPT_BUDGET_MS")) : 1500;
+    return ms;
+}
+std::atomic<int> opt_late_running{0};
+std::atomic<int64_t> st_opt_late, st_opt_failed, st_opt_upgraded, st_opt_capped;
+int opt_late_max() {   // (RX_VK_OPT_LATE_MAX: optimized builds left running past the budget at once; more are built without it)
+    static const int n = getenv("RX_VK_OPT_LATE_MAX") ? std::max(0, atoi(getenv("RX_VK_OPT_LATE_MAX"))) : 3;
+    return n;
+}
+
+// (local) Programs the optimizer could not build, or took past the budget without coming in soon after: kept beside the
+// executable (hookshot_noopt.txt, one key a line), so later starts build them without it at once and no draw waits on it
+std::mutex noopt_mu;
+std::unordered_set<uint64_t> noopt_keys;
+bool noopt_loaded = false;
+std::string noopt_path() {
+    char exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const std::string dir(exe, n);
+    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_noopt.txt";
+}
+void noopt_load_locked() {
+    if (noopt_loaded) return;
+    noopt_loaded = true;
+    if (FILE* f = fopen(noopt_path().c_str(), "r")) {
+        char line[64];
+        while (fgets(line, sizeof line, f))
+            if (const unsigned long long k = strtoull(line, nullptr, 16)) noopt_keys.insert(k);
+        fclose(f);
+    }
+    if (!noopt_keys.empty()) logf("vk: %zu programs built without the optimizer (hookshot_noopt.txt)", noopt_keys.size());
+}
+bool noopt_listed(uint64_t key) {
+    std::lock_guard lk(noopt_mu);
+    noopt_load_locked();
+    return noopt_keys.count(key) != 0;
+}
+std::unordered_set<uint64_t> noopt_failed;   // (this start's: the optimizer failed on one of its variants: not let go again)
+/// add: listed; failed: for good (the key is the program's, and its pipeline variants race apart: one variant coming in does not
+/// let go of a program the optimizer failed on in another)
+void noopt_note(uint64_t key, bool add, bool failed = false) {
+    std::lock_guard lk(noopt_mu);
+    noopt_load_locked();
+    if (failed) noopt_failed.insert(key);
+    if (!add && noopt_failed.count(key)) return;
+    if (add ? !noopt_keys.insert(key).second : !noopt_keys.erase(key)) return;   // (no change)
+    if (FILE* f = fopen(noopt_path().c_str(), "w")) {
+        for (const uint64_t k : noopt_keys) fprintf(f, "%016llx\n", (unsigned long long)k);
+        fclose(f);
+    }
+}
+
+/// make(flags): one build with these extra create flags, null when it fails; safe to run on two threads at once (its own create info).
+/// publish(pipeline): where the game takes it from. Called once with the pipeline to use now (null: none could be made), under a lock,
+/// and once more, later, if the optimized build finishes after the budget (never with null; the earlier one is left to draws that may
+/// still be on their way, as gpl's linked pipelines are). settled(ok): when an optimized build that was still running on return is done
+/// (ok: it was published). Returns whether one is: then settled will be called, from another thread.
+/// make, publish and settled must stay valid until then: they own copies, or point at what lives as long as the device (programs and
+/// pipeline entries are never freed).
+bool build_raced(uint64_t key, const char* what, std::function<VkPipeline(VkPipelineCreateFlags)> make,
+                 std::function<void(VkPipeline)> publish, std::function<void(bool)> settled = nullptr) {
+    constexpr VkPipelineCreateFlags NOOPT = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    const int budget = opt_budget_ms();
+    const auto told_failed = [&] {
+        st_opt_failed++;
+        noopt_note(key, true, true);
+        static std::atomic<int> told{0};
+        if (told++ < 20) logf("vk: %s %016llx not made with the optimizer: built without it", what, (unsigned long long)key);
+    };
+    if (noopt_all() || budget < 0) {
+        VkPipeline pl = make(noopt_all() ? NOOPT : 0);
+        if (!pl && !noopt_all()) {
+            told_failed();
+            pl = make(NOOPT);
+        }
+        publish(pl);
+        return false;
+    }
+    if (noopt_listed(key)) {   // (an earlier start found the optimizer cannot build it in time: without it, at once)
+        publish(make(NOOPT));
+        return false;
+    }
+    // (enough slow builds hold cores already, or optimizer threads are as many as the CPU's: this one goes without, at once. The alive
+    // count is taken before the thread starts, so builds starting together cannot all pass: the late count alone is only known later)
+    static std::atomic<int> opt_alive{0};
+    static const int alive_max = (int)std::max(2u, std::thread::hardware_concurrency());
+    bool full = opt_late_running.load() >= opt_late_max();
+    if (!full && opt_alive.fetch_add(1) >= alive_max) {
+        opt_alive--;   // (taken back: no thread for this one)
+        full = true;
+    }
+    if (full) {
+        st_opt_capped++;
+        static std::atomic<int> told{0};
+        if (told++ < 20)
+            logf("vk: %s %016llx built without the optimizer: %d optimized builds are still running", what, (unsigned long long)key,
+                 opt_late_running.load());
+        publish(make(NOOPT));
+        return false;
+    }
+    struct Race {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false, late = false, published = false;
+        bool ndone = false, resolved = false;   // (the build without the optimizer done; the one to use chosen)
+        VkPipeline pl = VK_NULL_HANDLE, npl = VK_NULL_HANDLE, used = VK_NULL_HANDLE;
+        std::function<void(VkPipeline)> publish;
+        std::function<void(bool)> settled;
+    };
+    auto r = std::make_shared<Race>();
+    r->publish = std::move(publish);
+    r->settled = std::move(settled);
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+        std::thread([r, make, key, what, t0] {
+            struct Alive {
+                ~Alive() { opt_alive--; }   // (however this thread ends)
+            } alive;
+            // (below normal, as the job workers that built pipelines before: a late build can take minutes, beside the game's threads)
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            const VkPipeline pl = make(0);
+            std::unique_lock lk(r->mu);
+            r->done = true;
+            r->pl = pl;
+            r->cv.notify_all();   // (the waiting thread may be waiting for either build)
+            if (!r->late) return;
+            const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (pl && s < 20) noopt_note(key, false);   // (slow, but it comes: the driver's cache has it next time)
+            bool ok = false;
+            if (!pl) {
+                logf("vk: %s %016llx: the optimizer gave up after %.1f s (the one built without it stays)", what, (unsigned long long)key, s);
+            } else if (r->published) {   // (else the waiting thread publishes this one in place of the unoptimized build)
+                r->publish(pl);
+                st_opt_upgraded++;
+                ok = true;
+                logf("vk: %s %016llx: optimized after %.1f s, in use from now", what, (unsigned long long)key, s);
+            }
+            if (r->published) {   // (not published yet: the waiting thread settles it)
+                opt_late_running--;
+                if (r->settled) r->settled(ok);
+            }
+        }).detach();
+    } catch (const std::system_error&) {   // (no thread to be had: built here, without the race)
+        opt_alive--;
+        VkPipeline pl = make(0);
+        if (!pl) {
+            told_failed();
+            pl = make(NOOPT);
+        }
+        r->publish(pl);
+        return false;
+    }
+    std::unique_lock lk(r->mu);
+    if (r->cv.wait_for(lk, std::chrono::milliseconds(budget), [&] { return r->done; })) {
+        if (r->pl) {
+            r->published = true;
+            r->publish(r->pl);
+            return false;
+        }
+        lk.unlock();
+        told_failed();
+        const VkPipeline pl = make(NOOPT);
+        lk.lock();
+        r->published = true;
+        r->publish(pl);
+        return false;
+    }
+    r->late = true;
+    const int running = ++opt_late_running;
+    noopt_note(key, true);   // (until it ends soon after all: next start, built without the optimizer at once)
+    lk.unlock();
+    st_opt_late++;
+    {
+        static std::atomic<int> told{0};
+        if (told++ < 40)
+            logf("vk: %s %016llx: the optimizer takes over %d ms (%d such builds running): built without it too, the first one done is used",
+                 what, (unsigned long long)key, budget, running);
+    }
+    // (the build without the optimizer on a thread of its own, racing the optimized one: whichever ends first with a pipeline is
+    // used. It used to be built here, and the draw waited for it even when the optimized one came in first)
+    bool threaded = true;
+    try {
+        std::thread([r, make] {
+            const VkPipeline pl = make(NOOPT);
+            std::lock_guard g(r->mu);
+            r->ndone = true;
+            r->npl = pl;
+            if (r->resolved && pl && pl != r->used) vkDestroyPipeline(dev.device, pl, nullptr);   // (never handed out)
+            r->cv.notify_all();
+        }).detach();
+    } catch (const std::system_error&) {
+        threaded = false;
+    }
+    if (!threaded) {
+        const VkPipeline pl = make(NOOPT);
+        lk.lock();
+        r->ndone = true, r->npl = pl;
+    } else {
+        lk.lock();
+    }
+    r->cv.wait(lk, [&] { return (r->done && r->pl) || r->ndone; });
+    r->published = true;
+    r->resolved = true;
+    if (r->done && r->pl) {   // (the optimized one first: settled here, the late thread having left it)
+        opt_late_running--;
+        if (r->ndone && r->npl) vkDestroyPipeline(dev.device, r->npl, nullptr), r->npl = VK_NULL_HANDLE;   // (never handed out)
+        r->used = r->pl;
+        r->publish(r->pl);
+        st_opt_upgraded++;
+        noopt_note(key, false);
+        logf("vk: %s %016llx: optimized first, in use", what, (unsigned long long)key);
+        return false;
+    }
+    r->used = r->npl;
+    r->publish(r->npl);
+    if (r->done) {   // (the optimizer gave up before: settled here)
+        opt_late_running--;
+        return false;
+    }
+    return true;   // (settled comes from the late thread)
+}
+
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
+                          VkPipelineCreateFlags extra = 0);
+/// A whole graphics pipeline through build_raced (the state copied: the optimized build may outlive the caller)
+void build_graphics_raced(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo,
+                          std::function<void(VkPipeline)> publish) {
+    const Program* pp = &p;
+    // ((local) AMD: the task and mesh programs (OoT's foliage culling, following pointers through its tables) hung the GPU when
+    // the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with another of them first
+    // (918adef1afaa39d4, 6f9142def3b6a978...), with either warp profile; never in runs where they were built without it
+    // (RX_VK_NOOPT=1, upstream's too). They are built without it. RX_VK_MESH_OPT=1: with it, as the others)
+    static const bool amd = [] {
+        VkPhysicalDeviceProperties pr{};
+        vkGetPhysicalDeviceProperties(dev.physical, &pr);
+        return pr.vendorID == 0x1002;
+    }();
+    static const bool mesh_opt = getenv("RX_VK_MESH_OPT") != nullptr;
+    bool mesh = false;
+    for (const Stage& st : p.stages) mesh |= (st.vk_stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
+    if (amd && mesh && !mesh_opt) {
+        static std::atomic<int> told{0};
+        if (told++ < 3) logf("vk: task and mesh programs built without the optimizer (AMD; RX_VK_MESH_OPT=1: with it)");
+        publish(build_graphics(p, s, at, topo, -1, VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT));
+        return;
+    }
+    build_raced(p.key, "graphics pipeline of", [pp, s, at, topo](VkPipelineCreateFlags flags) {
+        return build_graphics(*pp, s, at, topo, -1, flags);
+    }, std::move(publish));
+}
+/// A compute pipeline (the program's own: programs live as long as the device)
+VkPipeline make_compute(const Program& p, VkPipelineCreateFlags flags) {
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = p.stages[0].module;
+    ci.stage.pName = "main";
+    pin_subgroup(ci.stage, p.workgroup[0]);
+    ci.layout = p.layout;
+    ci.flags = flags;
+    VkPipeline pl = VK_NULL_HANDLE;
+    if (const VkResult made = guarded_compute(pcache, &ci, &pl); made != VK_SUCCESS) {
+        static std::atomic<int> told{0};
+        if (told++ < 20)
+            logf("vk: compute pipeline of %016llx not made%s (%d)", (unsigned long long)p.key,
+                 flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT ? " without the optimizer" : "", (int)made);
+        return VK_NULL_HANDLE;
+    }
+    return pl;
+}
+/// The program's compute pipeline through build_raced. Never null over one already there; while an optimized build of it still runs
+/// (compute_pending) none is started beside it, and a program is only given up on (dispatch: failed) when no build of it is left
+void build_compute_raced(Program& p) {
+    Program* pp = &p;
+    pp->compute_pending.store(true);
+    const bool pending = build_raced(
+        p.key, "compute pipeline of", [pp](VkPipelineCreateFlags flags) { return make_compute(*pp, flags); },
+        [pp](VkPipeline pl) {
+            if (pl) pp->compute_pipeline.store(pl, std::memory_order_release);
+        },
+        [pp](bool ok) {
+            if (!ok && !pp->compute_pipeline.load()) pp->compute_tries++;
+            pp->compute_pending.store(false);
+        });
+    if (!pending) {
+        if (!pp->compute_pipeline.load()) pp->compute_tries++;
+        pp->compute_pending.store(false);
+    }
+}
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
 /// (Maxwell keeps its texels; Vulkan writes undefined values: TOTK's maxwell.md 1.1)
@@ -855,7 +1158,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     pipeline_note(key, p, s, at, topo);
     static const bool sync = getenv("RX_VK_SYNC_PIPELINES") != nullptr;
     if (sync) {
-        e->pipeline = build_graphics(p, s, at, topo);
+        build_graphics_raced(p, s, at, topo, [e](VkPipeline pl) { e->pipeline.store(pl); });
         e->ready = true;
         return remember(e);
     }
@@ -881,15 +1184,19 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo;
     jobs_push([job] {
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
-        if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
-        job->e->ready.store(true, std::memory_order_release);
+        PipeEntry* e = job->e;
+        build_graphics_raced(*job->p, job->s, job->at, job->topo, [e](VkPipeline full) {
+            if (full) e->pipeline.store(full);
+        });
+        e->ready.store(true, std::memory_order_release);
     });
     return remember(e);
 }
 
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part,
+                          VkPipelineCreateFlags extra) {
     const Shader::Info& vs = p.stages[0].info;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -1055,11 +1362,8 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         }
     }
     VkPipeline pl = VK_NULL_HANDLE;
-    {   // (local) RX_VK_NOOPT=1: build every pipeline without the driver's optimizer. AMD's proprietary compiler crashes
-        // (-13 here) or takes minutes on some Ocarina shaders it builds in seconds unoptimized (Lichii #200, #210).
-        static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
-        if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-    }
+    // (local) RX_VK_NOOPT=1: every pipeline without the driver's optimizer; extra: build_raced's choice for this one
+    ci.flags |= extra | (noopt_all() ? VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT : 0);
     const VkResult r = guarded_graphics(part >= 0 ? VK_NULL_HANDLE : pcache, &ci, &pl);
     if (part >= 0) {
         if (r != VK_SUCCESS) {
@@ -1071,7 +1375,9 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     }
     if (r != VK_SUCCESS) {
         static std::atomic<int> logged;
-        if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
+        if (logged++ < 10)
+            logf("vk: graphics pipeline for %016llx not made%s (%d)", (unsigned long long)p.key,
+                 ci.flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT ? " without the optimizer" : "", (int)r);
         pl = VK_NULL_HANDLE;
     }
     st_pipelines++;
@@ -1969,7 +2275,7 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
 
 // ---- RX_VK_CHECKPOINTS: a marker before each draw and dispatch (VK_NV_device_diagnostic_checkpoints); when the
 // device is lost, the markers the GPU reached say which program it was running ----
-struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; };
+struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; const Program* p = nullptr; };   // ((local) p: a draw's or dispatch's)
 Checkpoint checkpoints[1 << 16];
 std::atomic<uint32_t> checkpoint_n{0};
 
@@ -1978,10 +2284,34 @@ bool checkpoint_markers() {
     static const bool on = !getenv("RX_VK_CHECKPOINTS") || strcmp(getenv("RX_VK_CHECKPOINTS"), "ext") != 0;
     return on;
 }
+// (local) AMD: the checkpoints' sequence numbers written by the GPU into a mapped buffer, word 0 when the command processor
+// reaches one (top of pipe), word 1 when everything before it is done (bottom of pipe). After a lost device the commands
+// from word 1's to word 0's were under way: the oldest of them is where the GPU stopped
+VkBuffer amd_marker_buf = VK_NULL_HANDLE;
+VmaAllocation amd_marker_alloc = nullptr;
+volatile uint32_t* amd_marker_map = nullptr;
+bool amd_markers_ready() {
+    if (!dev.amd_markers || !vkCmdWriteBufferMarkerAMD) return false;
+    static const bool ok = [] {
+        void* map = nullptr;
+        if (!create_buffer_cached(256, VK_BUFFER_USAGE_TRANSFER_DST_BIT, amd_marker_buf, amd_marker_alloc, &map) || !map) return false;
+        amd_marker_map = (volatile uint32_t*)map;
+        amd_marker_map[0] = amd_marker_map[1] = 0;
+        logf("vk: checkpoints by AMD buffer markers");
+        return true;
+    }();
+    return ok;
+}
+void amd_marker(VkCommandBuffer cmd, uint32_t seq) {
+    vkCmdWriteBufferMarkerAMD(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, amd_marker_buf, 0, seq);
+    vkCmdWriteBufferMarkerAMD(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, amd_marker_buf, 4, seq);
+}
 void checkpoint(VkCommandBuffer cmd, const Program& p, char kind) {
-    if (!dev.checkpoints || !vkCmdSetCheckpointNV || !checkpoint_markers()) return;
+    const bool amd = amd_markers_ready();
+    if (!amd && (!dev.checkpoints || !vkCmdSetCheckpointNV || !checkpoint_markers())) return;
     const uint32_t seq = ++checkpoint_n, i = (seq - 1) & 0xFFFF;
-    checkpoints[i] = {p.key, texture_frame_no(), seq, kind};
+    checkpoints[i] = {p.key, texture_frame_no(), seq, kind, &p};
+    if (amd) return amd_marker(cmd, seq);
     vkCmdSetCheckpointNV(cmd, (void*)(uintptr_t)(i + 1));
 }
 
@@ -2040,9 +2370,11 @@ void device_fault_report() {
 }
 
 void checkpoint_mark(VkCommandBuffer cmd, uint64_t key, char kind) {
-    if (!dev.checkpoints || !vkCmdSetCheckpointNV || !checkpoint_markers()) return;
+    const bool amd = amd_markers_ready();
+    if (!amd && (!dev.checkpoints || !vkCmdSetCheckpointNV || !checkpoint_markers())) return;
     const uint32_t seq = ++checkpoint_n, i = (seq - 1) & 0xFFFF;
     checkpoints[i] = {key, texture_frame_no(), seq, kind};
+    if (amd) return amd_marker(cmd, seq);
     vkCmdSetCheckpointNV(cmd, (void*)(uintptr_t)(i + 1));
 }
 
@@ -2059,6 +2391,34 @@ void checkpoints_report() {
     // (checkpoints first: on NVIDIA vkGetDeviceFaultInfoEXT has not come back after a fault, which lost the report)
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints" : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
     struct FaultLast { ~FaultLast() { if (std::getenv("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+    if (amd_marker_map) {   // (local) AMD: the commands between the last one done and the last one reached
+        auto kind = [](char c) {
+            return c == 'd' ? "draw of program" : c == 'c' ? "dispatch of program" : c == 'm' ? "mirror sync of pool"
+                 : c == 'b' ? "write-back of pool" : c == 'u' ? "upload of texture" : c == 'g' ? "GPU unswizzle of texture"
+                 : "?";
+        };
+        const uint32_t top = amd_marker_map[0], bottom = amd_marker_map[1], set = checkpoint_n.load();
+        logf("vk: device lost: AMD markers: all done before checkpoint %u, reached checkpoint %u, %u set", bottom, top, set);
+        if (bottom && top >= bottom && top - bottom < 4096) {
+            for (uint32_t s = bottom > 6 ? bottom - 6 : 1; s <= top + 4 && s <= set; s++) {
+                const Checkpoint& k = checkpoints[(s - 1) & 0xFFFF];
+                char desc[256] = "";
+                if (k.p && s >= bottom && s <= top) {   // (the program of a command under way: its stages and what they reach)
+                    int dn = 0;
+                    for (const Stage& st : k.p->stages)
+                        dn += snprintf(desc + dn, sizeof desc - dn, " [%s%s%s sb%zu]",
+                                       st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT ? "fs"
+                                       : st.vk_stage == VK_SHADER_STAGE_TASK_BIT_EXT ? "task" : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "mesh"
+                                       : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "cs" : "?",
+                                       st.info.uses_global_memory ? " pointers" : "", st.info.stores_global_memory ? " stores" : "",
+                                       st.info.storage_buffers_descriptors.size());
+                }
+                logf("vk:   %s checkpoint %u: %s %016llx, frame %llu%s", s < bottom ? "done   " : s <= top ? "UNDER WAY" : "not reached",
+                     k.seq, kind(k.kind), (unsigned long long)k.prog, (unsigned long long)k.frame, desc);
+            }
+        }
+        return;
+    }
     if (!dev.checkpoints || !vkGetQueueCheckpointDataNV) return;
     uint32_t n = 0;
     vkGetQueueCheckpointDataNV(dev.queue, &n, nullptr);
@@ -4749,21 +5109,34 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
                 if (!p->failed) made++;
                 if (!p->failed && warm_cs && p->compute && !taau_key(p->key)) {
                     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the
-                    // driver compiled them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
+                    // driver compiled them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang.
+                    // ((local) through build_raced: AMD's optimizer takes minutes over some, and this held the start for them; the noopt
+                    // list and the budget apply here as in play. The program outlives this loop while an optimized build of it runs on)
                     ensure_layout(*p);
-                    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-                    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                    ci.stage.module = p->stages[0].module;
-                    ci.stage.pName = "main";
-                    pin_subgroup(ci.stage, p->workgroup[0]);
-                    ci.layout = p->layout;
-                    if (getenv("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-                    VkPipeline pl = VK_NULL_HANDLE;
-                    if (guarded_compute(VK_NULL_HANDLE, &ci, &pl) == VK_SUCCESS && pl) {
-                        vkDestroyPipeline(dev.device, pl, nullptr);
-                        libs++;
-                    }
+                    std::shared_ptr<Program> sp(p.release(), [](Program* q) {
+                        for (Stage& st : q->stages)
+                            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+                        if (q->layout) vkDestroyPipelineLayout(dev.device, q->layout, nullptr);
+                        if (q->set_layout) vkDestroyDescriptorSetLayout(dev.device, q->set_layout, nullptr);
+                        delete q;
+                    });
+                    build_raced(sp->key, "compute pipeline (warm) of", [sp](VkPipelineCreateFlags flags) {
+                        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                        ci.stage.module = sp->stages[0].module;
+                        ci.stage.pName = "main";
+                        pin_subgroup(ci.stage, sp->workgroup[0]);
+                        ci.layout = sp->layout;
+                        ci.flags = flags;
+                        VkPipeline pl = VK_NULL_HANDLE;
+                        return guarded_compute(VK_NULL_HANDLE, &ci, &pl) == VK_SUCCESS ? pl : VK_NULL_HANDLE;
+                    }, [](VkPipeline pl) {
+                        if (pl) vkDestroyPipeline(dev.device, pl, nullptr);
+                    });
+                    libs++;
+                    done++;
+                    continue;
                 }
                 if (!p->failed && warm && !p->compute) {
                     ensure_layout(*p);
@@ -4843,14 +5216,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             if (i >= total) return;
             if (i < computes.size()) {
                 Program& p = *computes[i];
-                VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-                ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = p.stages[0].module;
-                ci.stage.pName = "main";
-                pin_subgroup(ci.stage, p.workgroup[0]);
-                ci.layout = p.layout;
-                if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
+                // (local) not a stood-in network: the dispatch never builds it (the TAAU's software matrices took the AMD compiler
+                // seconds to minutes, Hookshot issue 26). And raced, guarded, as a dispatch builds them
+                if (!taau_key(p.key) && !p.compute_pipeline) build_compute_raced(p);
             } else {
                 PipeNote& n = *notes[i - computes.size()];
                 const Program* p = program_find(n.prog, n.variant);
@@ -4861,14 +5229,17 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                     at.depth_format = (VkFormat)n.depth_format;
                     at.depth = n.has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
                     for (int k = 0; k < 8; k++) at.color_format[k] = (VkFormat)n.color_format[k];
-                    const VkPipeline made = build_graphics(*p, n.s, at, (VkPrimitiveTopology)n.topo);
-                    std::lock_guard lk(note_mu);
-                    auto it = pipelines.find(n.key);
-                    if (it == pipelines.end()) {
-                        auto e = std::make_unique<PipeEntry>();
-                        e->pipeline = made;
+                    // (local) the entry first, then the build into it: an optimized build finishing after the budget has somewhere to
+                    // go (entries are never freed). A key already there is not built twice
+                    PipeEntry* e = nullptr;
+                    {
+                        std::lock_guard lk(note_mu);
+                        if (pipelines.find(n.key) == pipelines.end())
+                            e = pipelines.emplace(n.key, std::make_unique<PipeEntry>()).first->second.get();
+                    }
+                    if (e) {
+                        build_graphics_raced(*p, n.s, at, (VkPrimitiveTopology)n.topo, [e](VkPipeline pl) { e->pipeline.store(pl); });
                         e->ready.store(true, std::memory_order_release);
-                        pipelines.emplace(n.key, std::move(e));
                     }
                 }
             }
@@ -4986,31 +5357,16 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     Program& p = const_cast<Program&>(*cp);
     ParLock plk(!p.layout || !p.compute_pipeline);
     ensure_layout(p);
-    if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
+    // (a stood-in network is never compiled; (local) nor one whose optimized build still runs: it is skipped until that comes)
+    if (!p.compute_pipeline && !taau_key(p.key) && !p.compute_pending.load()) {
         pcache_init();
-        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = p.stages[0].module;
-        ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
-        ci.layout = p.layout;
-        {   // (local) RX_VK_NOOPT=1, as for graphics pipelines above
-            static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
-            if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-        }
         const auto t0 = std::chrono::steady_clock::now();
         {   // (EvilOOT, 11-07: a freeze after Load was the driver's compiler on one compute pipeline, here, on the submit's thread)
             static std::atomic<int> told{0};
             if (told++ < 400) logf("vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
         }
-        if (const VkResult made = guarded_compute(pcache, &ci, &p.compute_pipeline); made != VK_SUCCESS) {
-            static std::atomic<int> told{0};
-            if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)p.key, (int)made);
-            p.compute_pipeline = VK_NULL_HANDLE;
-            p.failed = true;
-            SKIP_HERE();
-        }
+        // (local) raced (build_raced): this holds the recording lock, so a build the optimizer takes minutes over held every thread
+        build_compute_raced(p);
         {
             const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             if (ms >= 200) logf("vk: compute pipeline of %016llx: SLOW compile, %lld ms", (unsigned long long)p.key, (long long)ms);
@@ -5018,6 +5374,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         st_pipeline_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         st_pipelines++;
         pcache_built_since_save++;
+        // (none with or without the optimizer, twice, and no optimized build left that might still bring one: given up on)
+        if (!p.compute_pipeline && !p.compute_pending.load() && p.compute_tries.load() >= 2) p.failed = true;
     }
     if (plk.on) par_mutex().unlock(), plk.on = false;
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};

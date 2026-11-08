@@ -55,6 +55,7 @@
     X(vkCreateCommandPool)                                                                                            \
     X(vkDestroyCommandPool)                                                                                           \
     X(vkResetCommandPool)                                                                                             \
+    X(vkResetCommandBuffer)                                                                                           \
     X(vkAllocateCommandBuffers)                                                                                       \
     X(vkBeginCommandBuffer)                                                                                           \
     X(vkEndCommandBuffer)                                                                                             \
@@ -155,7 +156,7 @@
     X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdCopyQueryPoolResults) X(vkGetQueryPoolResults) \
     X(vkResetQueryPool) \
     X(vkCmdSetDepthClipEnableEXT) X(vkCmdSetLogicOpEXT) X(vkCmdClearAttachments) X(vkCmdSetDepthBoundsTestEnable) \
-    X(vkCmdSetCheckpointNV) X(vkGetQueueCheckpointDataNV) X(vkGetDeviceFaultInfoEXT)
+    X(vkCmdSetCheckpointNV) X(vkGetQueueCheckpointDataNV) X(vkGetDeviceFaultInfoEXT) X(vkCmdWriteBufferMarkerAMD)
 
 namespace vkx {
 #define VKX_DECLARE(f) extern PFN_##f f;

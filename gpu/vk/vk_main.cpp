@@ -190,6 +190,9 @@ bool create_device() {
     if (!getenv("RX_VK_CHECKPOINTS") || strcmp(getenv("RX_VK_CHECKPOINTS"), "0") != 0)
         optional(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, dev.checkpoints);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
+    // (local) AMD's markers for the checkpoints, asked for only (each draw writes two): which command a lost device hung in
+    if (getenv("RX_VK_CHECKPOINTS") && strcmp(getenv("RX_VK_CHECKPOINTS"), "0") != 0 && strcmp(getenv("RX_VK_CHECKPOINTS"), "ext") != 0)
+        optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.amd_markers);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
 
     // the queue: one family for graphics, compute and transfer
@@ -203,10 +206,22 @@ bool create_device() {
             dev.queue_family = i;
     if (dev.queue_family == UINT32_MAX) return false;
     const float priority = 1.0f;
-    VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    VkDeviceQueueCreateInfo qs[2]{{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    VkDeviceQueueCreateInfo& q = qs[0];
     q.queueFamilyIndex = dev.queue_family;
     q.queueCount = 1;
     q.pQueuePriorities = &priority;
+    // (local) the DMA engine's family: transfer only (AMD's SDMA). RX_VK_WB_DMA=0: not asked for
+    if (!getenv("RX_VK_WB_DMA") || atoi(getenv("RX_VK_WB_DMA")) != 0)
+        for (uint32_t i = 0; i < n && dev.xfer_family == UINT32_MAX; i++)
+            if ((families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) &&
+                families[i].queueCount > 0)
+                dev.xfer_family = i;
+    if (dev.xfer_family != UINT32_MAX) {
+        qs[1].queueFamilyIndex = dev.xfer_family;
+        qs[1].queueCount = 1;
+        qs[1].pQueuePriorities = &priority;
+    }
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -286,6 +301,7 @@ bool create_device() {
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
         const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !getenv("RX_VK_NO_SUBGROUP_PIN");
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
+        dev.max_subgroup = std::max(sg.subgroupSize, sc.maxSubgroupSize);
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x", sg.subgroupSize, sc.minSubgroupSize, sc.maxSubgroupSize,
              (unsigned)dev.sg32_stages);
     }
@@ -302,8 +318,8 @@ bool create_device() {
                         f.features.sparseResidencyImage2D && !(getenv("RX_VK_SPARSE") && !atoi(getenv("RX_VK_SPARSE")));
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
-    ci.queueCreateInfoCount = 1;
-    ci.pQueueCreateInfos = &q;
+    ci.queueCreateInfoCount = dev.xfer_family != UINT32_MAX ? 2 : 1;
+    ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
     if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
@@ -314,6 +330,10 @@ bool create_device() {
 
     load_device(dev.device);
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
+    if (dev.xfer_family != UINT32_MAX) {
+        vkGetDeviceQueue(dev.device, dev.xfer_family, 0, &dev.xfer_queue);
+        logf("vk: write-backs by DMA: transfer queue family %u", dev.xfer_family);
+    }
     coopmat_init();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};

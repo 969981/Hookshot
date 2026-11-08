@@ -52,6 +52,10 @@ struct Pool {
     // made (mirror_make), and until then the mirror stays (mirrors_give_back)
     bool inherit_pending = false;
     uint64_t retired_epoch = 0;
+    // (local) pages its mirror syncs brought the CPU's writes of, by the submission that last did (mirror_epoch): their
+    // write-backs stay on the queue, not by DMA, as the next sync of such a page reads guest memory there and a DMA copy
+    // still on its way would race it (write-backs by DMA, below)
+    std::unordered_map<uint32_t, uint64_t> cpu_pages;
 };
 uint64_t mem_rec_value = 0, mem_completed = 0;   // (the recording being made, and the GPU's progress)
 
@@ -166,6 +170,13 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     bi.pNext = &eb;
     bi.size = bytes;
     bi.usage = kUsage;
+    // (local) the DMA queue writes it too (write-backs by DMA): shared by both queues' families
+    const uint32_t families[2] = {dev.queue_family, dev.xfer_family};
+    if (dev.xfer_queue && dev.xfer_family != dev.queue_family) {
+        bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bi.queueFamilyIndexCount = 2;
+        bi.pQueueFamilyIndices = families;
+    }
     if (vkCreateBuffer(dev.device, &bi, nullptr, &p.buffer) != VK_SUCCESS) {
         import_remember_failure(lo, hi);
         return false;
@@ -295,7 +306,17 @@ uint64_t memory_guest_pages() {
     guest_pages_buffer = b;
     std::lock_guard pk(pools_mu);
     guest_pages = (uint64_t*)mapped;
-    for (auto& kv : imported) guest_pages_set(kv.second.lo, kv.second.hi, kv.second.address);
+    for (auto& kv : imported) {   // ((local) a pool mirrored already: its mirror, as mirror_make sets it once the table exists. Guest
+        // memory there is where write-backs by DMA land while the next submission runs)
+        Pool& p = kv.second;
+        uint64_t addr = p.address;
+        if (p.mstate == Pool::MIRROR_ON && p.mirror) {
+            VkBufferDeviceAddressInfo mi{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            mi.buffer = p.mirror;
+            addr = vkGetBufferDeviceAddress(dev.device, &mi);
+        }
+        guest_pages_set(p.lo, p.hi, addr);
+    }
     logf("vk: page table of guest memory at %#llx (%zu pools)", (unsigned long long)guest_pages_address, imported.size());
     return guest_pages_address;
 }
@@ -392,8 +413,18 @@ void memory_collect_written() {
     const int64_t n = host->collect_written(&pages);
     if (n > 0) {
         const uint32_t g = ++gen_now;
+        static const std::pair<uint64_t, uint64_t> log_range = [] {   // ((local) RX_VK_LOG_CPU_RANGE=<lo>:<hi>: the CPU's pages
+            unsigned long long a = 0, b = 0;                           // seen written there, 400 lines)
+            if (const char* e = getenv("RX_VK_LOG_CPU_RANGE")) sscanf(e, "%llx:%llx", &a, &b);
+            return std::pair<uint64_t, uint64_t>{a, b};
+        }();
         for (int64_t i = 0; i < n; i++) {
             const uint64_t guest = (uint64_t)pages[i] << kPageShift;
+            if (log_range.second && guest >= log_range.first && guest < log_range.second) {
+                static int logged;
+                if (logged++ < 400) logf("vk: CPU wrote page %#llx (gen %u, texture frame %llu)", (unsigned long long)guest, g,
+                                         (unsigned long long)texture_frame_no());
+            }
             if (capture_owns(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
                 uint64_t avail = 0;
                 if (const uint8_t* q = host->gpu_ptr(guest, &avail)) host->mark_written(q, 4096);
@@ -1473,6 +1504,88 @@ void cut_cpu_words(const Pool& p, std::vector<VkBufferCopy>& runs) {
     runs.swap(out);
 }
 
+// ---- (local) write-backs by DMA. A submission's write-backs (mirror -> guest memory, ~60 MB a frame of Ocarina's
+// storage buffers in Kokiri Forest) crossed PCIe on the graphics queue at its end: ~8 ms of the queue a frame on an
+// RX 6600 (PCIe 3.0 x8), measured with RX_VK_NO_WRITEBACK=1 (GPU time 20.9 -> 13.1 ms; the picture then overexposed: the
+// game reads its exposure back). Now the graphics queue copies them into a staging ring in VRAM (fast), and the DMA queue
+// copies the ring into guest memory beside the next submission's work. The submission's timeline value is signalled by
+// the DMA queue after its copies, so whatever waits for a submission (the game's fences, the replay's completed())
+// still finds its write-backs in guest memory. GPU readers of guest memory that do not wait for one (a pool's mirror
+// made or given back, gpu_buffer()) wait for the DMA copies over their range here. RX_VK_WB_DMA=0: as before ----
+VkBuffer dma_ring = VK_NULL_HANDLE;
+VmaAllocation dma_ring_alloc = nullptr;
+uint64_t dma_ring_size = 0, dma_head = 0;
+struct DmaSpan {
+    uint64_t lo, hi;
+    uint64_t value;   // (the transfer submit that copies out of it; 0: not submitted yet)
+};
+std::deque<DmaSpan> dma_spans;   // (in ring order, oldest first)
+std::vector<DmaCopy> dma_pending;   // (this submission's, for its transfer submit)
+struct DmaDst {
+    uint64_t lo, hi;   // (guest addresses written)
+    uint64_t value;    // (as above)
+};
+std::vector<DmaDst> dma_dsts;   // (copies not known to be done: what a reader of guest memory there waits for)
+int64_t st_dma_bytes = 0, st_dma_direct = 0;
+
+bool dma_ring_ready() {
+    if (dma_ring) return true;
+    static bool tried = false;
+    if (tried || !wb_dma_on()) return false;
+    tried = true;
+    const uint64_t mb = getenv("RX_VK_WB_RING_MB") ? std::max(8, atoi(getenv("RX_VK_WB_RING_MB"))) : 96;
+    if (!create_buffer_shared(mb << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dma_ring, dma_ring_alloc)) {
+        logf("vk: write-backs by DMA: no staging ring of %llu MB: on the queue, as before", (unsigned long long)mb);
+        dma_ring = VK_NULL_HANDLE;
+        return false;
+    }
+    dma_ring_size = mb << 20;
+    logf("vk: write-backs by DMA: a staging ring of %llu MB", (unsigned long long)mb);
+    return true;
+}
+/// n bytes of the ring for this submission (256-aligned offset), or UINT64_MAX when it cannot hold them now (waits for
+/// the DMA queue to free older spans when they are submitted)
+uint64_t dma_alloc(uint64_t n) {
+    n = (n + 255) & ~255ull;
+    if (n > dma_ring_size) return UINT64_MAX;
+    for (;;) {
+        const uint64_t done = xfer_done();
+        while (!dma_spans.empty() && dma_spans.front().value && dma_spans.front().value <= done) dma_spans.pop_front();
+        if (dma_spans.empty()) dma_head = 0;
+        uint64_t at = UINT64_MAX;
+        if (dma_spans.empty()) {
+            at = 0;
+        } else {
+            const uint64_t tail = dma_spans.front().lo;
+            const bool wrapped = dma_spans.back().lo < tail;   // (the newest spans start again at the ring's beginning)
+            if (!wrapped) {   // (free: [head, size) and [0, tail))
+                if (dma_head + n <= dma_ring_size) at = dma_head;
+                else if (n <= tail) at = 0;
+            } else if (dma_head + n <= tail) {   // (wrapped: free [head, tail))
+                at = dma_head;
+            }
+        }
+        if (at != UINT64_MAX) {
+            dma_spans.push_back({at, at + n, 0});
+            dma_head = at + n;
+            return at;
+        }
+        const uint64_t oldest = dma_spans.front().value;
+        if (!oldest) return UINT64_MAX;   // (the ring is this submission's already)
+        if (xfer_wait(oldest) != VK_SUCCESS || xfer_done() < oldest) return UINT64_MAX;   // (device lost: on the queue)
+    }
+}
+/// Before a GPU or CPU read of guest memory [lo, hi) that does not wait for a submission: the DMA copies there done
+void dma_wait_range(uint64_t lo, uint64_t hi) {
+    if (dma_dsts.empty()) return;
+    const uint64_t done = xfer_done();
+    std::erase_if(dma_dsts, [done](const DmaDst& d) { return d.value && d.value <= done; });
+    uint64_t need = 0;
+    for (const DmaDst& d : dma_dsts)
+        if (d.lo < hi && lo < d.hi && d.value) need = std::max(need, d.value);
+    if (need) xfer_wait(need);
+}
+
 // ---- a pool remade larger (a 16 MB chunk the game's next pool runs past): the old one leaves the table but stays
 // alive, as this submission's bindings, its mirror syncs and its write-backs still use it. Erasing it left those
 // lists pointing into a freed map node: the write-back copied with garbage handles and the device was lost (the
@@ -1483,6 +1596,9 @@ std::deque<std::map<uint64_t, Pool>::node_type> retired_pools;
 
 void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     Pool* old = &it->second;
+    // ((local) its range leaves its mirror for guest memory (the new pool's import): write-backs by DMA there done first, as
+    // mirror_free does; nothing else in this submission waits for them unless the new pool is bound)
+    if (old->mstate == Pool::MIRROR_ON) dma_wait_range(old->lo, old->hi);
     guest_pages_set(old->lo, old->hi, 0);
     old->retired_value = std::max(old->last_value, mem_rec_value);
     std::erase(mirror_wanted, old);   // (the new pool gets the mirror)
@@ -1583,12 +1699,27 @@ void mirror_sync(Pool& p) {
         page++;
     }
     if (run_hi) runs.push_back({run_lo, run_lo, run_hi - run_lo});
+    {   // (local) the pages the CPU wrote, remembered: their write-backs stay on the queue (write-backs by DMA)
+        const auto note = [&p](uint64_t off, uint64_t size) {
+            for (uint64_t pg = (p.lo + off) >> kPageShift; pg <= (p.lo + off + size - 1) >> kPageShift; pg++)
+                p.cpu_pages[(uint32_t)pg] = mirror_epoch;
+        };
+        for (const VkBufferCopy& r : runs) note(r.dstOffset, r.size);
+        for (const auto& [buf, rs] : cap_runs)
+            for (const VkBufferCopy& r : rs) note(r.dstOffset, r.size);
+        if (p.cpu_pages.size() > 65536) {   // (old ones let go)
+            std::erase_if(p.cpu_pages, [](const auto& e) { return e.second + 1200 < mirror_epoch; });
+        }
+    }
     for (const auto& [buf, rs] : cap_runs) {
         vkCmdCopyBuffer(upload_command_buffer(), buf, p.mirror, (uint32_t)rs.size(), rs.data());
         for (const VkBufferCopy& r : rs) st_sync_bytes += (int64_t)r.size;
         st_sync_copies += (int64_t)rs.size();
     }
     if (runs.empty()) return;
+    // (local) read from guest memory: write-backs by DMA over these runs done first (rare: a page the CPU writes keeps its
+    // write-back on the queue once seen, above; this is its first time)
+    for (const VkBufferCopy& r : runs) dma_wait_range(p.lo + r.srcOffset, p.lo + r.srcOffset + r.size);
     checkpoint_mark(upload_command_buffer(), p.lo, 'm');
     vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror, (uint32_t)runs.size(), runs.data());
     for (const VkBufferCopy& r : runs) st_sync_bytes += (int64_t)r.size;
@@ -1597,6 +1728,54 @@ void mirror_sync(Pool& p) {
 
 } // namespace
 
+// ---- (local) Readback pages: GPU results the CPU reads (invalidate) and then writes, as OoT's exposure meter (a sum the GPU adds
+// into each frame; the CPU reads it and stores 0 back). On the console the GPU adds into that memory as it is when its work runs,
+// the CPU's 0 included. Here it adds into the pool's mirror, which takes the CPU's 0 only at a mirror sync of a submit made after
+// it: one made just before (the game's threads overlap) added onto the old sum, the CPU read 2x the next frame and 0 the one
+// after, and the exposure stepped (the fog flickering in Kokiri's light). So each submission first copies those pages from guest
+// memory into the mirror, on the GPU as its work starts, last of the uploads: what the CPU wrote by then is what the GPU adds to.
+// Only pages whose write-backs stay on the queue (cpu_pages: guest memory has the GPU's last results before the copy reads it).
+// RX_VK_NO_RB_REFRESH=1: off ----
+namespace {
+std::unordered_map<uint32_t, uint64_t> rb_pages;   // (guest page -> mirror_epoch it was last read at)
+std::atomic<int64_t> st_rb_refresh{0};
+}
+void memory_note_readback(uint64_t guest, uint64_t size) {
+    static const bool off = getenv("RX_VK_NO_RB_REFRESH") != nullptr;
+    if (off || !size || size > 0x4000) return;   // (small results only: meters and counters)
+    std::lock_guard lk(pools_mu);
+    for (uint64_t pg = guest >> kPageShift; pg <= (guest + size - 1) >> kPageShift; pg++) rb_pages[(uint32_t)pg] = mirror_epoch;
+}
+/// Records the refresh copies into the submission's upload command buffer; true when it recorded any
+bool memory_rb_refresh(VkCommandBuffer up) {
+    std::lock_guard lk(pools_mu);
+    if (rb_pages.empty()) return false;
+    std::map<Pool*, std::vector<VkBufferCopy>> by_pool;
+    for (auto it = rb_pages.begin(); it != rb_pages.end();) {
+        if (it->second + 600 < mirror_epoch) { it = rb_pages.erase(it); continue; }   // (not read for a while)
+        const uint64_t g = (uint64_t)it->first << kPageShift;
+        ++it;
+        auto pit = imported.upper_bound(g);
+        if (pit == imported.begin()) continue;
+        --pit;
+        Pool& p = pit->second;
+        if (g < p.lo || g >= p.hi || p.mstate != Pool::MIRROR_ON || !p.mirror) continue;
+        const auto c = p.cpu_pages.find((uint32_t)(g >> kPageShift));
+        if (c == p.cpu_pages.end() || c->second + 1200 < mirror_epoch) continue;   // (its write-backs may go by DMA)
+        const uint64_t a = g - p.lo, b = std::min(g + 4096, p.hi) - p.lo;
+        by_pool[&p].push_back({a, a, b - a});
+    }
+    if (by_pool.empty()) return false;
+    full_barrier(up);   // (after the older submissions' write-backs into guest memory and this one's other uploads)
+    for (auto& [pp, rs] : by_pool) {
+        vkCmdCopyBuffer(up, pp->buffer, pp->mirror, (uint32_t)rs.size(), rs.data());
+        st_rb_refresh += (int64_t)rs.size();
+    }
+    static std::atomic<int64_t> n{0};
+    if (++n % 3000 == 1) logf("vk: readback pages refreshed from guest memory: %lld pages so far", (long long)st_rb_refresh.load());
+    return true;
+}
+
 BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     uint64_t avail = 0;
     if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
@@ -1604,6 +1783,7 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     std::lock_guard lk(pools_mu);
     const Pool* p = pool_of(guest, size);
     if (!p) return {};
+    dma_wait_range(guest, guest + size);   // (local) the GPU reads guest memory here: write-backs by DMA there done first
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
 }
 
@@ -1765,9 +1945,11 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)
+        // ((local) a pool with no mirror has no write-backs by DMA under way: memory_begin_submission waited for any at its
+        // range. A mirrored one bound in guest memory outside a recording goes the locked way, which waits for them)
+        if (!mirror_on() || (mirror_upload && (p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)))
             return remember({p->buffer, off, size, 0});
-        if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
+        if (p->mstate == Pool::MIRROR_ON && mirror_upload && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
             return remember({p->mirror, off, size, 0});
     }
     ParLock plk;   // (before pools_mu, always: a mirror sync records into the shared upload command buffer)
@@ -1780,6 +1962,9 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; }
+        // (local) guest memory read: write-backs by DMA in the whole pool done first (later bindings of it may take the
+        // fast path, which does not wait)
+        dma_wait_range(p->lo, p->hi);
         return remember({p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next
@@ -1803,6 +1988,9 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         auto& e = direct_by_pool[p->lo];
         e.first++, e.second = (int)p->mstate;
         if (written) p->direct_write_epoch = mirror_epoch;
+        // (local) guest memory read: write-backs by DMA in the whole pool done first (later bindings of it may take the
+        // fast path, which does not wait)
+        dma_wait_range(p->lo, p->hi);
         if (written && size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
             wb_pages_note(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo), mem_rec_value);
         return remember({p->buffer, off, size, 0});
@@ -1844,7 +2032,12 @@ void mirror_free(Pool& p) {
     {   // (the table back to guest memory, for a pool still in use only: a retired one's range is another pool's now, and its
         // address there sent the foliage culling into freed memory, a device lost)
         const auto live = imported.find(p.lo);
-        if (live != imported.end() && &live->second == &p) guest_pages_set(p.lo, p.hi, p.address);
+        if (live != imported.end() && &live->second == &p) {
+            // ((local) guest memory is the pool's again: its write-backs by DMA in it first. A retired one's were waited for when it
+            // retired, and waiting here would wait on its successor's)
+            dma_wait_range(p.lo, p.hi);
+            guest_pages_set(p.lo, p.hi, p.address);
+        }
     }
     dead_mirrors.push_back({p.mirror, p.mirror_alloc, std::max(mem_rec_value, p.last_value)});
     p.mirror = VK_NULL_HANDLE, p.mirror_alloc = nullptr;
@@ -1891,6 +2084,17 @@ void memory_begin_submission() {
         uint64_t want = 0;
         for (Pool* p : mirror_wanted) want += p->hi - p->lo;
         if (mirror_epoch % 64 == 0 || mirror_bytes + want > mirror_budget()) mirrors_give_back(want);
+    }
+    if (!dma_dsts.empty()) {   // (local) write-backs by DMA still under way where no live mirror covers them (a pool
+        // remade larger meanwhile): this submission may bind guest memory there, without waiting. Done first
+        uint64_t need = 0;
+        for (const DmaDst& d : dma_dsts) {
+            if (!d.value) continue;
+            auto it = imported.upper_bound(d.lo);   // (the live pool at that range, looked up only: nothing imported)
+            const Pool* q = it != imported.begin() && (--it)->second.lo <= d.lo && d.hi <= it->second.hi ? &it->second : nullptr;
+            if (!q || q->mstate != Pool::MIRROR_ON) need = std::max(need, d.value);
+        }
+        if (need && need > xfer_done()) xfer_wait(need);
     }
     if (mirror_wanted.empty()) return;
     for (Pool* p : mirror_wanted) mirror_make(*p);
@@ -1955,6 +2159,7 @@ bool mirror_make(Pool& pool) {
                      (unsigned long long)ma, (unsigned long long)(ma + n));
         }
         const VkBufferCopy all{0, 0, n};
+        dma_wait_range(p->lo, p->hi);   // (local) copied from guest memory: write-backs by DMA there (an older pool's) first
         vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);   // (all of it, at this generation)
         {   // (EvilOOT) then the mirrors of the pools it took in, over their part: what the GPU wrote there and only there
             // (retire_pool). The captures' pages go over it after, as before: the CPU's newer writes win
@@ -2097,7 +2302,48 @@ void memory_end_submission(VkCommandBuffer cmd) {
             cut_cpu_words(*p, runs);
             if (runs.empty()) continue;
             checkpoint_mark(cmd, p->lo, 'b');
-            vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)runs.size(), runs.data());
+            if (dma_ring_ready()) {   // (local) write-backs by DMA: mirror -> staging ring here, ring -> guest on the DMA queue
+                std::vector<VkBufferCopy> staged, direct;
+                // (a retired pool's range is another pool's now, which may bind guest memory there at once: on the queue)
+                const auto live = imported.find(p->lo);
+                const bool retired = live == imported.end() || &live->second != p;
+                const auto on_queue = [&](uint64_t off, uint64_t size) {   // (older DMA copies there done first: no two writers)
+                    dma_wait_range(p->lo + off, p->lo + off + size);
+                    direct.push_back({off, off, size});
+                    st_dma_direct++;
+                };
+                const auto by_dma = [&](uint64_t off, uint64_t size) {
+                    const uint64_t at = dma_alloc(size);
+                    if (at == UINT64_MAX) return on_queue(off, size);   // (the ring is full of this submission's)
+                    staged.push_back({off, at, size});
+                    dma_pending.push_back({p->buffer, {at, off, size}});
+                    dma_dsts.push_back({p->lo + off, p->lo + off + size, 0});
+                    st_dma_bytes += (int64_t)size;
+                };
+                const auto cpu_page = [&](uint64_t pg) {
+                    const auto it = p->cpu_pages.find((uint32_t)pg);
+                    return it != p->cpu_pages.end() && it->second + 1200 >= mirror_epoch;
+                };
+                for (const VkBufferCopy& r : runs) {
+                    if (retired) { on_queue(r.srcOffset, r.size); continue; }
+                    // (split at page bounds: the pages the CPU writes on the queue, the rest by DMA)
+                    uint64_t a = r.srcOffset;
+                    const uint64_t end = r.srcOffset + r.size;
+                    while (a < end) {
+                        const bool cpu = cpu_page((p->lo + a) >> kPageShift);
+                        uint64_t b = a;
+                        while (b < end && cpu_page((p->lo + b) >> kPageShift) == cpu)
+                            b = std::min(end, (((p->lo + b) >> kPageShift) + 1 << kPageShift) - p->lo);
+                        if (cpu) on_queue(a, b - a);
+                        else by_dma(a, b - a);
+                        a = b;
+                    }
+                }
+                if (!staged.empty()) vkCmdCopyBuffer(cmd, p->mirror, dma_ring, (uint32_t)staged.size(), staged.data());
+                if (!direct.empty()) vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)direct.size(), direct.data());
+            } else {
+                vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)runs.size(), runs.data());
+            }
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size;
             for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);   // (EvilBoyce)
             {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the pools written back the most, every 600 write-back submissions
@@ -2134,6 +2380,36 @@ void memory_end_submission(VkCommandBuffer cmd) {
     for (Pool* p : mirror_synced) p->synced_gen = gen_now;
     mirror_synced.clear();
     mirror_upload = false;
+}
+
+// (local) write-backs by DMA: what the transfer submit of the submission just ended copies, and its value once submitted
+VkBuffer memory_dma_ring() { return dma_ring; }
+void memory_dma_wait(uint64_t gpu, uint64_t size) {
+    if (!dma_ring || !size) return;
+    const uint64_t guest = host->gpu_guest(gpu);
+    if (!guest) return;
+    std::lock_guard lk(pools_mu);
+    dma_wait_range(guest, guest + size);
+}
+void memory_take_dma(std::vector<DmaCopy>& out) {
+    std::lock_guard lk(pools_mu);
+    out.swap(dma_pending);
+    dma_pending.clear();
+}
+void memory_dma_tag(uint64_t xfer_value) {
+    std::lock_guard lk(pools_mu);
+    for (auto it = dma_spans.rbegin(); it != dma_spans.rend() && !it->value; ++it) it->value = xfer_value;
+    for (auto it = dma_dsts.rbegin(); it != dma_dsts.rend() && !it->value; ++it) it->value = xfer_value;
+    {   // (the ones done let go: the list stays as long as the copies under way)
+        const uint64_t done = xfer_done();
+        std::erase_if(dma_dsts, [done](const DmaDst& d) { return d.value && d.value <= done; });
+    }
+    static int64_t n, l_bytes, l_direct;
+    if (++n % 600 == 0) {
+        logf("vk: write-backs by DMA (600 transfer submits): %.1f MB a submit by DMA, %.2f runs a submit on the queue (the ring full)",
+             (st_dma_bytes - l_bytes) / 600.0 / 1048576.0, (st_dma_direct - l_direct) / 600.0);
+        l_bytes = st_dma_bytes, l_direct = st_dma_direct;
+    }
 }
 
 void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, int64_t* sync_copies, int64_t* wb_bytes) {

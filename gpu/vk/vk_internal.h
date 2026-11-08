@@ -38,12 +38,17 @@ struct Device {
     VkDevice device = VK_NULL_HANDLE;
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;
+    // (local) a transfer-only queue (the DMA engine): the mirrors' write-backs to guest memory cross PCIe there, beside
+    // the next submission's work (vk_memory.cpp, "write-backs by DMA"); none: on the queue, as before. RX_VK_WB_DMA=0: none
+    uint32_t xfer_family = UINT32_MAX;
+    VkQueue xfer_queue = VK_NULL_HANDLE;
     // extensions in use
     bool mesh_shader = false, external_memory_host = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
          conditional_rendering = false, provoking_vertex = false, vertex_divisor = false, stencil_export = false, memory_budget = false,
          checkpoints = false,   // (RX_VK_CHECKPOINTS: VK_NV_device_diagnostic_checkpoints)
+         amd_markers = false,   // ((local) RX_VK_CHECKPOINTS=1: VK_AMD_buffer_marker, the same checkpoints on AMD)
          device_fault = false,  // (VK_EXT_device_fault: what a lost device faulted on)
          sparse_images = false, // (sparse resident 2D images on the queue: the terrain's huge arrays)
          view_2d_of_3d = false, // (VK_EXT_image_2d_view_of_3d: a 3D texture a 2D sample instruction reads)
@@ -53,6 +58,7 @@ struct Device {
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
+    uint32_t max_subgroup = 32;           // (local) the widest the driver may run a stage it does not pin (AMD: 64)
     uint32_t max_push_descriptors = 0;
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
@@ -168,6 +174,8 @@ void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the captur
 /// (EvilBoyce) the newest submission value whose write-back reaches into [guest, guest + size) (0: none ever); *ever set
 /// when any write-back ever did
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever);
+void memory_note_readback(uint64_t guest, uint64_t size);   // (local) a CPU read of GPU results: see memory_rb_refresh
+bool memory_rb_refresh(VkCommandBuffer up);
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
 bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);
@@ -196,6 +204,21 @@ void destroy_image(VkImage image, VmaAllocation allocation);
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,
                    VmaAllocation& allocation, void** mapped);
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation);
+/// (local) A buffer in VRAM both queues use (the graphics queue and the DMA queue: concurrent sharing)
+bool create_buffer_shared(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation);
+
+// ---- (local) write-backs by DMA (vk_replay.cpp's transfer submits, vk_memory.cpp's staging ring) ----
+struct DmaCopy {
+    VkBuffer dst;      // (a guest pool's imported buffer)
+    VkBufferCopy c;    // (from the staging ring)
+};
+bool wb_dma_on();                      // (a transfer queue, and RX_VK_WB_DMA not 0)
+uint64_t xfer_done();                  // (the transfer submits the DMA queue has finished)
+VkResult xfer_wait(uint64_t value);    // (until the DMA queue has finished this one)
+VkBuffer memory_dma_ring();
+void memory_dma_wait(uint64_t gpu, uint64_t size);   // (before a GPU read of guest memory there: the DMA copies done)
+void memory_take_dma(std::vector<DmaCopy>& out);   // (this submission's copies: for its transfer submit)
+void memory_dma_tag(uint64_t xfer_value);          // (the transfer submit that carries them: their staging is free after it)
 /// A buffer in VRAM only (within the driver's budget), or false
 bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation);
 /// Device-local memory this process uses and what the driver allows it now (VK_EXT_memory_budget), summed over the

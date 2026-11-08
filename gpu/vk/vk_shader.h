@@ -42,7 +42,10 @@ struct Program {
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     std::vector<VkDescriptorType> binding_types;   // by binding (what each descriptor write is)
-    VkPipeline compute_pipeline = VK_NULL_HANDLE;
+    // (atomic: an optimized build that finishes late replaces an unoptimized one while dispatches read it: vk_draw.cpp build_raced)
+    std::atomic<VkPipeline> compute_pipeline{VK_NULL_HANDLE};
+    std::atomic<bool> compute_pending{false};   // (an optimized build of it still running: it may yet come; none started beside it)
+    std::atomic<uint8_t> compute_tries{0};      // (builds of it that ended with no pipeline at all)
     bool push = false;              // its set is pushed (VK_KHR_push_descriptor)
     VkShaderStageFlags push_stages = 0;
     bool uses_render_area = false;
