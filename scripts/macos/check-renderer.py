@@ -23,6 +23,7 @@ def main():
                 f.write("/* Generated game-specific helpers are unused by renderer sources. */\n")
         flags = [
             "--target=x86_64-apple-macos10.15", "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything",
+            *toolchain.macos_sysroot_flags(),
             "-DA64_WRITE_TRACK",
             "-I" + os.path.join(gpu, "compat"),
             "-I" + os.path.join(gpu, "third_party", "suyu"),
