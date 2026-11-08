@@ -14,7 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#ifndef __APPLE__
 #include "../../gpu/vk/vk_api.h"
+#endif
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
@@ -47,12 +49,23 @@ static struct {
     uint32_t (*GetMouseState)(int *, int *);
     int (*SetRelativeMouseMode)(int);
     int (*GetDesktopDisplayMode)(int, SdlDisplayMode *);
+#ifdef __APPLE__
+    void (*GetWindowSizeInPixels)(void *, int *, int *);
+    void *(*Metal_CreateView)(void *);
+    void *(*Metal_GetLayer)(void *);
+#else
     int (*Vulkan_CreateSurface)(void *, void *, void *);
     void (*Vulkan_GetDrawableSize)(void *, int *, int *);
+#endif
     void (*SetWindowTitle)(void *, const char *);
 } sdl;
 enum { SDL_INIT_VIDEO = 0x20, SDL_INIT_EVENTS = 0x4000 };
-enum { WIN_SHOWN = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGHDPI = 0x2000, WIN_FULLSCREEN_DESKTOP = 0x1001, WIN_VULKAN = 0x10000000 };
+enum { WIN_SHOWN = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGHDPI = 0x2000, WIN_FULLSCREEN_DESKTOP = 0x1001 };
+#ifdef __APPLE__
+enum { WIN_METAL = 0x20000000 };
+#else
+enum { WIN_VULKAN = 0x10000000 };
+#endif
 enum { EV_QUIT = 0x100, EV_WINDOW = 0x200, EV_KEYDOWN = 0x300, EV_MOUSEMOTION = 0x400, EV_MOUSEDOWN = 0x401 };
 enum { WE_SIZE_CHANGED = 6, WE_LEAVE = 11, WE_FOCUS_GAINED = 12, WE_FOCUS_LOST = 13, WE_CLOSE = 14 };
 
@@ -80,8 +93,14 @@ static int load_sdl(void) {
     GET(GetMouseState, "SDL_GetMouseState");
     GET(SetRelativeMouseMode, "SDL_SetRelativeMouseMode");
     GET(GetDesktopDisplayMode, "SDL_GetDesktopDisplayMode");
+#ifdef __APPLE__
+    GET(GetWindowSizeInPixels, "SDL_GetWindowSizeInPixels");
+    GET(Metal_CreateView, "SDL_Metal_CreateView");
+    GET(Metal_GetLayer, "SDL_Metal_GetLayer");
+#else
     GET(Vulkan_CreateSurface, "SDL_Vulkan_CreateSurface");
     GET(Vulkan_GetDrawableSize, "SDL_Vulkan_GetDrawableSize");
+#endif
     GET(SetWindowTitle, "SDL_SetWindowTitle");
 #undef GET
     return 1;
@@ -126,9 +145,23 @@ static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 
+#ifndef __APPLE__
 static int create_surface(void *w, void *instance, void *surface) { return sdl.Vulkan_CreateSurface(w, instance, surface); }
 static void drawable_size(void *w, int *width, int *height) { sdl.Vulkan_GetDrawableSize(w, width, height); }
 static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL};
+#endif
+static void window_pixel_size(void *w, int *width, int *height) {
+#ifdef __APPLE__
+    sdl.GetWindowSizeInPixels(w, width, height);
+#else
+    sdl.Vulkan_GetDrawableSize(w, width, height);
+#endif
+}
+#ifdef __APPLE__
+void hos_posix_window_pixel_size(int *width, int *height) {
+    window_pixel_size(window, width, height);
+}
+#endif
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
@@ -147,12 +180,19 @@ static void set_fullscreen(int on) {
 
 static DWORD WINAPI renderer_main(void *p) {
     (void)p;
+#ifdef __APPLE__
+    void *view = sdl.Metal_CreateView(window);
+    void *layer = view ? sdl.Metal_GetLayer(view) : NULL;
+    if (!layer) hos_log("display: SDL_Metal_CreateView did not provide a Metal layer");
+    const int ok = layer ? rx_start(layer) : 0;
+#else
     const int ok = rx_start(&vk_window);
+#endif
     if (!ok) hos_log("display: the renderer did not start: the window stays black");
     renderer = ok;
     if (ok) {   /* (a size change while it started) */
         int w = 0, h = 0;
-        sdl.Vulkan_GetDrawableSize(window, &w, &h);
+        window_pixel_size(window, &w, &h);
         if (w > 0 && h > 0) rx_resize(w, h);
     }
     SetEvent(renderer_up);
@@ -217,14 +257,20 @@ void hos_display_loop(void) {
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
     window = sdl.CreateWindow(HOS_GAME_TITLE, 0x2FFF0000 /* centred */, 0x2FFF0000, win_w, win_h,
+#ifdef __APPLE__
+                              WIN_SHOWN | WIN_RESIZABLE | WIN_HIGHDPI | WIN_METAL);
+#else
                               WIN_SHOWN | WIN_RESIZABLE | WIN_HIGHDPI | WIN_VULKAN);
+#endif
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", sdl.GetError());
         rx_start(NULL);
         SetEvent(renderer_up);
         for (;;) Sleep(1000);
     }
+#ifndef __APPLE__
     vk_window.window = window;
+#endif
     hos_posix_window[0] = 1;
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
@@ -241,7 +287,7 @@ void hos_display_loop(void) {
                     const uint8_t what = e.raw[12];
                     if (what == WE_SIZE_CHANGED && renderer) {
                         int w = 0, h = 0;
-                        sdl.Vulkan_GetDrawableSize(window, &w, &h);
+                        window_pixel_size(window, &w, &h);
                         rx_resize(w, h);
                     } else if (what == WE_FOCUS_GAINED) {
                         hos_posix_window[0] = 1;

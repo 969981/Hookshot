@@ -7,11 +7,11 @@
 // below it). A segment is created when a draw first needs it; its pages are uploaded when a draw needs them (one
 // valid bit per 4 KB page; pages a dispatch wrote are copied from the neighbour that holds them).
 //
-// Changes: the guest arena is allocated with MEM_WRITE_WATCH (hos_main.c). At the start of each GPU submission the
-// pages written since the last one are invalidated (GetWriteWatch), which catches every CPU write the submission's
-// data needs. Writes the command processor makes while it runs a submission (inline uploads, copies: hos/gpu.c)
-// are reported through rx_memory_written; if a page they change was read earlier in the open batch, the batch is
-// submitted first, so earlier draws see the old contents.
+// Changes: A64_WRITE_TRACK marks guest pages written by the CPU; at the start of each GPU submission those pages are
+// invalidated. Windows also uses MEM_WRITE_WATCH for writes that bypass the translated stores. Writes the command
+// processor makes while it runs a submission (inline uploads, copies: hos/gpu.c) are reported through
+// rx_memory_written; if a page they change was read earlier in the open batch, the batch is submitted first, so
+// earlier draws see the old contents.
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -362,8 +362,8 @@ BufferRef guest_buffer(uint64_t gpu_va, uint64_t size) {
     return {s->buffer, guest - s->base, size};
 }
 
-/// The guest pages the CPU wrote since the last call (GetWriteWatch, which also resets them): any thread. False when
-/// write watching does not work (then nothing is tracked).
+/// The guest pages the CPU wrote since the last call (the active write watch is reset): any thread. False when write
+/// watching does not work (then nothing is tracked).
 bool collect_written_pages(std::vector<uint32_t>& out) {
     out.clear();
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
@@ -392,6 +392,7 @@ bool collect_written_pages(std::vector<uint32_t>& out) {
         return true;
     }
 #endif
+#if !defined(__APPLE__) || !defined(A64_WRITE_TRACK) || defined(__EMSCRIPTEN__)
     if (!watch_ok) return false;
     // only the memory mapped into the GPU's address space (what the renderer can read); the cost of GetWriteWatch
     // grows with the range, not with the pages written
@@ -448,6 +449,7 @@ bool collect_written_pages(std::vector<uint32_t>& out) {
         hos_log("rx: change tracking watches %d ranges, %llu MB", nranges, (unsigned long long)(total >> 20));
     }
     return true;
+#endif
 }
 
 /// Pages the CPU wrote (collect_written_pages) are invalidated (called with no batch open).
@@ -687,10 +689,13 @@ void buffer_cache_sync_to_guest(uint64_t gpu_va, uint64_t size) {
         uint8_t* dst = hos_guest_base() + p0 * kPage;
         // (pages the CPU wrote since the last scan keep their write-watch mark; the others are not reported as CPU
         // writes: the segment already holds this)
+        // macOS keeps these marks for collect_written_pages; only the native write-watch path resets marks here.
+#if !defined(__APPLE__) || !defined(A64_WRITE_TRACK) || defined(__EMSCRIPTEN__)
         std::vector<void*> dirty(p1 - p0 + 1);
         ULONG_PTR ndirty = dirty.size();
         DWORD gran = 0;
         const bool watched = !GetWriteWatch(0, dst, n, dirty.data(), &ndirty, &gran);
+#endif
         const auto* src = static_cast<const uint8_t*>(wgpuBufferGetConstMappedRange(staging, 0, n));
         std::lock_guard lk(shadow_mu);
         for (uint64_t p = p0; p <= p1; p++) {
@@ -708,7 +713,9 @@ void buffer_cache_sync_to_guest(uint64_t gpu_va, uint64_t size) {
             for (uint32_t w = 0; w < kPage / 4; w++)
                 if (gw[w] != sw[w]) dw[w] = gw[w];
         }
+#if !defined(__APPLE__) || !defined(A64_WRITE_TRACK) || defined(__EMSCRIPTEN__)
         if (watched && ndirty == 0) ResetWriteWatch(dst, n);
+#endif
         wgpuBufferUnmap(staging);
         for (uint64_t p = p0; p <= p1; p++) {
             gpu_pages[p] = 0;

@@ -3473,7 +3473,7 @@ void nvn_draw(NvnState& s, const NvnDraw& d) {
     // the frame rate depends on the replay's time (what making it faster could give)
     if (static const int64_t spin = getenv("RX_DEBUG_DRAW_SPIN_NS") ? atoll(getenv("RX_DEBUG_DRAW_SPIN_NS")) : 0; spin) {
         const int64_t until = clock_ns() + spin;
-        while (clock_ns() < until) _mm_pause();
+        while (clock_ns() < until) cpu_relax();
     }
     struct DrawTimer {
         int64_t t0 = clock_ns();

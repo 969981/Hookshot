@@ -212,6 +212,9 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
 
 int rx_start(void *hwnd) {
     const char *b = getenv("RX_BACKEND");
+#ifdef __APPLE__
+    if (b && _stricmp(b, "metal")) hos_log("rx: RX_BACKEND=%s is not supported on macOS; using Metal via WebGPU", b);
+#else
     const int eden = b && !_stricmp(b, "eden");
     if (!b || !_stricmp(b, "vulkan") || eden) {   /* (hookshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */
         const char *dll = eden ? "mkw_eden.dll" : "hookshot_vk.dll";
@@ -224,6 +227,7 @@ int rx_start(void *hwnd) {
         }
         if (r) hos_log("rx: the Vulkan back end could not start on the window: WebGPU");
     }
+#endif
     const int ok = wgr_start(hwnd);
     flush_early();
     return ok;

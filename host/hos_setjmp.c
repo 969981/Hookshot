@@ -19,16 +19,15 @@
    recomp_sj_longjmp brings the host back to that caller, which runs the owner's code from the return address: what
    the owner would have done, ending in its own return to the caller.
 
-   (recomp_sj_setjmp / recomp_sj_longjmp are this file's own, in assembly: every Win64 callee-saved register, xmm6-15
-   with them, and the stack pointer and return address. clang's __builtin_setjmp, which this used first, saves the
-   frame address, which on Win64 sits 128 bytes below the frame pointer clang addresses the frame's spill slots with,
-   and its longjmp set rbp to it: the caller's reloads of c and the slot read garbage, and the text box thread
-   called a stack address after its first longjmp.) */
+   (recomp_sj_setjmp / recomp_sj_longjmp are this file's own, in assembly: each host ABI's callee-saved state, stack
+   pointer and return address. clang's __builtin_setjmp, which this used first, saves the frame address, which on
+   Win64 sits 128 bytes below the frame pointer clang addresses the frame's spill slots with, and its longjmp set
+   rbp to it: the caller's reloads of c and the slot read garbage, and the text box thread called a stack address
+   after its first longjmp.) */
 #include "hos.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <windows.h>
 #include <string.h>
 
 #define DEPTH 256
@@ -100,6 +99,54 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "jmpq *72(%rcx)\n\t");
 }
 
+#elif defined(__aarch64__) || defined(__arm64__)
+/* AAPCS64: x19-x29, SP, LR and d8-d15 are callee-saved. FPCR/FPSR keep the host FP environment intact. */
+__attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
+    __asm__ volatile(
+        "stp x19, x20, [x0, #0]\n\t"
+        "stp x21, x22, [x0, #16]\n\t"
+        "stp x23, x24, [x0, #32]\n\t"
+        "stp x25, x26, [x0, #48]\n\t"
+        "stp x27, x28, [x0, #64]\n\t"
+        "stp x29, x30, [x0, #80]\n\t"
+        "mov x9, sp\n\t"
+        "str x9, [x0, #96]\n\t"
+        "stp d8, d9, [x0, #104]\n\t"
+        "stp d10, d11, [x0, #120]\n\t"
+        "stp d12, d13, [x0, #136]\n\t"
+        "stp d14, d15, [x0, #152]\n\t"
+        "mrs x9, fpcr\n\t"
+        "str x9, [x0, #168]\n\t"
+        "mrs x9, fpsr\n\t"
+        "str x9, [x0, #176]\n\t"
+        "mov w0, #0\n\t"
+        "ret\n\t");
+}
+
+__attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    __asm__ volatile(
+        "ldp x19, x20, [x0, #0]\n\t"
+        "ldp x21, x22, [x0, #16]\n\t"
+        "ldp x23, x24, [x0, #32]\n\t"
+        "ldp x25, x26, [x0, #48]\n\t"
+        "ldp x27, x28, [x0, #64]\n\t"
+        "ldp x29, x30, [x0, #80]\n\t"
+        "ldp d8, d9, [x0, #104]\n\t"
+        "ldp d10, d11, [x0, #120]\n\t"
+        "ldp d12, d13, [x0, #136]\n\t"
+        "ldp d14, d15, [x0, #152]\n\t"
+        "ldr x9, [x0, #168]\n\t"
+        "msr fpcr, x9\n\t"
+        "ldr x9, [x0, #176]\n\t"
+        "msr fpsr, x9\n\t"
+        "ldr x9, [x0, #96]\n\t"
+        "mov sp, x9\n\t"
+        "cmp w1, #0\n\t"
+        "mov w0, #1\n\t"
+        "csel w0, w1, w0, ne\n\t"
+        "br x30\n\t");
+}
+
 #else
 /* (linux) the System V ABI's: the buffer as above, its callee-saved registers only (rbx rbp r12-r15: rdi, rsi and the
    xmm registers are the caller's to keep there), buf in rdi and the value in esi */
@@ -169,8 +216,8 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
     for (int i = stack->depth - 1; i >= 0; i--) {
         SjSlot *s = &stack->slot[i];
         if (s->rets[0] != target && s->rets[1] != target && s->rets[2] != target && s->rets[3] != target) continue;
-        static volatile LONG logged;
-        if (InterlockedIncrement(&logged) <= 4)
+        static uint32_t logged;
+        if (__atomic_fetch_add(&logged, 1, __ATOMIC_RELAXED) < 4)
             hos_log("longjmp to %#llx (value %llu, %d slots above dropped)", (unsigned long long)target,
                     (unsigned long long)c->x[0], stack->depth - 1 - i);
         s->target = target;
