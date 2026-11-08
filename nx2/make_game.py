@@ -392,11 +392,15 @@ def check_mingw():
     """The bundled compiler builds and links a Windows program: found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
+    cc = os.path.join(os.environ.get("HOOKSHOT_MINGW", ""), "bin", "clang.exe")
+    if not os.path.isfile(cc):   # (HOOKSHOT_MINGW set to a folder without the compiler: said here, not as a silent SystemExit)
+        fail("The builder's own compiler was not found at %s. Set HOOKSHOT_MINGW to an llvm-mingw folder, or unpack the "
+             "Hookshot Builder zip again into a folder your antivirus allows." % cc)
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <windows.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + toolchain.native_link() +
+        r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
                            [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
@@ -414,6 +418,10 @@ def check_windows_sdk():
         return check_mingw()
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
+    cc = toolchain.find("clang")
+    if not os.path.isfile(cc):   # (toolchain.need() would raise SystemExit, which the builder cannot show: said in its protocol)
+        fail("No C compiler was found. Install clang (and lld) and put it on PATH, set EMSDK to an emsdk checkout, or set "
+             "HOOKSHOT_MINGW to an llvm-mingw folder. (%s)" % cc)
     # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
     # library in it, it is dropped and the compiler looks for Visual Studio itself. Issues 80 and 89)
     for k in [n for n in os.environ if n.upper() == "INCLUDE"]:
@@ -763,6 +771,12 @@ def cli():
             stack.enter_context(build_log(a.log))
             main(a)
         except SystemExit as e:
+            # (fail() exits with a number: it already said @@error. A library's SystemExit (toolchain.need) carries its message as
+            # text, which would reach only stderr; the builder app does not show that, and said "The game files could not be read")
+            if isinstance(e.code, str):
+                print(e.code, file=sys.stderr, flush=True)
+                say("error", e.code)
+                sys.exit(1)
             if e.code is not None and not isinstance(e.code, int):
                 print(e.code, file=sys.stderr, flush=True)
                 raise SystemExit(1)

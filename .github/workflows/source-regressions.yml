@@ -6,6 +6,8 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - third_party/a64-kit/tools/toolchain.py
+      - tests/test_check_no_compiler.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -101,6 +103,8 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - third_party/a64-kit/tools/toolchain.py
+      - tests/test_check_no_compiler.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -283,6 +287,8 @@ jobs:
           python -I -B tests/test_setup_pruning.py --cc cl
       - name: Linux builder worker selection
         run: python -I -B tests/test_linux_builder_jobs.py
+      - name: Check a missing compiler is said, not "game files"
+        run: python -I -B tests/test_check_no_compiler.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
