@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -5286,6 +5287,27 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     return true;
 }
 
+/// (host/hos_oot_camera.c: tan(fovy/2) and the planes sead's projection published, 0 when nothing
+/// has, which leaves a backend on its own defaults)
+extern "C" float hos_oot_camera(float* near_plane, float* far_plane);
+
+/// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
+/// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
+/// network. taau_key's own default turns itself off where the card can run the real network, which
+/// is the wrong condition for a backend that is meant to replace it.
+static bool upscale_trace_key(uint64_t key) {
+    const char* keys = getenv("RX_VK_UPSCALE_KEYS") ? getenv("RX_VK_UPSCALE_KEYS") : "fd029a317a9a4b94";
+    char hex[24];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    for (const char* q = keys; *q;) {
+        const char* e = q;
+        while (*e && *e != ',') e++;
+        if (e > q && *q != '-' && !strncmp(hex, q, (size_t)(e - q))) return true;
+        q = *e ? e + 1 : e;
+    }
+    return false;
+}
+
 /// (hookshot) The dispatch's sampled textures in descriptor order, in the terms of the upscaler input contract
 /// (gpu/vk/upscale_contract.h). Resolved exactly as build_descriptors resolves them, including the storage-pointer
 /// guard, so index i here is dw.imgs[i] -- the descriptor a backend is actually handed.
@@ -5458,7 +5480,14 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     avail.stand_in_wanted = taau_key(p.key);
     upscale::Request req;
     req.program_key = p.key;
-    if (upscale::choose(avail, req) != upscale::Backend::StandIn || p.stages.empty()) return false;
+    // (hookshot) A backend that is not the stand-in has to be reachable without it. On a card with
+    // hardware f16 matrix multiply taau_key defaults to "-", so the network runs as itself and the
+    // stand-in never does; gating everything on it would have made FSR unreachable on exactly the
+    // hardware that can run it. RX_VK_FSR=1 therefore brings us in here on its own.
+    static const bool fsr_wanted = getenv("RX_VK_FSR") && atoi(getenv("RX_VK_FSR")) != 0;
+    const bool fsr_here = fsr_wanted && avail.push_descriptor && upscale_trace_key(p.key);
+    if (p.stages.empty()) return false;
+    if (upscale::choose(avail, req) != upscale::Backend::StandIn && !fsr_here) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
@@ -5496,8 +5525,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // (hookshot) FSR 3.1 in the dispatch's place, opt-in with RX_VK_FSR=1 and only where the
     // contract holds. Its own RGBA16F output is blitted into the game's target, which is the
     // format conversion the game's network would have done itself.
-    static const bool fsr_wanted = getenv("RX_VK_FSR") && atoi(getenv("RX_VK_FSR")) != 0;
-    if (fsr_wanted && upscale::temporal_possible(req) && fsr3::supported()) {
+    if (fsr_here && upscale::temporal_possible(req) && fsr3::supported()) {
         fsr3::Inputs fi;
         fi.color = dw.imgs[req.colour_binding].imageView;
         fi.depth = dw.imgs[req.inputs.depth].imageView;
@@ -5506,6 +5534,15 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         fi.upscale_width = req.output_width, fi.upscale_height = req.output_height;
         fi.motion_scale[0] = (float)req.inputs.render_width;
         fi.motion_scale[1] = (float)req.inputs.render_height;
+        {   // (the game's own camera where the patch published it: nx2/oot_camera.py. Without it
+            // the Inputs defaults stand, which only scales FSR's disocclusion thresholds)
+            float near_plane = 0.0f, far_plane = 0.0f;
+            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
+            if (tan_half > 0.0f && near_plane > 0.0f) {
+                fi.near_plane = near_plane;
+                fi.fov_y = 2.0f * std::atan(tan_half);
+            }
+        }
         // (the jitter the game's own network used is not extracted yet, so this says no sub-pixel
         // offset: the picture is a plumbing check, not FSR at its quality. Logged once so a report
         // of a soft image is not mistaken for FSR behaving badly)
@@ -5524,6 +5561,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
             return true;
         }
     }
+    if (!avail.stand_in_wanted) return false;   // (we came in for FSR, which did not take it)
     return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
