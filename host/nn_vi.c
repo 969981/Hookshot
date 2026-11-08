@@ -1,5 +1,5 @@
 /* nn::vi for MKW (TOTKPort's nn_vi.c is bound to its renderer and TOTK's frame pacing): the default display, one
-   layer, and the display's vsync event, signaled at 60 Hz by a host thread. HDR and VRR are reported unsupported,
+   layer, and the display's vsync event, signaled at 60 Hz by a host thread (HOS_VSYNC_HZ over it). HDR and VRR are reported unsupported,
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
 #define WIN32_LEAN_AND_MEAN
@@ -16,9 +16,25 @@ static uint64_t vsync_events[8];
 static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
+/* (hookshot) HOS_VSYNC_HZ=<hz>: the rate the display's vsync event is signalled at, 60 by default.
+ *
+ * This is what paces the game. It waits on the event, so a hardcoded 60 here is a hard 60 fps
+ * however high the limiter is: on a 165 Hz monitor, with the limiter unlocked to 120 by
+ * HOS_DISPLAY_VRR, 298 of 300 frames still landed in the 15.5-17.8 ms window with no variance.
+ * Clamped to 15..1000: below 15 the game's own frame step treats a step as a hitch, and a rate the
+ * machine cannot render only spends the time sleeping less. */
+static int64_t vsync_period_ns(void) {
+    const char *e = getenv("HOS_VSYNC_HZ");
+    int hz = e && *e ? atoi(e) : 60;
+    if (hz < 15) hz = 15;
+    if (hz > 1000) hz = 1000;
+    if (hz != 60) hos_log("vi: the display's vsync event at %d Hz (HOS_VSYNC_HZ)", hz);
+    return 1000000000LL / hz;
+}
+
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
-    const int64_t period = 1000000000LL / 60;
+    const int64_t period = vsync_period_ns();
     int64_t next = hos_now_ns() + period;
     for (;;) {
         const int64_t now = hos_now_ns();
