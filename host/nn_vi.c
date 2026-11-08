@@ -303,8 +303,12 @@ static void realtime_step(int64_t now) {
                own code take a higher rate. */
             uint8_t *const gate = (uint8_t *)GP(mod + 0x232);
             if (!*gate) *gate = 1;
+            /* NOT +0x2c8. The real-time frame step above owns that word, and the engine steps
+               game time by 60 / it: forcing it to 165 while the game renders at 57 steps time by
+               0.36 a frame, which is slow motion on screen. Reported from a real run, and the
+               commit that added this block had already warned it changed two things at once. */
             int *const words[] = {(int *)GP(mod + 0x270 + 0x58), (int *)GP(mod + 0x270 + 0x28),
-                                  (int *)GP(mod + 0x270 + 0x2c), (int *)GP(mod + 0x2c8)};
+                                  (int *)GP(mod + 0x270 + 0x2c)};
             for (size_t i = 0; i < sizeof words / sizeof words[0]; i++)
                 if (*words[i] > 0 && *words[i] < target) *words[i] = target;
         }
