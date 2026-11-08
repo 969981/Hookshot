@@ -24,13 +24,16 @@ sealed record GameInstallation(string? Tag, ReleaseIdentity? Identity, bool CanR
     }
 
     public bool Current(ReleaseIdentity? latest) => latest != null && Identity == latest;
-    public bool UpdateAvailable(ReleaseIdentity? latest) => CanRebuild && Tag != null && latest != null && Identity != latest;
+    public bool UpdateAvailable(ReleaseIdentity? latest, string? fallbackTag = null) => CanRebuild && Tag != null &&
+        (latest != null ? Identity != latest : fallbackTag != null && Tag != fallbackTag);
 
-    public BuilderMode Mode(ReleaseIdentity? latest, string? builderTag, ReleaseIdentity? builderIdentity, bool sourcePicked)
+    public BuilderMode Mode(ReleaseIdentity? latest, string? builderTag, ReleaseIdentity? builderIdentity, bool sourcePicked,
+        string? fallbackTag = null)
     {
-        if (!sourcePicked && UpdateAvailable(latest)) return BuilderMode.UpdateGame;
+        if (!sourcePicked && UpdateAvailable(latest, fallbackTag)) return BuilderMode.UpdateGame;
         if (!sourcePicked && Tag != null) return BuilderMode.Play;
-        if (latest != null && builderTag != null && builderIdentity != latest) return BuilderMode.UpdateBuilder;
+        if (builderTag != null && (latest != null ? builderIdentity != latest : fallbackTag != null && builderTag != fallbackTag))
+            return BuilderMode.UpdateBuilder;
         return BuilderMode.Build;
     }
 

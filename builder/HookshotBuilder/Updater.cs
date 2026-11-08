@@ -27,7 +27,15 @@ static class Updater
         catch (Exception) { return null; }
     }
 
-    public static async Task<string?> LatestTag() => (await LatestIdentity())?.Tag;
+    public static async Task<string?> LatestSetupTag()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var http = Http();
+        try { return await LatestRelease.SetupTagAsync(http, timeout.Token); }
+        catch (Exception) { return null; }
+    }
+
+    public static async Task<string?> LatestTag() => (await LatestIdentity())?.Tag ?? await LatestSetupTag();
 
     // Retain the released UI entry point, but prepare the checked Builder itself instead of running setup.
     public static async Task RunLatestSetup(MainWindow w, IEnumerable<string> args, bool repair = false)

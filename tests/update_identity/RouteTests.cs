@@ -31,6 +31,12 @@ static class RouteTests
             Check(game.Mode(latest, latest.Tag, latest, false) == BuilderMode.UpdateGame, "files page uses changed-source update route");
             Check(!game.Current(null) && !game.UpdateAvailable(null), "offline is never current or a verified update");
             Check(game.Mode(null, old.Tag, old, false) == BuilderMode.Play, "offline game stays playable without a current claim");
+            Check(game.Mode(null, old.Tag, old, false, "new-tag") == BuilderMode.UpdateGame && !game.Current(null),
+                "setup-list hint can offer an update without claiming current identity");
+            Check(game.Mode(null, old.Tag, old, false, old.Tag) == BuilderMode.Play && !game.Current(null),
+                "matching fallback/local-Builder tag never proves globally current");
+            Check(!ReleaseIdentity.CanBuildFetched(old, null, old.Tag, old.Revision),
+                "a fallback tag never permits an unverified offline fetched rebuild");
             Stamp(latest.Revision);
             game = GameInstallation.Read(root);
             Check(game.Current(latest) && !game.UpdateAvailable(latest), "tag and revision together are current");
@@ -56,6 +62,8 @@ static class RouteTests
             Check(game.Tag == null && !game.Current(latest), "missing metadata is unknown");
             Check(game.Mode(latest, old.Tag, old, false) == BuilderMode.UpdateBuilder, "new game uses newer Builder first");
             Check(game.Mode(latest, old.Tag, null, false) == BuilderMode.UpdateBuilder, "legacy packaged Builder needs verification too");
+            Check(game.Mode(null, "old-tag", null, false, "new-tag") == BuilderMode.UpdateBuilder,
+                "setup-list hint retains the Builder update route");
             Check(game.Mode(latest, null, null, false) == BuilderMode.Build, "unidentified source Builder retains ordinary build mode");
 
             var flat = Path.Combine(root, "hookshot.exe");
