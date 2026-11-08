@@ -4,7 +4,7 @@
 # third_party part's prebuilt files, are the latest release's (scripts/release_parts.py). The Windows Vulkan back end is
 # compiled too, with the same llvm-mingw: players build it on their PC, this only checks that it still builds.
 # A workflow artifact on every run; on a tag, the new parts go to the builder-parts release and the setup
-# (HookshotBuilder.exe) and its list (hookshot-setup.txt) to the tag's release, beside the Linux AppImage.
+# (HookshotBuilder.exe), list and bound space companion to the tag's release, beside the Linux AppImage.
 name: Windows builder
 
 on:
@@ -72,17 +72,22 @@ jobs:
 
       # (the list of the newest stable release other than this tag: its Python, emsdk, CPM, wgpu-native and third_party
       # parts and its play profile. A fork with no release takes upstream's. A release must have one; any other run goes
-      # on without, and its package lacks those parts)
+      # on without, and its package lacks those parts. A selected legacy release without verified space facts fails:
+      # first upload its offline-generated companion, or fully stage the tools; never guess totals for reused parts.)
       - name: The latest release's setup list
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if python -I scripts/release_parts.py previous "$RUNNER_TEMP/previous-setup.txt" \
-              --repo "$GITHUB_REPOSITORY" --repo NotRexed/Hookshot --skip-tag "$TAG"; then
+              --repo "$GITHUB_REPOSITORY" --repo NotRexed/Hookshot --skip-tag "$TAG" \
+              --space-out "$RUNNER_TEMP/previous-setup-space.txt"; then
             echo "PREVIOUS=$RUNNER_TEMP/previous-setup.txt" >> "$GITHUB_ENV"
-          elif [[ $GITHUB_REF == refs/tags/* ]]; then
-            exit 1
+            echo "PREVIOUS_SPACE=$RUNNER_TEMP/previous-setup-space.txt" >> "$GITHUB_ENV"
           else
+            status=$?
+            if [[ $status -eq 2 || $GITHUB_REF == refs/tags/* ]]; then
+              exit "$status"
+            fi
             echo "::warning::no earlier release's setup list: the package has only the app and .NET parts"
           fi
 
@@ -112,7 +117,8 @@ jobs:
       - name: Setup parts
         run: |
           python -I scripts/make_setup_parts.py "$RUNNER_TEMP/package" "$TAG" dist \
-            --base "https://github.com/$GITHUB_REPOSITORY/releases/download/builder-parts" ${PREVIOUS:+--reuse "$PREVIOUS"}
+            --base "https://github.com/$GITHUB_REPOSITORY/releases/download/builder-parts" \
+            ${PREVIOUS:+--reuse "$PREVIOUS" --reuse-space "$PREVIOUS_SPACE"}
           # (a release holds the setup as HookshotBuilder.exe: builder/HookshotBuilder/Updater.cs)
           cp "$RUNNER_TEMP/HookshotBuilder-Setup.exe" dist/HookshotBuilder.exe
           cat dist/hookshot-setup.txt
@@ -186,7 +192,7 @@ jobs:
 
   release:
     name: Release assets
-    # (off until the maintainer switches it on: releases are published by hand with HookshotBuilder.exe and hookshot-setup.txt,
+    # (off until the maintainer switches it on: releases are published by hand with the setup, list and space companion,
     # and a second upload of them on the tag would race that. Set vars.CI_RELEASE_WINDOWS to 'true' to turn it on)
     if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts' && vars.CI_RELEASE_WINDOWS == 'true'
     needs: [package, vulkan]
@@ -222,5 +228,5 @@ jobs:
               gh release upload builder-parts "$f"
             fi
           done
-      - name: Setup and its list to the release
-        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/HookshotBuilder.exe dist/hookshot-setup.txt
+      - name: Setup, list and space companion to the release
+        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/HookshotBuilder.exe dist/hookshot-setup.txt dist/hookshot-setup-space.txt

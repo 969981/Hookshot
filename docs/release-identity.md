@@ -29,6 +29,13 @@ bootstrap requires the revision-aware list and matching companion before offerin
 releases that lack this metadata. Older bootstrap/updater parsers keep their existing setup-list grammar; no unknown records
 or comments are added to that list. See [the installation contract](../builder/setup/PLAN.md) for destination and space limits.
 
+When retaining earlier tool parts with `--reuse previous-hookshot-setup.txt`, also pass
+`--reuse-space previous-hookshot-setup-space.txt`. The companion must bind to the exact previous list; staged ZIPs are measured
+again. The Windows workflow fetches the pair and uploads both new text assets. For the first release using this contract,
+the maintainer must generate and upload the previous release's companion from existing SHA-verified ZIPs using
+`scripts/release_parts.py space <previous list> <existing ZIP directory> <out companion>`, or fully stage all current parts
+without reuse. Missing facts are an explicit workflow/publisher failure, with no automatic payload download to estimate sizes.
+
 The publish target writes `builder-revision.txt`. The packer runs on Windows and verifies that marker against the source revision
 embedded in both GUI files' Win32 ProductVersion at compilation, as well as the clean checkout, tag target and staged
 build sources before writing `tools/version.txt`, `tools/VERSION` (the displayed release name) and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old

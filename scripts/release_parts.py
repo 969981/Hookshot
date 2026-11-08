@@ -3,8 +3,14 @@
 and the play profile (addresses and counts made on the development PC).
 
     python -I scripts/release_parts.py previous <out list> --repo <owner/name> [--repo ...] [--skip-tag <tag>]
+                                              [--space-out <out space companion>]
         the newest stable release's hookshot-setup.txt (of the first repository that has one; not --skip-tag's, the release
-        being made); prints that release's tag. Exits 1 when no repository has one.
+        being made); prints that release's tag. Exits 1 when no repository has one. With --space-out, a selected release
+        missing a valid bound companion exits 2 rather than falling back to an incomplete package.
+    python -I scripts/release_parts.py space <setup list> <existing ZIP directory> <out space companion>
+        offline first-adoption bootstrap: verify each ZIP's exact SHA/length and measure its entries/final renamed paths.
+        Does not download, extract or execute anything. Upload the result beside that exact prior setup list, or fully
+        stage current parts instead of using --reuse. Missing archives or inconsistent metadata stop publication.
     python -I scripts/release_parts.py profile <setup list> <work folder>
         the play profile (tools/work of the list's app part) into <work folder>
     python -I scripts/release_parts.py llvm-mingw <folder> [--name]
@@ -26,6 +32,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -41,7 +48,7 @@ CACHE = os.path.join(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(), "re
 PREBUILT_EXT = (".dll", ".lib", ".exe", ".sha1")
 
 
-def get(url, api=False, tries=5):
+def get(url, api=False, tries=5, limit=None):
     headers = {"User-Agent": "hookshot-ci"}
     if api:
         headers["Accept"] = "application/vnd.github+json"
@@ -50,7 +57,10 @@ def get(url, api=False, tries=5):
     for i in range(tries):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
-                return r.read()
+                data = r.read() if limit is None else r.read(limit + 1)
+                if limit is not None and len(data) > limit:
+                    raise ValueError("Release metadata exceeds its size limit.")
+                return data
         except urllib.error.HTTPError as e:
             if e.code < 500 or i == tries - 1:
                 raise
@@ -73,8 +83,25 @@ def previous(a):
                 continue
             url = next((x["browser_download_url"] for x in r["assets"] if x["name"] == "hookshot-setup.txt"), None)
             if url:
-                with open(a.out, "wb") as f:
-                    f.write(get(url))
+                space_out = getattr(a, "space_out", None)
+                if space_out:
+                    space_url = next((x["browser_download_url"] for x in r["assets"] if x["name"] == "hookshot-setup-space.txt"), None)
+                    try:
+                        if Path(space_out).resolve() == Path(a.out).resolve():
+                            raise ValueError("write the setup list and companion to different paths")
+                        if not space_url:
+                            raise ValueError("the selected prior release has no hookshot-setup-space.txt")
+                        manifest, companion = get(url, limit=262144), get(space_url, limit=262144)
+                        setup_parts().read_space(manifest, companion)
+                        Path(space_out).write_bytes(companion)
+                        Path(a.out).write_bytes(manifest)
+                    except (ValueError, OSError) as error:
+                        print("%s: %s. Generate/upload the companion with release_parts.py space from existing verified "
+                              "ZIPs, or fully stage the tool parts before enabling this workflow." % (r["tag_name"], error), file=sys.stderr)
+                        return 2
+                else:
+                    manifest = get(url)
+                    Path(a.out).write_bytes(manifest)
                 print(r["tag_name"])
                 return 0
     print("no release with a hookshot-setup.txt in %s" % ", ".join(a.repo), file=sys.stderr)
@@ -107,6 +134,28 @@ def sha256(path):
         while b := f.read(1 << 20):
             h.update(b)
     return h.hexdigest()
+
+
+def space(a):
+    """Offline first-adoption bootstrap. Read only explicitly supplied, existing ZIPs."""
+    producer = setup_parts()
+    manifest = Path(a.list).read_bytes()
+    archives = Path(a.archives).resolve(strict=True)
+    facts = []
+    inputs = {Path(a.list).resolve()}
+    for fields in producer.manifest_parts(manifest):
+        _, sha, size, folder, old, new, url = fields
+        archive = (archives / url.rsplit("/", 1)[-1]).resolve(strict=True)
+        if archive.parent != archives or not archive.is_file() or archive.stat().st_size != int(size) or sha256(archive) != sha:
+            raise ValueError("Local ZIP does not match the setup list's exact SHA and size: %s" % archive)
+        inputs.add(archive)
+        facts.append((sha, producer.archive_space(archive, folder, old, new)))
+    companion = producer.space_text(manifest, facts).encode("ascii")
+    producer.read_space(manifest, companion)
+    if Path(a.out).resolve() in inputs:
+        raise ValueError("Write the companion separately from the setup list and ZIPs.")
+    Path(a.out).write_bytes(companion)
+    return 0
 
 
 def named_part(list_path, name):
@@ -143,11 +192,15 @@ def profile(a):
     return 0
 
 
-def llvm_spec():
+def setup_parts():
     spec = importlib.util.spec_from_file_location("make_setup_parts", os.path.join(ROOT, "scripts", "make_setup_parts.py"))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    return m.LLVM   # (sha256, size, top folder in the zip, url)
+    return m
+
+
+def llvm_spec():
+    return setup_parts().LLVM   # (sha256, size, top folder in the zip, url)
 
 
 def llvm_mingw(a):
@@ -206,6 +259,11 @@ def main():
     s.add_argument("out")
     s.add_argument("--repo", action="append", required=True)
     s.add_argument("--skip-tag", default="")
+    s.add_argument("--space-out", help="also require/fetch the exact release's SHA-bound space companion; absence exits 2")
+    s = sub.add_parser("space")
+    s.add_argument("list")
+    s.add_argument("archives")
+    s.add_argument("out")
     s = sub.add_parser("profile")
     s.add_argument("list")
     s.add_argument("work")
@@ -218,7 +276,7 @@ def main():
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
     a = p.parse_args()
-    return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
+    return {"previous": previous, "space": space, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
 
 if __name__ == "__main__":

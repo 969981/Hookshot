@@ -35,6 +35,28 @@ SHA, compressed size and declared archive root, from the verified archive's ZIP
 directory. A changed external pin without verified facts stops publication.
 Nothing is downloaded just to estimate its size.
 
+The Windows publisher preserves `--reuse` for tool folders absent from the staged
+package. It requires `--reuse-space` bound to the exact prior list and inherits
+only that selected part's facts. Every newly written ZIP is measured again. A
+missing, stale or incomplete companion fails before the new list is published.
+The workflow fetches the prior list/companion as a pair and uploads the new pair.
+
+First adoption requires maintainer action because older releases lack this
+companion. With all of that prior release's ZIPs already available locally, run:
+
+```text
+python -I scripts/release_parts.py space previous-hookshot-setup.txt existing-zips previous-hookshot-setup-space.txt
+```
+
+This verifies every ZIP's full SHA and compressed length and reads its directory,
+including empty directories and final UTF-16 path lengths after the declared
+destination/root rename. It never downloads or extracts. Upload the generated
+file as `hookshot-setup-space.txt` beside the unchanged prior list before enabling
+workflow reuse, or fully stage the current tool parts without reuse. The workflow
+deliberately fails if it selects a legacy list without verified facts; incomplete
+historical inventories do not substitute for archive metadata. No real legacy
+companion was generated as part of this change.
+
 The UI distinguishes full compressed download bytes (before cache reuse), exact
 unpacked logical file bytes, a conservative logical budget of compressed plus
 unpacked bytes, and free bytes on the selected volume. Filesystem overhead can

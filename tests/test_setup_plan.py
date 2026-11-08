@@ -1,7 +1,9 @@
 """Authored setup metadata and preflight contracts; --native opts into the Windows C fixture."""
 import argparse
+from contextlib import redirect_stderr
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 import zipfile
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = False
@@ -26,6 +29,7 @@ def load(name, path):
 
 identity = load("setup_plan_identity_fixture", ROOT / "tests/test_release_identity.py")
 producer = identity.setup_parts
+release = load("setup_space_release_fixture", ROOT / "scripts/release_parts.py")
 
 
 class PublisherSpaceTests(unittest.TestCase):
@@ -76,6 +80,190 @@ class PublisherSpaceTests(unittest.TestCase):
         after = producer.space_text(b"different manifest\n", facts)
         self.assertNotEqual(before.splitlines()[1], after.splitlines()[1])
         self.assertEqual(before.splitlines()[2:], after.splitlines()[2:])
+
+
+class ReusedSpaceTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = identity.PackageTests("test_parts_share_the_publisher_guard_and_gui_identity")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        guard = mock.patch.object(producer, "verify_staged", side_effect=identity.packer.verify_staged)
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.base = self.fixture.output.parent
+        self.previous = self.base / "previous.txt"
+        self.companion = self.base / "previous-space.txt"
+        self.archives = self.base / "archives"
+        self.archives.mkdir()
+        self.out = self.base / "parts-space"
+        self.lines, self.facts = [], []
+        for name in producer.TOOLS_PARTS:
+            archive = self.archives / ("HookshotBuilder-" + name + "-fixture.zip")
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zipped.writestr("HookshotBuilder/tools/" + name + "/empty/", b"")
+                zipped.writestr("HookshotBuilder/tools/" + name + "/payload", name.encode())
+            sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+            self.lines.append("part %s %d . - - https://fixture.invalid/%s" % (sha, archive.stat().st_size, archive.name))
+            self.facts.append((sha, producer.archive_space(archive)))
+        self.previous.write_text("tag old\n" + "\n".join(self.lines) + "\n", encoding="utf-8")
+        self.companion.write_text(producer.space_text(self.previous.read_bytes(), self.facts), encoding="ascii", newline="\n")
+
+    def publish(self, companion=True):
+        return producer.build_parts(self.fixture.stage, identity.TAG, self.out, repo=self.fixture.repo,
+            reuse=self.previous, reuse_space=self.companion if companion else None)
+
+    def test_real_publisher_reuses_bound_facts_and_recomputes_staged_tool_part(self):
+        self.assertEqual(self.publish(), self.fixture.revision)
+        manifest = (self.out / "hookshot-setup.txt").read_bytes()
+        facts = producer.read_space(manifest, (self.out / producer.SPACE_NAME).read_bytes())
+        for name, line, (sha, values) in zip(producer.TOOLS_PARTS, self.lines, self.facts):
+            if (self.fixture.stage / "tools" / name).is_dir():
+                self.assertNotIn(line.encode(), manifest)
+                archive = next(self.out.glob("HookshotBuilder-" + name + "-*.zip"))
+                self.assertEqual(facts[hashlib.sha256(archive.read_bytes()).hexdigest()], producer.archive_space(archive))
+            else:
+                self.assertIn(line.encode(), manifest)
+                self.assertEqual(facts[sha], values)
+        self.assertIn(("identity 1 " + self.fixture.revision).encode(), manifest)
+
+    def test_missing_or_stale_facts_fail_before_any_output(self):
+        with self.assertRaisesRegex(ValueError, "--reuse-space"):
+            self.publish(False)
+        self.assertFalse(self.out.exists())
+        original = self.companion.read_bytes()
+        self.companion.unlink()
+        with self.assertRaisesRegex(ValueError, "existing verified ZIPs"):
+            self.publish()
+        self.assertFalse(self.out.exists())
+        self.companion.write_bytes(original)
+        self.previous.write_bytes(self.previous.read_bytes() + b"\n")
+        with self.assertRaisesRegex(ValueError, "exact setup list"):
+            self.publish()
+        self.assertFalse(self.out.exists())
+
+    def test_fully_staged_parts_do_not_require_inherited_facts(self):
+        for name in producer.TOOLS_PARTS:
+            path = self.fixture.stage / "tools" / name
+            path.mkdir(exist_ok=True)
+            (path / "authored-dependency").write_bytes(name.encode())
+        self.companion.unlink()
+        self.assertEqual(self.publish(False), self.fixture.revision)
+        manifest = (self.out / "hookshot-setup.txt").read_bytes()
+        facts = producer.read_space(manifest, (self.out / producer.SPACE_NAME).read_bytes())
+        self.assertTrue(all(sha not in facts for sha, _ in self.facts))
+
+    def test_duplicate_unknown_missing_overflow_and_inconsistent_facts_fail(self):
+        original = self.companion.read_bytes()
+        for bad in (original + original.splitlines()[2] + b"\n", b"\n".join(original.splitlines()[:-1]) + b"\n",
+                    original.replace(self.facts[0][0].encode(), b"a" * 64),
+                    original.replace(b"space ", b"unknown ", 1),
+                    original + b"space " + b"c" * 64 + b" 18446744073709551616 1 1 1\n"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    producer.read_space(self.previous.read_bytes(), bad)
+
+    def test_offline_bootstrap_uses_actual_zip_facts_and_never_fetches(self):
+        before = {p.name: p.read_bytes() for p in self.archives.iterdir()}
+        output = self.base / "bootstrapped-space.txt"
+        with mock.patch.object(release, "get", side_effect=AssertionError("offline bootstrap requested network")), \
+                mock.patch.object(release.sys, "argv", ["release_parts.py", "space", str(self.previous), str(self.archives), str(output)]):
+            self.assertEqual(release.main(), 0)
+        self.assertEqual(output.read_bytes(), self.companion.read_bytes())
+        self.assertEqual({p.name: p.read_bytes() for p in self.archives.iterdir()}, before)
+        for _, (expanded, regular, entries, _) in producer.read_space(self.previous.read_bytes(), output.read_bytes()).items():
+            self.assertGreater(expanded, 0)
+            self.assertEqual((regular, entries), (1, 2))
+
+    def test_offline_bad_sha_truncation_or_missing_zip_preserves_previous_companion(self):
+        output = self.base / "preserve-space.txt"
+        output.write_bytes(b"previous companion")
+        archive = next(self.archives.iterdir())
+        data = archive.read_bytes()
+        for replacement in (b"x" * len(data), data[:-1], None):
+            if replacement is None:
+                archive.unlink()
+            else:
+                archive.write_bytes(replacement)
+            with mock.patch.object(release, "get", side_effect=AssertionError("offline bootstrap requested network")):
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    release.space(SimpleNamespace(list=self.previous, archives=self.archives, out=output))
+            self.assertEqual(output.read_bytes(), b"previous companion")
+            archive.write_bytes(data)
+
+    def test_offline_rename_counts_empty_directories_and_utf16_units(self):
+        archive = self.archives / "llvm.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("old/", b"")
+            zipped.writestr("old/empty/\U00010437/", b"")
+            zipped.writestr("old/file", b"123")
+        sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+        self.previous.write_text("part %s %d HookshotBuilder/tools old llvm-mingw https://fixture.invalid/llvm.zip\n" %
+                                 (sha, archive.stat().st_size), encoding="ascii")
+        output = self.base / "rename-space.txt"
+        self.assertEqual(release.space(SimpleNamespace(list=self.previous, archives=self.archives, out=output)), 0)
+        facts = producer.read_space(self.previous.read_bytes(), output.read_bytes())
+        self.assertEqual(facts[sha], (3, 1, 3, len("HookshotBuilder/tools/llvm-mingw/empty/\U00010437".encode("utf-16-le")) // 2))
+
+    def test_offline_output_cannot_overwrite_any_input(self):
+        for output in [self.previous, next(self.archives.iterdir())]:
+            before = output.read_bytes()
+            with self.assertRaisesRegex(ValueError, "separately"):
+                release.space(SimpleNamespace(list=self.previous, archives=self.archives, out=output))
+            self.assertEqual(output.read_bytes(), before)
+
+    def previous_release(self, companion=True, corrupt=False):
+        list_url, space_url = "https://fixture.invalid/list", "https://fixture.invalid/space"
+        assets = [{"name": "hookshot-setup.txt", "browser_download_url": list_url}]
+        if companion:
+            assets.append({"name": producer.SPACE_NAME, "browser_download_url": space_url})
+        data = {"https://api.github.com/repos/fixture/repo/releases?per_page=30":
+                json.dumps([{"draft": False, "prerelease": False, "tag_name": "old", "assets": assets}]).encode(),
+                list_url: self.previous.read_bytes(), space_url: b"stale" if corrupt else self.companion.read_bytes()}
+        return data
+
+    def test_previous_fetches_only_matching_small_pair(self):
+        data = self.previous_release()
+        output, companion = self.base / "fetched-list", self.base / "fetched-space"
+        with mock.patch.object(release, "get", side_effect=lambda url, **kwargs: data[url]) as fetch:
+            self.assertEqual(release.previous(SimpleNamespace(repo=["fixture/repo"], skip_tag="current", out=output, space_out=companion)), 0)
+        self.assertEqual(output.read_bytes(), self.previous.read_bytes())
+        self.assertEqual(companion.read_bytes(), self.companion.read_bytes())
+        self.assertEqual(len(fetch.call_args_list), 3)
+        self.assertEqual([call.kwargs.get("limit") for call in fetch.call_args_list[1:]], [262144, 262144])
+
+    def test_first_adoption_or_stale_pair_is_explicit_failure_without_output_writes(self):
+        output, companion = self.base / "fetched-list", self.base / "fetched-space"
+        output.write_bytes(b"old list")
+        companion.write_bytes(b"old space")
+        for has_space, corrupt in ((False, False), (True, True)):
+            data = self.previous_release(has_space, corrupt)
+            with mock.patch.object(release, "get", side_effect=lambda url, **kwargs: data[url]), redirect_stderr(io.StringIO()) as errors:
+                status = release.previous(SimpleNamespace(repo=["fixture/repo"], skip_tag="current", out=output, space_out=companion))
+            self.assertEqual(status, 2)
+            self.assertIn("existing verified ZIPs", errors.getvalue())
+            self.assertEqual((output.read_bytes(), companion.read_bytes()), (b"old list", b"old space"))
+
+    def test_metadata_fetch_rejects_oversized_response_without_payload_download(self):
+        with mock.patch.object(release.urllib.request, "urlopen", return_value=io.BytesIO(b"x" * 17)):
+            with self.assertRaisesRegex(ValueError, "size limit"):
+                release.get("https://fixture.invalid/space", tries=1, limit=16)
+
+    def test_pair_write_failure_is_not_the_no_prior_release_fallback(self):
+        data = self.previous_release()
+        output, companion = self.base / "fetched-list", self.base / "fetched-space"
+        with mock.patch.object(release, "get", side_effect=lambda url, **kwargs: data[url]), \
+                mock.patch.object(Path, "write_bytes", side_effect=PermissionError("authored denied output")), redirect_stderr(io.StringIO()):
+            self.assertEqual(release.previous(SimpleNamespace(repo=["fixture/repo"], skip_tag="current", out=output, space_out=companion)), 2)
+        self.assertFalse(output.exists())
+        self.assertFalse(companion.exists())
+
+    def test_pair_outputs_must_be_separate_before_fetch_or_write(self):
+        data = self.previous_release()
+        output = self.base / "same-output"
+        with mock.patch.object(release, "get", side_effect=lambda url, **kwargs: data[url]) as fetch, redirect_stderr(io.StringIO()):
+            self.assertEqual(release.previous(SimpleNamespace(repo=["fixture/repo"], skip_tag="current", out=output, space_out=output)), 2)
+        self.assertEqual(len(fetch.call_args_list), 1)
+        self.assertFalse(output.exists())
 
 
 def owned(temporary):

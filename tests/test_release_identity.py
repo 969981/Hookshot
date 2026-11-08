@@ -162,10 +162,15 @@ class PackageTests(unittest.TestCase):
         out = self.output.parent / "parts"
         previous = self.output.parent / "previous-setup.txt"
         reused = ["part %s 123 . - - https://example.invalid/HookshotBuilder-%s-%s.zip" %
-                  ("b" * 64, name, "b" * 12) for name in setup_parts.TOOLS_PARTS]
+                  (hashlib.sha256(name.encode()).hexdigest(), name, hashlib.sha256(name.encode()).hexdigest()[:12])
+                  for name in setup_parts.TOOLS_PARTS]
         previous.write_text("tag old\nidentity 1 %s\n%s\n" % ("a" * 40, "\n".join(reused)), encoding="utf-8")
+        companion = previous.with_suffix(".space")
+        companion.write_text(setup_parts.space_text(previous.read_bytes(),
+            [(line.split()[1], (123, 1, 1, 64)) for line in reused]), encoding="ascii")
         with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
-            self.assertEqual(setup_parts.build_parts(self.stage, TAG, out, repo=self.repo, reuse=previous), self.revision)
+            self.assertEqual(setup_parts.build_parts(self.stage, TAG, out, repo=self.repo, reuse=previous,
+                                                    reuse_space=companion), self.revision)
         lines = (out / "hookshot-setup.txt").read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[:2], ["tag " + TAG, "identity 1 " + self.revision])
         for name, line in zip(setup_parts.TOOLS_PARTS, reused):

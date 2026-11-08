@@ -2,6 +2,7 @@
 
     python -I scripts/make_setup_parts.py <package folder> <tag> <out folder> [--base <url the parts are served from>]
                                           [--reuse <an earlier release's hookshot-setup.txt>]
+                                          [--reuse-space <its hookshot-setup-space.txt>]
 
 A release is split by how often each part changes, so an update downloads only what changed: the builder's own code (a few MB)
 in every release, the .NET runtime, Python, emsdk, the CPM packages and third_party only when they change. llvm-mingw comes from
@@ -17,13 +18,16 @@ this companion; it cannot install an older release that lacks it. Scripts the bu
 
 --reuse: a part whose tools/<name> folder the package lacks is taken from that list as it is (its line, with its URL), so a
 package made in CI (.github/workflows/windows-builder.yml) carries the Python, emsdk, CPM and wgpu-native parts the maintainer
-made. Without the folder and without the part in that list it is an error.
+made. Missing folders require --reuse-space bound to that exact prior list. Generate a legacy companion offline with
+scripts/release_parts.py space from existing ZIPs, or stage all parts. Nothing is downloaded to infer size facts.
 """
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import sys
 import zipfile
 
@@ -45,13 +49,33 @@ LLVM_SPACE = {
 SPACE_NAME = "hookshot-setup-space.txt"
 
 
-def archive_space(path):
+def archive_space(path, folder=".", old="-", new="-"):
     """Read the just-published ZIP's directory, without extracting or changing it."""
+    def components(value):
+        parts = value.split("/")
+        if any(not p or p in (".", "..") or "\\" in p or ":" in p for p in parts):
+            raise ValueError("Unsupported archive destination or member path.")
+        return parts
+    prefix = [] if folder == "." else components(folder)
+    if (old == "-") != (new == "-") or (old != "-" and (len(components(old)) != 1 or len(components(new)) != 1)):
+        raise ValueError("Unsupported archive root rename.")
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
-        regular = [entry for entry in entries if not entry.is_dir()]
+        paths, regular = [], []
+        for entry in entries:
+            relative = components(entry.filename.rstrip("/"))
+            if old != "-":
+                if relative[0] != old:
+                    raise ValueError("Archive member is outside its declared root.")
+                relative[0] = new
+            paths.append("/".join(prefix + relative))
+            mode = stat.S_IFMT(entry.external_attr >> 16)
+            if mode not in (0, stat.S_IFREG, stat.S_IFDIR) or entry.flag_bits & 1:
+                raise ValueError("Space metadata requires unencrypted regular files/directories.")
+            if not entry.is_dir():
+                regular.append(entry)
         return (sum(entry.file_size for entry in regular), len(regular), len(entries),
-                max((len(entry.filename.rstrip("/").encode("utf-16-le")) // 2 for entry in entries), default=0))
+                max((len(path.encode("utf-16-le")) // 2 for path in paths), default=0))
 
 
 def llvm_space():
@@ -66,6 +90,42 @@ def space_text(manifest, records):
     lines = ["HookshotSetupSpace 1", "manifest " + hashlib.sha256(manifest).hexdigest()]
     lines += ["space %s %d %d %d %d" % (sha, *facts) for sha, facts in records]
     return "\n".join(lines) + "\n"
+
+
+def manifest_parts(manifest):
+    parts = [line.split() for line in manifest.decode("utf-8").splitlines() if line.startswith("part ")]
+    if not 1 <= len(parts) <= 16:
+        raise ValueError("Setup list requires between one and sixteen parts.")
+    seen = set()
+    for fields in parts:
+        if (len(fields) != 7 or not re.fullmatch("[0-9a-f]{64}", fields[1]) or
+                not re.fullmatch("[0-9]+", fields[2]) or not 0 < int(fields[2]) < 2**64 or fields[1] in seen):
+            raise ValueError("Setup list has an invalid or duplicate part identity.")
+        seen.add(fields[1])
+    return parts
+
+
+def read_space(manifest, companion):
+    """Verify inherited facts against the exact prior list, without fetching parts."""
+    if len(companion) > 262144:
+        raise ValueError("Setup space companion is too large.")
+    lines = [line.split() for line in companion.decode("ascii").splitlines() if line.strip()]
+    if lines[:2] != [["HookshotSetupSpace", "1"], ["manifest", hashlib.sha256(manifest).hexdigest()]]:
+        raise ValueError("Setup space companion does not match the exact setup list.")
+    facts = {}
+    for fields in lines[2:]:
+        if len(fields) != 6 or fields[0] != "space" or not re.fullmatch("[0-9a-f]{64}", fields[1]) or fields[1] in facts:
+            raise ValueError("Setup space companion has an invalid or duplicate record.")
+        if any(not re.fullmatch("[0-9]+", value) or int(value) >= 2**64 for value in fields[2:]):
+            raise ValueError("Setup space companion has an invalid byte/count value.")
+        expanded, files, entries, maximum = values = tuple(map(int, fields[2:]))
+        if (files > entries or maximum > 32767 or (not entries and any(values)) or
+                (entries and not maximum) or (not files and expanded)):
+            raise ValueError("Setup space companion has inconsistent archive facts.")
+        facts[fields[1]] = values
+    if set(facts) != {fields[1] for fields in manifest_parts(manifest)}:
+        raise ValueError("Setup space companion is missing parts or contains unknown parts.")
+    return facts
 
 
 def files_under(root, top):
@@ -103,7 +163,7 @@ def write_zip(path, root, names, sources, gui_hashes):
     return h.hexdigest(), os.path.getsize(path)
 
 
-def build_parts(package, tag, out, base=None, repo=None, reuse=None):
+def build_parts(package, tag, out, base=None, repo=None, reuse=None, reuse_space=None):
     root = os.path.abspath(package)
     if not os.path.isfile(os.path.join(root, "HookshotBuilder.exe")):
         sys.exit("not a Hookshot Builder package folder: %s" % root)
@@ -116,7 +176,6 @@ def build_parts(package, tag, out, base=None, repo=None, reuse=None):
         raise ValueError("Write setup parts outside the staging folder.")
     external_space = llvm_space()
     base = (base or "https://github.com/NotRexed/Hookshot/releases/download/builder-parts").rstrip("/")
-    os.makedirs(out, exist_ok=True)
 
     top = sorted(os.listdir(root))
     builder_files = [n for n in top if os.path.isfile(os.path.join(root, n)) and
@@ -134,20 +193,35 @@ def build_parts(package, tag, out, base=None, repo=None, reuse=None):
             parts[t] = files_under(root, "tools/" + t)
     reused = {}
     if reuse:
-        with open(reuse, encoding="utf-8") as f:
-            for line in f.read().splitlines():
-                w = line.split()
-                if len(w) == 7 and w[0] == "part" and w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-"):
-                    reused[w[6].rsplit("/", 1)[-1][len("HookshotBuilder-"):].rsplit("-", 1)[0]] = line
+        previous = Path(reuse).read_bytes()
+        for line in previous.decode("utf-8").splitlines():
+            w = line.split()
+            if len(w) == 7 and w[0] == "part" and w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-"):
+                reused[w[6].rsplit("/", 1)[-1][len("HookshotBuilder-"):].rsplit("-", 1)[0]] = line
+    inherited = {}
+    missing = [name for name in TOOLS_PARTS if not parts.get(name)] if reuse else []
+    for name in missing:
+        if name not in reused:
+            sys.exit("no tools/%s in the package and no %s part in %s" % (name, name, reuse))
+    if missing:
+        if not reuse_space:
+            raise ValueError("Reused tool parts need --reuse-space for that exact prior setup list. Generate/upload its "
+                             "companion with release_parts.py space using existing verified ZIPs, or stage all tool parts.")
+        try:
+            inherited = read_space(previous, Path(reuse_space).read_bytes())
+        except (OSError, ValueError) as error:
+            raise ValueError("Invalid --reuse-space: %s. Generate/upload that prior list's companion from existing "
+                             "verified ZIPs, or stage all tool parts." % error) from error
+    os.makedirs(out, exist_ok=True)
     # The managed updater requires the current app/source identity even when unchanged tool parts are reused.
     lines = ["tag %s" % tag, "identity 1 %s" % revision]
     sizes = []
     for name in ("app", "dotnet") + TOOLS_PARTS:
         if not parts.get(name):
             if reuse and name in TOOLS_PARTS:
-                if name not in reused:
-                    sys.exit("no tools/%s in the package and no %s part in %s" % (name, name, reuse))
                 lines.append(reused[name])
+                sha = reused[name].split()[1]
+                sizes.append((sha, inherited[sha]))
                 print("%-12s (as in %s)" % (name, os.path.basename(reuse)), flush=True)
             continue
         zp = os.path.join(out, "HookshotBuilder-%s.zip" % name)
@@ -161,11 +235,12 @@ def build_parts(package, tag, out, base=None, repo=None, reuse=None):
     lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s" % LLVM)
     sizes.append((LLVM[0], external_space))
     lines.append("run HookshotBuilder/HookshotBuilder.exe")
-    with open(os.path.join(out, "hookshot-setup.txt"), "w", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
-    manifest = Path(out, "hookshot-setup.txt").read_bytes()
+    manifest = ("\n".join(lines) + "\n").encode("utf-8")
+    companion = space_text(manifest, sizes)
+    read_space(manifest, companion.encode("ascii"))
+    Path(out, "hookshot-setup.txt").write_bytes(manifest)
     with open(os.path.join(out, SPACE_NAME), "w", encoding="utf-8", newline="\n") as f:
-        f.write(space_text(manifest, sizes))
+        f.write(companion)
     return revision
 
 
@@ -176,8 +251,9 @@ def main():
     p.add_argument("out")
     p.add_argument("--base", help="where the parts are served from (default: this repository's builder-parts release)")
     p.add_argument("--reuse", help="an earlier hookshot-setup.txt: the parts the package has no folder for, from it")
+    p.add_argument("--reuse-space", help="the SHA-bound space companion of --reuse (required for reused tool parts)")
     a = p.parse_args()
-    build_parts(a.package, a.tag, a.out, a.base, reuse=a.reuse)
+    build_parts(a.package, a.tag, a.out, a.base, reuse=a.reuse, reuse_space=a.reuse_space)
 
 
 if __name__ == "__main__":
