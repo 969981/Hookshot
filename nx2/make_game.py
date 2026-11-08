@@ -223,6 +223,17 @@ def compile_test(toolchain):
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
+def link_test(toolchain):
+    """A program links, not only compiles (issue 439: a default library a recent Windows SDK no longer ships stopped the
+    build at 99%, after the game had been read and translated)"""
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "t.c")
+        with open(src, "w") as f:
+            f.write(chr(10).join(("#include <stdio.h>", "int main(void) { return 0; }", "")))
+        return subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + toolchain.native_link() +
+                              [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
 def check_cpp_library(toolchain):
     """Check the renderer's C++20 library features before the long build (issues 39 and 100)."""
     with tempfile.TemporaryDirectory() as d:
@@ -380,7 +391,14 @@ def check_windows_sdk():
             r = compile_test(toolchain)
     if not r.returncode:
         check_cpp_library(toolchain)
-        return
+        link = link_test(toolchain)
+        if not link.returncode:
+            return
+        print(link.stdout + link.stderr, flush=True)
+        errors = [l for l in link.stderr.splitlines() if "error" in l]
+        why = errors[0].split("error:", 1)[-1].strip() if errors else (link.stderr.strip().splitlines() or ["no message"])[-1]
+        fail("The compiler could not link a test program: %s. In the Visual Studio Installer choose Modify on Visual Studio 2022, "
+             "tick \"Desktop development with C++\" with a Windows 11 SDK, then build again." % why)
     print(r.stdout + r.stderr, flush=True)   # (all of it, for Show details)
     errors = [l for l in r.stderr.splitlines() if "error:" in l]
     why = errors[0].split("error:", 1)[1].strip() if errors else (r.stderr.strip().splitlines() or ["no message"])[-1]
@@ -632,12 +650,20 @@ def main():
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
-    for name in BESIDE:
-        if os.path.exists(os.path.join(built, name)):
-            if os.path.exists(os.path.join(out, name)):   # (linux: not over a running copy's file: a new one in its place)
-                os.remove(os.path.join(out, name))
-            shutil.copy2(os.path.join(built, name), os.path.join(out, name))
-    shutil.copy2(os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin"))
+    # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
+    # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
+    staged = [(os.path.join(built, n), os.path.join(out, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
+    staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    for src, dst in staged:
+        if os.path.exists(dst + ".new"):
+            os.remove(dst + ".new")
+        shutil.copy2(src, dst + ".new")
+    for src, dst in staged:
+        try:
+            os.replace(dst + ".new", dst)   # (linux: a running copy keeps its own file; windows: a running exe cannot be replaced)
+        except PermissionError:
+            fail("Close Hookshot first: the game is running from %s, so its files cannot be replaced. The new build is ready beside it; "
+                 "build again once the game is closed." % out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
