@@ -53,9 +53,62 @@ const char* tx_resolution(int v) {
     return t[v];
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
+const char* tx_text_speed(int v) {
+    static const char* t[] = {"Normal", "2x", "4x", "Instant"};
+    if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
+    return t[v];
+}
 const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
 
+const char* tx_preset(int v) {
+    static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
+    return t[std::min(std::max(v, 0), 5)];
+}
+void sync_preset_budgets(int p) {
+    switch (p) {
+    case 1: opts.vram_mb = 2200;  opts.mirror_mb = 256;  break;
+    case 2: opts.vram_mb = 3600;  opts.mirror_mb = 512;  break;
+    case 3: opts.vram_mb = 4800;  opts.mirror_mb = 1024; break;
+    case 4: opts.vram_mb = 7500;  opts.mirror_mb = 2048; break;
+    case 5: opts.vram_mb = 11000; opts.mirror_mb = 3072; break;
+    default: opts.vram_mb = 0;    opts.mirror_mb = 0;    break;
+    }
+}
+void apply_preset(int p) {
+    switch (p) {
+    case 1: // Minimum (4GB VRAM / iGPU)
+        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 50;
+        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        break;
+    case 2: // Low (6GB VRAM)
+        opts.resolution = 2; opts.upscale = 2; opts.sharpness = 35;
+        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        break;
+    case 3: // Balanced (8GB VRAM)
+        opts.resolution = 1; opts.upscale = 1; opts.sharpness = 25;
+        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        break;
+    case 4: // High (12GB VRAM)
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 30;
+        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        break;
+    case 5: // Ultra (16GB+ VRAM)
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
+        opts.framegen = 3;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        break;
+    default:
+        break;
+    }
+    sync_preset_budgets(p);
+}
+/// (after a row changed) the preset applied, or, when a setting it sets was changed by hand, Custom
+void preset_follow(const int* value) {
+    if (value == &opts.preset) apply_preset(opts.preset);
+    else if (value == &opts.resolution || value == &opts.upscale || value == &opts.sharpness || value == &opts.framegen ||
+             value == &opts.pace || value == &opts.realtime || value == &opts.handheld)
+        opts.preset = 0, sync_preset_budgets(0);
+}
 const char* tx_sens(int v) {
     static char b[12];
     snprintf(b, sizeof b, "%.2f", v / 100.0);
@@ -149,6 +202,9 @@ Row rows[] = {
      "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart.", 0},
     {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
      "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate.", 0},
+    {"Quality preset", &opts.preset, 0, 5, 1, tx_preset,
+     "Sets resolution, upscaling, frame generation and the GPU memory limits for a tier of graphics card (its video memory). "
+     "Changing one of those settings by hand makes it Custom.", 1},
     {"Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts.", 1},
@@ -157,6 +213,9 @@ Row rows[] = {
     {"Game speed", &opts.realtime, 0, 1, 1, tx_speed,
      "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
      "longer steps.", 1},
+    {"Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
+     "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
+     "each page at once, as pressing A does.", 1},
     {"Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
      "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart.", 1},
     {"Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
@@ -656,6 +715,7 @@ void menu_init() {
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;
     }
+    if (opts.preset > 0) sync_preset_budgets(opts.preset);
     if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
@@ -720,13 +780,13 @@ void change(Row& r, int dir) {
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
     if (kind_of(r) == K_SLIDER) v = std::min(std::max(v, r.lo), r.hi);
     else v = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-    if (v != *r.value) *r.value = v, save();
+    if (v != *r.value) *r.value = v, preset_follow(r.value), save();
 }
 void set_from_x(Row& r, int x, const RECT& ctl, int s) {   // (a slider: the value under the pointer)
     const int tw = (ctl.right - ctl.left) - 52 * s - 10 * s;
     const int v = r.lo + (int)((long long)(x - ctl.left) * (r.hi - r.lo) / std::max(1, tw));
     const int stepped = r.lo + (std::min(std::max(v, r.lo), r.hi) - r.lo + r.step / 2) / r.step * r.step;
-    if (stepped != *r.value) *r.value = std::min(stepped, r.hi), save();
+    if (stepped != *r.value) *r.value = std::min(stepped, r.hi), preset_follow(r.value), save();
 }
 bool in(const RECT& r, int x, int y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 int first_on(int tab) {
