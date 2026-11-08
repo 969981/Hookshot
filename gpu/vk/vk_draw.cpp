@@ -4531,6 +4531,53 @@ static bool movie_keep_all_networks() {
     return keep;
 }
 
+// (amd-fix) Formats of four bytes a texel that share images (vk_texture.cpp: textures share an image by bytes per texel), for
+// upscale_stub's copy below; vkCmdCopyImage takes any two of the same texel size. (No sRGB ones: an sRGB view of a UNORM image
+// is the same bytes, which the blit already reads right.)
+static bool four_byte_color(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R32_SFLOAT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// (amd-fix) An image of `format` at least w x h, for upscale_stub to copy a texture's texels into, unchanged, so that a blit
+// reads them as the texture's own format. Grows only; the one before is kept, as the TAAU history is, for work in flight.
+static VkImage stub_source_image(VkCommandBuffer cmd, VkFormat format, uint32_t w, uint32_t h) {
+    static std::mutex mu;
+    static VkImage image = VK_NULL_HANDLE;
+    static VmaAllocation memory = nullptr;
+    static VkFormat made_format = VK_FORMAT_UNDEFINED;
+    static uint32_t made_w = 0, made_h = 0;
+    std::lock_guard lk(mu);
+    if (image && made_format == format && made_w >= w && made_h >= h) return image;
+    VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ic.imageType = VK_IMAGE_TYPE_2D, ic.format = format;
+    ic.extent = {made_format == format ? std::max(made_w, w) : w, made_format == format ? std::max(made_h, h) : h, 1};
+    ic.mipLevels = 1, ic.arrayLayers = 1, ic.samples = VK_SAMPLE_COUNT_1_BIT, ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ic.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImage made = VK_NULL_HANDLE;
+    VmaAllocation made_memory = nullptr;
+    if (!create_image(ic, made, made_memory)) return VK_NULL_HANDLE;
+    VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};   // (UNDEFINED -> GENERAL, once)
+    ib.srcStageMask = VK_PIPELINE_STAGE_2_NONE, ib.srcAccessMask = VK_ACCESS_2_NONE;
+    ib.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    ib.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ib.image = made, ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &ib;
+    vkCmdPipelineBarrier2(cmd, &di);
+    image = made, memory = made_memory, made_format = format, made_w = ic.extent.width, made_h = ic.extent.height;
+    (void)memory;
+    return image;
+}
+
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     static const bool off = getenv("RX_VK_NO_UPSCALE_STUB") != nullptr;
     if (off) return false;
@@ -4574,13 +4621,36 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     if (!src || !dst || !src->image || !dst->image || (src->aspect | dst->aspect) != VK_IMAGE_ASPECT_COLOR_BIT || src->bc ||
         dst->bc || src->samples != VK_SAMPLE_COUNT_1_BIT || dst->samples != VK_SAMPLE_COUNT_1_BIT)
         return false;
+    // (amd-fix) The input may be another format of its image's class: with Resolution Auto at a low scale, OoT's upscaler network
+    // 0775215f8da720e6 (left out on AMD) reads the scene as RGB9E5 from an image made R11G11B10. A blit decodes the image's own
+    // format, so the RGB9E5 bits came out as coloured noise over the whole 3D picture. Then the texels are copied, unchanged,
+    // into an image of the texture's own format, and the blit reads that one.
+    const VkFormatInfo in_vk = vk_format(in.d.format);
+    const bool reinterpret = !in_vk.astc && in_vk.format != src->format &&
+                             four_byte_color(in_vk.format) && four_byte_color(src->format);
+    const VkFormat blit_format = reinterpret ? in_vk.format : src->format;
     VkFormatProperties fs{}, fd{};
-    vkGetPhysicalDeviceFormatProperties(dev.physical, src->format, &fs);
+    vkGetPhysicalDeviceFormatProperties(dev.physical, blit_format, &fs);
     vkGetPhysicalDeviceFormatProperties(dev.physical, dst->format, &fd);
     if (!(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(fd.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) ||
-        !(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+        !(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ||
+        (reinterpret && !(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)))
         return false;
     end_pass(cmd);
+    VkImage blit_src = src->image;
+    if (reinterpret && dst->format != VK_FORMAT_R8G8B8A8_UNORM) {   // (the movie path below samples views of the right format)
+        blit_src = stub_source_image(cmd, blit_format, src->width, src->height);
+        if (!blit_src) return false;
+        full_barrier(cmd);
+        VkImageCopy cp{};
+        cp.srcSubresource = cp.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        cp.extent = {src->width, src->height, 1};
+        vkCmdCopyImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, blit_src, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true))
+            logf("vk: upscale stub: %#llx is NVN %#x (vk %d) in an image of vk %d: read through a copy of its own format",
+                 (unsigned long long)in.gpu, in.d.format, (int)blit_format, (int)src->format);
+    }
     full_barrier(cmd);
     if (dst->format == VK_FORMAT_R8G8B8A8_UNORM && movie_upscale(cmd, in_h, out_h, dst)) {
         full_barrier(cmd);
@@ -4595,7 +4665,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     bl.srcOffsets[1] = {(int32_t)src->width, (int32_t)src->height, 1};
     bl.dstOffsets[1] = {(int32_t)dst->width, (int32_t)dst->height, 1};
-    vkCmdBlitImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
+    vkCmdBlitImage(cmd, blit_src, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
     full_barrier(cmd);
     texture_written(dst);
     if (dump_on()) {   // (in a frame dump: what it read and what it made)
