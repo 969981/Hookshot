@@ -1071,6 +1071,11 @@ def main():
     print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
+    # (the game's code as read: every build deletes it and copies it again from the game folder's .hookshot_exefs, so it is not left
+    # behind in the work folder. sa\gen stays: an update with the same translator skips the lift on it (lifted_before). Kept in a
+    # development checkout)
+    if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
+        shutil.rmtree(exefs, ignore_errors=True)
     say("done", out)
 
 
