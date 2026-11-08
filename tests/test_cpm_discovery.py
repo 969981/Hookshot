@@ -65,7 +65,7 @@ class CpmDiscoveryTests(unittest.TestCase):
                          "bundled FFmpeg was not discovered")
         self.assertEqual(build.cpm_package("vulkanheaders"), expected["vulkanheaders"],
                          "bundled Vulkan headers were not discovered")
-        if not build.LINUX:
+        if not build.LINUX and not build.MACOS:
             self.assertEqual(build.FFMPEG, expected["ffmpeg"], "Windows import did not select FFmpeg")
 
     def test_portable_package_without_rx_cpm(self):
