@@ -240,6 +240,13 @@ static void realtime_step(int64_t now) {
            see whether the rate the controller settles on is what caps the frame. Unknown engine
            fields written every frame: opt-in, and off by default for that reason. */
         if (target && getenv("HOS_FPS_FORCE")) {
+            /* f_804fc0f0 is what stores a rate into +0xfc, and it does so only when a mode is 1,
+               the rate is 40 or more, and the byte at +0x232 is set. The sample prints that pair as
+               "vrr %d %d": +0x231 is 1 here and +0x232 is 0, so the store never runs and +0xfc
+               keeps the 60 it has, whatever the controller words say. Setting it lets the game's
+               own code take a higher rate. */
+            uint8_t *const gate = (uint8_t *)GP(mod + 0x232);
+            if (!*gate) *gate = 1;
             int *const words[] = {(int *)GP(mod + 0x270 + 0x58), (int *)GP(mod + 0x270 + 0x28),
                                   (int *)GP(mod + 0x270 + 0x2c), (int *)GP(mod + 0x2c8)};
             for (size_t i = 0; i < sizeof words / sizeof words[0]; i++)

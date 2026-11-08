@@ -25,6 +25,11 @@ volatile int hos_oot_camera_valid = 0;
    upscaler reprojects with view * projection. */
 volatile uint64_t hos_oot_proj_object = 0;
 volatile uint64_t hos_oot_proj_matrix = 0;
+/* The first 48 floats of the projection object, copied at publish time. The inlined copies build it
+   on the stack, so a pointer kept for later reads as zeros; a snapshot is the only honest way to
+   see what is in it. */
+volatile float hos_oot_cam_window[48];
+volatile int hos_oot_cam_window_have = 0;
 
 /* HOS_CAMERA_DUMP=1: once, a window of floats around each published object, so the view matrix can
    be found by reading what is there rather than by guessing an offset. Guest addresses only; no
@@ -34,6 +39,13 @@ void hos_oot_camera_dump(void) {
     const char *on = getenv("HOS_CAMERA_DUMP");
     if (done || !on || !*on || *on == '0' || !hos_oot_camera_valid) return;
     done = 1;
+    for (int row = 0; hos_oot_cam_window_have && row < 6; row++) {
+        char line[220];
+        int n = snprintf(line, sizeof line, "camera: window +%#03x:", row * 32);
+        for (int i = 0; i < 8; i++)
+            n += snprintf(line + n, sizeof line - n, " %.5g", (double)hos_oot_cam_window[row * 8 + i]);
+        hos_log("%s", line);
+    }
     for (int which = 0; which < 2; which++) {
         const uint64_t base = which ? hos_oot_proj_matrix : hos_oot_proj_object;
         if (!base) continue;

@@ -16,10 +16,11 @@ smaller of the two as the near plane and the larger as the far, and publishes no
 are positive and ordered. A projection with a near plane behind the eye is not one to hand an
 upscaler.
 
-It also publishes the guest addresses of the projection object and of the 4x4 it writes. The view
-projection a temporal upscaler reprojects with is not this matrix -- this is the projection alone --
-and rather than guess which offset of which object holds the view, HOS_CAMERA_DUMP=1 logs a window
-of floats around both so the matrix can be identified from what it contains.
+It also snapshots the first 48 floats of the projection object at publish time, which
+HOS_CAMERA_DUMP=1 logs. A snapshot rather than a pointer because the object the inlined copies build
+is transient: reading the published address a frame later came back all zeros, so it is a stack
+temporary. The view projection a temporal upscaler reprojects with is not the projection alone, and
+this window is how the rest of it gets identified from real values instead of a guess.
 """
 
 MAIN = 0x80020000
@@ -49,7 +50,11 @@ def _publish(base, with_matrix):
     "if (_nr > 0.0f && _fr > _nr && _ft > 0.0f) { hos_oot_cam_near = _nr; hos_oot_cam_far = _fr; "
     "hos_oot_cam_tan_half_fov = _ft; hos_oot_camera_valid = 1; } } "
     "{ extern volatile uint64_t hos_oot_proj_object, hos_oot_proj_matrix; (void)hos_oot_proj_matrix; "
-    "hos_oot_proj_object = _cp; " + matrix + "} }"
+    "hos_oot_proj_object = _cp; " + matrix + "} "
+    "{ extern volatile float hos_oot_cam_window[48]; extern volatile int hos_oot_cam_window_have; "
+    "if (!hos_oot_cam_window_have) { for (int _i = 0; _i < 48; _i++) { "
+    "uint32_t _w = (uint32_t)recomp_load32(c, _cp + (uint64_t)_i * 4); float _fv; memcpy(&_fv, &_w, 4); "
+    "hos_oot_cam_window[_i] = _fv; } hos_oot_cam_window_have = 1; } } }"
     "   /* (nx2/oot_camera.py: the camera a temporal upscaler needs) */"
     ).replace("const uint64_t _cp = c->x[0];", "const uint64_t _cp = c->x[%d];" % base)
 
