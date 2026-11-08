@@ -308,7 +308,7 @@ void use_queue_state(uint64_t queue) {
     cur_state = s;
     static uint64_t gen_base = 0;
     gen_base += 1ull << 32;
-    s->bind_gen = gen_base, s->rt_serial = gen_base;
+    s->bind_gen = gen_base, s->desc_gen = gen_base, s->rt_serial = gen_base;
 }
 
 template <class T>
@@ -431,6 +431,16 @@ bool ub_gap(const uint64_t* dst, const uint64_t* end, int n, uint64_t addr, uint
     *hi = right;
     return true;
 }
+bool range_lists_overlap(const uint64_t* a, const uint64_t* an, int na, const uint64_t* b, const uint64_t* bn, int nb) {
+    for (int i = 0; i < na; i++) {
+        if (!an[i] || a[i] + an[i] < a[i]) return true;
+        for (int j = 0; j < nb; j++) {
+            if (!bn[j] || b[j] + bn[j] < b[j]) return true;
+            if (a[i] < b[j] + bn[j] && b[j] < a[i] + an[i]) return true;
+        }
+    }
+    return false;
+}
 struct UbGapCache {
     uint64_t epoch = 0, lo = 0, hi = 0;
     size_t first = 0, lim = 0;
@@ -504,6 +514,7 @@ void ub_copy_keep(uint64_t addr, uint64_t n, const uint8_t* base, size_t first, 
     c.rec = rec_value_now, c.view = view, c.epoch = epoch;
 }
 uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc) {
+    desc_note_range(addr, n);
     const size_t lim = std::min(ub_limit, ub_updates.size());   // (a worker: those before its place in the stream)
     static const bool cur_only = getenv("RX_VK_UB_CUR_ONLY") != nullptr;   // (A/B: this submission's updates only)
     const size_t first = cur_only ? std::min(ub_first_of_recording, lim) : 0;
@@ -540,6 +551,7 @@ uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::functio
 /// the stream made before this place (a worker: before its segment) over it. For what the replay reads on the CPU for
 /// the GPU's sake (handles in uniform and storage buffers): the game's memory now may be its next frames'.
 bool ub_read(uint64_t addr, void* dst, uint64_t n) {
+    desc_note_range(addr, n);
     const size_t lim = std::min(ub_limit, ub_updates.size());
     if (n == 4) {
         uint32_t v = 0;
@@ -568,6 +580,20 @@ bool ub_read(uint64_t addr, void* dst, uint64_t n) {
         if (lo < hi) std::memcpy((uint8_t*)dst + (lo - addr), u.bytes.data() + (lo - u.dst), hi - lo);
     }
     return true;
+}
+
+size_t ub_update_count() {
+    return std::min(ub_limit, ub_updates.size());
+}
+bool ub_since_miss(size_t mark, const uint64_t* addr, const uint64_t* len, int count) {
+    const size_t lim = std::min(ub_limit, ub_updates.size());
+    if (lim < mark || mark > ub_updates.size()) return true;
+    if (mark == lim || count <= 0) return false;
+    for (size_t i = mark; i < lim; i++) {
+        const uint64_t u = ub_updates[i].dst, un = ub_updates[i].bytes.size();
+        if (range_lists_overlap(&u, &un, 1, addr, len, count)) return true;
+    }
+    return false;
 }
 
 namespace {
@@ -825,7 +851,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const auto b = payload<nvn_p_bind_program>(a, avail);
             // (the same program bound again: its descriptors already stand)
             const bool same = b.prog && s.has_prog ? std::memcmp(&s.prog, b.prog, sizeof s.prog) == 0 : !b.prog && !s.has_prog;
-            if (!same) s.bind_gen++;
+            if (!same) s.bind_gen++;   // (another program: desc_gen stays, so the set built for this one can be pushed again)
             if (b.prog) s.prog = *b.prog;
             s.has_prog = b.prog != nullptr && b.prog->nstage > 0;
             break;
@@ -903,7 +929,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 }
                 nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
                 if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size))
-                    s.bind_gen++;
+                    s.bind_gen++, s.desc_gen++;
                 u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
             }
             break;
@@ -920,7 +946,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             }
             if (b.stage >= 0 && b.stage < kNvnStages && b.index >= 0 && b.index < 16) {
                 nvn_p_bind_buf& u = (h.op == NOP_BIND_UBO ? s.ubo : s.ssbo)[b.stage][b.index];
-                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) s.bind_gen++;
+                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size))
+                    s.bind_gen++, s.desc_gen++;
                 u = b;
             }
             break;
@@ -940,7 +967,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const int lim = h.op == NOP_BIND_IMG ? 32 : 128;
             int n = 0;
             while (n < b.n && b.first + n < lim) n++;
-            if (!handles_unchanged(to + b.first, b.h, n)) s.bind_gen++;   // (the same handles: the draw keeps its descriptors)
+            if (!handles_unchanged(to + b.first, b.h, n)) s.bind_gen++, s.desc_gen++;   // (the same handles: the draw keeps its descriptors)
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
             break;
         }
@@ -997,7 +1024,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                      s.render_enabled ? "on" : "off");
             break;
         }
-        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: s.bind_gen++; break;
+        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: s.bind_gen++, s.desc_gen++; break;
         case NOP_COPY_STRIDE: s.copy_stride = payload<nvn_p_copy_stride>(a, avail).stride; break;
         case NOP_PUSH_CONST: {   // (hookshot) compute push constants, kept in the state (vk_bank.cpp serves them from c0)
             const auto u = payload<nvn_p_push_const>(a, avail);
@@ -1006,7 +1033,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 const bool same = (uint64_t)u.offset + u.size <= s.cs_push_n && std::memcmp(s.cs_push + u.offset, src, u.size) == 0;
                 std::memcpy(s.cs_push + u.offset, src, u.size);
                 s.cs_push_n = std::max<uint32_t>(s.cs_push_n, u.offset + u.size);
-                if (!same) s.bind_gen++;
+                if (!same) s.bind_gen++, s.desc_gen++;
             }
             break;
         }
@@ -2183,9 +2210,11 @@ void log_frame_stats() {
         draw_stats3(&pskip, &pwaits, &pwait_ms);
         static int64_t l_pskip, l_pwaits;
         static double l_pwait_ms;
-        static int64_t l_reused;
+        static int64_t l_reused, l_prog;
         logf("vk: a frame: %.0f draws kept their neighbour's descriptors", (draw_desc_reused() - l_reused) / 120.0);
         l_reused = draw_desc_reused();
+        logf("vk: a frame: %.0f draws reused a program's descriptors", (draw_desc_prog_reused() - l_prog) / 120.0);
+        l_prog = draw_desc_prog_reused();
         logf("vk: a frame: %.1f draws left out (not ready), %.2f waits for shaders or pipelines (%.1f ms); "
              "translation %.0f ms in all, %d jobs queued",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,

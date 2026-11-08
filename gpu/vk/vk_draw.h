@@ -50,11 +50,24 @@ void draw_stats2(int64_t* passes, int64_t* mesh, double* pipeline_ms);
 void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
 void draw_skip_report(double frames);   // (hookshot) skips by the line that made them
 int64_t draw_desc_reused();
+int64_t draw_desc_prog_reused();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
 void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
 void pass_traces_log(uint64_t frame_lo, uint64_t frame_hi);   // (RX_VK_PASS_TRACE=1)
 /// Changes with every uniform update the stream makes (vk_replay.cpp): descriptors bound before may be stale
 uint64_t ub_generation();
+/// Uniform updates this replay place can see (a worker: those before its segment)
+size_t ub_update_count();
+/// True when an update at or after mark overlaps a range, or the list shrank below mark. No ranges: false.
+bool ub_since_miss(size_t mark, const uint64_t* addr, const uint64_t* len, int count);
+/// True when a range of the first list overlaps a range of the second. Empty overlaps nothing. A wrapping length overlaps.
+bool range_lists_overlap(const uint64_t* a, const uint64_t* an, int na, const uint64_t* b, const uint64_t* bn, int nb);
+/// Set while a descriptor set is built, so the uniform ranges that build reads are remembered (off: one load)
+extern thread_local bool desc_watch_on;
+void desc_note_range_slow(uint64_t addr, uint64_t n);
+inline void desc_note_range(uint64_t addr, uint64_t n) {
+    if (desc_watch_on && n) desc_note_range_slow(addr, n);
+}
 /// The pipeline cache to disk (force: whatever was built since the last save; else only after a few new ones)
 void pipeline_cache_save(bool force);
 

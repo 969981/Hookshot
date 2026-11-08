@@ -29,6 +29,7 @@ struct NvnState {
     nvn_p_set_rt rt{};
     uint64_t rt_serial = 0;      // bumped at each NOP_SET_RT (the draw path resolves the targets once per change)
     uint64_t bind_gen = 0;       // bumped when a binding the descriptors read changes (a rebind of the same values does not)
+    uint64_t desc_gen = 0;       // the same, except a program change: that program's descriptors stay usable
     float viewport[16][4]{};
     float depth_near = 0.0f, depth_far = 1.0f;
     int32_t scissor[4]{0, 0, 0, 0};

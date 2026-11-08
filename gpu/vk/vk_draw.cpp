@@ -46,6 +46,51 @@ namespace mkwvk {
 struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
+
+// (ranges a descriptor build reads from uniform memory. Off, desc_note_range is one load. Outside the file's
+// private namespace: the replay's uniform reads call it)
+thread_local bool desc_watch_on = false;
+struct DescWatch {
+    bool overflow = false;
+    std::vector<std::pair<uint64_t, uint64_t>> ranges;
+    std::vector<const Texture*> colors;
+    std::vector<Texture*> images, written;
+    std::vector<std::pair<uint64_t, uint64_t>> stamps;
+};
+thread_local DescWatch desc_watch;
+void desc_note_range_slow(uint64_t addr, uint64_t n) {
+    if (!n) return;
+    if (addr + n < addr) {
+        desc_watch.overflow = true;
+        return;
+    }
+    if (!desc_watch.ranges.empty()) {
+        auto& b = desc_watch.ranges.back();
+        const uint64_t hi = b.first + b.second;
+        if (hi >= b.first && addr <= hi && b.first <= addr + n) {
+            const uint64_t lo = std::min(b.first, addr);
+            b.second = std::max(hi, addr + n) - lo;
+            b.first = lo;
+            return;
+        }
+    }
+    if (desc_watch.ranges.size() >= 48) {
+        desc_watch.overflow = true;
+        return;
+    }
+    desc_watch.ranges.emplace_back(addr, n);
+}
+void desc_watch_begin() {
+    desc_watch_on = true;
+    desc_watch = {};
+}
+void desc_watch_color(const Texture* t) { if (desc_watch_on && t) desc_watch.colors.push_back(t); }
+void desc_watch_image(Texture* t) { if (desc_watch_on && t) desc_watch.images.push_back(t); }
+void desc_watch_written(Texture* t) { if (desc_watch_on && t) desc_watch.written.push_back(t); }
+void desc_watch_stamp(uint64_t guest, uint64_t n) {
+    if (desc_watch_on && guest && n) desc_watch.stamps.emplace_back(guest, n);
+}
+
 namespace {
 
 bool no_a2c() {   // (RX_VK_NO_A2C, read once: it was a getenv on every alpha-to-coverage draw, the foliage's)
@@ -568,6 +613,7 @@ struct PipeEntry {
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
 int64_t st_draws, st_skipped, st_dispatches, st_passes, st_mesh, st_pending_skips, st_waits;
+
 // (hookshot) skips by the line that made them, reported with the frame statistics (draw_skip_report)
 namespace {
 struct SkipSite { std::atomic<int> line{0}; std::atomic<int64_t> n{0}; int64_t last = 0; };
@@ -1784,7 +1830,11 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (b && d.is_written) {
                     const auto t1 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     const uint64_t guest = host->gpu_guest(base);
-                    if (guest) { ParLock lk; memory_stamp_gpu(guest, n); }
+                    if (guest) {
+                        ParLock lk;
+                        memory_stamp_gpu(guest, n);
+                        desc_watch_stamp(guest, n);
+                    }
                     if (slow_desc_timing()) slow_descriptor(t1, "stamp", base, n);
                 }
             }
@@ -1846,6 +1896,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                (unsigned long long)p.key, k, handle, tex ? tex->id : 0, (unsigned long long)(tex ? tex->gpu : 0),
                                tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->layers : 0, tex ? (void*)tex->image : nullptr,
                                (void*)view, view ? "" : " (dummy)");
+                if (view && tex && desc_watch_on) desc_watch_color(tex);
                 if (view && tex && tex->gpu_written) draw_sampled.push_back(tex);
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
                 dw.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
@@ -1863,8 +1914,15 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
                                           : VK_NULL_HANDLE;
-                if (view && tex && d.is_written) { ParLock lk; texture_written(tex); }
-                if (view && tex) draw_sampled.push_back(tex);
+                if (view && tex && d.is_written) {
+                    ParLock lk;
+                    texture_written(tex);
+                    desc_watch_written(tex);
+                }
+                if (view && tex) {
+                    draw_sampled.push_back(tex);
+                    if (desc_watch_on) desc_watch_image(tex);
+                }
                 if (log_img_wanted(p.key)) {
                     static std::atomic<int> told{0};
                     if (told++ < 16)
@@ -1889,6 +1947,187 @@ void build_descriptors(const NvnState& s, const Program& p) {
             dw.writes.push_back(w);
         }
     }
+}
+
+// A program's descriptors, pushed again when that program returns after another one was drawn. The neighbour
+// check still skips the push when this program was the draw before. A binding other than the program, a texture
+// registration, a mirror, or a uniform range this build read, drops the set. So does a page stamped in one of
+// those ranges. The push still happens: the command buffer is holding the other program's descriptors.
+struct DescWrite {
+    VkWriteDescriptorSet head{};
+    uint32_t first = 0;
+    uint8_t kind = 0;   // 1 buffer, 2 image, 3 texel view
+};
+struct DescProg {
+    bool on = false, any_update_misses = false, grid_matters = false;
+    uint64_t desc_gen = 0, reg_gen = 0, stamp = 0, destroy_gen = 0;
+    uint32_t mem_gen = 0, grid[3]{};
+    size_t ub_mark = 0;
+    std::vector<std::pair<uint64_t, uint64_t>> ranges;
+    std::vector<VkDescriptorBufferInfo> bufs;
+    std::vector<VkDescriptorImageInfo> imgs;
+    std::vector<VkBufferView> views;
+    std::vector<DescWrite> writes;
+    std::vector<const Texture*> colors;
+    std::vector<Texture*> images, written;
+    std::vector<std::pair<uint64_t, uint64_t>> stamps;
+    struct Ptr { int stage = -1; PointerEntry e[3]{}; };
+    std::vector<Ptr> ptrs;   // (compute, task and mesh: c0's pointer table, which a program switch does not invalidate)
+};
+thread_local std::unordered_map<const Program*, DescProg> desc_progs;
+int64_t st_desc_prog;
+
+void desc_merge_ranges(std::vector<std::pair<uint64_t, uint64_t>>& r) {
+    if (r.size() < 2) return;
+    std::sort(r.begin(), r.end());
+    size_t w = 0;
+    for (size_t i = 1; i < r.size(); i++) {
+        const uint64_t hi = r[w].first + r[w].second;
+        if (r[i].first <= hi) r[w].second = std::max(hi, r[i].first + r[i].second) - r[w].first;
+        else r[++w] = r[i];
+    }
+    r.resize(w + 1);
+}
+template <class T>
+int desc_index(const T* p, const std::vector<T>& v) {
+    if (!p) return 0;
+    const T* b = v.data();
+    if (!b || p < b || p > b + v.size()) return -1;
+    return (int)(p - b);
+}
+void desc_prog_keep(const Program& p, const NvnState& s, uint64_t reg, uint64_t stamp, uint64_t destroy_gen, size_t mark) {
+    DescProg d;
+    d.on = true;
+    d.desc_gen = s.desc_gen;
+    d.reg_gen = reg;
+    d.stamp = stamp;
+    d.destroy_gen = destroy_gen;
+    d.mem_gen = memory_generation();
+    d.ub_mark = mark;
+    d.any_update_misses = desc_watch.overflow;
+    d.ranges = desc_watch.ranges;
+    desc_merge_ranges(d.ranges);
+    d.bufs = dw.bufs;
+    d.imgs = dw.imgs;
+    d.views = dw.views;
+    d.colors = desc_watch.colors;
+    d.images = desc_watch.images;
+    d.written = desc_watch.written;
+    d.stamps = desc_watch.stamps;
+    d.writes.reserve(dw.writes.size());
+    for (const VkWriteDescriptorSet& w : dw.writes) {
+        DescWrite e;
+        e.head = w;
+        e.head.pNext = nullptr;
+        e.head.pBufferInfo = nullptr;
+        e.head.pImageInfo = nullptr;
+        e.head.pTexelBufferView = nullptr;
+        if (w.pBufferInfo) {
+            const int i = desc_index(w.pBufferInfo, dw.bufs);
+            if (i < 0) { desc_progs.erase(&p); return; }   // (keep the draw's own set; do not reuse the one from before)
+            e.kind = 1, e.first = (uint32_t)i;
+        } else if (w.pImageInfo) {
+            const int i = desc_index(w.pImageInfo, dw.imgs);
+            if (i < 0) { desc_progs.erase(&p); return; }
+            e.kind = 2, e.first = (uint32_t)i;
+        } else if (w.pTexelBufferView) {
+            const int i = desc_index(w.pTexelBufferView, dw.views);
+            if (i < 0) { desc_progs.erase(&p); return; }
+            e.kind = 3, e.first = (uint32_t)i;
+        }
+        d.writes.push_back(e);
+    }
+    for (const Stage& st : p.stages) {
+        if (st.nvn_stage == 5) d.grid_matters = true;
+        if (st.nvn_stage != 5 && st.nvn_stage != 6 && st.nvn_stage != 7) continue;
+        const PointerEntry* e = pointer_table(s, st.nvn_stage);
+        DescProg::Ptr ps;
+        ps.stage = st.nvn_stage;
+        if (e) std::memcpy(ps.e, e, sizeof ps.e);
+        d.ptrs.push_back(ps);
+    }
+    if (d.grid_matters) std::memcpy(d.grid, s.grid, sizeof d.grid);
+    desc_progs[&p] = std::move(d);
+}
+bool desc_prog_use(const Program& p, const NvnState& s, uint64_t reg) {
+    auto it = desc_progs.find(&p);
+    if (it == desc_progs.end() || !it->second.on) return false;
+    DescProg& d = it->second;
+    if (d.desc_gen != s.desc_gen || d.reg_gen != reg || d.stamp != gpu_bind_stamp() ||
+        d.destroy_gen != texture_destroy_generation())
+        return false;
+    if (d.grid_matters && std::memcmp(d.grid, s.grid, sizeof d.grid)) return false;
+    const size_t lim = ub_update_count();
+    if (d.any_update_misses) {
+        if (lim != d.ub_mark) return false;
+    } else if (!d.ranges.empty()) {
+        static thread_local std::vector<uint64_t> addr, len;
+        addr.clear(), len.clear();
+        addr.reserve(d.ranges.size()), len.reserve(d.ranges.size());
+        for (const auto& rg : d.ranges) addr.push_back(rg.first), len.push_back(rg.second);
+        if (ub_since_miss(d.ub_mark, addr.data(), len.data(), (int)addr.size())) return false;
+    } else if (ub_since_miss(d.ub_mark, nullptr, nullptr, 0)) {
+        return false;
+    }
+    if (memory_generation() != d.mem_gen)
+        for (const auto& rg : d.ranges) {
+            if (!rg.second) continue;
+            const uint64_t end = rg.first + rg.second;
+            // (page stamps cover 512 GB. A GPU address past that is not a guest page, so a write there would not show)
+            if (end < rg.first || end > (1ull << 39) || memory_written_since(rg.first, rg.second, d.mem_gen))
+                return false;
+        }
+    for (const DescProg::Ptr& ps : d.ptrs) {
+        const PointerEntry* e = pointer_table(s, ps.stage);
+        if (!e || std::memcmp(e, ps.e, sizeof ps.e)) return false;
+    }
+    for (const DescWrite& e : d.writes) {
+        if (e.kind == 1 && e.first > d.bufs.size()) return false;
+        if (e.kind == 2 && e.first > d.imgs.size()) return false;
+        if (e.kind == 3 && e.first > d.views.size()) return false;
+    }
+    dw.bufs = d.bufs;
+    dw.imgs = d.imgs;
+    dw.views = d.views;
+    dw.writes.clear();
+    dw.writes.reserve(d.writes.size());
+    for (const DescWrite& e : d.writes) {
+        VkWriteDescriptorSet w = e.head;
+        if (e.kind == 1) w.pBufferInfo = dw.bufs.empty() ? nullptr : dw.bufs.data() + e.first;
+        else if (e.kind == 2) w.pImageInfo = dw.imgs.empty() ? nullptr : dw.imgs.data() + e.first;
+        else if (e.kind == 3) w.pTexelBufferView = dw.views.empty() ? nullptr : dw.views.data() + e.first;
+        dw.writes.push_back(w);
+    }
+    draw_sampled.clear();
+    for (const Texture* t : d.colors)
+        if (t && t->gpu_written) draw_sampled.push_back(t);
+    for (Texture* t : d.images)
+        if (t) draw_sampled.push_back(t);
+    for (Texture* t : d.written)
+        if (t) {
+            ParLock lk;
+            texture_written(t);
+        }
+    for (const auto& st : d.stamps)
+        if (st.first && st.second) {
+            ParLock lk;
+            memory_stamp_gpu(st.first, st.second);
+        }
+    if (!d.any_update_misses) d.ub_mark = lim;
+    st_desc_prog++;
+    return true;
+}
+void desc_prog_build(const Program& p, const NvnState& s, uint64_t reg, bool keep) {
+    const uint64_t stamp = gpu_bind_stamp(), destroy_gen = texture_destroy_generation(), desc = s.desc_gen;
+    const size_t mark = ub_update_count();
+    struct Off {
+        ~Off() { desc_watch_on = false; }
+    } off;
+    if (keep) desc_watch_begin();
+    build_descriptors(s, p);
+    if (keep && stamp == gpu_bind_stamp() && destroy_gen == texture_destroy_generation() && desc == s.desc_gen &&
+        reg == registrations_generation())
+        desc_prog_keep(p, s, reg, stamp, destroy_gen, mark);
 }
 
 /// Binds the descriptors built: pushed, or a set from the recording's pool
@@ -2756,6 +2995,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     pass = Pass{};
     work_since_barrier = false;
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    desc_progs.clear();
     descriptors_disturbed();
     static thread_local uint64_t hits_value = ~0ull;   // (resolved targets last a submission, through its parts: no CPU write is
     if (value != hits_value) {            // collected between them; resolved handles last while their slot and
@@ -4044,21 +4284,24 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_reg == reg_gen && last_desc_ub == ub_gen;
     if (!same_desc) {
-        PROF(PROF_DESC);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
-        build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
-        static std::string last_logged;
-        if (dump_on()) {
-            char head[256];
-            int hn = snprintf(head, sizeof head, "prog %016llx %ux%u:", (unsigned long long)p.key, at.width, at.height);
-            for (int i = 0; i < at.n && hn < 200; i++)   // (the targets' NVN formats and the views' Vulkan ones)
-                if (at.color[i])
-                    hn += snprintf(head + hn, sizeof head - hn, " c%d:#%u/n%#x/v%d", i, at.color[i]->id,
-                                   s.rt.has_cview[i] && s.rt.cview[i].set_format ? (int)s.rt.cview[i].format
-                                                                                 : (int)s.rt.color[i]->d.format,
-                                   (int)at.color_format[i]);
-            if (last_logged != head + dump_inputs)
-                last_logged = head + dump_inputs, logf("vk: dump-in %03d draw %s", dump_seq(), last_logged.c_str());
+        const bool quiet = dump_on() || probe_on() || stats_frame_now();
+        if (no_reuse || quiet || !desc_prog_use(p, s, reg_gen)) {
+            PROF(PROF_DESC);
+            desc_prog_build(p, s, reg_gen, !no_reuse && !quiet);   // (textures first used here are uploaded)
+            static std::string last_logged;
+            if (dump_on()) {
+                char head[256];
+                int hn = snprintf(head, sizeof head, "prog %016llx %ux%u:", (unsigned long long)p.key, at.width, at.height);
+                for (int i = 0; i < at.n && hn < 200; i++)   // (the targets' NVN formats and the views' Vulkan ones)
+                    if (at.color[i])
+                        hn += snprintf(head + hn, sizeof head - hn, " c%d:#%u/n%#x/v%d", i, at.color[i]->id,
+                                       s.rt.has_cview[i] && s.rt.cview[i].set_format ? (int)s.rt.cview[i].format
+                                                                                     : (int)s.rt.color[i]->d.format,
+                                       (int)at.color_format[i]);
+                if (last_logged != head + dump_inputs)
+                    last_logged = head + dump_inputs, logf("vk: dump-in %03d draw %s", dump_seq(), last_logged.c_str());
+            }
         }
     }
     if (dump_on()) log_dump_draw(s, p, d);
@@ -5023,7 +5266,13 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (plk.on) par_mutex().unlock(), plk.on = false;
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     end_pass(cmd);
-    build_descriptors(s, p);
+    {
+        const uint64_t reg_gen = registrations_generation();
+        static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;
+        const bool quiet = dump_on() || probe_on() || stats_frame_now();
+        if (no_reuse || quiet || !desc_prog_use(p, s, reg_gen))
+            desc_prog_build(p, s, reg_gen, !no_reuse && !quiet);
+    }
     dclock.t_desc = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (dump_on())
         logf("vk: dump-in %03d dispatch %ux%ux%u prog %016llx:%s", dump_seq(), x, y, z, (unsigned long long)p.key,
@@ -5283,6 +5532,9 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 }
 int64_t draw_desc_reused() {
     return st_desc_reused;
+}
+int64_t draw_desc_prog_reused() {
+    return st_desc_prog;
 }
 
 void pipeline_cache_save(bool force) {
