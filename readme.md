@@ -187,6 +187,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Frame generation | Off, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
+| | Frame rate limit | Off, 30, 40, 45, 50 fps | Off |
 | | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% | Auto |
 | | Upscaling | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
@@ -214,6 +215,10 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
+- **Frame rate limit** holds the game at most at that rate. When your PC runs the game between two rates (35 to 45 fps,
+  say), a limit it always keeps is steadier: 30 fps with Frame generation 2x and Frame pacing on is an even 60 on a
+  60 Hz screen. Game speed stays right with Real time. `HOS_FPS_LIMIT=<fps>` in `hookshot_env.txt` (15 to 59) wins over
+  the menu.
 - **Upscaling** and **Sharpness** also work when Frame generation is Off.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off

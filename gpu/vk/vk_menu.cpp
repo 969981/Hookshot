@@ -67,6 +67,11 @@ const char* tx_resolution(int v) {
     return t[v];
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
+const char* tx_fps_limit(int v) {
+    static const char* t[] = {"Off", "30 fps", "40 fps", "45 fps", "50 fps"};
+    if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
+    return t[v];
+}
 const char* tx_text_speed(int v) {
     static const char* t[] = {"Normal", "2x", "4x", "Instant"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
@@ -134,7 +139,7 @@ void apply_preset(int p) {
 }
 
 Row rows[] = {
-    // Graphics (11 rows)
+    // Graphics (12 rows)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
@@ -146,6 +151,9 @@ Row rows[] = {
      "can show artifacts."},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
      "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
+    {TAB_GRAPHICS, "Frame rate limit", &opts.fps_limit, 0, 4, 1, tx_fps_limit,
+     "Holds the game at most at this rate. A rate your PC always keeps is steadier than one that swings: 30 fps with Frame "
+     "generation 2x and Frame pacing on is a locked 60 on the screen."},
     {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
      "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
      "faster."},
@@ -820,6 +828,11 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+
+int menu_fps_limit() {   // (the row's value is an index, kept in the ini as frame_rate_limit)
+    static const int fps[] = {0, 30, 40, 45, 50};
+    return (unsigned)opts.fps_limit < sizeof fps / sizeof fps[0] ? fps[opts.fps_limit] : 0;
+}
 
 void menu_note_frame(bool game_frame) {
     shown_frames.fetch_add(1, std::memory_order_relaxed);

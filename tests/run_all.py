@@ -30,6 +30,7 @@ ARGS = {
     "nx2/test_import_windows.py": ["--cxx", "g++"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
+    "tests/test_fps_limit.py": ["--cc", "gcc"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],

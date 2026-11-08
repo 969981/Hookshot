@@ -97,6 +97,21 @@ HLE(_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE) {
 static volatile int present_interval = 1;
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
+/* (hookshot) The Insert menu's Frame rate limit, HOS_FPS_LIMIT=<fps> over it: the game's frames paced to at most that rate
+   (15 to 59; anything else: off). A PC whose replay makes 35-45 fps swung between them, and frame generation passed the swing
+   on to the screen; at a rate it always keeps, 30 with Frame generation 2x, the screen gets an even 60. Game time still
+   follows the clock (realtime_step). */
+static int fps_limit(void) {
+    static int env = -1;
+    if (env < 0) env = getenv("HOS_FPS_LIMIT") ? atoi(getenv("HOS_FPS_LIMIT")) : 0;
+    int rx_option(int id, int otherwise);
+    const int fps = env > 0 ? env : rx_option(18, 0);
+    return fps >= 15 && fps < 60 ? fps : 0;
+}
+static int64_t frame_period(void) {
+    const int64_t interval = 1000000000LL / 60 * present_interval, fps = fps_limit();
+    return fps && 1000000000LL / fps > interval ? 1000000000LL / fps : interval;
+}
 int hos_vi_native_interval(Ctx *c, int requested) {
     (void)c;
     /* (hookshot) OoT's frame-rate controller asks for 2, 3 or 4 vsyncs a frame whenever one runs long (480 changes a minute
@@ -127,7 +142,9 @@ void hos_vi_native_acquire(int active) {
     if (double_buffered < 0) double_buffered = getenv("HOS_VI_DOUBLE") != NULL;
     if (no_pacing || !next_frame_at) return;
     int64_t until = next_frame_at;
-    if (!double_buffered && active >= 2) {
+    /* (with a frame rate limit, one period after the last present: through the display queue the game ran up to two frames
+       ahead of the screen, two limited frames of input delay) */
+    if (!double_buffered && active >= 2 && !fps_limit()) {
         const int64_t n = shown_count, frame = n - active + 1;   /* (the frame whose showing frees this texture) */
         until = frame >= 0 && frame < n ? shown_at[frame & 15] : 0;
     }
@@ -305,7 +322,7 @@ void hos_vi_native_presented(void) {
         if (ms < 0) ms = getenv("HOS_FRAME_SLEEP_MS") ? atoi(getenv("HOS_FRAME_SLEEP_MS")) : 0;
         if (ms) hos_sleep_ns(ms * 1000000LL);
     }
-    const int64_t period = 1000000000LL / 60 * present_interval, now = hos_now_ns();
+    const int64_t period = frame_period(), now = hos_now_ns();
     realtime_step(now);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
