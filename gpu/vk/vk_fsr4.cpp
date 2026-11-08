@@ -2,8 +2,11 @@
 // (Kits/FidelityFX/docs/getting-started/ffx-api.md): a Vulkan backend description chained to the upscale context description,
 // inputs read in SHADER_READ_ONLY_OPTIMAL, the output written in GENERAL. Ported from madebyjordan's FSR 4.1 work on Lichii
 // (vk_fsr4_upscaler.cpp), GPL-3.0-or-later.
-#include "vk_paths.h"
 #include "vk_fsr4.h"
+
+#ifdef _WIN32   // (AMD's signed FSR 4 runtime is Windows only: elsewhere FSR is never available, below)
+
+#include "vk_paths.h"
 
 #include <chrono>
 #include <cstdio>
@@ -18,6 +21,7 @@
 #include "api/include/ffx_api_types.h"
 #include "api/include/vk/ffx_api_vk.h"
 #include "upscalers/include/ffx_upscale.h"
+#include "vk_work.h"   // (after the others: the barriers here count as work for full_barrier)
 
 namespace mkwvk {
 namespace {
@@ -163,8 +167,9 @@ bool make_context(uint32_t w, uint32_t h) {
     fsr.upscale = {};
     fsr.upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     fsr.upscale.header.pNext = &fsr.backend.header;
-    // (the game's colour is tonemapped and square-root encoded already: LDR, perceptual, no auto exposure; depth not inverted)
-    fsr.upscale.flags = FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
+    // (the game's colour is tonemapped and square-root encoded already: LDR, perceptual, no auto exposure; depth not inverted.
+    // The render size changes with the Resolution row and the game's dynamic resolution, under the one context)
+    fsr.upscale.flags = FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE | FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION;
     fsr.upscale.maxRenderSize = {w, h};
     fsr.upscale.maxUpscaleSize = {w, h};
     fsr.upscale.fpMessage = &on_message;
@@ -256,6 +261,7 @@ bool fsr4_evaluate(VkCommandBuffer cmd, const DlssImage& color, const DlssImage&
     d.cameraNear = 0.1f, d.cameraFar = 1000.0f, d.cameraFovAngleVertical = 1.0f, d.viewSpaceToMetersFactor = 1.0f;
     d.flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
     const ffxReturnCode_t r = fsr.dispatch(&fsr.context, &d.header);
+    note_work();   // (AMD's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
 
     const VkImageMemoryBarrier2 out[4] = {barrier(color, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),
                                           barrier(depth, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),
@@ -279,3 +285,16 @@ void fsr4_stop() {
 }
 
 }  // namespace mkwvk
+
+#else
+
+namespace mkwvk {
+bool fsr4_available() { return false; }
+const char* fsr4_reason() { return "Windows only"; }
+bool fsr4_evaluate(VkCommandBuffer, const DlssImage&, const DlssImage&, const DlssImage&, const DlssImage&, float, float, bool) {
+    return false;
+}
+void fsr4_stop() {}
+}  // namespace mkwvk
+
+#endif
