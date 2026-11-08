@@ -94,6 +94,10 @@ typedef struct MkwVkHost {
     void (*bind)(int set, int button, int slot, int code);
     /// The guest camera aspect explicitly applied at startup (0: its default aspect)
     float (*aspect_ratio)(void);
+    /// Returns 1 when a scene or zone is loading from storage, 0 otherwise
+    int (*is_loading)(void);
+    /// Clears the loading state once the new 3D scene begins rendering
+    void (*clear_loading)(void);
     int (*take_key_press)(int key);
     /* (hookshot) the free mouse (MkwVkPointer), read and its presses and wheel cleared: 1 when the cursor is over the
        window and the window has the focus. The Insert menu releases the mouse while it is open: WM_APP + 8 to the

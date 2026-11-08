@@ -39,6 +39,23 @@ static void mount(const char *name, const char *root, int writable) {
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
+static volatile uint64_t hos_last_loading_tick = 0;
+
+void hos_mark_loading(void) {
+    hos_last_loading_tick = GetTickCount64();
+}
+
+void hos_clear_loading(void) {
+    hos_last_loading_tick = 0;
+}
+
+int hos_is_loading(void) {
+    uint64_t t = hos_last_loading_tick;
+    if (!t) return 0;
+    uint64_t now = GetTickCount64();
+    return (now >= t && now - t < 5000) ? 1 : 0;
+}
+
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
    is unknown. */
 static int host_path(const char *guest, char *out, size_t cap, int *writable) {
@@ -247,6 +264,10 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     fh->h = h;
     fh->writable = want_write;
     snprintf(fh->path, sizeof fh->path, "%s", g);
+    if (!want_write && (strstr(g, "Banc/") || strstr(g, "WorldParam/") ||
+                        strstr(g, "PrepareScreensOfLoading") || strstr(g, "LoadBanc"))) {
+        hos_mark_loading();
+    }
     G64(ARG(0)) = new_handle(fh);
     if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s)", g);
     RET(0);
@@ -267,6 +288,10 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
         hos_sleep_ns(delay_ns);
     }
     const int away = hos_vcore_away();   /* (as OpenFile: no core held through the read) */
+    if (size >= 32768 && hos_is_loading() && !strstr(fh->path, "Sound/") && !strstr(fh->path, "Movie/") &&
+        !strstr(fh->path, "PreComputedCulling/") && !strstr(fh->path, "Bake/")) {
+        hos_mark_loading();
+    }
     while (done < size) {
         OVERLAPPED ov = {0};
         int64_t o = off + (int64_t)done;

@@ -2503,6 +2503,22 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     {
         std::lock_guard lk(replay_mu);
         bench_frame(presents);
+        {
+            int64_t cur_d = 0, cur_sk = 0, cur_di = 0, cur_pl = 0;
+            draw_stats(&cur_d, &cur_sk, &cur_di, &cur_pl);
+            static int64_t prev_d = 0, prev_di = 0;
+            const int64_t f_draws = cur_d - prev_d, f_disp = cur_di - prev_di;
+            prev_d = cur_d, prev_di = cur_di;
+            const int64_t d3d = draw_3d_take();
+            const bool was_loading = menu_loading_active();
+            const int64_t min_draws = was_loading ? 1 : 3;
+            if (opts.loading_screen && presents > 60 && f_disp == 0 && d3d < 15 && f_draws >= min_draws && f_draws <= 25) {
+                menu_set_loading_active(true);
+            } else if (was_loading) {
+                menu_set_loading_active(false);
+                if (host && host->clear_loading) host->clear_loading();
+            }
+        }
         SlowWatch slow("present");
         frame_submits.clear();
         PROF(PROF_PRESENT);
@@ -3012,7 +3028,12 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         // The following blit overlaps the clear in the content rectangle.
         image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     }
-    if (const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE) {
+    if (menu_loading_active()) {
+        const VkClearColorValue black{0.0f, 0.0f, 0.0f, 1.0f};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+        image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    } else if (const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE) {
         blit_crop_to_rect(f.cmd, scaled, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else if (src) {
         blit_crop_to_rect(f.cmd, src, sw, sh, crop, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);

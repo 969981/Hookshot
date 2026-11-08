@@ -283,7 +283,17 @@ void display_main() {
         Job j;
         {
             std::unique_lock lk(fg.mu);
-            fg.cv.wait(lk, [] { return !fg.jobs.empty(); });
+            while (fg.jobs.empty()) {
+                if (menu_loading_active()) {
+                    if (!fg.cv.wait_for(lk, std::chrono::milliseconds(16), [] { return !fg.jobs.empty(); })) {
+                        lk.unlock();
+                        present_image(VK_NULL_HANDLE, 0, 0, nullptr, VK_NULL_HANDLE);
+                        lk.lock();
+                    }
+                } else {
+                    fg.cv.wait(lk, [] { return !fg.jobs.empty(); });
+                }
+            }
             j = fg.jobs.front();
             fg.jobs.pop_front();
         }
