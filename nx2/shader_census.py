@@ -5,7 +5,8 @@
 Walks romfs/Shader/*.bfsha.zs (and the shader packages inside other archives) and romfs/Effect/*.vsetb.byml.zs, and each BNSH
 inside them. A BNSH's variations are programs: which stages go together, so what comes out are real pairs, not a heap of
 stages. The agl shader archives in ApplicationPackage (AglShader.sharcb, FoliageShader.sharcb: BAHS, no BNSH) give their
-compute programs, each a program of its own. --out writes them for the back
+programs from their stage records (sharc_programs: graphics, mesh and compute) and each compute stage as a program of its own
+(sharc_computes). --out writes them for the back
 end to translate (gpu/vk/vk_shader.cpp); nothing here goes into the repository: the file is made from the player's own game.
 
 After tools/shader_census.py of TotK Recomp (github.com/valentderah/totk-pc-recomp, MIT), itself after MacNativeGames'
@@ -110,11 +111,52 @@ def sharc_computes(data, stats):
         yield [(5, data[c:c + 0xd8], data[code:code + end])]
 
 
+def sharc_programs(data, stats):
+    """The graphics (and mesh, and compute) programs of an agl shader archive (BAHS, .sharcb), each [(stage, control, code)...].
+    Each stage there has a record: u32 code offset (from the code region at header +0x1c), u32 0, u32 the control section's size
+    (0xe0, 0xf8), s32 the control section's
+    offset from the record (control sections the same for many stages are kept once: a record may point back a long way). The
+    records of a program follow one another, in stage order: vertex then fragment, task then mesh then fragment. Read only the
+    compute ones before (sharc_computes): the agl archives' own graphics programs (the post effects, the menus' and the HUD's) were
+    translated in play, each the first time it was drawn"""
+    size = len(data)
+    code_base = struct.unpack_from("<I", data, 0x1c)[0]
+    program, last = [], None
+    for at in range(0x20, size - 16, 8):
+        code_off, zero, control_size, rel = struct.unpack_from("<IIIi", data, at)
+        if zero or not 0xd8 <= control_size <= 0x400 or control_size & 7:
+            continue
+        c = at + rel
+        if not 0 <= c <= size - 0xd8 or data[c:c + 4] != CONTROL_MAGIC:
+            continue
+        stage = struct.unpack_from("<H", data, c + 0x56)[0]
+        length = struct.unpack_from("<I", data, c + 0x38)[0]
+        c1o, end = struct.unpack_from("<II", data, c + 0x40)
+        code = code_base + code_off
+        if stage > 7 or not length or end > (16 << 20) or c1o > end or length > end or code + end > size:
+            stats["sharc record, not a stage"] += 1
+            continue
+        stats["sharc record, stage %d" % stage] += 1
+        # (a program goes on: a fragment stage after a vertex or mesh one, a mesh stage after a task one)
+        if not (program and ((stage == 1 and last in (0, 7)) or (stage == 7 and last == 6))):
+            if program:
+                yield program
+            program = []
+        program.append((stage, data[c:c + 0xd8], data[code:code + end]))
+        last = stage
+    if program:
+        yield program
+
+
 def archives(romfs):
-    """The files that hold shaders: Shader/* (programs, and ApplicationPackage's compute), Layout2Shader/*, and Effect/*.vsetb
+    """The files that hold shaders: Shader/* (programs, and ApplicationPackage's compute), Layout2Shader/*, Effect/*.vsetb
     (the particle effects: each its own BNSH, with the game's compute programs, which nothing else has. Left out, every one
-    was translated and built the first time it was met, 2-2.6 s each on an RX 7700S, the picture frozen meanwhile)"""
-    for folder in ("Shader", "Layout2Shader", "Effect"):
+    was translated and built the first time it was met, 2-2.6 s each on an RX 7700S, the picture frozen meanwhile), and the
+    libraries' resource archives, Lib/*/*.sarc.zs (agl's own .sharcb archives: its post effects and shadows, the agl_common,
+    agl_technique_pfx and agl_technique_shdw programs, which were translated in play, each the first time it was drawn)"""
+    lib = os.path.join(romfs, "Lib")
+    libs = [os.path.join("Lib", d) for d in sorted(os.listdir(lib)) if os.path.isdir(os.path.join(lib, d))] if os.path.isdir(lib) else []
+    for folder in ["Shader", "Layout2Shader", "Effect"] + libs:
         top = os.path.join(romfs, folder)
         if os.path.isdir(top):
             for name in sorted(os.listdir(top)):
@@ -155,7 +197,7 @@ def main():
             found = (bnsh_programs(bytes(view[m.start():m.start() + struct.unpack_from("<I", data, m.start() + 28)[0]]), stats)
                      for m in re.finditer(b"BNSH", data) if data[m.start() + 96:m.start() + 100] == b"grsc")
             if data[:4] == b"BAHS":
-                found = [sharc_computes(data, stats)]
+                found = [sharc_programs(data, stats), sharc_computes(data, stats)]
             for each in found:
                 for stages in each:
                     ids = []
