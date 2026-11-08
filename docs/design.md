@@ -77,7 +77,9 @@ message. OoT-specific code goes into new files where it can, so the shared files
   in for the SDK's OS-facing functions; the rest of the SDK (libc, nn::util, nn::mem, the NVN2 driver's front end)
   runs as lifted code. Unimplemented OS-facing imports get generated stubs that log their first call.
 - **Memory.** A 512 GB reservation; the image at Eden's `0x80000000` (the lift's addresses), the heap from 64 GB,
-  address regions growing down from 512 GB; committed as handed out or on first touch (`host/hos.h`).
+  address regions growing down from 512 GB; committed as handed out or on first touch (`host/hos.h`). Every guest
+  access is masked into the window (`nx2/rtgen.py`, `nx2/addr_split.py`), with reserved guards on both sides of it, so
+  no address the game's code computes reaches host memory.
 - **GPU.** `host/nvn_native.c` implements the NVN2 procs over guest memory in place: objects live where the game
   puts them, command buffers record an op stream (`gpu/render/rx_nvn.h`), queue submits hand it to the back end.
   `gpu/vk` replays it on Vulkan 1.3: pools imported as host memory, SM86 programs through Eden's recompiler to

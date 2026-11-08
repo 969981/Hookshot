@@ -113,7 +113,7 @@ static void *reserve_large(SIZE_T size) {
 extern int hos_guest_memfd;   /* (below) */
 #endif
 /* The guest window lives at the constant A64_HOST_BASE (rt/a64.h), so lifted code never loads its base. */
-static int reserve_guest(void) {
+static int reserve_window(void) {
 #if defined(A64_MEM_ZERO)
     hos_space_end = (uint64_t)(uintptr_t)&__global_base & ~0xFFFFULL;
     return hos_space_end >= (1ULL << 30);
@@ -198,6 +198,34 @@ static int reserve_guest(void) {
 #endif
     return 1;
 #endif
+}
+
+/* Guest addresses are masked into the window (nx2/rtgen.py A64_PTR), but an access, or a host copy into a guest buffer,
+   that starts in its last bytes runs on past its end: HOS_GUEST_GUARD of reserved, inaccessible address space there
+   makes that a crash, never a write to whatever the host had mapped next. (Address space only: no memory.) */
+static int reserve_guest(void) {
+    if (!reserve_window()) return 0;
+#if !defined(A64_MEM_ZERO)
+    void *const end = (void *)(A64_HOST_BASE + GUEST_SPACE);
+    /* (and HOS_GUEST_GUARD_BELOW before it: an access at a masked base and a negative offset, nx2/addr_split.py) */
+    void *const below = (void *)(A64_HOST_BASE - HOS_GUEST_GUARD_BELOW);
+#if defined(_WIN32)
+    const int guarded = VirtualAlloc(end, HOS_GUEST_GUARD, MEM_RESERVE, PAGE_NOACCESS) == end &&
+                        VirtualAlloc(below, HOS_GUEST_GUARD_BELOW, MEM_RESERVE, PAGE_NOACCESS) == below;
+#else
+    const int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE;
+    void *g = mmap(end, HOS_GUEST_GUARD, PROT_NONE, flags, -1, 0);
+    if (g != MAP_FAILED && g != end) munmap(g, HOS_GUEST_GUARD);
+    void *h = mmap(below, HOS_GUEST_GUARD_BELOW, PROT_NONE, flags, -1, 0);
+    if (h != MAP_FAILED && h != below) munmap(h, HOS_GUEST_GUARD_BELOW);
+    const int guarded = g == end && h == below;
+#endif
+    if (!guarded) {   /* (something of the host's already lies right after the window: not safe to run) */
+        hos_log("mem: the guards around the guest window could not be reserved (%p, %p)", below, end);
+        return 0;
+    }
+#endif
+    return 1;
 }
 
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)

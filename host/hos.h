@@ -36,7 +36,7 @@
 #define SPLICE_AFTER_EACH(addr, anchor) void splice_##addr(Ctx *c)
 #define ARG(n) (c->x[n])
 #define RET(v) (c->x[0] = (uint64_t)(v))
-#define GP(a) ((void *)A64_PTR(a))           /* host pointer of a guest address */
+#define GP(a) ((void *)A64_PTR(a))           /* host pointer of a guest address (masked into the window) */
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 
@@ -44,6 +44,14 @@
 #define HOS_SYSTEM_END 0x07000000ULL
 #define HOS_HEAP_BASE 0x1000000000ULL
 #define HOS_GUEST_SPACE (1ULL << 39)
+#if defined(A64_WINDOW_MASK) && !defined(A64_MEM_ZERO)
+/* (the mask in A64_PTR / GP is the window: an address it lets through is one the reservation holds) */
+_Static_assert(A64_WINDOW_MASK + 1 == HOS_GUEST_SPACE, "the guest address mask (nx2/rtgen.py) must be the guest window");
+#endif
+/* the reserved, inaccessible space right after the window (hos_main.c): what an access, or a host copy, starting in the
+   window's last bytes runs into */
+#define HOS_GUEST_GUARD (4ULL << 30)
+#define HOS_GUEST_GUARD_BELOW (1ULL << 20)   /* (before it: nx2/addr_split.py's offsets, -64 KB at most) */
 extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
 extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
 extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */

@@ -38,9 +38,11 @@ import image as eden_image
 import a64emit
 import a64_lift
 import a64_rtgen
+import addr_split
 
 insn.install()
 lift_fixes.install()
+addr_split.install()   # (guest accesses at a base + constant: the base alone masked into the window)
 
 
 def module_of(img, pc):
