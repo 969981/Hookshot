@@ -62,9 +62,25 @@ def main():
             raise SystemExit("the global stores do not reset their count before the loop")
         if "CasLoopDone(*this, tries_var, success)" not in loop:
             raise SystemExit("the global stores leave only on success")
-    if source.count("OpAtomicCompareExchange(") != source.count("CasLoopDone(") - 1:
+    # (the global f32 add's fallback: the same shape as the global stores)
+    marker = "// (hookshot) RED/ATOM.E.ADD.F32"
+    if marker in source:
+        add = source[source.index(marker):]
+        add = add[:add.index("atomic_global_add_f32_func = func;")]
+        loop = block(add, "const auto cas_loop{[&](Id pointer)")
+        declared = add.find("const Id tries_var{AddLocalVariable(")
+        if declared < 0 or declared > add.index("const auto cas_loop{"):
+            raise SystemExit("the global f32 add declares no attempt count before its loop")
+        if "OpStore(tries_var, u32_zero_value);" not in loop or loop.index("OpStore(tries_var") > loop.index("OpLoopMerge"):
+            raise SystemExit("the global f32 add does not reset its count before the loop")
+        if "CasLoopDone(*this, tries_var, success)" not in loop:
+            raise SystemExit("the global f32 add leaves only on success")
+    # (ATOMG.CAS is one compare-exchange and no loop: the guest's own loop decides whether to try again)
+    single = block(source, "const auto cas{[&](Id pointer)").count("OpAtomicCompareExchange(") if "const auto cas{[&](Id pointer)" in source else 0
+    exchanges = source.count("OpAtomicCompareExchange(") - single
+    if exchanges != source.count("CasLoopDone(") - 1:
         raise SystemExit("a compare-exchange loop without the ceiling (%d exchanges, %d ceilings)"
-                         % (source.count("OpAtomicCompareExchange("), source.count("CasLoopDone(") - 1))
+                         % (exchanges, source.count("CasLoopDone(") - 1))
     print("compare-exchange loops end at the ceiling ok")
 
 
