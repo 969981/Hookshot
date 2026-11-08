@@ -21,14 +21,30 @@ static HANDLE vsync_thread;
  * This is what paces the game. It waits on the event, so a hardcoded 60 here is a hard 60 fps
  * however high the limiter is: on a 165 Hz monitor, with the limiter unlocked to 120 by
  * HOS_DISPLAY_VRR, 298 of 300 frames still landed in the 15.5-17.8 ms window with no variance.
- * Clamped to 15..1000: below 15 the game's own frame step treats a step as a hitch, and a rate the
- * machine cannot render only spends the time sleeping less. */
+ * Unset follows the display's own refresh rate, which is the right default: a hardcoded 60 paces a
+ * 165 Hz screen at 60. 0 turns the pacing off. Clamped to 15..1000: below 15 the game's own frame
+ * step treats a step as a hitch, and a rate the machine cannot render only spends the time sleeping
+ * less. */
 static int64_t vsync_period_ns(void) {
+    int hos_sdl_refresh_hz(void);
     const char *e = getenv("HOS_VSYNC_HZ");
-    int hz = e && *e ? atoi(e) : 60;
+    const int asked = e && *e ? atoi(e) : -1;
+    int hz;
+    const char *why;
+    if (asked == 0) {   /* (off: as fast as the clamp allows, so the game is not paced by this) */
+        hz = 1000, why = "HOS_VSYNC_HZ=0, not paced";
+    } else if (asked > 0) {
+        hz = asked, why = "HOS_VSYNC_HZ";
+    } else {
+        /* The display's own rate, which is the right default: a hardcoded 60 paces a 165 Hz screen
+           at 60 however high the game's limiter is. 0 from SDL means it could not say. */
+        const int screen = hos_sdl_refresh_hz();
+        hz = screen > 0 ? screen : 60;
+        why = screen > 0 ? "the display's rate" : "no rate from the display, 60";
+    }
     if (hz < 15) hz = 15;
     if (hz > 1000) hz = 1000;
-    if (hz != 60) hos_log("vi: the display's vsync event at %d Hz (HOS_VSYNC_HZ)", hz);
+    hos_log("vi: the display's vsync event at %d Hz (%s)", hz, why);
     return 1000000000LL / hz;
 }
 
