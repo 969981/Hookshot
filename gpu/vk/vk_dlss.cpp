@@ -1,6 +1,15 @@
 // NVIDIA DLSS super resolution through NVIDIA Streamline, manual hooking (vk_dlss.h). Ported from Lichii (Eden lineage;
 // Duck912's Eglantine work), GPL-3.0-or-later: video_core/vulkan_common/streamline.cpp (the loader) and
 // renderer_vulkan/vk_streamline_dlss.cpp (the evaluation). Streamline's headers are MIT (third_party/streamline/license.txt).
+// (Windows 10's headers: sl_security.h's signature check uses wintrust.h's WINTRUST_SIGNATURE_SETTINGS, Windows 8 and later,
+// which llvm-mingw leaves out at its default of Windows 7, set already by the C++ headers the build includes first. Before the
+// first header that brings in windows.h)
+#ifdef _WIN32
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#undef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000000
+#endif
 #include "vk_dlss.h"
 #include "vk_internal.h"
 
