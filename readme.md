@@ -250,7 +250,8 @@ For one run: `RX_DLSS=0/1`, `RX_DLSS_PRESET=J..M`, `RX_DLSS_DIR=<folder>`, `HOS_
 
 FSR 4.1 is optional. It replaces the game's own upscale the same way, from the scene's depth and the camera's motion,
 and moves the 3D by a sub-pixel amount each frame (a jitter) so it can rebuild edges and fine detail over several
-frames. It runs on AMD's RDNA 2 cards and newer (RDNA 2 and 3 use its INT8 model). **Resolution** sets the size it
+frames. It is for AMD cards: tested on an RX 6700 XT (RDNA 2), which runs FSR 4's INT8 model. Windows only.
+**Resolution** sets the size it
 upscales from: 75% is FSR's Quality, 67% Balanced, 50% Performance, 100% anti-aliasing only. Hookshot does not include
 AMD's files: put `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
 [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)

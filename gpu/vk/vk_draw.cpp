@@ -5572,7 +5572,18 @@ bool clip_to_previous(const Mat& current, const Mat& previous, Mat& out) {
 
 bool dlss_image(DlssImg& im, uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage, VkCommandBuffer cmd) {
     if (im.image && im.w == w && im.h == h) return true;
-    im = {};   // (the one before is kept: work in flight may still use it, and the sizes seldom change)
+    // (the one before is given back 120 presents later, when no work in flight can use it, as typed_upscale's histories are: with
+    // AMD FSR 4.1 the Resolution row may be Auto, and the game's dynamic resolution changes the render size every so often)
+    struct Old { DlssImg im; uint64_t frame; };
+    static std::vector<Old> old;
+    for (size_t i = 0; i < old.size();) {
+        if (texture_frame_no() - old[i].frame < 120) { i++; continue; }
+        if (old[i].im.view) vkDestroyImageView(dev.device, old[i].im.view, nullptr);
+        destroy_image(old[i].im.image, old[i].im.mem);
+        old.erase(old.begin() + (ptrdiff_t)i);
+    }
+    if (im.image) old.push_back({im, texture_frame_no()});
+    im = {};
     VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ic.imageType = VK_IMAGE_TYPE_2D, ic.format = format, ic.extent = {w, h, 1}, ic.mipLevels = 1, ic.arrayLayers = 1;
     ic.samples = VK_SAMPLE_COUNT_1_BIT, ic.tiling = VK_IMAGE_TILING_OPTIMAL, ic.usage = usage;
