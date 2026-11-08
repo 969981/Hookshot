@@ -170,3 +170,7 @@ python -I -B tests/test_mcp_server.py
 The test speaks MCP to the server in memory, checks the input-line encoding and environment handling, and runs a
 fake Python game that answers live input and screenshot requests exactly as the host does. It needs the `mcp` package
 but no game build, GPU or game files.
+
+`tests/test_shot_request.py` compiles the renderer's `read_shot_request()` and checks the request-file rules, and
+`tests/test_docs.py` checks this page's tool/resource tables against the server. Both are part of
+`python -I -B tests/run_all.py --strict`.
