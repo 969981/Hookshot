@@ -71,6 +71,10 @@ on:
       - scripts/changelog.py
       - tests/test_changelog.py
       - host/nn_audio.c
+      - host/hos_paths.h
+      - host/posix/windows.h
+      - host/posix/win32_posix.c
+      - tests/test_linux_game_path.py
       - tests/test_audio_deadline.py
       - tests/test_audio_output_errors.py
       - tests/audio_output_errors_test.c
@@ -189,6 +193,10 @@ on:
       - scripts/changelog.py
       - tests/test_changelog.py
       - host/nn_audio.c
+      - host/hos_paths.h
+      - host/posix/windows.h
+      - host/posix/win32_posix.c
+      - tests/test_linux_game_path.py
       - tests/test_audio_deadline.py
       - tests/test_audio_output_errors.py
       - tests/audio_output_errors_test.c
@@ -439,6 +447,9 @@ jobs:
       - name: Check the game launcher
         if: runner.os == 'Linux'
         run: python -I -B tests/test_hookshot_launch.py
+      - name: Check the Linux game-path header and real POSIX forwarding
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_linux_game_path.py --cc gcc
       - name: Clang for the lowering check
         if: runner.os == 'Linux'
         run: sudo apt-get install -y clang
