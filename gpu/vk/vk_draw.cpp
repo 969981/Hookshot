@@ -39,6 +39,7 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "upscale_format.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -5876,11 +5877,29 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         static std::unordered_map<uint64_t, int> seen;
         std::lock_guard lk(mu);
         if (seen[p.key]++ == 0) {
+            // (hookshot) with each one's role in the upscaler input contract, so this says whether a temporal
+            // upscaler could take this network's place rather than leaving it to be counted by hand later:
+            // docs/upscaling.md
+            std::vector<upscale::Binding> bindings(draw_sampled.size());
+            for (size_t i = 0; i < draw_sampled.size(); ++i)
+                if (const Texture* t = draw_sampled[i])
+                    bindings[i] = {upscale::kind_of(t->format, t->aspect), t->width, t->height};
+            std::vector<upscale::Role> roles(bindings.size(), upscale::Role::None);
+            const upscale::Verdict v = upscale::classify(bindings.data(), bindings.size(), roles.data());
             char line[900];
             int n = snprintf(line, sizeof line, "vk: network %016llx: dispatch %ux%ux%u, %zu textures %zu images:", (unsigned long long)p.key, x, y, z,
                              p.stages[0].info.texture_descriptors.size(), p.stages[0].info.image_descriptors.size());
-            for (const Texture* t : draw_sampled)
-                if (t && n < 860) n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+            for (size_t i = 0; i < draw_sampled.size() && n < 840; ++i) {
+                const Texture* t = draw_sampled[i];
+                if (!t) continue;
+                n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+                if (roles[i] != upscale::Role::None && n < 840)
+                    n += snprintf(line + n, sizeof line - n, "=%s", upscale::role_name(roles[i]));
+            }
+            if (n < 860)
+                n += v.inputs_complete
+                         ? snprintf(line + n, sizeof line - n, "; upscaler inputs at %ux%u", v.render_width, v.render_height)
+                         : snprintf(line + n, sizeof line - n, "; no upscaler inputs");
             logf("%s", line);
         }
     }
