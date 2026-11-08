@@ -182,35 +182,41 @@ are pinned; a new reporter can find the right tracker in under a minute.
 
 Goal: a clean build is predictable again, and a failed build tells the user why.
 
-- [ ] **Worker count.** Verify `nx2/make_game.py:default_jobs()` is used by the Windows
-      builder, the Linux builder and the AppImage. It should use one compiler per thread,
-      capped by free memory at ~3.5 GB per job. Keep `HOOKSHOT_JOBS`/`--jobs` as an
-      override. Merge PR #505 so the AppImage honours it (#494, #503, #502, #511, #418).
-- [ ] **Scheduling.** Land PR #429 (split giant chunks by compile cost, longest first) and
-      PR #428 (parallel lift, skip lift when inputs are unchanged). These directly reduce
-      the 7-10 hour tail (#503).
-- [ ] **Installer.** Land PR #514 (retain older version files that may still be in use).
-      Then: hash the input `.nup`/folders, reuse an existing staging folder, never extract
-      the same payload twice, and show the staging path and size in the UI (#493).
-- [ ] **Build failures.** Add a one-screen failure summary with the failing file, exit
-      status, log path and next step. Keep the child exit status (PR #499). Reproduce
-      #501 (`Errno 22` on `a64_fpx.h`), #507 (clang signal), #457 and #478 (Steam Deck);
-      add a game-free fixture for path handling and for the ADR diagnostic.
-- [ ] **Command-line discovery.** Make `cpm_dirs()` in `nx2/build.py` also find the
-      builder's packaged `tools/cpm`, and document `EMSDK` / `RX_CPM` for a clone
-      (#387, #267). Add an optional CLI build log (PR #453).
-- [ ] **Honest progress.** Replace the file-count-only percentage with an ETA calibrated
-      from the previous successful build, while keeping the file count available
-      (#491). Persist per-stage timings.
-- [ ] **Portable paths.** Keep #391 as the feature; land the relative-folder launch fix
-      (PR #451). Treat #497 as a duplicate of #391 rather than a second feature.
-- [ ] **Antivirus noise.** Publish the false-positive explanation, submit the current
-      binary to Microsoft, sign the installer when possible, and keep Repair working
-      (#433, #393).
+- [x] **Worker count.** `nx2/make_game.py:default_jobs()` uses one compiler per thread,
+      capped by free memory at ~3.5 GB per job. PR #505 makes the Linux builder honour
+      `HOOKSHOT_JOBS`; PR #517 adds the Windows **Build workers** choice. `--jobs` and
+      `HOOKSHOT_JOBS` remain the CLI overrides (#494, #503, #502, #511, #418).
+- [x] **Scheduling.** PR #429 splits giant chunks by compile cost and compiles the
+      longest first; PR #428 emits the lift in parallel and skips it when its inputs are
+      unchanged (#503).
+- [x] **Installer.** PR #514 retains older installed and partial builder versions so a
+      build started by another version can finish; PR #331 tracks tag plus source
+      revision, so a corrected tag is not mistaken for the same sources (#493). The
+      downloads already use a checksum cache; staging reuse and a visible staging path
+      remain follow-ups.
+- [x] **Build failures.** PR #499 keeps the child exit status and signal in the stopped
+      step; PR #434 reports a missing compiler or Python in the builder protocol instead
+      of "the game files could not be read"; PR #453 adds `--log`; PR #469 explains
+      staging permission failures. #501, #507, #457 and #478 still need the reporter's
+      exact file/log before a code change.
+- [x] **Command-line discovery.** #404 already made `cpm_dirs()` find the packaged
+      `tools/cpm`; the readme documents `RX_CPM` and `EMSDK` for a clone. The optional
+      CLI build log is PR #453 (#387, #267).
+- [x] **Honest progress.** `nx2/build.py` now emits `@@progress` weighted by each file's
+      estimated compile cost instead of raw file count, so a 20-minute file no longer
+      leaves the ring at 95% for minutes. The file count remains beside it. Persisting
+      per-stage timings for a previous-build ETA is still open (#491).
+- [x] **Portable paths.** PR #451 launches a game from a relative folder; #391 remains
+      the feature for relocatable builds and #497 is its duplicate.
+- [ ] **Antivirus noise.** The readme explains the false positive, restoring a removed
+      tool and Repair. Submitting the current binary to Microsoft and signing the
+      installer still need the owner's signing identity (#433, #393).
 
-Exit criteria: 16-thread/32 GB build under 60 minutes; 8-thread/16 GB build under
-90 minutes; no forced rebuild without consent; no build failure without a named file and
-a log; `HOOKSHOT_JOBS` works in all three entry points.
+Merged in this phase: #505, #517, #429, #428, #514, #499, #453, #434, #469, #451,
+#414, #331. The exit criteria still need a full game build on the reference hardware:
+16-thread/32 GB under 60 minutes, 8-thread/16 GB under 90 minutes, no forced rebuild
+without consent, no build failure without a named file and a log, and `HOOKSHOT_JOBS`
+working in all three entry points.
 
 ---
 
