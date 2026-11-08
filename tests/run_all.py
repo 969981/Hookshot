@@ -36,6 +36,7 @@ ARGS = {
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
+    "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
@@ -116,6 +117,7 @@ def find_tools():
         "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
+        "glslang": which("glslangValidator", "glslang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 
