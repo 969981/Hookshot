@@ -35,6 +35,8 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_lower_cs2r_depbar.py
+      - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -106,6 +108,8 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_lower_cs2r_depbar.py
+      - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -211,6 +215,9 @@ jobs:
       - name: Check a pool span is reused without the lock
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pool_span.py
+      - name: Check DEPBAR lists and CS2R into high registers lower
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_lower_cs2r_depbar.py --cxx g++
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py
