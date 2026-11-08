@@ -66,7 +66,10 @@ class FinishOutputTests(unittest.TestCase):
 
     def finish(self):
         with mock.patch.object(make_game, "BESIDE", ["hookshot.exe"]):
-            exec(FINISH, make_game.__dict__, {"built": str(self.built), "out": str(self.out), "work": str(self.work)})
+            scope = make_game.__dict__.copy()
+            scope.update(built=str(self.built), out=str(self.out), work=str(self.work),
+                         game_dir=str(self.out), launcher=None)
+            exec(FINISH, scope, scope)
 
     def assert_installed_unchanged(self):
         self.assertEqual(self.destination.read_bytes(), b"existing synthetic executable")
