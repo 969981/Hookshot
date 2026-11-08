@@ -28,6 +28,7 @@ OS = "windows" if WINDOWS else "linux"
 ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_input_background.py": ["--cc", "gcc"],
+    "tests/test_shot_request.py": ["--cxx", "g++"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
@@ -54,6 +55,7 @@ MODULES = {
     "nx2/test_nup_codec.py": ["zstandard"],
     "nx2/test_nup_verify.py": ["zstandard"],
     "tests/test_mcp_server.py": ["mcp"],
+    "tests/test_docs.py": ["mcp"],
 }
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
