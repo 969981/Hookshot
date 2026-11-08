@@ -12,9 +12,12 @@
 
 namespace mkwvk::fsr3 {
 
-/// One evaluation's inputs. Every field is the SDK's meaning, not a guess: the colour is HDR and
-/// jittered at the render size, the depth is reversed, the motion points at the previous frame, and
-/// the jitter is in render pixels (input texel k is sampled at k + 0.5 - jitter).
+/// One evaluation's inputs, the ones vk_draw.cpp builds for FSR 4.1 too. The colour is tonemapped and
+/// square-root encoded (LDR, in [0, 1]) and jittered at the render size, the depth is standard (0 near,
+/// 1 far), the motion points at the previous frame in render pixels, and the jitter is in render pixels
+/// (input texel k is sampled at k + 0.5 - jitter). The pass shaders are compiled for exactly this:
+/// scripts/fsr3_shaders.py. A view of the same inputs in another colour or depth convention would need
+/// new shaders.
 struct Inputs {
     VkImageView color = VK_NULL_HANDLE;
     VkImageView depth = VK_NULL_HANDLE;
@@ -28,6 +31,7 @@ struct Inputs {
     /// conversion only scales FSR's disocclusion thresholds, so a typical camera is usable and is
     /// what these default to; supplying the real one is better but is not a precondition.
     float near_plane = 0.1f;
+    float far_plane = 1000.0f;
     float fov_y = 60.0f * 3.14159265358979f / 180.0f;
     float frame_time_ms = 16.667f;
     bool reset = false;
@@ -38,6 +42,13 @@ struct Inputs {
 /// Whether this device can run the passes at all: push descriptors, and every storage format the
 /// SDK's internal images need. Asked once; the answer is cached.
 [[nodiscard]] bool supported();
+
+/// supported(), and nothing has failed for good since (a pipeline or an image that could not be
+/// made). What the Insert menu and the upscaler choice ask each frame.
+[[nodiscard]] bool available();
+
+/// Why not available(), short, for the menu and the log; empty while it is. Starts nothing.
+[[nodiscard]] const char* reason();
 
 /// Makes the pipelines and the internal images for an evaluation at these sizes, re-making them
 /// when the sizes change. False when anything could not be made, which leaves FSR unavailable
