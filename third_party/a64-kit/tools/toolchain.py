@@ -37,6 +37,24 @@ def find(tool):
     return shutil.which(tool) or os.path.join(folder, tool + exts[0])
 
 
+def macos_sysroot_flags():
+    """Return the active macOS SDK for direct clang invocations (xcrun normally adds this implicitly)."""
+    if sys.platform != "darwin":
+        return []
+    sdk = os.environ.get("SDKROOT", "")
+    if sdk and os.path.isdir(sdk):
+        return ["-isysroot", sdk]
+    xcrun = shutil.which("xcrun")
+    if not xcrun:
+        raise SystemExit("Xcode Command Line Tools are required to locate the macOS SDK (xcrun not found).")
+    result = subprocess.run([xcrun, "--sdk", "macosx", "--show-sdk-path"], capture_output=True, text=True)
+    sdk = result.stdout.strip()
+    if result.returncode or not sdk or not os.path.isdir(sdk):
+        reason = result.stderr.strip() or "xcrun returned no SDK path"
+        raise SystemExit("Could not locate the macOS SDK: %s" % reason)
+    return ["-isysroot", sdk]
+
+
 def need(path):
     if not os.path.isfile(path):
         raise SystemExit("%s not found: set EMSDK to an emsdk checkout (now %s), or put %s on PATH"

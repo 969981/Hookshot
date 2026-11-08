@@ -9,12 +9,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MacOSBuildPathTests(unittest.TestCase):
+    def test_macos_toolchain_uses_the_xcrun_sdk(self):
+        source = ROOT / "third_party" / "a64-kit" / "tools" / "toolchain.py"
+        script = r"""
+import runpy, sys, tempfile, types
+from pathlib import Path
+from unittest.mock import patch
+sys.platform = "darwin"
+tools = runpy.run_path(sys.argv[1])
+with tempfile.TemporaryDirectory() as sdk:
+    with patch.dict("os.environ", {"SDKROOT": ""}), patch("shutil.which", return_value="xcrun"), \
+         patch("subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout=sdk, stderr="")) as run:
+        assert tools["macos_sysroot_flags"]() == ["-isysroot", sdk]
+        run.assert_called_once_with(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                                    capture_output=True, text=True)
+"""
+        subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
+                       capture_output=True, text=True)
+
     def test_selects_x86_64_posix_and_metal_build_target(self):
         source = ROOT / "nx2" / "build.py"
         script = (
             "import json, runpy, sys; "
             "sys.platform = 'darwin'; "
             "b = runpy.run_path(sys.argv[1]); "
+            "b['toolchain'].macos_sysroot_flags = lambda: ['-isysroot', '/MacOSX.sdk']; "
             "print(json.dumps({k: b[k] for k in ('WINDOWS', 'LINUX', 'MACOS', 'POSIX_HOST', 'EXE', 'MARCH')} "
             "| {'target': b['target']()}))"
         )
@@ -28,7 +47,7 @@ class MacOSBuildPathTests(unittest.TestCase):
             "POSIX_HOST": True,
             "EXE": "hookshot",
             "MARCH": "x86-64",
-            "target": ["--target=x86_64-apple-macos10.15"],
+            "target": ["--target=x86_64-apple-macos10.15", "-isysroot", "/MacOSX.sdk"],
         })
 
     def test_game_builder_selects_macos_bundle_files(self):
@@ -69,7 +88,8 @@ with tempfile.TemporaryDirectory() as tmp:
     def run(command, **kwargs):
         commands.append(command)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-    toolchain = types.SimpleNamespace(find=lambda name: sys.executable)
+    toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
+                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
     with patch.dict(os.environ, {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": ""}), \
          patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), \
@@ -110,7 +130,8 @@ with tempfile.TemporaryDirectory() as tmp:
     def run(command, **kwargs):
         commands.append(command)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-    toolchain = types.SimpleNamespace(find=lambda name: sys.executable)
+    toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
+                                      macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
     env = {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": str(ffmpeg)}
     with patch.dict(os.environ, env), patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), patch.dict(sys.modules, {"toolchain": toolchain}):

@@ -73,7 +73,9 @@ def failure_reason(lines):
     tail, seen = [], None
     for line in lines:
         tail = (tail + [line])[-12:]
-        if "error:" in line.lower() and "CalledProcessError" not in line:
+        lower = line.lower()
+        if ("error:" in lower and "CalledProcessError" not in line and
+                "linker command failed" not in lower):
             seen = line
     if seen is not None:
         return seen
@@ -323,7 +325,8 @@ def check_macos_toolchain():
         src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
         with open(src, "w", encoding="utf-8") as f:
             f.write("int main(void) { return 0; }\n")
-        r = subprocess.run([cc, "--target=x86_64-apple-macos10.15", src, "-o", exe],
+        r = subprocess.run([cc, "--target=x86_64-apple-macos10.15"] + toolchain.macos_sysroot_flags() +
+                           [src, "-o", exe],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         fail("Xcode Command Line Tools could not link an x86-64 macOS test program: %s"
