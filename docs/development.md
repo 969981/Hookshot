@@ -59,3 +59,9 @@ the script's existing exclusive interval is active; it is not a focus override.
 
 License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is
 GPL-3.0.
+
+## Experimental native scene base scale
+
+`HOS_SCENE_NATIVE=1` opts into the [native base-scale experiment](native-scene-resolution.md) on Windows.
+It removes a separate 0.8 scene-size factor in the supported game configuration; it does not force a window size
+or change antialiasing, texture quality or frame generation. It is disabled by default.

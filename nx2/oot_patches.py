@@ -58,6 +58,8 @@ def patch_text_speed(s):
 
 
 def apply(gen):
+    import oot_native_resolution
+    oot_native_resolution.apply(gen)
     done = {"dynamic resolution branch": 0, "text speed block": 0}
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
