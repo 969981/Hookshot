@@ -8,6 +8,8 @@ on:
       - nx2/make_game.py
       - third_party/a64-kit/tools/toolchain.py
       - tests/test_check_no_compiler.py
+      - builder/HookshotBuilder/Runner.cs
+      - tests/test_builder_python.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -105,6 +107,8 @@ on:
       - nx2/make_game.py
       - third_party/a64-kit/tools/toolchain.py
       - tests/test_check_no_compiler.py
+      - builder/HookshotBuilder/Runner.cs
+      - tests/test_builder_python.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -289,6 +293,8 @@ jobs:
         run: python -I -B tests/test_linux_builder_jobs.py
       - name: Check a missing compiler is said, not "game files"
         run: python -I -B tests/test_check_no_compiler.py
+      - name: Check the py launcher's arguments
+        run: python -I -B tests/test_builder_python.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
