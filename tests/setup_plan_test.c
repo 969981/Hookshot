@@ -63,6 +63,10 @@ int wmain(int argc, wchar_t **argv) {
     } else if (!wcscmp(argv[2], L"unicode")) {
         CHECK(join(parent, argv[1], L"space \u96ea"));
         CHECK(setup_root_child(parent, root, &kind) == SETUP_PLAN_OK && kind == SETUP_ROOT_EMPTY);
+    } else if (!wcscmp(argv[2], L"source-unowned")) {
+        CHECK(join(parent, argv[1], L"owned-parent\\HookshotBuilder\\versions\\v1\\HookshotBuilder\\HookshotBuilder-Setup.exe"));
+        CHECK(setup_under_owned_root(parent));
+        CHECK(setup_preferred_root(parent, NULL, 1, root) == 0 && !root[0]);
     } else if (!wcscmp(argv[2], L"source")) {
         CHECK(join(parent, argv[1], L"owned-parent\\HookshotBuilder\\versions\\v1\\HookshotBuilder\\HookshotBuilder-Setup.exe"));
         CHECK(join(expected, argv[1], L"owned-parent\\HookshotBuilder"));

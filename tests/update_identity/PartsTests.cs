@@ -9,7 +9,7 @@ static class PartsTests
 {
     const string Tag = "authored-release";
     const string Revision = "1234567890123456789012345678901234567890";
-    static readonly ReleaseIdentity Identity = ReleaseIdentity.Create(Tag, Revision)!;
+    public static readonly ReleaseIdentity Identity = ReleaseIdentity.Create(Tag, Revision)!;
     static byte[] Bytes(string text) => Encoding.UTF8.GetBytes(text);
     static string Sha(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     static void Check(bool value, string name) { if (!value) throw new Exception(name); }
@@ -61,7 +61,7 @@ static class PartsTests
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => stream.WriteAsync(bytes).AsTask();
     }
-    sealed class Api : HttpMessageHandler
+    internal sealed class Api : HttpMessageHandler
     {
         public readonly Dictionary<string, byte[]> Replies = [];
         public readonly Dictionary<string, int> Calls = [];
@@ -78,7 +78,7 @@ static class PartsTests
         }
     }
 
-    sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         public readonly string Root = Path.Combine(Path.GetTempPath(), "hookshot-parts-" + Guid.NewGuid().ToString("N"));
         public readonly Api Api = new();

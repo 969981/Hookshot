@@ -242,9 +242,21 @@ static inline int setup_source_root(const wchar_t *module, wchar_t root[SETUP_PL
             leaf[end - version] = 0;
             if (!setup_leaf(leaf) || (!setup_path_equal(end, L"\\HookshotBuilder\\HookshotBuilder.exe") &&
                                     !setup_path_equal(end, L"\\HookshotBuilder\\HookshotBuilder-Setup.exe"))) return 0;
+            if (!setup_owned_version(candidate, leaf)) return 0;
             memcpy(root, candidate, (length + 1) * sizeof(wchar_t));
             return 1;
         }
+    }
+    return 0;
+}
+static inline int setup_under_owned_root(const wchar_t *module) {
+    wchar_t path[SETUP_PLAN_PATH], root[SETUP_PLAN_PATH];
+    DWORD n = GetFullPathNameW(module, SETUP_PLAN_PATH, path, NULL);
+    if (!n || n >= SETUP_PLAN_PATH) return 0;
+    for (wchar_t *slash = wcsrchr(path, L'\\'); slash; slash = wcsrchr(path, L'\\')) {
+        *slash = 0;
+        SetupRootKind kind;
+        if (setup_root_validate(path, root, &kind) == SETUP_PLAN_OK && kind == SETUP_ROOT_OWNED) return 1;
     }
     return 0;
 }
@@ -286,6 +298,8 @@ static inline SetupPlanResult setup_plan_create(const wchar_t *root, const wchar
     uint64_t pending_prefix = (uint64_t)wcslen(L"\\.setup-") + 32;
     uint64_t payload_suffix = (uint64_t)wcslen(L"\\payload\\");
     uint64_t cache_suffix = (uint64_t)wcslen(L"\\downloads\\") + 64 + (uint64_t)wcslen(L".zip");
+    /* Keep validated totals available to the chooser; these plans cannot install. */
+    *out = plan;
     if (length + final_prefix + plan.max_relative_units >= SETUP_PLAN_PATH ||
         length + pending_prefix + payload_suffix + plan.max_relative_units >= SETUP_PLAN_PATH ||
         length + pending_prefix + cache_suffix >= SETUP_PLAN_PATH) return SETUP_PLAN_PATH_TOO_LONG;

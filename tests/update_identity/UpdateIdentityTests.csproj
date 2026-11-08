@@ -14,6 +14,7 @@
     <Compile Include="../../builder/HookshotBuilder/BuilderDownload.cs" Link="BuilderDownload.cs" />
     <Compile Include="../../builder/HookshotBuilder/BuilderHttp.cs" Link="BuilderHttp.cs" />
     <Compile Include="../../builder/HookshotBuilder/GameInstallation.cs" Link="GameInstallation.cs" />
+    <Compile Include="../../builder/HookshotBuilder/InstallRoot.cs" Link="InstallRoot.cs" />
     <Compile Include="../../builder/HookshotBuilder/SetupManifest.cs" Link="SetupManifest.cs" />
     <Compile Include="../../builder/HookshotBuilder/UpdatePreparation.cs" Link="UpdatePreparation.cs" />
     <Compile Include="../../builder/HookshotBuilder/UpdateRequest.cs" Link="UpdateRequest.cs" />

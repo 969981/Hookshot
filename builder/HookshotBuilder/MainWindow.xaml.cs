@@ -880,17 +880,11 @@ public partial class MainWindow : Window
         ShowPage(FilesPage);
     }
 
-    /// The setup (HookshotBuilder-Setup.exe beside this app) checks every part against its checksum and downloads the missing ones
-    void Repair(object sender, RoutedEventArgs e)
+    /// Reuse the verified downloader and extract a fresh builder without deleting this one.
+    async void Repair(object sender, RoutedEventArgs e)
     {
-        var setup = System.IO.Path.Combine(AppContext.BaseDirectory, "HookshotBuilder-Setup.exe");
-        if (File.Exists(setup))
-        {
-            Process.Start(new ProcessStartInfo(setup, "--repair") { UseShellExecute = false, WorkingDirectory = AppContext.BaseDirectory });
-            Application.Current.Shutdown();
-            return;
-        }
-        Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true });
+        try { await Updater.RunLatestSetup(this, Array.Empty<string>(), repair: true); }
+        catch (Exception error) { DownloadFailed(error.Message + " Your previous builder was left unchanged."); }
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================

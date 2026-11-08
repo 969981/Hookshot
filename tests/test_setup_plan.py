@@ -178,6 +178,9 @@ class NativeSetupPlanTests(unittest.TestCase):
     def test_new_empty_owned_and_foreign_roots_and_version_ownership(self): self.check_case("roots")
     def test_spaces_and_unicode(self): self.check_case("unicode")
     def test_source_root_wins_over_saved_preference(self): self.check_case("source")
+    def test_source_version_must_also_be_marked_owned(self):
+        (self.root / "owned-parent/HookshotBuilder/versions/v1/.hookshot-install-version").unlink()
+        self.check_case("source-unowned")
     def test_cancel_change_commit_gates_and_stale_root(self): self.check_case("gate")
     def test_unsupported_names_and_long_paths(self): self.check_case("paths")
 

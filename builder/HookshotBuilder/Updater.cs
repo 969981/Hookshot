@@ -30,13 +30,13 @@ static class Updater
     public static async Task<string?> LatestTag() => (await LatestIdentity())?.Tag;
 
     // Retain the released UI entry point, but prepare the checked Builder itself instead of running setup.
-    public static async Task RunLatestSetup(MainWindow w, IEnumerable<string> args)
+    public static async Task RunLatestSetup(MainWindow w, IEnumerable<string> args, bool repair = false)
     {
         var token = w.DownloadToken;
         using var http = Http();
         w.Note("Asking GitHub for the latest release");
         var latest = await LatestRelease.FetchAsync(http, token, w.Note);
-        var target = await PrepareBuilderAsync(w, http, latest, token);
+        var target = await PrepareBuilderAsync(w, http, latest, token, repair);
         token.ThrowIfCancellationRequested();
         Process.Start(BuilderLaunch.StartInfo(Path.Combine(target, "HookshotBuilder.exe"), args));
         Application.Current.Shutdown();
@@ -52,24 +52,29 @@ static class Updater
         return http;
     }
 
-    static async Task<string> PrepareBuilderAsync(MainWindow w, HttpClient http, LatestRelease latest, CancellationToken token)
+    static async Task<string> PrepareBuilderAsync(MainWindow w, HttpClient http, LatestRelease latest, CancellationToken token, bool repair = false)
     {
-        if (Tools.Find()?.Identity == latest.Identity)
+        var owned = InstallRoot.FromSource(AppContext.BaseDirectory);
+        if (!repair && Tools.Find()?.Identity == latest.Identity)
         {
-            await BuilderContents.ValidateAsync(AppContext.BaseDirectory, latest.Identity, token);
+            if (owned != null) await owned.ValidateCurrentAsync(latest.Identity, token);
+            else await BuilderContents.ValidateAsync(AppContext.BaseDirectory, latest.Identity, token);
             return AppContext.BaseDirectory;
         }
+        if (owned != null)
+            return await owned.PrepareAsync(http, latest, token, w.Note, w.DownloadProgress);
         var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
         var parent = Directory.GetParent(AppContext.BaseDirectory.TrimEnd('\\', '/'))!.FullName;
+        var suffix = repair ? "-repair-" + Guid.NewGuid().ToString("N") : "";
         try
         {
             return await UpdatePreparation.PrepareAsync(http, latest, cache,
-                Path.Combine(parent, "HookshotBuilder " + latest.Identity.CacheName), token, w.Note, w.DownloadProgress);
+                Path.Combine(parent, "HookshotBuilder " + latest.Identity.CacheName + suffix), token, w.Note, w.DownloadProgress);
         }
         catch (Exception error) when (error is UnauthorizedAccessException || (error is IOException && error is not InvalidDataException && error is not LegacySetupManifestException))
         {
             return await UpdatePreparation.PrepareAsync(http, latest, cache,
-                Path.Combine(Path.GetDirectoryName(cache)!, "builders", latest.Identity.CacheName), token, w.Note, w.DownloadProgress);
+                Path.Combine(Path.GetDirectoryName(cache)!, "builders", latest.Identity.CacheName + suffix), token, w.Note, w.DownloadProgress);
         }
     }
 

@@ -49,9 +49,13 @@ on:
       - builder/HookshotBuilder/**
       - scripts/package_builder.py
       - scripts/make_setup_parts.py
-      - builder/setup/setup_plan.h
+      - builder/setup/**
       - tests/setup_plan_test.c
       - tests/test_setup_plan.py
+      - tests/setup_transaction_test.c
+      - tests/test_setup_transaction.py
+      - tests/setup_native_test.c
+      - tests/test_setup_native.py
       - tests/test_release_identity.py
       - tests/update_identity_test.c
       - tests/check_update_identity_c.py
@@ -180,9 +184,13 @@ on:
       - builder/HookshotBuilder/**
       - scripts/package_builder.py
       - scripts/make_setup_parts.py
-      - builder/setup/setup_plan.h
+      - builder/setup/**
       - tests/setup_plan_test.c
       - tests/test_setup_plan.py
+      - tests/setup_transaction_test.c
+      - tests/test_setup_transaction.py
+      - tests/setup_native_test.c
+      - tests/test_setup_native.py
       - tests/test_release_identity.py
       - tests/update_identity_test.c
       - tests/check_update_identity_c.py
@@ -355,6 +363,12 @@ jobs:
           call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           if errorlevel 1 exit /b 1
           python -I -B tests/test_setup_plan.py --native --cc cl NativeSetupPlanTests
+          if errorlevel 1 exit /b 1
+          python -I -B tests/test_setup_transaction.py --cc cl
+          if errorlevel 1 exit /b 1
+          python -I -B tests/test_setup_native.py --cc cl
+          if errorlevel 1 exit /b 1
+          python -I -B tests/test_setup_transaction.py --cc cl --build-preview "%RUNNER_TEMP%\setup-preview.exe"
       - name: Linux builder worker selection
         run: python -I -B tests/test_linux_builder_jobs.py
       - name: Set up .NET for Windows Builder checks

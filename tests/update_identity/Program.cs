@@ -45,6 +45,7 @@ static class Test
 
     static async Task Main(string[] args)
     {
+        if (args.SequenceEqual(new[] { "--owned-root-only" })) { await OwnedRootTests.Run(); return; }
         if (args.Length == 3) { await PartsTests.VerifyRealOldGui(args[0], args[1], args[2]); return; }
         var old = ReleaseIdentity.Create(Tag, Old)!;
         var next = ReleaseIdentity.Create(Tag, Next)!;
@@ -116,5 +117,6 @@ static class Test
         await PartsTests.Run();
         await NetworkTests.Run();
         RouteTests.Run();
+        await OwnedRootTests.Run();
     }
 }

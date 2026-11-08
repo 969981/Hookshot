@@ -21,6 +21,14 @@ python -I scripts/package_builder.py --staged build/HookshotBuilder --tag RELEAS
 python -I scripts/make_setup_parts.py build/HookshotBuilder RELEASE_TAG build/setup-parts
 ```
 
+For the parts route, upload **both** `hookshot-setup.txt` and `hookshot-setup-space.txt` alongside the thin bootstrap in the
+same official release. Upload the referenced ZIPs to their declared part URLs (the `--base`/builder-parts location). The space
+companion belongs beside the setup list, **not** at that part base. It contains the SHA256 of the exact setup-list bytes;
+publish the pair together without modifying either file or reusing a companion from a different release. The new native
+bootstrap requires the revision-aware list and matching companion before offering an installation. It does not install older
+releases that lack this metadata. Older bootstrap/updater parsers keep their existing setup-list grammar; no unknown records
+or comments are added to that list. See [the installation contract](../builder/setup/PLAN.md) for destination and space limits.
+
 The publish target writes `builder-revision.txt`. The packer runs on Windows and verifies that marker against the source revision
 embedded in both GUI files' Win32 ProductVersion at compilation, as well as the clean checkout, tag target and staged
 build sources before writing `tools/version.txt`, `tools/VERSION` (the displayed release name) and `tools/revision.txt` and creating the ZIP. A stale staged renderer or an old
@@ -39,8 +47,8 @@ bound, so a large download that keeps making progress has no overall time limit.
 identity, declared-size mismatches and checksum failures do not trigger an alternate download or retry. Failed attempts discard only
 their own partial file; a completed cached file is reused only after checking its size and SHA-256.
 
-The setup list includes `identity 1 <full source revision>` alongside its existing tag, parts and run fields. The standalone setup
-ignores that additional line, so its UI and Repair flow are unchanged. The managed updater reads the list itself, downloads only missing
+The setup list includes `identity 1 <full source revision>` alongside its existing tag, parts and run fields. Older standalone setups
+ignore that line. The consent-based setup validates it and the separate size companion. The managed updater reads the list itself, downloads only missing
 or invalid SHA-addressed ZIP parts, and applies the declared LLVM top-directory relocation inside a fresh owned staging folder. It never
 downloads or executes the thin setup EXE. Archive paths, links, duplicate files, destinations and renames are checked before installation.
 The complete ZIP remains a fallback when available; a legacy setup list can use that path only if the ZIP has supported package identity.

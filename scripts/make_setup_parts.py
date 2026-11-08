@@ -7,8 +7,11 @@ in every release, the .NET runtime, Python, emsdk, the CPM packages and third_pa
 its official release. Each zip is deterministic (sorted names, fixed dates and attributes): a part whose files did not change
 has the same SHA-256 in the next release, and the setup takes it from its download cache instead of downloading it again.
 
-Writes <out>/hookshot-setup.txt and one HookshotBuilder-<part>-<sha256 prefix>.zip per part (upload the ones the builder-parts
-release lacks). Scripts the build does not use (.ps1, .bat, .js,
+Writes <out>/hookshot-setup.txt, its SHA-bound hookshot-setup-space.txt companion, and one
+HookshotBuilder-<part>-<sha256 prefix>.zip per part (upload the ones the builder-parts release lacks).
+Upload BOTH text files beside the thin bootstrap in the same official release. The companion is not served from --base;
+it binds to the exact setup-list bytes and must not be copied from another release. The consent-based bootstrap requires
+this companion; it cannot install an older release that lacks it. Scripts the build does not use (.ps1, .bat, .js,
 .html: antivirus machine-learning guesses fire on them) are left out.
 """
 import argparse
