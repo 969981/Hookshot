@@ -1,0 +1,47 @@
+# Builds Hookshot Builder (WPF, .NET Framework 4.8) on Windows, reports the size of HookshotBuilder.exe, and starts it once to
+# catch a crash on startup (a XAML or resource error). No game data is involved.
+name: Builder (Windows)
+
+on:
+  push:
+    paths: ['builder/HookshotBuilder/**', 'builder/HookshotBuilder.sln', '.github/workflows/builder-windows.yml']
+  pull_request:
+    paths: ['builder/HookshotBuilder/**', 'builder/HookshotBuilder.sln']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: dotnet build builder/HookshotBuilder.sln -c Release -o out
+
+      - name: Size and contents
+        shell: pwsh
+        run: |
+          Get-ChildItem out | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          $exe = Get-Item out/HookshotBuilder.exe
+          $kb = [math]::Round($exe.Length / 1KB)
+          "HookshotBuilder.exe: $kb KB" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          # nothing but the exe and its config beside it: no .NET runtime, no extra DLLs
+          $extra = Get-ChildItem out -File | Where-Object { $_.Name -notin 'HookshotBuilder.exe', 'HookshotBuilder.exe.config' }
+          if ($extra) { $extra | ForEach-Object { Write-Host "::error::unexpected file $($_.Name)" }; exit 1 }
+          if ($exe.Length -gt 3MB) { Write-Host "::error::HookshotBuilder.exe is $kb KB (over 3 MB)"; exit 1 }
+
+      - name: Starts without crashing
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath out/HookshotBuilder.exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { Write-Host "::error::HookshotBuilder.exe exited with code $($p.ExitCode) within 10 seconds"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+          "Started and ran for 10 seconds without exiting." | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HookshotBuilder
+          path: |
+            out/HookshotBuilder.exe
+            out/HookshotBuilder.exe.config
