@@ -345,6 +345,9 @@ static const char *saves_dir(const char *beside) {
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
    player's hookshot_env.txt as it is. */
 static void load_hookshot_env(void) {
+    /* (hookshot) HOOKSHOT_NO_ENV_FILE=1: a test harness sets every switch itself (the MCP server merges this file
+       first and then applies its own values, so the file must not override them a second time). */
+    if (getenv("HOOKSHOT_NO_ENV_FILE")) return;
     char path[MAX_PATH + 32];
     const char *other = getenv("HOS_ENV_FILE");
     if (other && *other) {

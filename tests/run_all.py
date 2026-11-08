@@ -53,6 +53,7 @@ ARGS = {
 MODULES = {
     "nx2/test_nup_codec.py": ["zstandard"],
     "nx2/test_nup_verify.py": ["zstandard"],
+    "tests/test_mcp_server.py": ["mcp"],
 }
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).

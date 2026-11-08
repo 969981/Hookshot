@@ -31,6 +31,7 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | random whole functions (or call trees), Unicorn vs recompiled native code on the real image |
 | `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_vk.dll` |
 | `powershell -File scripts/run-vk.ps1 [-Window] [-Seconds 120] [-Name x]` | a muted test run on Vulkan, with screenshots in `work/runs/<name>/shots` |
+| `python -I scripts/hookshot_mcp.py` | the MCP server for automated in-game tests: scripted input and on-demand screenshots ([docs/mcp.md](mcp.md)) |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>`, named from the linker maps |
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
@@ -38,7 +39,10 @@ The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` m
 Scripted test input (`HOS_INPUT_SCRIPT` and `HOS_INPUT_LIVE`) is applied before the window-focus check. A log saying
 the game window is not in front does not mean those presses were discarded. `HOS_HEADLESS` and
 `HOS_WINDOW_NOACTIVATE` change window creation, not this input routing. The game must still reach a state that reads
-and responds to the supplied controller input.
+and responds to the supplied controller input. `HOS_INPUT_SCRIPT_ONLY=1` leaves out the physical pad, keyboard and
+mouse entirely, so a connected controller cannot disturb a test; analog sticks are written as `LX=`, `LY=`, `RX=` and
+`RY=` tokens. `scripts/hookshot_mcp.py` wraps this, the screenshot request file and the game log in an MCP server (see
+[docs/mcp.md](mcp.md)).
 
 Physical keyboard and mouse input stays with the foreground window. Physical controllers can also play in the
 background when the existing "Controller in background" option or `HOS_INPUT_BACKGROUND=1` enables them;
