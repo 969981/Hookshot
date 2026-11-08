@@ -115,5 +115,6 @@ static class Test
         Console.WriteLine("update identity: Builder/ref/fetched/archive checks passed");
         await PartsTests.Run();
         await NetworkTests.Run();
+        RouteTests.Run();
     }
 }
