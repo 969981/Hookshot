@@ -150,6 +150,21 @@ jobs:
           for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
+      - name: Configure the authored native register-role fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/native_register_roles -B ${{ runner.temp }}/native-register-roles
+          -DREPO_ROOT=${{ github.workspace }}
+          -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
+      - name: Build the native register-role fixture
+        run: cmake --build ${{ runner.temp }}/native-register-roles --parallel 2
+      - name: Check actual native register roles through Maxwell IR
+        run: ${{ runner.temp }}/native-register-roles/native_register_roles ${{ runner.temp }}/native-register-roles/modules
+      - name: Validate every native register-role module
+        shell: bash
+        run: |
+          for module in "${{ runner.temp }}"/native-register-roles/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 "$module"
+          done
 
   actionlint:
     name: Workflow lint (actionlint)

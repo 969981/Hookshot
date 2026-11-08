@@ -64,6 +64,7 @@ inline u32 RenameableFields(u32 opcode) {
     switch (opcode) {
     case 0x381: case 0x981: return 1 | 2;   // LDG Rd, [Ra] (0x381: Ra a register pair)
     case 0x986: return 2 | 4;          // STG [Ra], Rb
+    case 0x3c2: return 2;              // R2UR: one scalar GPR source; its destination is uniform
     default: break;
     }
     if (extended_renaming) {
@@ -94,6 +95,7 @@ inline u32 RenameableFields(u32 opcode) {
 // 32-bit operand taken for a quad reached R239 or the scratch from R236 or R244 and failed whole mesh programs (OoT's
 // foliage).
 inline u32 FieldSpan(u32 opcode, u32 field) {
+    if (opcode == 0x3c2) return field == 1 ? 1 : 0;
     if (!extended_renaming) return 0;
     const u32 family = opcode & 0x1ff, form = (opcode >> 9) & 7;
     if (opcode == 0x805) return field == 0 ? 2 : 0;
@@ -220,6 +222,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 if (register_field && reg >= reserved_base) any_high = true;
             }
             for (u32 f = 0; f < 4 && any_high; ++f) {
+                if (opcode == 0x812 && f == 2) continue; // LOP3's bits 32-63 are an immediate, not a GPR.
                 const u32 bit = bits[f], reg = insn.Bits(bit, 8);
                 if (reg >= 255 || reg + 3 < reserved_base) continue;
                 const u32 exact = FieldSpan(opcode, f);
