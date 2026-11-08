@@ -147,7 +147,8 @@ class PrecompileBackoffTests(unittest.TestCase):
         draw = (SOURCE / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
         shader = (SOURCE / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8")
         start = draw.index("void precompile_run(void (*progress)(size_t done, size_t total)) {")
-        prefix = draw[start:draw.index("    std::vector<std::unique_ptr<PipeNote>> notes;", start)]
+        prefix_end = draw.index("    pcache_init();", start) + len("    pcache_init();")
+        prefix = draw[start:prefix_end]
         start = shader.index("size_t program_cache_load_some(")
         selection = shader[start:shader.index("\n}\n", start) + 2]
         has_backoff = "struct PrecompileBackoff {" in draw
