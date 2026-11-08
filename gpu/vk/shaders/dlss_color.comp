@@ -4,7 +4,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D guest_color;
 layout(binding = 1, rgba16f) uniform writeonly image2D dlss_color;
-layout(push_constant) uniform P { int encode; } pc;
+layout(push_constant) uniform P { int encode; int fsr; } pc;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -14,6 +14,12 @@ void main() {
     // The guest has already tonemapped this square-root-encoded color for LDR (the network's input, RGB9E5). (hookshot) encode = 1:
     // the tonemapped scene, the network's first passes left out (vk_draw.cpp), square-root encoded here the same way.
     // dlss_output.comp squares it back
-    const vec3 c = max(texelFetch(guest_color, pixel, 0).rgb, vec3(0.0));
-    imageStore(dlss_color, pixel, vec4(pc.encode != 0 ? sqrt(c) : c, 1.0));
+    // (hookshot-amd) fsr = 1, AMD FSR 4.1: its LDR mode keeps history, where a NaN, infinite or out-of-range value would build up;
+    // and under its jitter moved up or left, the AMD driver draws nothing into the scene's last column or row (a stale near-white
+    // value, a flickering line on the right and bottom edges): they repeat the ones before them (vk_draw.cpp FsrJitter)
+    const ivec2 source = pc.fsr != 0 ? min(pixel, max(imageSize(dlss_color) - 2, ivec2(0))) : pixel;
+    vec3 c = max(texelFetch(guest_color, source, 0).rgb, vec3(0.0));
+    if (pc.fsr != 0 && (any(isnan(c)) || any(isinf(c)))) c = vec3(0.0);
+    c = pc.encode != 0 ? sqrt(c) : c;
+    imageStore(dlss_color, pixel, vec4(pc.fsr != 0 ? min(c, vec3(1.0)) : c, 1.0));
 }

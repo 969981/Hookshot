@@ -15,6 +15,7 @@
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
+#include "vk_fsr4.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -131,6 +132,12 @@ const char* tx_dlss_preset(int v) {
     snprintf(b, sizeof b, opts.dlss && dlss_available() ? "%c" : "%c (DLSS off)", 'J' + v);
     return b;
 }
+const char* tx_fsr4(int v) {
+    if (!v) return "Off";
+    if (opts.dlss && dlss_available()) return "On (DLSS is on)";
+    const char* why = fsr4_reason();   // (read only: the replay thread loads AMD's DLLs at the first frame it is wanted)
+    return *why && strcmp(why, "not started") ? "On (no AMD FSR 4 found)" : "On";
+}
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
 int gpu_device_at_start = 0;   // (the row's value the game started with: menu_set_gpu_count)
 const char* tx_gpu(int v) {
@@ -218,6 +225,10 @@ Row rows[] = {
      "NVIDIA's DLSS model, changed at once. M: NVIDIA's pick for Performance, close to L's picture but nearer K's speed. L: its "
      "pick for Ultra Performance, sharper and steadier, less ghosting, slower. K: its pick for Quality, Balanced and DLAA. J: "
      "like K, slightly less ghosting, more flicker."},
+    {TAB_GRAPHICS, "AMD FSR 4.1", &opts.fsr4, 0, 1, 1, tx_fsr4,
+     "AMD FSR 4.1 in place of the game's own upscale, with the scene's depth, the camera's motion and a sub-pixel jitter: steadier "
+     "edges, less shimmer. Resolution sets what it upscales from: 75% is FSR's Quality, 50% Performance, 100% anti-aliasing only. "
+     "Needs AMD's two FidelityFX DLLs beside the game. DLSS takes priority when on."},
     {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
      "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
@@ -313,7 +324,8 @@ std::string ini_path() {
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_options.ini";
 }
 const char* ini_key(const Row& r) {
-    if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
+    if (r.value == &opts.output_res) return "output_res";
+    if (r.value == &opts.fsr4) return "fsr4";   // (host/nn_applet.c reads it at the start)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -897,6 +909,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("RX_DLSS")) opts.dlss = atoi(e) != 0;
+    if (const char* e = getenv("RX_FSR4")) opts.fsr4 = atoi(e) != 0;
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = std::min(std::max(atoi(e), 0), 2);
     if (const char* e = getenv("RX_DLSS_PRESET"); e && e[0] >= 'J' && e[0] <= 'M') opts.dlss_preset = e[0] - 'J';
 }

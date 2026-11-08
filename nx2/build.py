@@ -712,7 +712,9 @@ def main():
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             # (third_party/streamline: NVIDIA Streamline's MIT headers, vk_dlss.cpp's)
             "-I" + os.path.join(vk_headers, "include"), "-I" + vk,
-            "-I" + os.path.join(kit.HERE, "..", "third_party", "streamline", "include")] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+            "-I" + os.path.join(kit.HERE, "..", "third_party", "streamline", "include"),
+            # (third_party/fidelityfx: AMD's FSR API headers, MIT, vk_fsr4.cpp's)
+            "-I" + os.path.join(kit.HERE, "..", "third_party", "fidelityfx")] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
