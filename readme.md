@@ -192,6 +192,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | DLSS | Off, On (after a restart) | Off |
 | | DLSS mode | Ultra Performance, Performance, Balanced, Quality, DLAA | Quality |
 | | DLSS preset | J, K, L, M | M |
+| | AMD FSR 4.1 | Off, On | Off |
 | | Upscaling | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -244,6 +245,19 @@ NVIDIA's [Streamline SDK](https://github.com/NVIDIA-RTX/Streamline) (2.14 or new
 so and the game runs as before. **DLSS preset** picks NVIDIA's model and changes at once.
 
 For one run: `RX_DLSS=0/1`, `RX_DLSS_PRESET=J..M`, `RX_DLSS_DIR=<folder>`, `HOS_OUTPUT_RES=0/1/2`.
+
+### AMD FSR 4.1
+
+FSR 4.1 is optional. It replaces the game's own upscale the same way, from the scene's depth and the camera's motion,
+and moves the 3D by a sub-pixel amount each frame (a jitter) so it can rebuild edges and fine detail over several
+frames. It runs on AMD's RDNA 2 cards and newer (RDNA 2 and 3 use its INT8 model). **Resolution** sets the size it
+upscales from: 75% is FSR's Quality, 67% Balanced, 50% Performance, 100% anti-aliasing only. Hookshot does not include
+AMD's files: put `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
+[FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
+beside the game's exe (`bin\hookshot.exe` with the launcher). Without them the row says so and the game runs as
+before. The row changes at once; DLSS takes priority while it is on.
+
+For one run: `RX_FSR4=0/1`, `RX_FSR4_DIR=<folder>`, `RX_FSR4_JITTER=0` (no jitter, for comparisons).
 
 ### Controls
 
@@ -420,6 +434,7 @@ Hookshot exists thanks to the work of many people:
   (trees, ferns, grass, falling leaves, fireflies), the ambient light probes, the pond's water, the game's own fog, the freeze
   after Load (Horizon's mutex handoff) and the exposure flicker fix.
 - **[zortos293/Lichii](https://github.com/zortos293/Lichii)**: reference for Ampere shader lowering, and its compare-exchange retry fix; the NVIDIA DLSS replacement of the game's upscale (Streamline loader, camera motion and its shaders), ported in `gpu/vk/vk_dlss.cpp` and `gpu/vk/vk_draw.cpp`, which Lichii credits to Duck912's work in Eglantine. NVIDIA Streamline's headers (MIT) are in `third_party/streamline`; NVIDIA's DLLs are not part of Hookshot.
+- **[madebyjordan/Lichii-Hyrule](https://github.com/madebyjordan/Lichii-Hyrule)** (Lichii's OoT branch): AMD FSR 4.1 in place of the game's upscale, its jitter and the AMD edge fixes, ported in `gpu/vk/vk_fsr4.cpp` and `gpu/vk/vk_draw.cpp`. AMD's FSR API headers (MIT) are in `third_party/fidelityfx`; AMD's DLLs are not part of Hookshot.
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
