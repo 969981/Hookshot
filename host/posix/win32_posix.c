@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #ifdef __APPLE__
 #define _XOPEN_SOURCE 700
+#define _DARWIN_C_SOURCE
 #endif
 #include <windows.h>
 #include <mmsystem.h>

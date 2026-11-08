@@ -32,6 +32,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/a64-generated"
           printf '/* Generated lift helpers are unused by these host translation units. */\n' \
             > "$RUNNER_TEMP/a64-generated/a64_suyu.h"
+          printf '/* Generated per-game floating-point helpers are unused by these host translation units. */\n' \
+            > "$RUNNER_TEMP/a64-generated/a64_fpx.h"
           clang -target x86_64-apple-macos10.15 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
             host/posix/win32_posix.c host/hos_main.c host/rx_backend.c
