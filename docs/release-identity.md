@@ -33,6 +33,12 @@ make a stale GUI match the verified package. Reuse also compares the local GUI m
 rewriting both local GUI bytes and local hash metadata cannot make them the published builder. When GitHub supplies an asset SHA256,
 the downloader verifies that digest too.
 
+The managed updater keeps the released five-cycle retry schedule (3, 6, 12 and 20 seconds), GitHub API asset fallback and early-EOF
+retries. Metadata requests and asset response headers have a 30-second bound. Each asset body read has a fresh 60-second inactivity
+bound, so a large download that keeps making progress has no overall time limit. User cancellation, HTTP 403/404, invalid release
+identity, declared-size mismatches and checksum failures do not trigger an alternate download or retry. Failed attempts discard only
+their own partial file; a completed cached file is reused only after checking its size and SHA-256.
+
 The setup list includes `identity 1 <full source revision>` alongside its existing tag, parts and run fields. The standalone setup
 ignores that additional line, so its UI and Repair flow are unchanged. The managed updater reads the list itself, downloads only missing
 or invalid SHA-addressed ZIP parts, and applies the declared LLVM top-directory relocation inside a fresh owned staging folder. It never
@@ -73,3 +79,5 @@ or run the GUI. The native negative control retains the previous tag-only decisi
 Managed tests exercise actual download/preparation code against an offline HTTP handler, including manifest-only releases, ZIP fallback,
 hash caches, truncation, release changes, malformed handoffs, LLVM relocation, archive boundaries and stale GUI bytes. A separate local
 check keeps a real old GUI binary immutable and confirms it is rejected against fresh markers and the new GUI manifest without execution.
+Authored stalled responses and streams exercise header/read inactivity, continuing progress, cancellation and the actual new-builder
+command-line handoff. These checks do not demonstrate a real network update, installer handoff or subsequent game rebuild.

@@ -61,8 +61,21 @@ sealed record ReleaseIdentity(string Tag, string Revision)
     }
 }
 
-sealed record ReleaseAsset(string Url, long Size, string? Digest)
+sealed record ReleaseAsset(string Url, long Size, string? Digest, string? Api = null)
 {
+    internal static string? ApiUrl(JsonElement asset)
+    {
+        if (!asset.TryGetProperty("url", out var field)) return null;
+        var value = field.GetString();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.UserInfo.Length != 0 ||
+            !uri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw new InvalidDataException("The API asset URL is invalid.");
+        var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 6 || parts[0] != "repos" || parts[3] != "releases" || parts[4] != "assets" || !parts[5].All(char.IsAsciiDigit))
+            throw new InvalidDataException("The API asset URL is invalid.");
+        return value;
+    }
+
     public static ReleaseAsset Read(JsonElement asset)
     {
         var url = asset.GetProperty("browser_download_url").GetString();
@@ -74,7 +87,7 @@ sealed record ReleaseAsset(string Url, long Size, string? Digest)
         if (digest != null && (digest.Length != 71 || !digest.StartsWith("sha256:", StringComparison.Ordinal) ||
                               !digest[7..].All(Uri.IsHexDigit)))
             throw new InvalidDataException("The release download digest is invalid.");
-        return new(url!, size, digest?.ToLowerInvariant());
+        return new(url!, size, digest?.ToLowerInvariant(), ApiUrl(asset));
     }
 }
 
@@ -85,9 +98,10 @@ sealed record LatestRelease(ReleaseIdentity Identity, ReleaseAsset? Zip, Release
     public const string SetupList = "hookshot-setup.txt";
     public string? Digest => Zip?.Digest;
 
-    public static async Task<LatestRelease> FetchAsync(HttpClient http, CancellationToken token)
+    public static async Task<LatestRelease> FetchAsync(HttpClient http, CancellationToken token,
+        Action<string>? note = null, BuilderHttp.Policy? policy = null)
     {
-        using var doc = JsonDocument.Parse(await http.GetStringAsync(Api, token));
+        using var doc = JsonDocument.Parse(await BuilderHttp.JsonAsync(http, Api, token, note, policy));
         var tag = doc.RootElement.GetProperty("tag_name").GetString();
         if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("The release has no tag.");
         ReleaseAsset? Find(string name)
@@ -101,7 +115,7 @@ sealed record LatestRelease(ReleaseIdentity Identity, ReleaseAsset? Zip, Release
         var manifest = Find(SetupList);
         if (zip == null && manifest == null)
             throw new InvalidDataException("The latest release has no builder archive or setup list. It may still be uploading.");
-        var identity = await ReleaseIdentity.ResolveAsync(tag, (path, ct) => http.GetStringAsync(path, ct), token);
+        var identity = await ReleaseIdentity.ResolveAsync(tag, (path, ct) => BuilderHttp.JsonAsync(http, path, ct, note, policy), token);
         return new(identity, zip, manifest);
     }
 }

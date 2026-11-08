@@ -22,12 +22,8 @@ static class Updater
             var token = w.DownloadToken;
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
-            LatestRelease latest;
-            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
-            {
-                timeout.CancelAfter(TimeSpan.FromSeconds(30));
-                latest = await LatestRelease.FetchAsync(http, timeout.Token);
-            }
+            w.Note("Asking GitHub for the latest release");
+            var latest = await LatestRelease.FetchAsync(http, token, w.Note);
             if (fetched && !ReleaseIdentity.CanBuildFetched(tools.Identity, latest.Identity, tag, revision))
                 throw new InvalidDataException("The release changed while downloading. Retry after publishing finishes.");
             if (tools.Identity == latest.Identity)
@@ -50,9 +46,8 @@ static class Updater
                     Path.Combine(Path.GetDirectoryName(cache)!, "builders", latest.Identity.CacheName), token, w.Note, w.DownloadProgress);
             }
             token.ThrowIfCancellationRequested();
-            var start = new ProcessStartInfo(Path.Combine(target, "HookshotBuilder.exe")) { UseShellExecute = false, WorkingDirectory = target };
-            foreach (var arg in new[] { "--update", folder, "--tag", latest.Identity.Tag, "--revision", latest.Identity.Revision, "--fetched" })
-                start.ArgumentList.Add(arg);
+            var start = new UpdateRequest(folder, latest.Identity.Tag, latest.Identity.Revision, true)
+                .StartInfo(Path.Combine(target, "HookshotBuilder.exe"));
             Process.Start(start);
             Application.Current.Shutdown();
         }

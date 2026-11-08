@@ -32,6 +32,7 @@ sealed class Runner
 {
     readonly Tools tools;
     readonly List<string> args;
+    readonly int? workers;
     Process? process;
     string? error;
     bool cancelled;
@@ -39,13 +40,15 @@ sealed class Runner
     public event Action<string>? Line;
     public event Action<string?>? Finished;
 
-    public Runner(Tools tools, List<string> args)
+    public Runner(Tools tools, List<string> args, int? workers = null)
     {
         this.tools = tools;
         this.args = args;
+        if (workers is <= 0) throw new ArgumentOutOfRangeException(nameof(workers), "Build workers must be positive.");
+        this.workers = workers;
     }
 
-    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args)
+    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -56,6 +59,7 @@ sealed class Runner
             RedirectStandardError = true,
         };
         si.Environment["PYTHONIOENCODING"] = "utf-8";
+        BuildWorkers.Apply(si, workers);
         // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
         if (Environment.ProcessPath != null) si.Environment["HOOKSHOT_BUILDER_EXE"] = Environment.ProcessPath;
         si.Environment["HOOKSHOT_BUILDER_UPDATE_PROTOCOL"] = "2";
@@ -78,7 +82,7 @@ sealed class Runner
         {
             try
             {
-                using var p = Process.Start(Info(tools, args))!;
+                using var p = Process.Start(Info(tools, args, workers))!;
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();

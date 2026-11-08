@@ -7,7 +7,8 @@ namespace HookshotBuilder;
 static class UpdatePreparation
 {
     public static async Task<string> PrepareAsync(HttpClient http, LatestRelease latest, string cache, string target,
-                                                  CancellationToken token, Action<string>? note = null, Action<double>? progress = null)
+                                                  CancellationToken token, Action<string>? note = null, Action<double>? progress = null,
+                                                  BuilderHttp.Policy? policy = null)
     {
         token.ThrowIfCancellationRequested();
         SetupManifest? manifest = null;
@@ -15,7 +16,7 @@ static class UpdatePreparation
         {
             if (list.Size > 262144) throw new InvalidDataException("The setup list is too large.");
             note?.Invoke("Checking the release's setup list");
-            var path = await BuilderDownload.GetAsync(http, list, Path.Combine(cache, "lists"), token);
+            var path = await BuilderDownload.GetAsync(http, list, Path.Combine(cache, "lists"), token, note: note, policy: policy);
             try { manifest = SetupManifest.Parse(await File.ReadAllTextAsync(path, token), latest.Identity); }
             catch (LegacySetupManifestException) when (latest.Zip != null) { /* A checked full archive supports older list formats. */ }
         }
@@ -27,7 +28,7 @@ static class UpdatePreparation
             {
                 var part = manifest.Parts[i];
                 note?.Invoke($"Checking update part {i + 1} of {manifest.Parts.Count}");
-                var zip = await BuilderDownload.GetAsync(http, part.Asset, Path.Combine(cache, "parts"), token, progress);
+                var zip = await BuilderDownload.GetAsync(http, part.Asset, Path.Combine(cache, "parts"), token, progress, note, policy);
                 parts.Add((zip, part));
             }
             result = await BuilderArchive.UnpackPartsAsync(parts, target, latest.Identity, token);
@@ -35,13 +36,11 @@ static class UpdatePreparation
         else if (latest.Zip is { } full)
         {
             note?.Invoke("Downloading the full builder archive");
-            var zip = await BuilderDownload.GetAsync(http, full, Path.Combine(cache, "archives"), token, progress);
+            var zip = await BuilderDownload.GetAsync(http, full, Path.Combine(cache, "archives"), token, progress, note, policy);
             result = await BuilderArchive.UnpackAsync(zip, target, latest.Identity, token);
         }
         else throw new InvalidDataException("This release needs revision-aware setup metadata before it can update automatically. Download it manually.");
-        using var refresh = CancellationTokenSource.CreateLinkedTokenSource(token);
-        refresh.CancelAfter(TimeSpan.FromSeconds(30));
-        if ((await LatestRelease.FetchAsync(http, refresh.Token)).Identity != latest.Identity)
+        if ((await LatestRelease.FetchAsync(http, token, note, policy)).Identity != latest.Identity)
             throw new InvalidDataException("The release changed while preparing the update. Retry after publishing finishes.");
         await BuilderContents.ValidateAsync(result, latest.Identity, token);
         return result;

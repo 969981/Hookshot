@@ -107,7 +107,8 @@ static class PartsTests
             Api.Replies["https://fixture.invalid/full.zip"] = App;
         }
         public async Task<string> Prepare(string? target = null) => await UpdatePreparation.PrepareAsync(Http,
-            await LatestRelease.FetchAsync(Http, CancellationToken.None), Cache, target ?? Target, CancellationToken.None);
+            await LatestRelease.FetchAsync(Http, CancellationToken.None, policy: NetworkTests.Fast), Cache, target ?? Target,
+            CancellationToken.None, policy: NetworkTests.Fast);
         public void Dispose() { Http.Dispose(); Directory.Delete(Root, true); }
     }
 
@@ -156,7 +157,9 @@ static class PartsTests
         using (var f = new Fixture()) {
             f.Api.UnknownLengths = true;
             f.Api.Replies["https://fixture.invalid/app.zip"] = f.App[..^1];
-            await Throws<InvalidDataException>(() => f.Prepare());
+            await Throws<HttpRequestException>(() => f.Prepare());
+            Check(f.Api.Calls["https://fixture.invalid/app.zip"] == 5, "early EOF retains released five-cycle retry");
+            Check(!Directory.EnumerateFiles(f.Cache, "*.part-*", SearchOption.AllDirectories).Any(), "truncated attempts leave no owned partial");
         }
         using (var f = new Fixture()) {
             foreach (var bad in new[] {

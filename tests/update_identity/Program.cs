@@ -77,7 +77,7 @@ static class Test
         Check("missing asset not treated as current", missing.Calls.Count == 1);
         using var offline = new Api(new());
         using var offlineHttp = new HttpClient(offline);
-        await Throws<HttpRequestException>("offline does not imply current", () => LatestRelease.FetchAsync(offlineHttp, CancellationToken.None));
+        await Throws<HttpRequestException>("offline does not imply current", () => LatestRelease.FetchAsync(offlineHttp, CancellationToken.None, policy: NetworkTests.Fast));
         var cyclicCalls = 0;
         await Throws<InvalidDataException>("annotated cycle bounded", () => ReleaseIdentity.ResolveAsync(Tag, (_, _) => {
             cyclicCalls++;
@@ -114,5 +114,6 @@ static class Test
         finally { Directory.Delete(temp, true); }
         Console.WriteLine("update identity: Builder/ref/fetched/archive checks passed");
         await PartsTests.Run();
+        await NetworkTests.Run();
     }
 }

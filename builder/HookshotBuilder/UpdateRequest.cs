@@ -1,9 +1,20 @@
 using System.IO;
+using System.Diagnostics;
 
 namespace HookshotBuilder;
 
 sealed record UpdateRequest(string Folder, string? Tag, string? Revision, bool Fetched)
 {
+    public ProcessStartInfo StartInfo(string executable)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
+        start.ArgumentList.Add("--update"); start.ArgumentList.Add(Folder);
+        if (Tag != null) { start.ArgumentList.Add("--tag"); start.ArgumentList.Add(Tag); }
+        if (Revision != null) { start.ArgumentList.Add("--revision"); start.ArgumentList.Add(Revision); }
+        if (Fetched) start.ArgumentList.Add("--fetched");
+        return start;
+    }
+
     public static UpdateRequest? Parse(string[] args)
     {
         if (args.Length == 0) return null;
