@@ -10,6 +10,24 @@ integration. In particular, motion vectors currently describe camera movement
 only. Moving characters, foliage, particles and disocclusions need more testing
 and may leave temporal trails.
 
+## Scene-resolution prerequisites
+
+Native AA requires matching scene color, depth and resolve-output dimensions.
+Fixed Resolution 100% on current main does not reliably establish that contract:
+in the isolated contribution test, the game's TAAU path still received 1920x1080
+and wrote 2560x1440, and this implementation did not initialize FSR.
+The player liked that image, but that observation is not FSR validation.
+
+The previously validated 2560x1440 setup also carried the fixed-scale cache
+refresh from [PR #329](https://github.com/NotRexed/Hookshot/pull/329) and the native
+base-scale option in [PR #578](https://github.com/NotRexed/Hookshot/pull/578).
+Reproducing that setup requires both separate changes, with `HOS_FIX_RES=1`,
+`HOS_SCENE_NATIVE=1` and fixed Resolution 100%, until upstream provides equivalent
+behavior. They are not bundled into this PR. The #329 proposal documents
+unresolved issues at lower resolution percentages; this is not validation of
+those modes. A plain build of this branch on current main is not a verified
+standalone Native AA configuration.
+
 ## Trying it
 
 Build this branch normally. It vendors only the unmodified MIT-licensed API
