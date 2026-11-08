@@ -1,6 +1,9 @@
 /* The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
    hookshot_vk.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
 #define _GNU_SOURCE
+#ifdef __APPLE__
+#define _XOPEN_SOURCE 700
+#endif
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -99,6 +102,11 @@ static void monitor_init(pthread_mutex_t *mu, pthread_cond_t *cv) {
         }                                                                                                             \
     } while (0)
 
+static struct timespec rel_ms(DWORD ms) {
+    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
+    return ts;
+}
+
 /* ---- address waits: futexes on Linux, condition buckets on macOS ---- */
 #ifdef __APPLE__
 typedef struct { pthread_mutex_t mu; pthread_cond_t cv; } WaitBucket;
@@ -174,10 +182,6 @@ void WakeByAddressAll(void *addr) { wake_address(addr); }
 #else
 static long futex(volatile uint32_t *a, int op, uint32_t v, const struct timespec *ts) {
     return syscall(SYS_futex, a, op, v, ts, NULL, 0);
-}
-static struct timespec rel_ms(DWORD ms) {
-    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
-    return ts;
 }
 void WakeConditionVariable(CONDITION_VARIABLE *cv) {
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
