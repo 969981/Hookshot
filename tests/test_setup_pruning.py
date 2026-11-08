@@ -116,7 +116,7 @@ class SetupPruningTests(unittest.TestCase):
         cls.exe = folder / "fixture.exe"
         print("production helper SHA256:", hashlib.sha256(helpers.encode()).hexdigest(), flush=True)
         subprocess.run(compiler_command(CC, source, cls.exe), env=compiler_environment(CC), cwd=folder,
-                       creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS, timeout=60, check=True)
+                       creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS | subprocess.CREATE_NO_WINDOW, timeout=60, check=True)
         cls.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         cls.kernel.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
         cls.kernel.GetFileAttributesW.restype = ctypes.c_uint32
@@ -174,7 +174,7 @@ class SetupPruningTests(unittest.TestCase):
 
     def start(self, tag, *barrier):
         return subprocess.Popen([str(self.exe), str(self.root), tag, *barrier], cwd=self.root,
-                                creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                                creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS | subprocess.CREATE_NO_WINDOW)
 
     def prune(self, tag):
         self.prepare()
