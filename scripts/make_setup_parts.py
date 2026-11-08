@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import zipfile
 
@@ -42,6 +43,8 @@ def files_under(root, top):
 
 def write_zip(path, root, names, sources, gui_hashes):
     """Deterministic: the same files give the same bytes (sorted, a fixed date, fixed attributes)"""
+    root = Path(root)
+    tools = root / "tools"
     created = False
     try:
         with open(path + ".new", "xb") as stream:
@@ -51,8 +54,20 @@ def write_zip(path, root, names, sources, gui_hashes):
                     info = zipfile.ZipInfo("HookshotBuilder/" + n, date_time=(2026, 1, 1, 0, 0, 0))
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o644 << 16
-                    data = verified_bytes(os.path.join(root, n.replace("/", os.sep)), root, sources, gui_hashes)
-                    z.writestr(info, data, compresslevel=6)
+                    source = root / n.replace("/", os.sep)
+                    # Keep the exact checked bytes for every tracked source and GUI digest.
+                    checked = ((source.is_relative_to(tools) and source.relative_to(tools).as_posix() in sources) or
+                               (source.parent == root and source.name in gui_hashes))
+                    if checked:
+                        data = verified_bytes(source, root, sources, gui_hashes)
+                        z.writestr(info, data, compresslevel=6)
+                    else:
+                        # (the public ZipInfo.compress_level property needs Python 3.13)
+                        info._compresslevel = 6
+                        with open(source, "rb") as f:
+                            info.file_size = os.fstat(f.fileno()).st_size   # (select ZIP64 before writing)
+                            with z.open(info, "w") as member:
+                                shutil.copyfileobj(f, member, 1 << 20)
     except BaseException:
         if created:
             os.remove(path + ".new")

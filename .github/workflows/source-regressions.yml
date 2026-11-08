@@ -49,6 +49,7 @@ on:
       - builder/HookshotBuilder/**
       - scripts/package_builder.py
       - scripts/make_setup_parts.py
+      - tests/test_setup_parts_stream.py
       - tests/test_release_identity.py
       - tests/update_identity_test.c
       - tests/check_update_identity_c.py
@@ -177,6 +178,7 @@ on:
       - builder/HookshotBuilder/**
       - scripts/package_builder.py
       - scripts/make_setup_parts.py
+      - tests/test_setup_parts_stream.py
       - tests/test_release_identity.py
       - tests/update_identity_test.c
       - tests/check_update_identity_c.py
@@ -328,6 +330,8 @@ jobs:
         run: python -I -B tests/test_failure_reason.py
       - name: Check release metadata and packaging
         run: python -I -B tests/test_release_identity.py
+      - name: Check streamed setup parts retain identity checks
+        run: python -I -B tests/test_setup_parts_stream.py
       - name: Linux builder worker selection
         run: python -I -B tests/test_linux_builder_jobs.py
       - name: Set up .NET for Windows Builder checks
