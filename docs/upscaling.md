@@ -68,6 +68,28 @@ inputs it has guessed produces ghosting that looks like a renderer bug and is re
 > D32 depth) are that game's, not necessarily this one's: the shapes have to be read off OoT's own
 > dispatch before anything is wired to them.
 
+## The seam
+
+`gpu/vk/upscale_seam.h` is where a backend is chosen. The renderer resolves a recognized dispatch once into an
+`upscale::Request` — what the sampled bindings provide, the image the dispatch writes, and which binding the renderer
+is going to hand over as colour — and `choose()` says which backend takes it. A backend never re-derives the dispatch
+for itself.
+
+`temporal_possible()` is the gate a temporal backend has to pass, and every clause in it is a wrong picture rather
+than a missing feature: the inputs must be complete, the output must be resolved, writable and no smaller than the
+render extent, and the colour the renderer hands over must be the colour the contract identified.
+
+That last clause does not hold yet, and the seam says so in its log rather than assuming it away. The renderer passes
+`dw.imgs[0]`, the first texture descriptor; the contract indexes the textures the descriptor build resolved
+(`draw_sampled`). Those are two different lists — the first carries every texture descriptor, the second only the
+ones it resolved — so binding 0 of one is not binding 0 of the other. Establishing which descriptor is the
+contract's colour is the first job of the backend that needs it. Until then `temporal_possible()` refuses, which is
+the point: it cannot be passed by accident.
+
+The stand-in needs none of this. It is a spatial resolve, and it runs wherever `RX_VK_TAAU_KEYS` asks for it exactly
+as it did before the seam existed, including where the contract is not met. That property is what makes introducing
+the seam a no-op, and `tests/upscale_seam_test.cpp` pins it.
+
 ## Order of work
 
 Each row is one pull request, and each one is useful on its own.
@@ -75,7 +97,7 @@ Each row is one pull request, and each one is useful on its own.
 | # | Change | Why it is first |
 |---|---|---|
 | 1 | Name each network binding's role in the existing per-network log, and say whether the inputs are complete | Nothing can be built until the contract above is read off the real dispatch rather than assumed, and the log that reports a network's textures was already there |
-| 2 | A vendor-neutral upscaler seam at `taau_stand_in`, with the stand-in as its only backend | No behavior change, and it is the review that decides the shape |
+| 2 | A vendor-neutral seam at `taau_stand_in`, with the stand-in as its only backend | No behaviour change, and it is the review that decides the shape |
 | 3 | FSR 3.1 temporal upscaling as the first backend | MIT sources, no external runtime, works on every vendor, so it is the backend that can be the default |
 | 4 | DLSS Super Resolution: Streamline on Windows, NGX on Linux | Needs a user-supplied runtime, so it comes after a working fallback exists |
 | 5 | Presets, quality modes and DLAA in the Insert menu and `hookshot_options.ini` | Settings for backends that exist, rather than settings-first |

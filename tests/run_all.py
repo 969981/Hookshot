@@ -32,6 +32,7 @@ ARGS = {
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_upscale_contract.py": ["--cxx", "g++", "--headers", "{vulkan_headers}"],
+    "tests/test_upscale_seam.py": ["--cxx", "g++"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],

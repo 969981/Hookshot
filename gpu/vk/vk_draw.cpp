@@ -40,6 +40,7 @@
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
 #include "upscale_format.h"
+#include "upscale_seam.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -5231,6 +5232,16 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     return true;
 }
 
+/// (hookshot) The sampled textures of the dispatch being recorded, in the terms the upscaler input contract uses
+/// (gpu/vk/upscale_contract.h). One place builds this, so the per-network log and the seam below cannot disagree
+/// about what a dispatch sampled.
+static void upscale_bindings(std::vector<upscale::Binding>& out) {
+    out.assign(draw_sampled.size(), upscale::Binding{});
+    for (size_t i = 0; i < draw_sampled.size(); ++i)
+        if (const Texture* t = draw_sampled[i])
+            out[i] = {upscale::kind_of(t->format, t->aspect), t->width, t->height};
+}
+
 /// (hookshot) OoT's gameplay TAAU network (fd029a317a9a4b94) stood in for: its input upscaled into its output
 /// (shaders/taau_upscale.comp). The network's translation loses the blue channel, the yellow cast over every
 /// scene; with this the picture is right, without the network's temporal anti-aliasing.
@@ -5371,9 +5382,18 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     if (temporal) probe_image(cmd, out, level, 0, key, 't');
     return true;
 }
+/// (hookshot) The seam of docs/upscaling.md: a recognized upscale dispatch is resolved once into an
+/// upscale::Request, a backend is chosen for it, and that backend runs it. The compute stand-in is the only backend
+/// today, and it is a spatial resolve that needs none of the input contract, so this is the same behaviour through
+/// one gate. What the seam adds is the gate a temporal backend has to pass, reported once per program.
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
-    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    upscale::Availability avail;
+    avail.push_descriptor = dev.push_descriptor && vkCmdPushDescriptorSetKHR != nullptr;
+    avail.stand_in_wanted = taau_key(p.key);
+    upscale::Request req;
+    req.program_key = p.key;
+    if (upscale::choose(avail, req) != upscale::Backend::StandIn || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
@@ -5386,6 +5406,30 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    // (hookshot) what a temporal backend would be given here, said once per program: the output this resolved, and
+    // the inputs the dispatch sampled. colour_binding stays unset on purpose. The renderer hands over
+    // dw.imgs[0], the first texture descriptor, while the contract indexes the textures the descriptor build
+    // recorded, and those two orders are not the same list: dw.imgs carries every texture descriptor, draw_sampled
+    // only those it resolved. Establishing which descriptor is the contract's colour is the first job of the
+    // backend that needs it, not something to assume here.
+    std::vector<upscale::Binding> bindings;
+    upscale_bindings(bindings);
+    req.inputs = upscale::classify(bindings.data(), bindings.size());
+    req.output_width = std::max(1u, out->width >> level);
+    req.output_height = std::max(1u, out->height >> level);
+    req.output_writable = true;
+    {
+        static std::mutex mu;
+        static std::unordered_map<uint64_t, int> said;
+        std::lock_guard lk(mu);
+        if (said[p.key]++ == 0) {
+            const char* why = upscale::temporal_refusal(req);
+            logf("vk: upscale seam %016llx: %s, output %ux%u, inputs %ux%u; a temporal backend %s%s",
+                 (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
+                 req.output_height, req.inputs.render_width, req.inputs.render_height,
+                 why ? "could not be given this: " : "could be given this", why ? why : "");
+        }
+    }
     return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
@@ -5880,10 +5924,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             // (hookshot) with each one's role in the upscaler input contract, so this says whether a temporal
             // upscaler could take this network's place rather than leaving it to be counted by hand later:
             // docs/upscaling.md
-            std::vector<upscale::Binding> bindings(draw_sampled.size());
-            for (size_t i = 0; i < draw_sampled.size(); ++i)
-                if (const Texture* t = draw_sampled[i])
-                    bindings[i] = {upscale::kind_of(t->format, t->aspect), t->width, t->height};
+            std::vector<upscale::Binding> bindings;
+            upscale_bindings(bindings);
             std::vector<upscale::Role> roles(bindings.size(), upscale::Role::None);
             const upscale::Verdict v = upscale::classify(bindings.data(), bindings.size(), roles.data());
             char line[900];
