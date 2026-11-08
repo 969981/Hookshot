@@ -129,13 +129,20 @@ static int reserve_guest(void) {
        step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
-    if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
+    int map_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef __linux__
+    map_flags |= MAP_FIXED_NOREPLACE | MAP_NORESERVE;
+#else
+    map_flags |= MAP_FIXED;
+#endif
+    if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE, map_flags, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
+#ifdef __linux__
     if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+#endif
     return 1;
 #endif
 }
@@ -163,7 +170,7 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 
 void hos_update_check(void);   /* (host/hos_update.c) */
 #ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
+/* POSIX saves live outside the rebuilt game folder, so a rebuilt game still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
    cannot be moved keeps the old place. --user still wins. */
 static int is_dir(const char *p) {
@@ -222,12 +229,17 @@ static void delete_tree(const char *p) {
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+#ifdef __APPLE__
+    if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/Library/Application Support", home);
+#else
     if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
     else if (home && home[0] == '/') {
         snprintf(dir, sizeof dir, "%s/.local", home);
         CreateDirectoryA(dir, NULL);
         snprintf(dir, sizeof dir, "%s/.local/share", home);
     } else return beside;
+#endif
+    if (!home && !xdg) return beside;
     CreateDirectoryA(dir, NULL);
     snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
     CreateDirectoryA(dir, NULL);

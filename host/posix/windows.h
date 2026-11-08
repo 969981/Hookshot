@@ -147,7 +147,11 @@ void SetLastError(DWORD e);
 #define InterlockedCompareExchangePointer InterlockedCompareExchange
 #define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #define _ReadWriteBarrier() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+#ifdef __x86_64__
 #define YieldProcessor() __builtin_ia32_pause()
+#else
+#define YieldProcessor() __asm__ volatile("yield")
+#endif
 
 /* ---- locks: SRW locks are POSIX rwlocks (zero-initialised is valid, as on Windows); condition variables a futex
    word, so they wait with either an SRW lock or a critical section ---- */

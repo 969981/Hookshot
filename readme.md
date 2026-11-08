@@ -9,7 +9,7 @@
   <br>
 </h1>
 
-<h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Windows & Linux, with no emulator.
+<h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Windows, Linux & macOS, with no emulator.
 </h4>
 
 <p align="center">
@@ -112,6 +112,22 @@ builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zst
 with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`scripts/linux/deps.sh` makes one).
 `scripts/linux/deps.sh` and `scripts/linux/appimage.sh` make the AppImage.
 
+### On macOS
+
+macOS builds are supported on Intel and Apple silicon through the POSIX backend. Install Python 3, LLVM/Clang, FFmpeg,
+SDL2 and a Vulkan loader with MoltenVK (Homebrew provides `python`, `llvm`, `ffmpeg`, `sdl2` and `molten-vk`), then set
+`HOOKSHOT_FFMPEG` and `HOOKSHOT_SDL2` if they are not found by `pkg-config` or beside the output folder.
+
+Build from the command line with the same options as Linux:
+
+```sh
+python3 -I nx2/make_game.py --nup ~/your-game.nup --out ~/Games/Hookshot --language en-US
+./builder/macos/hookshot-launch ~/Games/Hookshot
+```
+
+The game executable is `hookshot`, and the renderer is `hookshot_vk.dylib`. A Vulkan 1.3-capable MoltenVK device is
+required; macOS does not support the Linux AppImage, so its compiler and libraries must be installed locally.
+
 ### Updating to a newer release
 
 A new release is not a patch to your game folder: the game is built again from your copy, with the new code. Your
@@ -124,6 +140,7 @@ saves and settings are kept. What changed in each release is in [changelog.txt](
    - **Hookshot Builder:** download the new HookshotBuilder zip and extract it to a new folder (with its `tools`
      folder). The old builder folder can then be deleted.
    - **Linux:** download the new AppImage and make it executable. The old one can be deleted, the game is not removed with it.
+   - **macOS:** pull the new source and build again with the same command. The game folder and saves are kept.
    - **Command line:** `git pull` in your clone, and take the `tools` folder's contents (see
      [What you need](#what-you-need)) from the new HookshotBuilder zip, as they can change between releases.
 4. Build again with the same `.nup` (or `romfs` and `exefs` folders) and **the same game folder** as before. With the
@@ -135,7 +152,7 @@ What a new build keeps and what it replaces in the game folder:
 
 | Kept | Replaced |
 |---|---|
-| Your saves (`user`, or `~/.local/share/hookshot` on Linux) | `hookshot.exe` (`hookshot` on Linux) and its files |
+| Your saves (`user`, or `~/.local/share/hookshot` on Linux, or `~/Library/Application Support/Hookshot` on macOS) | `hookshot.exe` (`hookshot` on Linux/macOS) and its files |
 | `hookshot_options.ini`, the in-game menu's choices | `image.bin` and the shader list |
 | `hookshot_env.txt` | `language.txt`, written again with the language you choose |
 

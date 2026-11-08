@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <setjmp.h>
 #include <windows.h>
 #include <string.h>
 
@@ -98,6 +99,15 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "1:\n\t"
         "movq 64(%rcx), %rsp\n\t"
         "jmpq *72(%rcx)\n\t");
+}
+
+#elif defined(__aarch64__)
+__attribute__((returns_twice)) int recomp_sj_setjmp(void **buf) {
+    return setjmp(*(jmp_buf *)buf);
+}
+
+__attribute__((noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    longjmp(*(jmp_buf *)buf, value);
 }
 
 #else

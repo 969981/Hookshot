@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+folder=${1:-}
+if [ -z "$folder" ]; then
+    folder="${HOME}/Games/Hookshot"
+fi
+
+if [ ! -f "$folder/hookshot" ] || [ ! -f "$folder/image.bin" ]; then
+    echo "Hookshot: no built game in $folder" >&2
+    exit 1
+fi
+
+cd "$folder"
+exec ./hookshot

@@ -27,8 +27,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
-LINUX = os.name != "nt"
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+LINUX = sys.platform.startswith("linux")
+MACOS = sys.platform == "darwin"
+POSIX = LINUX or MACOS
+BESIDE = (["hookshot", "hookshot_vk.dylib", "libSDL2-2.0.0.dylib"] if MACOS else
+          ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else
+          ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"])
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -245,7 +249,7 @@ def check_cpp_library(toolchain):
 
 
 def check_linux_compiler():
-    """(linux) A C compiler that builds and links a program here (the AppImage's own clang and sysroot, else the system's):
+    """A C compiler that builds and links a program here (the AppImage's own clang and sysroot on Linux):
     found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
@@ -257,13 +261,15 @@ def check_linux_compiler():
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <pthread.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([cc] + (["--sysroot=" + sysroot] if sysroot else []) + ["-fuse-ld=lld", src, "-o", os.path.join(d, "t")],
+        r = subprocess.run([cc] + (["--sysroot=" + sysroot] if sysroot else []) + (["-fuse-ld=lld"] if LINUX else []) +
+                           [src, "-o", os.path.join(d, "t")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
         errors = [l for l in r.stderr.splitlines() if "error" in l]
-        fail("The compiler could not build a test program: %s (install clang, lld and your system's C library headers: "
-             "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
+        fail("The compiler could not build a test program: %s (install clang%s and your system's C library headers: "
+             "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)"
+             % (errors[0] if errors else "no message", ", lld" if LINUX else ""))
 
 
 def free_memory_gb():
@@ -304,7 +310,7 @@ def default_jobs():
 def bundled_mingw():
     """(as TotK Recomp's installer) llvm-mingw in the tools folder: its clang, headers and libraries build the game, and nothing of
     Visual Studio or the Windows SDK is needed. HOOKSHOT_MINGW set already wins; HOOKSHOT_MSVC=1: the Visual Studio route"""
-    if LINUX or os.environ.get("HOOKSHOT_MSVC") == "1":
+    if POSIX or os.environ.get("HOOKSHOT_MSVC") == "1":
         return os.environ.get("HOOKSHOT_MINGW", "")
     if not os.environ.get("HOOKSHOT_MINGW"):
         here = os.path.join(ROOT, "llvm-mingw")
@@ -342,7 +348,7 @@ def check_mingw():
 
 def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
-    if LINUX:
+    if POSIX:
         return check_linux_compiler()
     if bundled_mingw():
         return check_mingw()
@@ -462,7 +468,7 @@ def folder_language(out):
 def profile_readable(prof):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
     build. Then the game is built without it (a little slower in play), not at all"""
-    if not LINUX:
+    if not POSIX:
         return True
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
@@ -506,7 +512,7 @@ def main():
     p.add_argument("--exefs")
     p.add_argument("--out")
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
-                   if LINUX else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
+                   if POSIX else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
@@ -530,7 +536,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
-    if not LINUX:
+    if not POSIX:
         check_windows_sdk()
     drop_stale_objects(work)
     exefs = os.path.join(work, "exefs")
@@ -610,7 +616,7 @@ def main():
     if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
         run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
 
-    if LINUX:
+    if POSIX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
     done = {"n": 0, "of": 1}

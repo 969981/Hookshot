@@ -3,6 +3,9 @@
 #ifndef HOOKSHOT_POSIX_PSAPI_H
 #define HOOKSHOT_POSIX_PSAPI_H
 #include <windows.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 typedef struct {
     DWORD cb, PageFaultCount;
     SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage,
@@ -15,6 +18,16 @@ typedef struct {
 } PROCESS_MEMORY_COUNTERS_EX;
 static inline BOOL K32GetProcessMemoryInfo(HANDLE p, PROCESS_MEMORY_COUNTERS *out, DWORD cb) {
     (void)p;
+#ifdef __APPLE__
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) return FALSE;
+    memset(out, 0, cb);
+    out->cb = cb, out->WorkingSetSize = info.resident_size, out->PeakWorkingSetSize = info.resident_size,
+    out->PagefileUsage = info.virtual_size - info.resident_size;
+    if (cb >= sizeof(PROCESS_MEMORY_COUNTERS_EX)) ((PROCESS_MEMORY_COUNTERS_EX *)out)->PrivateUsage = out->PagefileUsage;
+    return TRUE;
+#else
     FILE *f = fopen("/proc/self/status", "r");
     if (!f) return FALSE;
     SIZE_T rss = 0, hwm = 0, anon = 0;
@@ -30,6 +43,7 @@ static inline BOOL K32GetProcessMemoryInfo(HANDLE p, PROCESS_MEMORY_COUNTERS *ou
     out->cb = cb, out->WorkingSetSize = rss, out->PeakWorkingSetSize = hwm, out->PagefileUsage = anon;
     if (cb >= sizeof(PROCESS_MEMORY_COUNTERS_EX)) ((PROCESS_MEMORY_COUNTERS_EX *)out)->PrivateUsage = anon;
     return TRUE;
+#endif
 }
 #define GetProcessMemoryInfo K32GetProcessMemoryInfo
 #endif

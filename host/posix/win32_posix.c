@@ -1,4 +1,4 @@
-/* (linux) The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
+/* The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
    hookshot_vk.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
 #define _GNU_SOURCE
 #include <windows.h>
@@ -9,12 +9,17 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <limits.h>
-#include <linux/futex.h>
 #include <signal.h>
 #include <sys/resource.h>
-#include <sys/syscall.h>
 #include <sys/time.h>
 #include <ucontext.h>
+#ifdef __linux__
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#else
+#include <mach-o/dyld.h>
+#include <pthread.h>
+#endif
 
 /* the guest window (third_party/a64-kit/rt/a64.h A64_HOST_BASE, host/hos.h HOS_GUEST_SPACE): one mapping, all of it
    readable and writable, which VirtualQuery reports as committed without asking the kernel */
@@ -61,7 +66,9 @@ static struct timespec abs_after_ms(DWORD ms) {
 static void monitor_init(pthread_mutex_t *mu, pthread_cond_t *cv) {
     pthread_condattr_t a;
     pthread_condattr_init(&a);
+#ifdef __linux__
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(cv, &a);
     pthread_condattr_destroy(&a);
     pthread_mutex_init(mu, NULL);
@@ -79,26 +86,66 @@ static void monitor_init(pthread_mutex_t *mu, pthread_cond_t *cv) {
 
 /* ---- futexes: condition variables, WaitOnAddress ---- */
 static long futex(volatile uint32_t *a, int op, uint32_t v, const struct timespec *ts) {
+#ifdef __linux__
     return syscall(SYS_futex, a, op, v, ts, NULL, 0);
+#else
+    (void)a, (void)op, (void)v, (void)ts;
+    return -1;
+#endif
 }
 static struct timespec rel_ms(DWORD ms) {
     struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
     return ts;
 }
+#ifndef __linux__
+static pthread_mutex_t posix_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t posix_cv = PTHREAD_COND_INITIALIZER;
+#endif
 void WakeConditionVariable(CONDITION_VARIABLE *cv) {
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
+#ifdef __linux__
     futex(&cv->seq, FUTEX_WAKE_PRIVATE, 1, NULL);
+#else
+    (void)cv;
+    pthread_mutex_lock(&posix_mu);
+    pthread_cond_signal(&posix_cv);
+    pthread_mutex_unlock(&posix_mu);
+#endif
 }
 void WakeAllConditionVariable(CONDITION_VARIABLE *cv) {
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
+#ifdef __linux__
     futex(&cv->seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+#else
+    (void)cv;
+    pthread_mutex_lock(&posix_mu);
+    pthread_cond_broadcast(&posix_cv);
+    pthread_mutex_unlock(&posix_mu);
+#endif
 }
 static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*relock)(void *, ULONG), void *l, ULONG flags) {
     const uint32_t seq = __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST);
     unlock(l);
+#ifdef __linux__
     struct timespec ts = rel_ms(ms);
     const long r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, ms == INFINITE ? NULL : &ts);
     const int timed_out = r == -1 && errno == ETIMEDOUT;
+#else
+    pthread_mutex_lock(&posix_mu);
+    int timed_out = 0;
+    if (ms == INFINITE) {
+        while (__atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST) == seq) pthread_cond_wait(&posix_cv, &posix_mu);
+    } else {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += ms / 1000;
+        ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) ts.tv_sec++, ts.tv_nsec -= 1000000000L;
+        while (__atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST) == seq &&
+               pthread_cond_timedwait(&posix_cv, &posix_mu, &ts) != 0) timed_out = 1;
+    }
+    pthread_mutex_unlock(&posix_mu);
+#endif
     relock(l, flags);
     if (timed_out) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
@@ -125,6 +172,7 @@ void InitializeCriticalSection(CRITICAL_SECTION *cs) {
 }
 /* (any size: the futex is the aligned 32-bit word holding the address, woken by any change near it) */
 BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
+#ifdef __linux__
     volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
     const uint32_t seen = *w;
     if (memcmp((const void *)addr, compare, size)) return TRUE;
@@ -132,9 +180,41 @@ BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
     const long r = futex(w, FUTEX_WAIT_PRIVATE, seen, ms == INFINITE ? NULL : &ts);
     if (r == -1 && errno == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
+#else
+    pthread_mutex_lock(&posix_mu);
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    const int64_t until = ms == INFINITE ? INT64_MAX :
+        (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec + (int64_t)ms * 1000000;
+    while (!memcmp((const void *)addr, compare, size)) {
+        if (ms == 0 || now_ns() >= until) {
+            pthread_mutex_unlock(&posix_mu);
+            last_error = ERROR_TIMEOUT;
+            return FALSE;
+        }
+        struct timespec ts = {(time_t)(until / 1000000000), (long)(until % 1000000000)};
+        if (pthread_cond_timedwait(&posix_cv, &posix_mu, &ts) == ETIMEDOUT) break;
+    }
+    pthread_mutex_unlock(&posix_mu);
+    return TRUE;
+#endif
 }
-void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
-void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+void WakeByAddressSingle(void *addr) {
+#ifdef __linux__
+    futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+#else
+    (void)addr;
+    pthread_cond_signal(&posix_cv);
+#endif
+}
+void WakeByAddressAll(void *addr) {
+#ifdef __linux__
+    futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+#else
+    (void)addr;
+    pthread_cond_broadcast(&posix_cv);
+#endif
+}
 
 /* ---- time ---- */
 void Sleep(DWORD ms) {
@@ -178,6 +258,15 @@ typedef struct {
     char name[64];
 } HThread;
 static __thread HThread *self_thread;
+static pid_t posix_thread_id(void) {
+#ifdef __linux__
+    return (pid_t)syscall(SYS_gettid);
+#else
+    uint64_t id = 0;
+    pthread_threadid_np(NULL, &id);
+    return (pid_t)id;
+#endif
+}
 static void thread_unref(HThread *t) {
     if (__atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) {
         pthread_mutex_destroy(&t->mu);
@@ -195,7 +284,7 @@ static HThread *thread_self(void) {
     if (!self_thread) {   /* (a thread this file did not start: the main thread, a library's) */
         HThread *t = thread_new();
         t->th = pthread_self();
-        t->tid = (pid_t)syscall(SYS_gettid);
+        t->tid = posix_thread_id();
         t->refs = 1;   /* (kept for the thread's life) */
         self_thread = t;
     }
@@ -219,7 +308,7 @@ static void thread_finish(DWORD code) {
 static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
     self_thread = t;
-    t->tid = (pid_t)syscall(SYS_gettid);
+    t->tid = posix_thread_id();
     thread_finish(t->fn(t->arg));
     return NULL;
 }
@@ -282,6 +371,7 @@ int GetThreadPriority(HANDLE h) {
     return t ? t->priority : 0;
 }
 DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
+#ifdef __linux__
     HThread *t = thread_of(h);
     if (!t || !mask) { last_error = ERROR_INVALID_PARAMETER; return 0; }
     cpu_set_t old, want;
@@ -293,8 +383,14 @@ DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
     DWORD_PTR r = 0;
     for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &old)) r |= (DWORD_PTR)1 << i;
     return r ? r : 1;
+#else
+    (void)h, (void)mask;
+    last_error = ERROR_NOT_SUPPORTED;
+    return 0;
+#endif
 }
 BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
+#ifdef __linux__
     (void)p;
     cpu_set_t s;
     CPU_ZERO(&s);
@@ -305,6 +401,13 @@ BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
     *proc = m;
     *sys = n >= 64 ? ~(DWORD_PTR)0 : (((DWORD_PTR)1 << n) - 1);
     return TRUE;
+#else
+    (void)p;
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    *proc = n >= 64 ? ~(DWORD_PTR)0 : (((DWORD_PTR)1 << n) - 1);
+    *sys = *proc;
+    return TRUE;
+#endif
 }
 int WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR w, int n, LPSTR s, int cap, LPCSTR def, BOOL *used) {
     (void)cp, (void)flags, (void)def;
@@ -354,7 +457,11 @@ HRESULT SetThreadDescription(HANDLE h, PCWSTR name) {
     t->name[sizeof t->name - 1] = 0;
     char shortname[16];
     snprintf(shortname, sizeof shortname, "%s", t->name);   /* (the kernel keeps 15 characters) */
+#ifdef __linux__
     pthread_setname_np(t->th, shortname);
+#else
+    if (t->th == pthread_self()) pthread_setname_np(shortname);
+#endif
     return S_OK;
 }
 HRESULT GetThreadDescription(HANDLE h, PWSTR *name) {
@@ -374,7 +481,13 @@ BOOL GetThreadTimes(HANDLE h, FILETIME *create, FILETIME *exit_, FILETIME *kerne
     HThread *t = thread_of(h);
     clockid_t clk;
     struct timespec ts;
-    if (!t || t->done || pthread_getcpuclockid(t->th, &clk) || clock_gettime(clk, &ts)) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
+    if (!t || t->done
+#ifdef __linux__
+        || pthread_getcpuclockid(t->th, &clk) || clock_gettime(clk, &ts)
+#else
+        || clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts)
+#endif
+    ) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
     filetime_ns(create, 0), filetime_ns(exit_, 0), filetime_ns(kernel, 0);
     filetime_ns(user, (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
     return TRUE;
@@ -478,7 +591,12 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     } else if (is(h, H_TIMER)) {
         const int64_t due = ((HTimer *)h)->due;
         struct timespec ts = {(time_t)(due / 1000000000LL), (long)(due % 1000000000LL)};
-        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
+        for (;;) {
+            const int64_t left = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec - now_ns();
+            if (left <= 0) break;
+            struct timespec nap = {(time_t)(left / 1000000000LL), (long)(left % 1000000000LL)};
+            nanosleep(&nap, NULL);
+        }
         r = WAIT_OBJECT_0;
     } else {
         last_error = ERROR_INVALID_HANDLE;
@@ -534,7 +652,14 @@ void *CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, LPFIBER_START_RO
     size_t size = reserve > commit ? reserve : commit;
     if (size < (1u << 20)) size = 1u << 20;
     size = (size + 0xFFFF) & ~(size_t)0xFFFF;
-    void *stack = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
+    int map_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef __linux__
+    map_flags |= MAP_NORESERVE;
+#ifdef MAP_STACK
+    map_flags |= MAP_STACK;
+#endif
+#endif
+    void *stack = mmap(NULL, size, PROT_READ | PROT_WRITE, map_flags, -1, 0);
     if (stack == MAP_FAILED) { last_error = ERROR_NOT_ENOUGH_MEMORY; return NULL; }
     mprotect(stack, 4096, PROT_NONE);   /* (a guard page at the bottom) */
     Fiber *f = (Fiber *)calloc(1, sizeof *f);
@@ -606,7 +731,11 @@ BOOL GetLogicalProcessorInformation(SYSTEM_LOGICAL_PROCESSOR_INFORMATION *info, 
 }
 void GetSystemInfo(SYSTEM_INFO *si) {
     memset(si, 0, sizeof *si);
-    si->wProcessorArchitecture = 9;   /* (PROCESSOR_ARCHITECTURE_AMD64) */
+#if defined(__aarch64__)
+    si->wProcessorArchitecture = 12;  /* PROCESSOR_ARCHITECTURE_ARM64 */
+#else
+    si->wProcessorArchitecture = 9;   /* PROCESSOR_ARCHITECTURE_AMD64 */
+#endif
     si->dwPageSize = (DWORD)sysconf(_SC_PAGESIZE);
     si->dwAllocationGranularity = 0x10000;
     si->dwNumberOfProcessors = (DWORD)sysconf(_SC_NPROCESSORS_ONLN);
@@ -646,7 +775,12 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect) {
         return addr;
     }
     const int prot = (type & MEM_COMMIT) ? prot_of(protect) : PROT_NONE;
-    void *p = mmap(addr, size, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | (addr ? MAP_FIXED_NOREPLACE : 0), -1, 0);
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef __linux__
+    flags |= MAP_NORESERVE;
+    if (addr) flags |= MAP_FIXED_NOREPLACE;
+#endif
+    void *p = mmap(addr, size, prot, flags, -1, 0);
     if (p == MAP_FAILED || (addr && p != addr)) {
         if (p != MAP_FAILED) munmap(p, size);
         last_error = ERROR_INVALID_PARAMETER;
@@ -724,12 +858,24 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T size
 
 /* ---- modules ---- */
 static void exe_path(char *out, size_t cap) {
+#ifdef __linux__
     const ssize_t n = readlink("/proc/self/exe", out, cap - 1);
     out[n > 0 ? n : 0] = 0;
+#else
+    uint32_t n = (uint32_t)cap;
+    if (_NSGetExecutablePath(out, &n) != 0) out[0] = 0;
+#endif
 }
 /* a Windows library name, as the Linux one: SDL2.dll -> libSDL2-2.0.so.0, vulkan-1.dll -> libvulkan.so.1, x.dll -> x.so */
-static const char *linux_name(const char *base) {
-    static const char *map[][2] = {{"sdl2.dll", "libSDL2-2.0.so.0"}, {"vulkan-1.dll", "libvulkan.so.1"}};
+static const char *posix_name(const char *base) {
+    static const char *map[][2] = {
+        {"sdl2.dll", "libSDL2-2.0.0.dylib"},
+        {"vulkan-1.dll", "libvulkan.dylib"}
+    };
+#ifdef __linux__
+    map[0][1] = "libSDL2-2.0.so.0";
+    map[1][1] = "libvulkan.so.1";
+#endif
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
         if (!strcasecmp(base, map[i][0])) return map[i][1];
     return NULL;
@@ -741,7 +887,7 @@ HMODULE LoadLibraryA(LPCSTR name) {
     for (char *p = path; *p; p++) if (*p == '\\') *p = '/';
     char *slash = strrchr(path, '/');
     char *base = slash ? slash + 1 : path;
-    const char *mapped = linux_name(base);
+    const char *mapped = posix_name(base);
     if (mapped) {
         snprintf(base, sizeof path - (size_t)(base - path), "%s", mapped);
     } else {
@@ -752,6 +898,9 @@ HMODULE LoadLibraryA(LPCSTR name) {
         }
     }
     HMODULE m = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+#ifdef __APPLE__
+    if (!m && !strcasecmp(base, "libvulkan.dylib")) m = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL);
+#endif
     if (!m) last_error = ERROR_FILE_NOT_FOUND;
     return m;
 }
@@ -1070,20 +1219,53 @@ static struct sigaction previous[32];
 static pthread_mutex_t handlers_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void context_from(CONTEXT *c, const ucontext_t *uc) {
+#ifdef __APPLE__
+#if defined(__aarch64__)
+    const uint64_t *x = uc->uc_mcontext->__ss.__x;
+    c->Rax = x[0], c->Rcx = x[1], c->Rdx = x[2], c->Rbx = x[3];
+    c->Rsp = uc->uc_mcontext->__ss.__sp, c->Rbp = x[29], c->Rsi = x[4], c->Rdi = x[5];
+    c->R8 = x[6], c->R9 = x[7], c->R10 = x[8], c->R11 = x[9], c->R12 = x[10], c->R13 = x[11], c->R14 = x[12], c->R15 = x[13];
+    c->Rip = uc->uc_mcontext->__ss.__pc, c->EFlags = uc->uc_mcontext->__ss.__cpsr;
+#else
+    const __darwin_x86_thread_state64_t *s = &uc->uc_mcontext->__ss;
+    c->Rax = s->__rax, c->Rcx = s->__rcx, c->Rdx = s->__rdx, c->Rbx = s->__rbx;
+    c->Rsp = s->__rsp, c->Rbp = s->__rbp, c->Rsi = s->__rsi, c->Rdi = s->__rdi;
+    c->R8 = s->__r8, c->R9 = s->__r9, c->R10 = s->__r10, c->R11 = s->__r11, c->R12 = s->__r12, c->R13 = s->__r13;
+    c->R14 = s->__r14, c->R15 = s->__r15, c->Rip = s->__rip, c->EFlags = s->__rflags;
+#endif
+#else
     const greg_t *g = uc->uc_mcontext.gregs;
     c->Rax = (DWORD64)g[REG_RAX], c->Rcx = (DWORD64)g[REG_RCX], c->Rdx = (DWORD64)g[REG_RDX], c->Rbx = (DWORD64)g[REG_RBX];
     c->Rsp = (DWORD64)g[REG_RSP], c->Rbp = (DWORD64)g[REG_RBP], c->Rsi = (DWORD64)g[REG_RSI], c->Rdi = (DWORD64)g[REG_RDI];
     c->R8 = (DWORD64)g[REG_R8], c->R9 = (DWORD64)g[REG_R9], c->R10 = (DWORD64)g[REG_R10], c->R11 = (DWORD64)g[REG_R11];
     c->R12 = (DWORD64)g[REG_R12], c->R13 = (DWORD64)g[REG_R13], c->R14 = (DWORD64)g[REG_R14], c->R15 = (DWORD64)g[REG_R15];
     c->Rip = (DWORD64)g[REG_RIP], c->EFlags = (DWORD)g[REG_EFL], c->ContextFlags = CONTEXT_FULL;
+#endif
+    c->ContextFlags = CONTEXT_FULL;
 }
 static void context_to(ucontext_t *uc, const CONTEXT *c) {
+#ifdef __APPLE__
+#if defined(__aarch64__)
+    uint64_t *x = uc->uc_mcontext->__ss.__x;
+    x[0] = c->Rax, x[1] = c->Rcx, x[2] = c->Rdx, x[3] = c->Rbx;
+    uc->uc_mcontext->__ss.__sp = c->Rsp, x[29] = c->Rbp, x[4] = c->Rsi, x[5] = c->Rdi;
+    x[6] = c->R8, x[7] = c->R9, x[8] = c->R10, x[9] = c->R11, x[10] = c->R12, x[11] = c->R13, x[12] = c->R14, x[13] = c->R15;
+    uc->uc_mcontext->__ss.__pc = c->Rip, uc->uc_mcontext->__ss.__cpsr = c->EFlags;
+#else
+    __darwin_x86_thread_state64_t *s = &uc->uc_mcontext->__ss;
+    s->__rax = c->Rax, s->__rcx = c->Rcx, s->__rdx = c->Rdx, s->__rbx = c->Rbx;
+    s->__rsp = c->Rsp, s->__rbp = c->Rbp, s->__rsi = c->Rsi, s->__rdi = c->Rdi;
+    s->__r8 = c->R8, s->__r9 = c->R9, s->__r10 = c->R10, s->__r11 = c->R11, s->__r12 = c->R12, s->__r13 = c->R13;
+    s->__r14 = c->R14, s->__r15 = c->R15, s->__rip = c->Rip, s->__rflags = c->EFlags;
+#endif
+#else
     greg_t *g = uc->uc_mcontext.gregs;
     g[REG_RAX] = (greg_t)c->Rax, g[REG_RCX] = (greg_t)c->Rcx, g[REG_RDX] = (greg_t)c->Rdx, g[REG_RBX] = (greg_t)c->Rbx;
     g[REG_RSP] = (greg_t)c->Rsp, g[REG_RBP] = (greg_t)c->Rbp, g[REG_RSI] = (greg_t)c->Rsi, g[REG_RDI] = (greg_t)c->Rdi;
     g[REG_R8] = (greg_t)c->R8, g[REG_R9] = (greg_t)c->R9, g[REG_R10] = (greg_t)c->R10, g[REG_R11] = (greg_t)c->R11;
     g[REG_R12] = (greg_t)c->R12, g[REG_R13] = (greg_t)c->R13, g[REG_R14] = (greg_t)c->R14, g[REG_R15] = (greg_t)c->R15;
     g[REG_RIP] = (greg_t)c->Rip;
+#endif
 }
 static void on_signal(int sig, siginfo_t *si, void *uctx) {
     ucontext_t *uc = (ucontext_t *)uctx;
@@ -1097,7 +1279,11 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
     rec.ExceptionAddress = (void *)(uintptr_t)ctx.Rip;
     if (sig == SIGSEGV || sig == SIGBUS) {
         rec.NumberParameters = 2;
-        rec.ExceptionInformation[0] = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;   /* (1: a write) */
+#ifdef __linux__
+        rec.ExceptionInformation[0] = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;
+#else
+        rec.ExceptionInformation[0] = 0;
+#endif
         rec.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
     }
     EXCEPTION_POINTERS ep = {&rec, &ctx};
