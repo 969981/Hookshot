@@ -103,6 +103,9 @@ jobs:
       - name: Verify packaged builder starts
         run: |
           test -d build-macos/package/HookshotBuilder/HookshotBuilder.app
+          test -x build-macos/package/HookshotBuilder/HookshotBuilder.app/Contents/Resources/tools/python/bin/python3
+          test -f build-macos/package/HookshotBuilder/HookshotBuilder.app/Contents/Resources/tools/source/builder/linux/hookshot_builder.py
+          test ! -L build-macos/package/HookshotBuilder/HookshotBuilder.app/Contents/Resources/tools
           lipo build-macos/package/HookshotBuilder/HookshotBuilder.app/Contents/MacOS/applet -verify_arch arm64
           cd build-macos/package/HookshotBuilder
           ./HookshotBuilder.command --help
@@ -110,7 +113,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: HookshotBuilder-macos-arm64
-          path: build-macos/HookshotBuilder-macos-arm64.zip
+          path: |
+            build-macos/HookshotBuilder-macos-arm64.zip
+            build-macos/HookshotBuilder-macos-arm64.app.zip
           if-no-files-found: error
 
   release:
@@ -133,4 +138,4 @@ jobs:
           name: HookshotBuilder-macos-arm64
           path: dist
       - name: macOS builder to the release
-        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/HookshotBuilder-macos-arm64.zip
+        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/HookshotBuilder-macos-arm64.app.zip

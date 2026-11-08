@@ -46,11 +46,14 @@ cp scripts/macos/README.txt "$ROOT/README.txt"
 APP=$ROOT/HookshotBuilder.app
 osacompile -o "$APP" scripts/macos/Builder.applescript
 mkdir -p "$APP/Contents/Resources"
-ln -s ../../../tools "$APP/Contents/Resources/tools"
+mv "$ROOT/tools" "$APP/Contents/Resources/tools"
+ln -s "HookshotBuilder.app/Contents/Resources/tools" "$ROOT/tools"
 test -x "$APP/Contents/MacOS/applet"
 lipo "$APP/Contents/MacOS/applet" -verify_arch arm64
 
 mkdir -p "$OUT"
 cd "$STAGE"
 ditto -c -k --sequesterRsrc --keepParent HookshotBuilder "$OUT/HookshotBuilder-macos-arm64.zip"
+ditto -c -k --sequesterRsrc --keepParent "$ROOT/HookshotBuilder.app" "$OUT/HookshotBuilder-macos-arm64.app.zip"
 echo "Created $OUT/HookshotBuilder-macos-arm64.zip"
+echo "Created $OUT/HookshotBuilder-macos-arm64.app.zip"
