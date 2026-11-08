@@ -362,6 +362,9 @@ jobs:
           )
           call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           if errorlevel 1 exit /b 1
+          rem Compile the real TU too: GNU C11 rejects missing API declarations; enforce that with the Windows SDK compiler.
+          cl /nologo /std:c11 /we4013 /c builder\setup\setup.c /Fo"%RUNNER_TEMP%\hookshot-setup.obj"
+          if errorlevel 1 exit /b 1
           python -I -B tests/test_setup_plan.py --native --cc cl NativeSetupPlanTests
           if errorlevel 1 exit /b 1
           python -I -B tests/test_setup_transaction.py --cc cl
