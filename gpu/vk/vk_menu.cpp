@@ -562,6 +562,32 @@ void paint_fps(HDC dc, uint32_t w, uint32_t h, int s) {
 const char* loading_text() {
     return "LOADING...";
 }
+static void fill_triangle(HDC dc, POINT p0, POINT p1, POINT p2, COLORREF color) {
+    if (p0.y > p1.y) std::swap(p0, p1);
+    if (p1.y > p2.y) std::swap(p1, p2);
+    if (p0.y > p1.y) std::swap(p0, p1);
+
+    const int total_h = p2.y - p0.y;
+    if (total_h <= 0) return;
+
+    HBRUSH brush = CreateSolidBrush(color);
+    for (int y = p0.y; y <= p2.y; y++) {
+        const bool second_half = y > p1.y || p1.y == p0.y;
+        const int segment_h = second_half ? (p2.y - p1.y) : (p1.y - p0.y);
+        if (segment_h <= 0) continue;
+
+        const float alpha = (float)(y - p0.y) / (float)total_h;
+        const float beta = (float)(y - (second_half ? p1.y : p0.y)) / (float)segment_h;
+
+        int ax = p0.x + (int)std::round((p2.x - p0.x) * alpha);
+        int bx = second_half ? (p1.x + (int)std::round((p2.x - p1.x) * beta))
+                             : (p0.x + (int)std::round((p1.x - p0.x) * beta));
+        if (ax > bx) std::swap(ax, bx);
+        RECT r{ax, y, bx + 1, y + 1};
+        FillRect(dc, &r, brush);
+    }
+    DeleteObject(brush);
+}
 void paint_loading(HDC dc, uint32_t w, uint32_t h, int s) {
     fill(dc, 0, 0, (int)w, (int)h, RGB(0, 0, 0));
     SetBkMode(dc, TRANSPARENT);
@@ -595,42 +621,26 @@ void paint_loading(HDC dc, uint32_t w, uint32_t h, int s) {
     int g3 = std::clamp((int)(230 * (0.72 + 0.28 * absCos)), 0, 255);
     int b3 = std::clamp((int)(50  * (0.72 + 0.28 * absCos)), 0, 255);
 
-    HPEN outline = CreatePen(PS_SOLID, std::max(1, s), RGB(255, 240, 140));
-    HGDIOBJ old_pen = SelectObject(dc, outline);
-
     POINT top_pts[3] = {
         project(cx, cy - h_tri),
         project(cx - w_half, cy),
         project(cx + w_half, cy)
     };
-    HBRUSH b_top = CreateSolidBrush(RGB(r1, g1, b1));
-    HGDIOBJ old_b = SelectObject(dc, b_top);
-    Polygon(dc, top_pts, 3);
+    fill_triangle(dc, top_pts[0], top_pts[1], top_pts[2], RGB(r1, g1, b1));
 
     POINT left_pts[3] = {
         project(cx - w_half, cy),
         project(cx - w_tri, cy + h_tri),
         project(cx, cy + h_tri)
     };
-    HBRUSH b_left = CreateSolidBrush(RGB(r2, g2, b2));
-    SelectObject(dc, b_left);
-    Polygon(dc, left_pts, 3);
+    fill_triangle(dc, left_pts[0], left_pts[1], left_pts[2], RGB(r2, g2, b2));
 
     POINT right_pts[3] = {
         project(cx + w_half, cy),
         project(cx, cy + h_tri),
         project(cx + w_tri, cy + h_tri)
     };
-    HBRUSH b_right = CreateSolidBrush(RGB(r3, g3, b3));
-    SelectObject(dc, b_right);
-    Polygon(dc, right_pts, 3);
-
-    SelectObject(dc, old_b);
-    SelectObject(dc, old_pen);
-    DeleteObject(b_top);
-    DeleteObject(b_left);
-    DeleteObject(b_right);
-    DeleteObject(outline);
+    fill_triangle(dc, right_pts[0], right_pts[1], right_pts[2], RGB(r3, g3, b3));
 
     const char* msg = loading_text();
     HFONT font = hard_font(14 * s, FW_BOLD);
@@ -956,20 +966,6 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         lk.unlock();
         if (fw) copy_over(cmd, dst, fps_bmp, ups[1][slot], (int)w - (int)fw - (int)(12 * cur_scale), (int)(10 * cur_scale), w, h);
     }
-    if (menu_loading_active()) {
-        std::unique_lock lk(bmp_mu);
-        const uint32_t lw = loading_bmp.w, lh = loading_bmp.h;
-        lk.unlock();
-        if (lw && lh) {
-            VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-            mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-            mb.srcAccessMask = mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
-            vkCmdPipelineBarrier2(cmd, &di);
-            copy_over(cmd, dst, loading_bmp, ups[2][slot], (int)(w - lw) / 2, (int)(h - lh) / 2, w, h);
-        }
-    }
     if (open_now.load(std::memory_order_relaxed)) {
         std::unique_lock lk(bmp_mu);
         const uint32_t mw = menu_bmp.w, mh = menu_bmp.h;
@@ -982,6 +978,22 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &di);
         if (mw) copy_over(cmd, dst, menu_bmp, ups[0][slot], (int)(w - mw) / 2, (int)(h - mh) / 2, w, h);
+    }
+}
+
+void loading_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h) {
+    if (!menu_loading_active()) return;
+    std::unique_lock lk(bmp_mu);
+    const uint32_t lw = loading_bmp.w, lh = loading_bmp.h;
+    lk.unlock();
+    if (lw && lh) {
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        mb.srcAccessMask = mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
+        copy_over(cmd, dst, loading_bmp, ups[2][slot], (int)(w - lw) / 2, (int)(h - lh) / 2, w, h);
     }
 }
 

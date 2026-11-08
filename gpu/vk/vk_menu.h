@@ -40,5 +40,6 @@ bool menu_loading_active();
 void menu_note_frame(bool game_frame);   // (the frame rates the FPS counter shows)
 /// Over the window's image (TRANSFER_DST_OPTIMAL), w x h: the menu and the FPS counter. slot: the frame in flight, 0 to 2.
 void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h);
+void loading_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h);
 
 } // namespace mkwvk

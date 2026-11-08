@@ -2819,6 +2819,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
     }
     menu_record(f.cmd, dst, log_slot, dev.swap_extent.width, dev.swap_extent.height);
+    loading_record(f.cmd, dst, log_slot, dev.swap_extent.width, dev.swap_extent.height);
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     vkEndCommandBuffer(f.cmd);
     // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value
