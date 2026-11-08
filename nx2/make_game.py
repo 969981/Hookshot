@@ -564,15 +564,42 @@ def drop_stale_objects(work):
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    heads = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
-    stamp = hashlib.sha1(chr(10).join(heads).encode()).hexdigest()
+    found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
+
+    # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
+    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
+    # writes them with / where the folder has \: compared with / on both sides, each path's own spelling kept for the old stamp
+    mine = os.path.normcase(os.path.abspath(ROOT)).lower().replace(os.sep, "/")
+    ours = lambda h: h.replace(os.sep, "/").startswith(mine + "/")
+
+    def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
+        root = root.replace(os.sep, "/")
+        moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
+        return hashlib.sha1(chr(10).join(sorted(moved)).encode()).hexdigest()
+
+    rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
+    ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace").stdout.splitlines()[:1]
+    stamp = hashlib.sha1(chr(10).join(ver + rel).encode()).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
-            if f.read().strip() == stamp:
-                return
+            had = f.read().strip()
     except OSError:
-        pass
+        had = ""
+    if had == stamp:
+        return
+    # (a stamp an installed version of the builder wrote the old way: the same headers, in its own folder; kept, and written anew)
+    versions = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(ROOT))))
+    olds = {stamp_for(mine)}
+    if os.path.basename(versions).lower() == "versions" and os.path.isdir(versions):
+        for v in os.listdir(versions):
+            olds.add(stamp_for(os.path.normcase(os.path.join(versions, v, "HookshotBuilder", "tools")).lower()))
+    if had and had in olds:
+        print("the system headers are the same as the last build's (an earlier version of the builder): its objects are reused", flush=True)
+        with open(note, "w") as f:
+            f.write(stamp + chr(10))
+        return
     for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
         if os.path.isdir(sub):
             print("the system headers changed since the last build: its compiled objects are not reused (%s)" % sub, flush=True)
@@ -774,23 +801,52 @@ def main():
     if LINUX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
-    done = {"n": 0, "of": 1}
+    done = {"n": 0.0, "of": 1.0}
+    # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
+    # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
+    # builder said "452 minutes left" an hour from the end. Seconds per MB measured on a full build: the eight hot files (-O2,
+    # the play profile) 23.5, the other game files 3.4, the rest ~1.3 s each)
+    gen = os.path.join(work, "sa", "gen")
+
+    def cost(name, mb=None):
+        if mb is None:
+            try:
+                mb = os.path.getsize(os.path.join(gen, name)) / (1 << 20)
+            except OSError:
+                mb = 0
+        return 23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3
 
     def compiled(line):
         m = re.match(r"(\d+) files, ", line)
         if m:
-            done["of"] = int(m.group(1))
-        elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
-            done["n"] += 1
-            say("progress", "%.3f" % (done["n"] / done["of"]))
+            try:
+                ours = [f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c")]
+            except OSError:
+                ours = []
+            done["of"] = sum(cost(f) for f in ours) + max(0, int(m.group(1)) - len(ours)) * 1.3
+        else:
+            m = re.match(r"\s+(\S+)\s+(\d+) MB\s+\d+s", line)
+            if m:
+                done["n"] += cost(m.group(1))
+                say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
-    staged = [(os.path.join(built, n), os.path.join(out, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
+    # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
+    # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
+    # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
+    # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    launcher = launcher if not LINUX and os.path.isfile(launcher) else None
+    game_dir = os.path.join(out, "bin") if launcher else out
+    os.makedirs(game_dir, exist_ok=True)
+    staged = [(os.path.join(built, n), os.path.join(game_dir, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    if launcher:
+        staged.append((launcher, os.path.join(out, "hookshot.exe")))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -806,6 +862,13 @@ def main():
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
+    if launcher:   # (a folder built before the launcher: its game's DLLs and map left the folder for bin\; hookshot.exe is the launcher now)
+        for n in BESIDE[1:] + ["hookshot.map", "hookshot-game.exe"]:
+            try:
+                if os.path.isfile(os.path.join(out, n)):
+                    os.remove(os.path.join(out, n))
+            except OSError:
+                pass
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
