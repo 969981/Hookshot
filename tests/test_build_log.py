@@ -114,8 +114,10 @@ class BuildLogTests(unittest.TestCase):
 
         code, stdout, stderr, _ = self.invoke(build)
         self.assertEqual(code, 1)
+        # (PR #434: a library's SystemExit text goes through the builder's @@error protocol as well as stderr)
         self.assertEqual(stderr, "authored toolchain failure\n")
-        self.assertEqual(self.log.read_text(encoding="utf-8"), stderr)
+        self.assertEqual(stdout, "@@error authored toolchain failure\n")
+        self.assertEqual(self.log.read_text(encoding="utf-8"), stderr + stdout)
 
     def test_unwritable_destination_stops_before_build(self):
         self.log = self.root / "missing parent" / "build.log"

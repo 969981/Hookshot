@@ -505,10 +505,17 @@ def main():
         jobs = list(vk_jobs)
     print("%d files, %d jobs, %s" % (len(jobs), a.jobs, " ".join(f for f in fl if f.startswith("-D") or f.startswith("-O"))),
           flush=True)
+    # (progress by estimated compile cost, not by file count: one 20-minute file is not the same as one that takes
+    # five seconds, and the file count alone made the ring jump at the end of a build)
+    weights = {j[1]: compile_cost(j[1], costs) for j in jobs}
+    total_weight = max(1, sum(weights.values()))
+    done_weight = 0
     t0, failed = time.time(), []
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         # (as each ends, not in order: the builder app shows progress from these lines, and the biggest file comes first)
         for src, secs, err in (f.result() for f in concurrent.futures.as_completed([ex.submit(compile_one, j) for j in jobs])):
+            done_weight += weights.get(src, 1)
+            print("@@progress %.3f" % (done_weight / total_weight), flush=True)
             size = os.path.getsize(src) >> 20
             if err:
                 failed.append(src)

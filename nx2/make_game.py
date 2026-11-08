@@ -793,16 +793,9 @@ def main(a=None):
     if LINUX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
-    done = {"n": 0, "of": 1}
-
-    def compiled(line):
-        m = re.match(r"(\d+) files, ", line)
-        if m:
-            done["of"] = int(m.group(1))
-        elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
-            done["n"] += 1
-            say("progress", "%.3f" % (done["n"] / done["of"]))
-    run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    # (build.py emits @@progress itself, weighted by each file's estimated compile cost, so a 20-minute file is not
+    # counted the same as a 5-second one. The file count still reaches the builder through its ordinary file lines.)
+    run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env)
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")

@@ -91,6 +91,19 @@ The Windows setup retains older installed and partial builder folders in
 accumulate across updates; automatic cleanup still removes obsolete downloaded ZIP parts. Installing or repairing
 the same version remains a separate replacement operation.
 
+### Build speed and stopped builds
+
+- The builder uses one compiler per CPU thread, capped by free memory at about 3.5 GB per compiler. The Windows
+  builder's **Build workers** menu can choose fewer for this build only. On the command line, `--jobs <n>` or
+  `HOOKSHOT_JOBS=<n>` overrides the automatic choice; `0` and an empty value keep automatic selection.
+- Progress is weighted by each file's estimated compile cost, not only by file count, so a 20-minute file does not
+  look like a 5-second one. The file count stays visible beside it.
+- Do not start a builder update while a build is running. Let the build finish, then update.
+- If a build stops, copy the whole stopped-step text (the failing file and exit status), not a screenshot. Add
+  `--log "C:\path\build.log"` to keep the full output.
+- If Windows Defender removes one of the builder's tools, allow the Hookshot Builder folder or restore the file
+  from quarantine, then use the builder's **Repair** button. The tools are unsigned, which causes false positives.
+
 ### On Linux
 
 1. Download `Hookshot-<version>-x86_64.AppImage` from the Releases page (or the Linux AppImage workflow's artifact),

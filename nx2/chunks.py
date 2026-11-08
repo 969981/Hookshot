@@ -218,7 +218,7 @@ def split_big(gen_dir, files, budget=None):
         m = re.fullmatch(r"code_(\d{3})\.c", os.path.basename(path))
         if not m:
             continue
-        with open(path, encoding="utf-8", newline="") as f:
+        with open(path, encoding="utf-8") as f:   # (universal newlines: a CRLF copy of the same C is not a different cost)
             text = f.read()
         marks = [h.start() for h in HEAD.finditer(text)]
         ends = marks[1:] + [len(text)]
@@ -234,6 +234,14 @@ def split_big(gen_dir, files, budget=None):
                 cuts.append(i)
                 k = run * parts // total + 1   # (past a giant function: the next share, not a sliver after it)
             run += c
+        # (a short tail after a giant function is not a part of its own: merge it into the part before it, or it would
+        # compile in a few seconds while every worker waits for the giant one anyway)
+        min_part = budget // 4 + budget // 20   # (a 5% margin: an estimate that lands just under a quarter is still a sliver)
+        kept = [cuts[0]]
+        for cut in cuts[1:]:
+            if marks[0] + sum(cost[kept[-1]:cut]) >= min_part:
+                kept.append(cut)
+        cuts = kept
         bounds = [marks[i] for i in cuts] + [len(text)]
         preamble = text[:marks[0]]
         for j in range(len(cuts)):
