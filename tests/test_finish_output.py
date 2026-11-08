@@ -25,10 +25,13 @@ spec.loader.exec_module(make_game)
 def finish_statements(source, filename):
     main = next(node for node in ast.parse(source).body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
-    starts = [i for i, node in enumerate(main.body) if isinstance(node, ast.Assign)
-              and any(isinstance(target, ast.Name) and target.id == "staged" for target in node.targets)]
-    assert len(starts) == 1
-    start = starts[0]
+    def assigns(name):
+        return [i for i, node in enumerate(main.body) if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)]
+    assert len(assigns("staged")) == 1
+    # From the launcher's first line: the staged list names game_dir (bin\ beside the launcher), set up just before it
+    start = min(assigns("launcher") or assigns("staged"))
+    assert start <= assigns("staged")[0]
     end = next(i for i, node in enumerate(main.body[start + 1:], start + 1)
                if isinstance(node, ast.If) and any(isinstance(call, ast.Call)
                and isinstance(call.func, ast.Name) and call.func.id == "shader_census_cmd" for call in ast.walk(node)))
