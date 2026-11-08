@@ -726,23 +726,52 @@ def main():
     if LINUX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
-    done = {"n": 0, "of": 1}
+    done = {"n": 0.0, "of": 1.0}
+    # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
+    # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
+    # builder said "452 minutes left" an hour from the end. Seconds per MB measured on a full build: the eight hot files (-O2,
+    # the play profile) 23.5, the other game files 3.4, the rest ~1.3 s each)
+    gen = os.path.join(work, "sa", "gen")
+
+    def cost(name, mb=None):
+        if mb is None:
+            try:
+                mb = os.path.getsize(os.path.join(gen, name)) / (1 << 20)
+            except OSError:
+                mb = 0
+        return 23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3
 
     def compiled(line):
         m = re.match(r"(\d+) files, ", line)
         if m:
-            done["of"] = int(m.group(1))
-        elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
-            done["n"] += 1
-            say("progress", "%.3f" % (done["n"] / done["of"]))
+            try:
+                ours = [f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c")]
+            except OSError:
+                ours = []
+            done["of"] = sum(cost(f) for f in ours) + max(0, int(m.group(1)) - len(ours)) * 1.3
+        else:
+            m = re.match(r"\s+(\S+)\s+(\d+) MB\s+\d+s", line)
+            if m:
+                done["n"] += cost(m.group(1))
+                say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
-    staged = [(os.path.join(built, n), os.path.join(out, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
+    # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
+    # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
+    # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
+    # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    launcher = launcher if not LINUX and os.path.isfile(launcher) else None
+    game_dir = os.path.join(out, "bin") if launcher else out
+    os.makedirs(game_dir, exist_ok=True)
+    staged = [(os.path.join(built, n), os.path.join(game_dir, n)) for n in BESIDE if os.path.exists(os.path.join(built, n))]
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    if launcher:
+        staged.append((launcher, os.path.join(out, "hookshot.exe")))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -758,6 +787,13 @@ def main():
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
+    if launcher:   # (a folder built before the launcher: its game's DLLs and map left the folder for bin\; hookshot.exe is the launcher now)
+        for n in BESIDE[1:] + ["hookshot.map", "hookshot-game.exe"]:
+            try:
+                if os.path.isfile(os.path.join(out, n)):
+                    os.remove(os.path.join(out, n))
+            except OSError:
+                pass
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
