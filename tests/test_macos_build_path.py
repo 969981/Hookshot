@@ -149,6 +149,13 @@ with tempfile.TemporaryDirectory() as tmp:
         source = (ROOT / "host" / "posix" / "macos_stubs.c").read_text(encoding="utf-8")
         self.assertIn("void hos_prof_start(void)", source)
 
+    def test_macos_renderer_uses_sdl_pixel_dimensions(self):
+        renderer = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")
+        window = (ROOT / "host" / "posix" / "display_sdl.c").read_text(encoding="utf-8")
+        self.assertIn("hos_posix_window_pixel_size(&width, &height)", renderer)
+        self.assertIn("void hos_posix_window_pixel_size(int *width, int *height)", window)
+        self.assertIn("window_pixel_size(window, width, height)", window)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

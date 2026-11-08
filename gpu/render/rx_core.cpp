@@ -57,6 +57,9 @@ bool wgpuDevicePoll(WGPUDevice device, bool wait, const void* submission) {
 #endif
 
 namespace rx {
+#ifdef __APPLE__
+extern "C" void hos_posix_window_pixel_size(int* width, int* height);
+#endif
 bool draw_must_run = false;
 bool rt_history_on() { static const bool on = getenv("RX_RT_HISTORY") != nullptr; return on; }
 
@@ -578,6 +581,11 @@ bool init_device(HWND hwnd) {
 #ifdef __EMSCRIPTEN__
     present_mode = WGPUPresentMode_Fifo;
     configure_surface(1280, 720);
+#elif defined(__APPLE__)
+    int width = 0, height = 0;
+    hos_posix_window_pixel_size(&width, &height);
+    configure_surface((uint32_t)std::max(width, 1), (uint32_t)std::max(height, 1));
+    present_window_size(width, height);
 #else
     RECT rc;
     GetClientRect(hwnd, &rc);

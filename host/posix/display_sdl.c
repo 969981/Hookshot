@@ -157,6 +157,11 @@ static void window_pixel_size(void *w, int *width, int *height) {
     sdl.Vulkan_GetDrawableSize(w, width, height);
 #endif
 }
+#ifdef __APPLE__
+void hos_posix_window_pixel_size(int *width, int *height) {
+    window_pixel_size(window, width, height);
+}
+#endif
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
