@@ -55,6 +55,12 @@ def macos_sysroot_flags():
     return ["-isysroot", sdk]
 
 
+def macos_target_flags():
+    if sys.platform != "darwin":
+        return []
+    return ["--target=arm64-apple-macos13.3"]
+
+
 def need(path):
     if not os.path.isfile(path):
         raise SystemExit("%s not found: set EMSDK to an emsdk checkout (now %s), or put %s on PATH"

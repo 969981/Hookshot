@@ -1,12 +1,12 @@
 Hookshot Builder for macOS (Apple Silicon)
 
-This package includes a macOS app and an x86-64 command-line builder that run
-under Rosetta 2 and use WebGPU's Metal backend. It includes Hookshot source, Python
+This package includes a native arm64 macOS app and command-line builder that use
+WebGPU's Metal backend. It includes Hookshot source, Python
 runtime and modules, SDL2, static FFmpeg libraries, and wgpu-native.
 
 It does not include game data or a built game. You must provide your own
-legally obtained .nup dump. Xcode Command Line Tools and Rosetta 2 are required
-on the Mac where you build.
+legally obtained .nup dump. Xcode Command Line Tools are required on the Mac
+where you build.
 The generated executable requires macOS 13.3 or newer.
 
 Double-click HookshotBuilder.app to open the Hookshot Builder interface. It

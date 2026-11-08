@@ -17,6 +17,7 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
 import argparse
 import filecmp
 import os
+import platform
 import re
 import shutil
 import stat
@@ -288,16 +289,18 @@ def check_linux_compiler():
 
 
 def check_macos_toolchain():
-    """Validate the x86-64 Rosetta compiler and graphics/audio libraries before the long lift."""
+    """Validate the native Apple Silicon compiler and graphics/audio libraries before the long lift."""
     wgpu = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "wgpu-native"))
     sdl = os.environ.get("HOOKSHOT_SDL2", "")
     ffmpeg = os.environ.get("HOOKSHOT_FFMPEG", "")
+    if platform.machine() not in ("arm64", "aarch64"):
+        fail("The macOS builder requires a native Apple Silicon (arm64) process; Rosetta is not supported.")
     if not os.path.isfile(os.path.join(wgpu, "include", "webgpu", "webgpu.h")):
-        fail("macOS needs x86-64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
+        fail("macOS needs arm64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
     if not os.path.isfile(os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
         fail("macOS needs libwgpu_native.dylib in WGPU_NATIVE/lib.")
     if not sdl or not os.path.isfile(sdl):
-        fail("macOS needs an x86-64 SDL2 dylib: set HOOKSHOT_SDL2 to libSDL2-2.0.0.dylib.")
+        fail("macOS needs an arm64 SDL2 dylib: set HOOKSHOT_SDL2 to libSDL2-2.0.0.dylib.")
     if not shutil.which("lipo"):
         fail("Install Xcode Command Line Tools to verify macOS dependency architectures.")
     libraries = [sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")]
@@ -312,10 +315,10 @@ def check_macos_toolchain():
             fail("macOS needs the Hookshot static FFmpeg package; missing: %s" % ", ".join(missing))
         libraries += [os.path.join(ffmpeg, "lib", l) for l in static_libs]
     for library in libraries:
-        r = subprocess.run(["lipo", library, "-verify_arch", "x86_64"],
+        r = subprocess.run(["lipo", library, "-verify_arch", "arm64"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode:
-            fail("macOS dependency must contain x86_64 code for Rosetta: %s" % library)
+            fail("macOS dependency must contain native arm64 code: %s" % library)
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
     cc = toolchain.find("clang")
@@ -325,19 +328,19 @@ def check_macos_toolchain():
         src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
         with open(src, "w", encoding="utf-8") as f:
             f.write("int main(void) { return 0; }\n")
-        r = subprocess.run([cc, "--target=x86_64-apple-macos13.3"] + toolchain.macos_sysroot_flags() +
+        r = subprocess.run([cc] + toolchain.macos_target_flags() + toolchain.macos_sysroot_flags() +
                            [src, "-o", exe],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
-        fail("Xcode Command Line Tools could not link an x86-64 macOS test program: %s"
+        fail("Xcode Command Line Tools could not link a native arm64 macOS test program: %s"
              % failure_reason((r.stdout + r.stderr).splitlines()))
     if not ffmpeg:
         if not shutil.which("pkg-config"):
-            fail("Install pkg-config and x86-64 FFmpeg development libraries for the macOS build.")
+            fail("Install pkg-config and arm64 FFmpeg development libraries for the macOS build.")
         r = subprocess.run(["pkg-config", "--exists", "libavcodec", "libswscale", "libswresample", "libavutil"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode:
-            fail("macOS needs x86-64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
+            fail("macOS needs arm64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
 
 
 def free_memory_gb():

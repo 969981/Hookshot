@@ -11,11 +11,22 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <thread>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(__x86_64__)
 #include <x86intrin.h>
 #endif
+
+inline void cpu_relax() {
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+    __asm__ volatile("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(_M_X64)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
 
 #include <webgpu/webgpu.h>
 #ifdef __EMSCRIPTEN__

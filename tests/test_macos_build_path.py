@@ -27,14 +27,14 @@ with tempfile.TemporaryDirectory() as sdk:
         subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
                        capture_output=True, text=True)
 
-    def test_selects_x86_64_posix_and_metal_build_target(self):
+    def test_selects_native_arm64_posix_and_metal_build_target(self):
         source = ROOT / "nx2" / "build.py"
         script = (
             "import json, runpy, sys; "
             "sys.platform = 'darwin'; "
             "b = runpy.run_path(sys.argv[1]); "
             "b['toolchain'].macos_sysroot_flags = lambda: ['-isysroot', '/MacOSX.sdk']; "
-            "print(json.dumps({k: b[k] for k in ('WINDOWS', 'LINUX', 'MACOS', 'POSIX_HOST', 'EXE', 'MARCH')} "
+            "print(json.dumps({k: b[k] for k in ('WINDOWS', 'LINUX', 'MACOS', 'POSIX_HOST', 'EXE', 'MARCH', 'CPU')} "
             "| {'target': b['target']()}))"
         )
         result = subprocess.run([sys.executable, "-I", "-c", script, str(source)],
@@ -46,8 +46,9 @@ with tempfile.TemporaryDirectory() as sdk:
             "MACOS": True,
             "POSIX_HOST": True,
             "EXE": "hookshot",
-            "MARCH": "x86-64",
-            "target": ["--target=x86_64-apple-macos13.3", "-isysroot", "/MacOSX.sdk"],
+            "MARCH": "apple-m1",
+            "CPU": ["-mcpu=apple-m1", "-ffp-contract=off"],
+            "target": ["--target=arm64-apple-macos13.3", "-isysroot", "/MacOSX.sdk"],
         })
 
     def test_game_builder_selects_macos_bundle_files(self):
@@ -89,15 +90,17 @@ with tempfile.TemporaryDirectory() as tmp:
         commands.append(command)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
     toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
+                                      macos_target_flags=lambda: ["--target=arm64-apple-macos13.3"],
                                       macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
     with patch.dict(os.environ, {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": ""}), \
          patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), \
+         patch("platform.machine", return_value="arm64"), \
          patch.dict(sys.modules, {"toolchain": toolchain}):
         builder["check_macos_toolchain"]()
     assert [c for c in commands if c[0] == "lipo"] == [
-        ["lipo", str(sdl), "-verify_arch", "x86_64"],
-        ["lipo", str(library), "-verify_arch", "x86_64"],
+        ["lipo", str(sdl), "-verify_arch", "arm64"],
+        ["lipo", str(library), "-verify_arch", "arm64"],
     ]
 """
         subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
@@ -131,15 +134,17 @@ with tempfile.TemporaryDirectory() as tmp:
         commands.append(command)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
     toolchain = types.SimpleNamespace(find=lambda name: sys.executable,
+                                      macos_target_flags=lambda: ["--target=arm64-apple-macos13.3"],
                                       macos_sysroot_flags=lambda: ["-isysroot", "/MacOSX.sdk"])
     env = {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": str(ffmpeg)}
     with patch.dict(os.environ, env), patch("shutil.which", return_value="tool"), \
-         patch("subprocess.run", side_effect=run), patch.dict(sys.modules, {"toolchain": toolchain}):
+         patch("subprocess.run", side_effect=run), patch("platform.machine", return_value="arm64"), \
+         patch.dict(sys.modules, {"toolchain": toolchain}):
         builder["check_macos_toolchain"]()
     assert [c for c in commands if c[0] == "lipo"] == [
-        ["lipo", str(sdl), "-verify_arch", "x86_64"],
-        ["lipo", str(wgpu / "lib/libwgpu_native.dylib"), "-verify_arch", "x86_64"],
-    ] + [["lipo", str(ffmpeg / "lib" / lib), "-verify_arch", "x86_64"] for lib in libs]
+        ["lipo", str(sdl), "-verify_arch", "arm64"],
+        ["lipo", str(wgpu / "lib/libwgpu_native.dylib"), "-verify_arch", "arm64"],
+    ] + [["lipo", str(ffmpeg / "lib" / lib), "-verify_arch", "arm64"] for lib in libs]
     assert not any(c[0] == "pkg-config" for c in commands)
 """
         subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
@@ -148,6 +153,14 @@ with tempfile.TemporaryDirectory() as tmp:
     def test_macos_runtime_supplies_non_linux_profiler_entry_point(self):
         source = (ROOT / "host" / "posix" / "macos_stubs.c").read_text(encoding="utf-8")
         self.assertIn("void hos_prof_start(void)", source)
+
+    def test_native_arm64_path_has_host_context_and_memory_ordering_support(self):
+        context = (ROOT / "host" / "hos_setjmp.c").read_text(encoding="utf-8")
+        lifter = (ROOT / "third_party" / "a64-kit" / "lift" / "suyu" / "arm64_to_c.h").read_text(encoding="utf-8")
+        self.assertIn("#elif defined(__aarch64__) || defined(__arm64__)", context)
+        self.assertIn("stp x19, x20", context)
+        self.assertIn("__atomic_thread_fence(__ATOMIC_ACQUIRE)", lifter)
+        self.assertIn("__atomic_thread_fence(__ATOMIC_RELEASE)", lifter)
 
     def test_macos_renderer_uses_sdl_pixel_dimensions(self):
         renderer = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")

@@ -45,38 +45,34 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 `HOS_INPUT_BACKGROUND=0` overrides that option. `HOS_INPUT_EXCLUSIVE=1` controls merging the player's devices while
 the script's existing exclusive interval is active; it is not a focus override.
 
-## macOS (Apple Silicon, first build path)
+## macOS (Apple Silicon)
 
-The current runtime has x86-64 context-switch assembly and x86-specific synchronization code, so this first macOS
-target is an x86-64 executable run under Rosetta 2, not a native arm64 executable. It uses SDL2 for the window and
+The macOS builder and generated game are native arm64, with no Rosetta dependency. It uses SDL2 for the window and
 input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
-macOS. This provides a real Apple Silicon/Metal path while leaving native arm64 as follow-up work.
-The executable targets macOS 13.3 or newer because Apple's C++20 floating-point formatting support requires it.
+macOS. The executable targets macOS 13.3 or newer because Apple's C++20 floating-point formatting support requires it.
 
-The `macOS platform` workflow uploads a `HookshotBuilder-macos-x86_64` artifact containing a command-line builder,
-the Hookshot source, an x86-64 Python runtime and modules, SDL2, static FFmpeg, and Metal-enabled `wgpu-native`.
+The `macOS platform` workflow uploads a `HookshotBuilder-macos-arm64` artifact containing a command-line builder,
+the Hookshot source, a native arm64 Python runtime and modules, SDL2, static FFmpeg, and Metal-enabled `wgpu-native`.
 It does not contain game data or a built game. Download and unpack it on the target Mac; Xcode Command Line Tools
-and Rosetta 2 must be installed there. Double-click `HookshotBuilder.app` to choose your own `.nup` dump and output
-folder, or use the command-line launcher:
+must be installed there. Double-click `HookshotBuilder.app` to choose your own `.nup` dump and output folder, or
+use the command-line launcher:
 
 ```sh
 ./HookshotBuilder/HookshotBuilder.command --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
 ```
 
-The package is x86-64 under Rosetta on Apple Silicon, not native arm64. For development outside the artifact, use
-x86-64 builds of SDL2 2.26 or newer and `wgpu-native`; Homebrew packages from the native arm64 prefix cannot be linked
-into this build. `wgpu-native` must include its matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`,
-built with Metal support. Set `HOOKSHOT_FFMPEG` to the static FFmpeg prefix (or provide FFmpeg through
-`pkg-config`) and build from an x86-64 shell, for example:
+For development outside the artifact, use arm64 builds of SDL2 2.26 or newer and `wgpu-native`. `wgpu-native` must
+include its matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`, built with Metal support. Set
+`HOOKSHOT_FFMPEG` to the static FFmpeg prefix (or provide FFmpeg through `pkg-config`) and build natively:
 
 ```sh
-export WGPU_NATIVE=/path/to/x86_64-wgpu-native
-export HOOKSHOT_SDL2=/path/to/x86_64/libSDL2-2.0.0.dylib
-export HOOKSHOT_FFMPEG=/path/to/x86_64/ffmpeg
-arch -x86_64 python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+export WGPU_NATIVE=/path/to/arm64-wgpu-native
+export HOOKSHOT_SDL2=/path/to/arm64/libSDL2-2.0.0.dylib
+export HOOKSHOT_FFMPEG=/path/to/arm64/ffmpeg
+python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
 ```
 
-The normal builder command validates the x86-64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
+The normal builder command validates the arm64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
 then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder;
 FFmpeg is statically linked when `HOOKSHOT_FFMPEG` points to the packaged static libraries. The macOS FFmpeg build
 uses its native AV1 decoder to avoid compiling an additional dav1d dependency in CI.

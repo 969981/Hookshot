@@ -164,7 +164,7 @@ void SetLastError(DWORD e);
 #define InterlockedCompareExchangePointer InterlockedCompareExchange
 #define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #define _ReadWriteBarrier() __atomic_signal_fence(__ATOMIC_SEQ_CST)
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__arm64__)
 #define YieldProcessor() __builtin_arm_yield()
 #else
 #define YieldProcessor() __builtin_ia32_pause()

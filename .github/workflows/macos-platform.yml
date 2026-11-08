@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   macos-posix:
-    # Apple Silicon runner; Hookshot's current native context-switching assembly requires x86-64.
+    # Apple Silicon runner: verify the native arm64 game and runtime target.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,13 +19,20 @@ jobs:
           python-version: "3.12"
 
       - name: Build configuration test
-        run: python -I -B tests/test_macos_build_path.py
+        run: |
+          python -I -B tests/test_macos_build_path.py
+          python -I third_party/a64-kit/lift/build_emit.py
+          python -I scripts/macos/check-arm64-translation.py
 
-      - name: Link x86-64 macOS executable
+      - name: Link native arm64 macOS executable
         run: |
           printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/macos-probe.c"
-          clang --target=x86_64-apple-macos13.3 "$RUNNER_TEMP/macos-probe.c" -o "$RUNNER_TEMP/macos-probe"
-          lipo "$RUNNER_TEMP/macos-probe" -verify_arch x86_64
+          clang -target arm64-apple-macos13.3 -mcpu=apple-m1 "$RUNNER_TEMP/macos-probe.c" -o "$RUNNER_TEMP/macos-probe"
+          lipo "$RUNNER_TEMP/macos-probe" -verify_arch arm64
+          printf 'int main(void) { unsigned __int128 v = 0, e = 0; return __atomic_compare_exchange_n(&v, &e, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }\n' \
+            > "$RUNNER_TEMP/arm64-atomic-probe.c"
+          clang -target arm64-apple-macos13.3 -mcpu=apple-m1 "$RUNNER_TEMP/arm64-atomic-probe.c" \
+            -o "$RUNNER_TEMP/arm64-atomic-probe"
 
       - name: Compile macOS POSIX host shims
         run: |
@@ -34,19 +41,31 @@ jobs:
             > "$RUNNER_TEMP/a64-generated/a64_suyu.h"
           printf '/* Generated per-game floating-point helpers are unused by these host translation units. */\n' \
             > "$RUNNER_TEMP/a64-generated/a64_fpx.h"
-          clang -target x86_64-apple-macos13.3 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+          test "$(uname -m)" = arm64
+          python -c "import platform; assert platform.machine() == 'arm64', platform.machine()"
+          clang -target arm64-apple-macos13.3 -mcpu=apple-m1 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
-            host/posix/win32_posix.c host/hos_main.c host/rx_backend.c
-          clang -target x86_64-apple-macos13.3 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+            host/posix/win32_posix.c host/hos_main.c host/rx_backend.c host/hos_setjmp.c \
+            host/hos_thread.c host/hos_svc.c host/nn_os_sync.c
+          clang -target arm64-apple-macos13.3 -mcpu=apple-m1 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
             host/posix/display_sdl.c host/posix/macos_stubs.c
 
   macos-builder:
-    # Builds a downloadable CLI and its x86-64 dependencies; it never receives or builds game data.
+    # Builds a native arm64 downloadable CLI and dependencies; it never receives or builds game data.
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify Apple Silicon runner
+        run: |
+          test "$(uname -m)" = arm64
+          python -c "import platform; assert platform.machine() == 'arm64', platform.machine()"
 
       - uses: actions/cache@v4
         with:
@@ -55,12 +74,6 @@ jobs:
 
       - name: Install dependency build tools
         run: brew install cmake nasm
-
-      - name: Install Rosetta
-        run: |
-          if ! arch -x86_64 /usr/bin/true; then
-            softwareupdate --install-rosetta --agree-to-license
-          fi
 
       - name: Build builder dependencies
         run: bash scripts/macos/deps.sh
@@ -71,11 +84,17 @@ jobs:
           HOOKSHOT_SDL2: ${{ github.workspace }}/build-macos/deps/sdl2/lib/libSDL2-2.0.0.dylib
           HOOKSHOT_FFMPEG: ${{ github.workspace }}/build-macos/deps/ffmpeg
         run: |
-          arch -x86_64 build-macos/deps/python/bin/python3 -I -B tests/test_macos_build_path.py
-          arch -x86_64 build-macos/deps/python/bin/python3 -I -c "import tkinter"
-          arch -x86_64 build-macos/deps/python/bin/python3 -I -c \
+          build-macos/deps/python/bin/python3 -I -B tests/test_macos_build_path.py
+          build-macos/deps/python/bin/python3 -I -c "import tkinter"
+          build-macos/deps/python/bin/python3 -I -c \
+            "import platform; assert platform.machine() == 'arm64', platform.machine()"
+          build-macos/deps/python/bin/python3 -I -c \
             "import runpy; runpy.run_path('nx2/make_game.py')['check_macos_toolchain']()"
-          arch -x86_64 build-macos/deps/python/bin/python3 -I scripts/macos/check-renderer.py
+          python -I scripts/macos/check-renderer.py
+          lipo build-macos/deps/python/bin/python3 -verify_arch arm64
+          lipo build-macos/deps/sdl2/lib/libSDL2-2.0.0.dylib -verify_arch arm64
+          lipo build-macos/deps/wgpu-native/lib/libwgpu_native.dylib -verify_arch arm64
+          for lib in build-macos/deps/ffmpeg/lib/*.a; do lipo "$lib" -verify_arch arm64; done
 
       - name: Package CLI builder
         run: bash scripts/macos/package-builder.sh
@@ -83,11 +102,12 @@ jobs:
       - name: Verify packaged builder starts
         run: |
           test -d build-macos/package/HookshotBuilder/HookshotBuilder.app
+          lipo build-macos/package/HookshotBuilder/HookshotBuilder.app/Contents/MacOS/applet -verify_arch arm64
           cd build-macos/package/HookshotBuilder
           ./HookshotBuilder.command --help
 
       - uses: actions/upload-artifact@v4
         with:
-          name: HookshotBuilder-macos-x86_64
-          path: build-macos/HookshotBuilder-macos-x86_64.zip
+          name: HookshotBuilder-macos-arm64
+          path: build-macos/HookshotBuilder-macos-arm64.zip
           if-no-files-found: error

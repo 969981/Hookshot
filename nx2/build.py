@@ -48,7 +48,7 @@ WINDOWS = sys.platform == "win32"
 LINUX = sys.platform.startswith("linux")
 MACOS = sys.platform == "darwin"
 POSIX_HOST = LINUX or MACOS
-# Linux uses Vulkan. macOS targets x86-64 on Apple Silicon through Rosetta and uses WebGPU's Metal backend.
+# Linux uses Vulkan. macOS builds native arm64 and uses WebGPU's Metal backend.
 POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if POSIX_HOST else "hookshot.exe"
@@ -57,7 +57,7 @@ VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
-    target = ["--target=x86_64-apple-macos13.3"] if MACOS else toolchain.native_target()
+    target = toolchain.macos_target_flags() if MACOS else toolchain.native_target()
     if MACOS:
         target += toolchain.macos_sysroot_flags()
     return target + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])
@@ -258,16 +258,18 @@ def host_march():
         return "x86-64-v3"
 
 
-MARCH = os.environ.get("RX_MARCH") or ("x86-64" if MACOS else host_march())
+MARCH = os.environ.get("RX_MARCH") or ("apple-m1" if MACOS else host_march())
 if not MACOS and MARCH != "x86-64-v3":
     print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
-CPU = ["-march=" + MARCH, "-ffp-contract=off"]
+CPU = [("-mcpu=" if MACOS else "-march=") + MARCH, "-ffp-contract=off"]
+ATOMIC = [] if MACOS else ["-mcx16"]
 
 
 def flags(gen, rt64, opt, polls):
     return target() + CPU + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
-        "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
+        "-fno-strict-aliasing"] + ATOMIC + [
+        "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
         (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
 
@@ -418,7 +420,8 @@ def main():
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if POSIX_HOST else []) + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0"] + ATOMIC + \
+        ["-DA64_POLLING"] + WRITE_TRACK
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
     if POSIX_HOST:

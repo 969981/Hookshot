@@ -1370,6 +1370,7 @@ bool stats_on = false;
 
 int64_t clock_ns() {
     if (!stats_on) return 0;
+#if defined(__x86_64__) || defined(_M_X64)
     static const double ns_per_tick = [] {
         const int64_t t0 = hos_now_ns();
         const uint64_t c0 = __rdtsc();
@@ -1379,6 +1380,9 @@ int64_t clock_ns() {
         return c1 > c0 ? double(t1 - t0) / double(c1 - c0) : 0.0;
     }();
     return (int64_t)(double(__rdtsc()) * ns_per_tick);
+#else
+    return hos_now_ns();
+#endif
 }
 
 bool gpu_read(uint64_t va, void* dst, uint64_t n) {
