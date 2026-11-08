@@ -15,6 +15,9 @@ namespace mkwvk {
 /// among those it lists. Made at the first use (no instance or device extensions needed), once. True when there is one
 bool fsr4_available();
 const char* fsr4_reason();   // (why not, short: the menu and the log)
+/// It started, then failed while playing (the game's upscale would stand in again; FSR 3.1 takes over instead, whatever the
+/// menu chose: vk_draw.cpp)
+bool fsr4_failed();
 /// (linux) a Vulkan FSR 4 library such as fsr4-vk's is there and records with descriptor buffers: the device has to enable them
 bool fsr4_wants_descriptor_buffer();
 

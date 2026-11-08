@@ -5327,10 +5327,17 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
 
 /// (host/hos_oot_camera.c: tan(fovy/2) and the planes sead's projection published, 0 when nothing
 /// has, which leaves a backend on its own defaults)
-extern "C" float hos_oot_camera(float* near_plane, float* far_plane);
+/// (weak, like the next one: this renderer is also loaded by a game that was built without them, where they are null)
+extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* far_plane);
 /// (host/hos_oot_camera.c: the view projection the depth was rendered with, row major; false until
 /// something publishes it, which is what keeps camera motion from reprojecting through a guess)
-extern "C" int hos_oot_view_projection(float* row_major_4x4);
+extern "C" __attribute__((weak)) int hos_oot_view_projection(float* row_major_4x4);
+static float oot_camera(float* near_plane, float* far_plane) {
+    return hos_oot_camera ? hos_oot_camera(near_plane, far_plane) : 0.0f;
+}
+static int oot_view_projection(float* row_major_4x4) {
+    return hos_oot_view_projection ? hos_oot_view_projection(row_major_4x4) : 0;
+}
 
 /// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
 /// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
@@ -5558,7 +5565,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         if (said[p.key]++ == 0) {
             const char* why = upscale::temporal_refusal(req);
             float near_plane = 0.0f, far_plane = 0.0f;
-            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
+            const float tan_half = oot_camera(&near_plane, &far_plane);
             logf("vk: upscale seam %016llx: %s, output %ux%u, inputs %ux%u; a temporal backend %s%s",
                  (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
                  req.output_height, req.inputs.render_width, req.inputs.render_height,
@@ -5580,7 +5587,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (fsr_here && scene_depth.view && fsr3::supported() &&
         scene_depth.width == req.inputs.render_width && scene_depth.height == req.inputs.render_height) {
         camera_motion::Matrix vp{};
-        if (hos_oot_view_projection(vp.m)) {
+        if (oot_view_projection(vp.m)) {
             const VkImageView motion = camera_motion::record(cmd, scene_depth.view, scene_depth.format,
                                                              scene_depth.width, scene_depth.height, vp);
             if (motion) {
@@ -5599,8 +5606,11 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     ai.upscale_width = req.output_width, ai.upscale_height = req.output_height;
                     ai.motion_scale[0] = 1.0f, ai.motion_scale[1] = 1.0f;   // (already render pixels)
                     float np = 0.0f, fp = 0.0f;
-                    const float th = hos_oot_camera(&np, &fp);
-                    if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
+                    const float th = oot_camera(&np, &fp);
+                    if (th > 0.0f && np > 0.0f) {
+                        ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
+                        if (fp > np) ai.far_plane = fp;
+                    }
                     if (fsr3::upscale(cmd, ai)) {
                         static std::atomic<int> said{0};
                         if (said++ == 0)
@@ -5631,10 +5641,11 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         {   // (the game's own camera where the patch published it: nx2/oot_camera.py. Without it
             // the Inputs defaults stand, which only scales FSR's disocclusion thresholds)
             float near_plane = 0.0f, far_plane = 0.0f;
-            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
+            const float tan_half = oot_camera(&near_plane, &far_plane);
             if (tan_half > 0.0f && near_plane > 0.0f) {
                 fi.near_plane = near_plane;
                 fi.fov_y = 2.0f * std::atan(tan_half);
+                if (far_plane > near_plane) fi.far_plane = far_plane;
             }
         }
         // (the jitter the game's own network used is not extracted yet, so this says no sub-pixel
@@ -5714,11 +5725,21 @@ struct DlssState {
 DlssState ds;   // ponytail: one set of images, no lock: the replay records one frame at a time (RX_VK_PARALLEL would need ParLock here)
 
 bool dlss_on() { return opts.dlss && dlss_available(); }
-// (hookshot-amd) AMD FSR 4.1 on the same frames (vk_fsr4.cpp), from the same colour, depth and camera motion, when DLSS is not on:
-// the menu's AMD FSR 4.1 row (at once) and AMD's DLLs found. Ported from madebyjordan's FSR 4.1 work on Lichii
-bool fsr_on() { return opts.fsr4 && !dlss_on() && fsr4_available(); }
+// (hookshot-amd) AMD FSR on the same frames, from the same colour, depth and camera motion, when DLSS is not on: the menu's FSR
+// upscaler row (at once). 4.1 is AMD's library when it is there and has a model for this card (vk_fsr4.cpp, ported from madebyjordan's
+// FSR 4.1 work on Lichii); 3.1 is the SDK's own passes built in (vk_fsr3.cpp), for every card and every folder without the library.
+upscale::Engine fsr_engine() {
+    const auto choice = (upscale::Choice)opts.upscaler;
+    if (choice == upscale::Choice::Off || dlss_on()) return upscale::Engine::None;
+    upscale::EngineState state;
+    state.fsr4_usable = choice != upscale::Choice::Fsr3 && fsr4_available();   // (AMD's library is loaded at the first frame it is wanted)
+    state.fsr4_failed = fsr4_failed();
+    state.fsr3_usable = fsr3::available();
+    return upscale::engine_for(choice, state);
+}
+bool fsr_on() { return fsr_engine() != upscale::Engine::None; }
 bool upscaler_on() { return dlss_on() || fsr_on(); }
-const char* upscaler_name() { return fsr_on() ? "fsr4" : "dlss"; }
+const char* upscaler_name() { return dlss_on() ? "dlss" : fsr_engine() == upscale::Engine::Fsr3 ? "fsr3" : fsr_engine() == upscale::Engine::Fsr4 ? "fsr4" : "dlss"; }
 
 // FSR's jitter. The game draws without one, so a temporal upscaler has no sub-pixel detail to gather: the draws that test or write
 // the scene's depth are moved by a sub-pixel amount through the viewport (dyn_pack, dynamic_state), Halton (2, 3) as FSR's own
@@ -5740,6 +5761,7 @@ struct FsrJitter {
     bool live = false;        // (and the jitter is on)
     bool used = false;        // (a draw of this frame was moved: FSR is told x, y)
     uint64_t net_present = 0; // (the present the last network pass came in)
+    upscale::Engine engine = upscale::Engine::None;   // (the one that drew the last evaluation: a new one starts from no history)
 };
 FsrJitter fj;
 float halton(uint32_t i, uint32_t base) {
@@ -5986,6 +6008,27 @@ bool dlss_take_colour(VkCommandBuffer cmd, const Program& p, bool encode) {
     return true;
 }
 
+/// (hookshot-amd) AMD FSR 3.1 from the inputs FSR 4.1 takes (the passes are compiled for them: scripts/fsr3_shaders.py), the output left
+/// in its own image for dlss_output.comp. The camera is the one the motion was computed from
+static bool fsr3_evaluate(VkCommandBuffer cmd, const DlssImage& color, const DlssImage& depth, const DlssImage& motion, uint32_t ow, uint32_t oh,
+                          const Mat& camera, float jitter_x, float jitter_y, bool reset) {
+    fsr3::Inputs in;
+    in.color = color.view, in.depth = depth.view, in.motion = motion.view;
+    in.render_width = color.width, in.render_height = color.height;
+    in.upscale_width = ow, in.upscale_height = oh;
+    in.jitter[0] = jitter_x, in.jitter[1] = jitter_y;
+    in.reset = reset;
+    const upscale::Camera c = upscale::camera_from_view_projection(camera.data());
+    if (c.valid) in.near_plane = c.near_plane, in.far_plane = c.far_plane, in.fov_y = 2.0f * std::atan(c.tan_half_fov);
+    if (!fsr3::upscale(cmd, in)) return false;
+    static uint64_t evals = 0;
+    static int told = 0;   // (the first evaluation, and the first resets: a camera cut each)
+    if (evals++ == 0 || (reset && told < 40))
+        told++, logf("vk: fsr3: %ux%u -> %ux%u, jitter %.3f %.3f%s (camera near %.3f far %.1f)%s", color.width, color.height, ow, oh, jitter_x,
+                     jitter_y, reset ? " (history reset)" : "", in.near_plane, in.far_plane, c.valid ? "" : " (not read from the view projection: defaults)");
+    return true;
+}
+
 /// From dispatch(), the program's descriptors built: true when the dispatch is replaced (the network on a DLSS frame; with
 /// unless RX_DLSS_KEEP_PREPASSES=1, the chain's first three passes too)
 bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
@@ -6003,7 +6046,8 @@ bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     }
     if (!known && !skip_pre) return false;   // (unknown networks by their place only: with the prepasses left out)
     // (hookshot-amd: the game's frame ends here; FSR's next jitter, live when FSR drew this one)
-    const bool fsr = fsr_on();
+    const upscale::Engine engine = fsr_engine();
+    const bool fsr = engine != upscale::Engine::None;
     struct FrameEnd {
         bool drew = false;
         uint32_t rw = 0, ow = 0;
@@ -6036,7 +6080,8 @@ bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     const uint32_t ow = out->width, oh = out->height, rw = ds.used.w, rh = ds.used.h;
     gprof_begin(cmd);
     full_barrier(cmd);
-    bool ok = dlss_image(ds.out, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT,
+    bool ok = engine == upscale::Engine::Fsr3 ||   // (FSR 3.1 writes its own output image)
+              dlss_image(ds.out, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT,
                          VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, cmd);
     Mat clip{};
     const bool have_motion = clip_to_previous(ds.used.cur, ds.used.prev, clip);
@@ -6050,7 +6095,8 @@ bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         bool same_camera = true;   // (a camera cut: the previous matrix is not last frame's current one)
         for (int i = 0; i < 16; i++) same_camera = same_camera && std::abs(ds.used.prev[i] - ds.last_vp[i]) < 0.001f;
         // (FSR: history goes on while it drew the last network pass; presents can come mid-frame, and made frames add presents)
-        const bool reset = (fsr ? !fj.drew : (ds.last_frame == ~0ull || now != ds.last_frame + 1)) || !same_camera;
+        // (and a new engine starts from no history: the images the other one kept are not its own)
+        const bool reset = (fsr ? !fj.drew || fj.engine != engine : (ds.last_frame == ~0ull || now != ds.last_frame + 1)) || !same_camera;
         ds.resets += reset, ds.cuts += reset && !same_camera;
         if (dlss_debug() && ds.evals >= 1500 && ds.evals < 1512) {   // (the camera of 12 frames: a jitter would move [0][3]/[1][3] by ~1/w)
             const Mat& m = ds.used.cur;
@@ -6066,13 +6112,20 @@ bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         const DlssImage motion{ds.motion.image, ds.motion.view, VK_FORMAT_R16G16_SFLOAT, rw, rh, VK_IMAGE_ASPECT_COLOR_BIT};
         const DlssImage output{ds.out.image, ds.out.view, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, VK_IMAGE_ASPECT_COLOR_BIT};
         // (FSR is told the offset this frame's scene was drawn with: none when no draw was moved)
-        ok = fsr ? fsr4_evaluate(cmd, color, depth, motion, output, fj.used ? fj.x : 0.0f, fj.used ? fj.y : 0.0f, reset)
-                 : dlss_evaluate(cmd, color, depth, motion, output, reset, ds.evals++);
+        const float jitter_x = fj.used ? fj.x : 0.0f, jitter_y = fj.used ? fj.y : 0.0f;
+        ok = engine == upscale::Engine::Fsr4 ? fsr4_evaluate(cmd, color, depth, motion, output, jitter_x, jitter_y, reset)
+             : engine == upscale::Engine::Fsr3 ? fsr3_evaluate(cmd, color, depth, motion, ow, oh, ds.used.cur, jitter_x, jitter_y, reset)
+                                               : dlss_evaluate(cmd, color, depth, motion, output, reset, ds.evals++);
         if (fsr) ds.evals++;
         frame_end.drew = ok && fsr, frame_end.rw = rw, frame_end.ow = ow;
+        if (ok && fsr && fj.engine != engine) {
+            logf("vk: fsr: %s draws the upscale from now on", upscale::engine_name(engine));
+            fj.engine = engine;
+        }
         if (ok) {
             if (ds.reason || ds.last_frame == ~0ull)
-                logf("vk: %s: %s draws the upscale from frame %llu (%ux%u -> %ux%u)", upscaler_name(), fsr ? "AMD FSR 4.1" : "DLSS",
+                logf("vk: %s: %s draws the upscale from frame %llu (%ux%u -> %ux%u)", upscaler_name(),
+                     engine == upscale::Engine::Fsr3 ? "AMD FSR 3.1" : fsr ? "AMD FSR 4.1" : "DLSS",
                      (unsigned long long)now, rw, rh, ow, oh);
             ds.reason = nullptr;
             ds.last_frame = now, ds.last_vp = ds.used.cur;
@@ -6087,7 +6140,9 @@ bool dlss_dispatch(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     }
     if (ok && dlss_debug() && dlss_debug_pass(cmd, dw.imgs[ntex].imageView, ow, oh, ds.used)) {
     } else if (ok) {
-        dlss_pass(cmd, ds.output_pipe, ds.nearest, ds.out.view, dw.imgs[ntex].imageView, ow, oh, nullptr);   // (squared back)
+        // (squared back: FSR 3.1's own image, or the output image the other two wrote)
+        dlss_pass(cmd, ds.output_pipe, ds.nearest, engine == upscale::Engine::Fsr3 ? fsr3::output_view() : ds.out.view,
+                  dw.imgs[ntex].imageView, ow, oh, nullptr);
     } else {   // (DLSS failed with the first passes left out: a linear upscale of the square-rooted scene this frame)
         dlss_fallback(have_motion ? "DLSS declined the frame: a linear upscale" : "the camera matrix is not invertible: a linear upscale");
         dlss_pass(cmd, ds.output_pipe, ds.linear, ds.color.view, dw.imgs[ntex].imageView, ow, oh, nullptr);

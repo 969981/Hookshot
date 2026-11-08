@@ -36,7 +36,7 @@ constexpr const char* kLoader = "amd_fidelityfx_upscaler_vk.so";
 #endif
 
 struct Fsr {
-    bool tried = false, ok = false;
+    bool tried = false, ok = false, started = false;
     const char* reason = "not started";
     HMODULE lib = nullptr;
     PfnFfxCreateContext create = nullptr;
@@ -168,6 +168,7 @@ bool start() {
     }
     logf("vk: fsr4: upscalers %s; using %u.%u.%u", listed.c_str(), best[0], best[1], best[2]);
     fsr.ok = true;
+    fsr.started = true;
     fsr.reason = "";
     return true;
 }
@@ -282,6 +283,7 @@ bool fsr4_available() {
     return fsr.ok;
 }
 const char* fsr4_reason() { return fsr.reason; }
+bool fsr4_failed() { return fsr.started && !fsr.ok; }
 
 bool fsr4_wants_descriptor_buffer() {
 #ifdef _WIN32
