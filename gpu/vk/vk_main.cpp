@@ -17,6 +17,7 @@
 #include "vk_draw.h"
 #include "vk_internal.h"
 #include "vk_dlss.h"
+#include "vk_fsr4.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
 
@@ -240,6 +241,8 @@ bool create_device() {
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
     for (const char* e : dlss_device_exts())   // (hookshot: NVIDIA Streamline's, vk_dlss.cpp)
         if (has_extension(exts, e) && std::none_of(want.begin(), want.end(), [&](const char* x) { return !std::strcmp(x, e); })) want.push_back(e);
+    bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
+    if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -290,7 +293,10 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
