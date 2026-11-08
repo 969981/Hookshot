@@ -81,7 +81,7 @@ This is **source identity**, not a complete toolchain/content manifest. Repackin
 same tag and source commit does not trigger an offer. Publish such a change under a new tag if it should be offered to existing
 users. The Linux runtime's automatic update offer remains out of scope.
 
-Game-free checks are `tests/test_release_identity.py`, `tests/check_update_identity_c.py` and
+Game-free checks are `tests/test_release_identity.py`, `tests/test_update_identity_c.py` and
 `tests/update_identity/UpdateIdentityTests.csproj`. Their inputs are authored metadata, source files and ZIPs; they do not read games
 or run the GUI. The native negative control retains the previous tag-only decision and must fail the corrected-source case.
 Managed tests exercise actual download/preparation code against an offline HTTP handler, including manifest-only releases, ZIP fallback,
