@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory() as tmp:
         commands.append(command)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
     toolchain = types.SimpleNamespace(find=lambda name: sys.executable)
-    with patch.dict(os.environ, {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl)}), \
+    with patch.dict(os.environ, {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": ""}), \
          patch("shutil.which", return_value="tool"), \
          patch("subprocess.run", side_effect=run), \
          patch.dict(sys.modules, {"toolchain": toolchain}):
