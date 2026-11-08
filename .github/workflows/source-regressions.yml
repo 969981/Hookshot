@@ -26,6 +26,8 @@ on:
       - tests/test_failure_reason.py
       - tests/test_setup_pruning.py
       - builder/setup/setup.c
+      - tests/test_linux_builder_jobs.py
+      - builder/linux/hookshot_builder.py
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -119,6 +121,8 @@ on:
       - tests/test_failure_reason.py
       - tests/test_setup_pruning.py
       - builder/setup/setup.c
+      - tests/test_linux_builder_jobs.py
+      - builder/linux/hookshot_builder.py
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -277,6 +281,8 @@ jobs:
           call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
           if errorlevel 1 exit /b 1
           python -I -B tests/test_setup_pruning.py --cc cl
+      - name: Linux builder worker selection
+        run: python -I -B tests/test_linux_builder_jobs.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
