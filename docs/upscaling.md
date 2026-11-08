@@ -117,7 +117,28 @@ rather than from a guess:
 
 `x0` is the projection object throughout that function and `x1` is the 4x4 it writes, so one
 injected block there can publish the near plane, the far plane and the field of view to host globals
-for the renderer to read, the way `hos_wide_ratio` already travels the other way.
+for the renderer to read, the way `hos_wide_ratio` already travels the other way. Note that the path
+which actually runs is one of the **inlined** copies, not the out-of-line function, and each holds
+the projection in a different register; patching only the out-of-line one published nothing.
+
+**A run confirms the layout and the values.** The object is built on the stack, so a published
+pointer read a frame later is all zeros; snapshotting its first 48 floats at publish time gives:
+
+```
++0x80: 0 0 0 0 1 0 1 20000
++0xa0: 0.7854 0.38268 0.92388 0.41421 0.5625 0 0 0
+```
+
+- `+0x98` = **1.0**, the near plane, and `+0x9c` = **20000**, the far plane
+- `+0xac` = **0.41421** = tan(22.5 deg), so the vertical field of view is **45 degrees** — and
+  `+0xa0` holds that same angle in radians, 0.7854
+- `+0xb0` = **0.5625** = 1080/1920, so it is height over width, not width over height
+- `+0xa4` and `+0xa8` are sin and cos of the half angle
+
+That 45 degrees is also the needle for the rest of the matrix: a projection built from it has
+m11 = 1/tan(22.5 deg) = **2.41421**, so the view projection the draws use can be found by looking
+for that value in the uniform buffer a scene draw reads, rather than by guessing at another object's
+offsets.
 
 That removes the approximation the reference implementation settles for — it documents using "a
 typical near plane and vertical field of view" because DLSS hands it no camera — and it is the same
