@@ -88,12 +88,12 @@ jobs:
 
       - name: Build macOS Vulkan renderer
         env:
-          PATH: /opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:/usr/bin:/bin
+          PATH: /opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:/usr/bin:/bin:/usr/sbin:/sbin
           RX_CPM: ${{ runner.temp }}/cpm
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
         run: |
-          python -I nx2/build.py --standalone --jobs "$(sysctl -n hw.ncpu)"
+          python -I nx2/build.py --standalone --jobs "$(python -c 'import os; print(os.cpu_count() or 1)')"
           test -f work/sa/build/hookshot_vk.dylib
           file work/sa/build/hookshot_vk.dylib
           otool -L work/sa/build/hookshot_vk.dylib
