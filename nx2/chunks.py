@@ -126,11 +126,24 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
     try:
         ctx = multiprocessing.get_context("fork")
         with ctx.Pool(jobs) as pool:
-            for out, deltas in pool.imap(_emit_run, [order[i:i + run] for i in range(0, len(order), run)]):
+            # At most jobs unconsumed batches, including the one being yielded. An early slow batch can leave workers
+            # idle; letting them run ahead instead kept every later batch's generated text in the parent's imap buffer.
+            batches = iter(order[i:i + run] for i in range(0, len(order), run))
+            pending = collections.deque()
+            for es in batches:
+                pending.append(pool.apply_async(_emit_run, (es,)))
+                if len(pending) == jobs:
+                    break
+            while pending:
+                out, deltas = pending.popleft().get()
                 for c, d in zip(counters, deltas):
                     for k, v in d.items():
                         c[k] = c.get(k, 0) + v
                 yield from out
+                del out, deltas   # release the consumed payload before submitting its replacement
+                es = next(batches, None)
+                if es is not None:
+                    pending.append(pool.apply_async(_emit_run, (es,)))
     finally:
         _job = None
         gc.unfreeze()
