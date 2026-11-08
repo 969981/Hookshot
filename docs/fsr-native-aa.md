@@ -37,8 +37,10 @@ build the default renderer.
 
 For the optional runtime, obtain `amd_fidelityfx_loader_vk.dll` and
 `amd_fidelityfx_upscaler_vk.dll` from the official SDK's Vulkan binaries and put
-them next to `hookshot.exe`, following AMD's license terms. The loader is opened
-by absolute executable-relative path with restricted DLL search flags.
+them beside the actual game executable and `hookshot_vk.dll`, following AMD's
+license terms. In the new Windows launcher layout this is `bin/`, not beside the
+root launcher; older/development layouts keep them in the game root. The loader
+is opened by absolute executable-relative path with restricted DLL search flags.
 
 Add these lines to the local `hookshot_env.txt`, then restart:
 
@@ -99,6 +101,17 @@ controlled benchmark. Menus, cutscenes, area transitions, independent character
 motion, resizing and other hardware need wider validation before enabling the
 feature by default. The best local image also used a separate native scene-scale
 experiment; that resolution change is not part of this feature.
+
+On 2026-11-08 the isolated integration of this feature, #578 and the existing
+#329 fix was also verified on base `3f5b0aa` (source fingerprint `9882ef6b`). The
+log recorded FSR provider 4.1.2 and at least 2,520 successful Native AA dispatches
+at 2560x1440. The resolve guards require matched scene color, depth and output
+sizes; the native network report also showed 2560x1440 input and output. No FSR
+SDK error, dispatch failure or device-lost entry was observed in that snapshot.
+The player reported that the result looked good. With frame generation off,
+19 gameplay presentation samples had a median of 52.2 FPS (47.4-54.8); this is not
+a controlled before/after benchmark. Later upstream merges have separate build
+and source-regression checks and are not covered by that gameplay run.
 
 ## Game-free checks
 
