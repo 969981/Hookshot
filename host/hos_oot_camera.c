@@ -50,6 +50,19 @@ void hos_oot_camera_dump(void) {
     }
 }
 
+/* The view projection the scene's depth was rendered with, row major, or 0 when nothing has
+   published one. sead's projection update gives the projection alone; the view is not identified
+   yet (HOS_CAMERA_DUMP=1 is for finding it), so this answers 0 and camera motion stays off rather
+   than reprojecting through a matrix that is not the one the depth came from. */
+volatile int hos_oot_view_projection_valid = 0;
+volatile float hos_oot_view_projection_rows[16];
+
+int hos_oot_view_projection(float *row_major_4x4) {
+    if (!hos_oot_view_projection_valid || !row_major_4x4) return 0;
+    for (int i = 0; i < 16; i++) row_major_4x4[i] = hos_oot_view_projection_rows[i];
+    return 1;
+}
+
 /* The renderer's side: the field of view in radians, or 0 when nothing has been published.
    tan_half_fov is what the game stores (1 / it becomes the projection's m11), so the angle is
    twice its arc tangent. */

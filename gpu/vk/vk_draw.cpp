@@ -42,6 +42,7 @@
 #include "shaders/taau_upscale_comp_spv.h"
 #include "upscale_format.h"
 #include "upscale_seam.h"
+#include "vk_camera_motion.h"
 #include "vk_fsr3.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -5308,6 +5309,9 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
 /// (host/hos_oot_camera.c: tan(fovy/2) and the planes sead's projection published, 0 when nothing
 /// has, which leaves a backend on its own defaults)
 extern "C" float hos_oot_camera(float* near_plane, float* far_plane);
+/// (host/hos_oot_camera.c: the view projection the depth was rendered with, row major; false until
+/// something publishes it, which is what keeps camera motion from reprojecting through a guess)
+extern "C" int hos_oot_view_projection(float* row_major_4x4);
 
 /// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
 /// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
@@ -5552,6 +5556,50 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // (hookshot) FSR 3.1 in the dispatch's place, opt-in with RX_VK_FSR=1 and only where the
     // contract holds. Its own RGBA16F output is blitted into the game's target, which is the
     // format conversion the game's network would have done itself.
+    // (hookshot) The two inputs this dispatch never carries, assembled: the scene's own depth, and
+    // motion reprojected from it. docs/upscaling.md says why they cannot be taken from here.
+    if (fsr_here && scene_depth.view && fsr3::supported() &&
+        scene_depth.width == req.inputs.render_width && scene_depth.height == req.inputs.render_height) {
+        camera_motion::Matrix vp{};
+        if (hos_oot_view_projection(vp.m)) {
+            const VkImageView motion = camera_motion::record(cmd, scene_depth.view, scene_depth.format,
+                                                             scene_depth.width, scene_depth.height, vp);
+            if (motion) {
+                req.inputs.motion = 0;   // (assembled, not a binding of this dispatch)
+                upscale::Request assembled = req;
+                assembled.inputs.inputs_complete = true;
+                assembled.inputs.render_width = scene_depth.width;
+                assembled.inputs.render_height = scene_depth.height;
+                assembled.colour_binding = assembled.inputs.colour;
+                if (upscale::temporal_possible(assembled)) {
+                    fsr3::Inputs ai;
+                    ai.color = dw.imgs[req.inputs.colour != upscale::kNone ? req.inputs.colour : 0].imageView;
+                    ai.depth = scene_depth.view;
+                    ai.motion = motion;
+                    ai.render_width = scene_depth.width, ai.render_height = scene_depth.height;
+                    ai.upscale_width = req.output_width, ai.upscale_height = req.output_height;
+                    ai.motion_scale[0] = 1.0f, ai.motion_scale[1] = 1.0f;   // (already render pixels)
+                    float np = 0.0f, fp = 0.0f;
+                    const float th = hos_oot_camera(&np, &fp);
+                    if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
+                    if (fsr3::upscale(cmd, ai)) {
+                        static std::atomic<int> said{0};
+                        if (said++ == 0)
+                            logf("vk: fsr3 %ux%u -> %ux%u with assembled depth and camera motion",
+                                 ai.render_width, ai.render_height, ai.upscale_width, ai.upscale_height);
+                        VkImageBlit b{};
+                        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+                        b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
+                                       VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     if (fsr_here && upscale::temporal_possible(req) && fsr3::supported()) {
         fsr3::Inputs fi;
         fi.color = dw.imgs[req.colour_binding].imageView;
