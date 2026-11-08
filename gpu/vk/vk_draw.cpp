@@ -5308,10 +5308,14 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
 
 /// (host/hos_oot_camera.c: tan(fovy/2) and the planes sead's projection published, 0 when nothing
 /// has, which leaves a backend on its own defaults)
-extern "C" float hos_oot_camera(float* near_plane, float* far_plane);
-/// (host/hos_oot_camera.c: the view projection the depth was rendered with, row major; false until
-/// something publishes it, which is what keeps camera motion from reprojecting through a guess)
-extern "C" int hos_oot_view_projection(float* row_major_4x4);
+/// (host/hos_oot_camera.c) These live in the game executable, not in this library, so they are weak:
+/// the renderer is dlopen'd with RTLD_NOW, which resolves every symbol up front, and a plain extern
+/// to the host made this whole library fail to load with "undefined symbol". Weak and null-checked
+/// means the renderer loads either way and simply has no camera when the host does not export one.
+extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* far_plane);
+/// (the view projection the depth was rendered with, row major; false until something publishes it,
+/// which is what keeps camera motion from reprojecting through a guess)
+extern "C" __attribute__((weak)) int hos_oot_view_projection(float* row_major_4x4);
 
 /// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
 /// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
@@ -5539,7 +5543,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         if (said[p.key]++ == 0) {
             const char* why = upscale::temporal_refusal(req);
             float near_plane = 0.0f, far_plane = 0.0f;
-            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
+            const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
             logf("vk: upscale seam %016llx: %s, output %ux%u, inputs %ux%u; a temporal backend %s%s",
                  (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
                  req.output_height, req.inputs.render_width, req.inputs.render_height,
@@ -5561,7 +5565,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (fsr_here && scene_depth.view && fsr3::supported() &&
         scene_depth.width == req.inputs.render_width && scene_depth.height == req.inputs.render_height) {
         camera_motion::Matrix vp{};
-        if (hos_oot_view_projection(vp.m)) {
+        if (hos_oot_view_projection && hos_oot_view_projection(vp.m)) {
             const VkImageView motion = camera_motion::record(cmd, scene_depth.view, scene_depth.format,
                                                              scene_depth.width, scene_depth.height, vp);
             if (motion) {
@@ -5580,7 +5584,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     ai.upscale_width = req.output_width, ai.upscale_height = req.output_height;
                     ai.motion_scale[0] = 1.0f, ai.motion_scale[1] = 1.0f;   // (already render pixels)
                     float np = 0.0f, fp = 0.0f;
-                    const float th = hos_oot_camera(&np, &fp);
+                    const float th = hos_oot_camera ? hos_oot_camera(&np, &fp) : 0.0f;
                     if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
                     if (fsr3::upscale(cmd, ai)) {
                         static std::atomic<int> said{0};
@@ -5612,7 +5616,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         {   // (the game's own camera where the patch published it: nx2/oot_camera.py. Without it
             // the Inputs defaults stand, which only scales FSR's disocclusion thresholds)
             float near_plane = 0.0f, far_plane = 0.0f;
-            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
+            const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
             if (tan_half > 0.0f && near_plane > 0.0f) {
                 fi.near_plane = near_plane;
                 fi.fov_y = 2.0f * std::atan(tan_half);
