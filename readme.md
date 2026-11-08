@@ -87,9 +87,10 @@ A build takes about 40 minutes, and you can use your PC in the meantime.
    make it executable (`chmod +x`) and start it. It is Hookshot Builder with everything it needs inside: the compiler,
    the libraries and the Vulkan renderer. Nothing else has to be installed.
 2. Choose your `.nup` (or your `romfs` and `exefs` folders), a language and a folder for the game, and build.
-3. When it finishes, press Play. The game is also added to your applications menu. The same AppImage starts that
-   game without opening the builder: `./Hookshot-<version>-x86_64.AppImage --play`, or `--play ~/Games/Hookshot`
-   for a different folder. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
+3. When it finishes, press Play. The game is also added to your applications menu. `hookshot` in the folder is the
+   launcher (Play, and Update when a newer release is out). The game itself is `bin/hookshot`. The same AppImage
+   starts that game without the window: `./Hookshot-<version>-x86_64.AppImage --play`, or `--play ~/Games/Hookshot`
+   for a different folder. A folder built from a source checkout has no launcher: `hookshot` there is the game.
 
 From the command line: `./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot`
 (the same options as `make_game.py`).
@@ -102,8 +103,9 @@ beside the game from an earlier build is moved there once.
 To choose how many files compile at once, launch the builder from a terminal with, for example,
 `HOOKSHOT_JOBS=2 ./Hookshot-<version>-x86_64.AppImage` (replace the filename with the one you downloaded).
 Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal. Use a positive whole number;
-`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder's automatic selection still
-uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
+`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder still uses `RX_JOBS` when set;
+otherwise it chooses as on Windows: one compiler per CPU thread, as many as the free memory holds at 2 GB each (a file
+whose compiler runs out of memory is compiled again alone). The `--cli` route also accepts `--jobs 2`.
 These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows.
@@ -128,14 +130,15 @@ saves and settings are kept. What changed in each release is in [changelog.txt](
 2. To be safe, copy your saves somewhere first: the `user` folder beside `hookshot.exe` on Windows, or
    `~/.local/share/hookshot` on Linux.
 3. Get the new release:
-   - **Hookshot Builder:** download the new HookshotBuilder zip and extract it to a new folder (with its `tools`
-     folder). The old builder folder can then be deleted.
-   - **Linux:** download the new AppImage and make it executable. The old one can be deleted, the game is not removed with it.
+   - **Windows:** open `hookshot.exe` in the game folder and press Update, or run `HookshotBuilder.exe`. Only the
+     parts of the builder that changed are downloaded, and only the game files that changed are compiled.
+   - **Linux:** open `hookshot` in the game folder (or the AppImage) and press Update. The same: parts whose checksum
+     did not change are kept, and the game is compiled again only where its code changed. The first AppImage is still
+     the whole builder. A release from before this list was published downloads the parts once.
    - **Command line:** `git pull` in your clone, and take the `tools` folder's contents (see
      [What you need](#what-you-need)) from the new HookshotBuilder zip, as they can change between releases.
-4. Build again with the same `.nup` (or `romfs` and `exefs` folders) and **the same game folder** as before. With the
-   same `.nup`, the game is not read again, but the translation and the compile still run, so it takes about as long
-   as the first build.
+4. Update builds again into **the same game folder**. With the same game files, they are not read again. A part of the
+   builder that did not change is not downloaded, and a compiled file whose source did not change is not compiled again.
 5. Start the game as before.
 
 What a new build keeps and what it replaces in the game folder:
@@ -166,6 +169,9 @@ To build from the command line you also need:
   it the build uses the clang from [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools
   and the Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
+- From Linux, the Windows game builds too: unpack llvm-mingw's Linux build (`ucrt-ubuntu-22.04-x86_64`), then run
+  `make_game.py` with `RX_TARGET=windows` and `HOOKSHOT_MINGW` set to its folder. The objects go to
+  `~/.cache/hookshot-builder-windows`, apart from the Linux game's. The game folder runs under Proton or on Windows.
 - The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
 - What the HookshotBuilder zip carries in its `tools` folder and a clone does not. The builder sets the variables
   below itself; from the command line, set them before you run `make_game.py`:
