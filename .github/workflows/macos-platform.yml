@@ -10,7 +10,7 @@ permissions:
 jobs:
   macos-posix:
     # Apple Silicon runner; Hookshot's current native context-switching assembly requires x86-64.
-    runs-on: macos‑26‑xlarge
+    runs-on: macos-latest-xlarge
     steps:
       - uses: actions/checkout@v4
 
