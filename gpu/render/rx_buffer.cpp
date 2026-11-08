@@ -53,9 +53,7 @@ std::vector<Segment*> segments;   // by base / kStep
 // ((mkw-recomp) by buffer: the table has a slot per 8 MB of the 512 GB window, 65536, which a search by buffer walked)
 std::unordered_map<WGPUBuffer, Segment*> segment_of_buffer;
 int64_t batch_id;
-#if !defined(__APPLE__) || !defined(A64_WRITE_TRACK) || defined(__EMSCRIPTEN__)
 bool watch_ok = true;
-#endif
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 extern "C" uint8_t a64_dirty[1ull << 27];   // (rt/a64_rt.c: (mkw-recomp) A64_DIRTY_PAGES, a mark per page of 512 GB)
 #endif
