@@ -28,7 +28,7 @@ ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
 LINUX = os.name != "nt"
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
+BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -266,6 +266,41 @@ def check_linux_compiler():
              "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
 
 
+def free_memory_gb():
+    """The memory free for the compilers now, in GB (None: not known)"""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("len", ctypes.c_uint32), ("load", ctypes.c_uint32), ("total", ctypes.c_uint64),
+                            ("avail", ctypes.c_uint64), ("pt", ctypes.c_uint64), ("pa", ctypes.c_uint64),
+                            ("vt", ctypes.c_uint64), ("va", ctypes.c_uint64), ("ve", ctypes.c_uint64)]
+            m = MS()
+            m.len = ctypes.sizeof(MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+                return m.avail / (1 << 30)
+            return None
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1 << 20)
+    except Exception:
+        return None
+    return None
+
+
+def default_jobs():
+    """(issue 418) One compiler per CPU thread, as many as the free memory holds (a piece of the game takes ~2-3 GB to
+    compile): half the threads left 16-thread PCs at 8 and 4-thread ones at 2. HOOKSHOT_JOBS or --jobs choose"""
+    cpus = os.cpu_count() or 2
+    mem = free_memory_gb()
+    floor = max(1, min(4, cpus // 2))   # (as many as before at the least: Windows pages rather than fails)
+    jobs = cpus if mem is None else max(floor, min(cpus, int(mem // 2)))
+    print("build: %d compilers at once (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
+          % (jobs, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
+    return jobs
+
+
 def bundled_mingw():
     """(as TotK Recomp's installer) llvm-mingw in the tools folder: its clang, headers and libraries build the game, and nothing of
     Visual Studio or the Windows SDK is needed. HOOKSHOT_MINGW set already wins; HOOKSHOT_MSVC=1: the Visual Studio route"""
@@ -380,6 +415,28 @@ def drop_stale_objects(work):
         f.write(stamp + chr(10))
 
 
+def seed_pipelines(out):
+    """The pipelines recorded on the development PC (hookshot_pipelines_seed.bin in the tools: program keys and draw states, no game
+    code), as the game folder's list, so its first start builds them before the title, as TotK Recomp's shipped shader list does,
+    instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build
+    made: the file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as
+    the player plays)"""
+    seed = os.path.join(ROOT, "hookshot_pipelines_seed.bin")
+    dst = os.path.join(out, "hookshot_pipelines.bin")
+    if not os.path.isfile(seed):
+        return
+    with open(seed, "rb") as f:
+        stamp = f.read(8)
+    try:
+        with open(dst, "rb") as f:
+            if f.read(8) == stamp:
+                return
+    except OSError:
+        pass
+    shutil.copyfile(seed, dst)
+    print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
+
+
 def folder_language(out):
     """the language a game folder was built in: the code line of its language.txt"""
     try:
@@ -480,7 +537,7 @@ def main():
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
                    if LINUX else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
-    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or max(1, (os.cpu_count() or 2) // 2))
+    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
@@ -608,6 +665,7 @@ def main():
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    seed_pipelines(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
