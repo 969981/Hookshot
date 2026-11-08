@@ -233,6 +233,18 @@ static void realtime_step(int64_t now) {
                     *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58), *(int *)GP(mod + 0x270 + 0x28),
                     *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30));
         if (target && *limit > 0 && *limit < target) *limit = target;
+        /* (hookshot) EXPERIMENT, HOS_FPS_FORCE=1: raising +0xfc alone does not hold. With variable
+           refresh on the engine's adaptive controller writes it back every frame, so a run with
+           HOS_FPS_TARGET=120 logs "frame limiter 60" at every sample and presents a locked 60. This
+           also raises the three controller words that sample read as 60, and the nominal rate, to
+           see whether the rate the controller settles on is what caps the frame. Unknown engine
+           fields written every frame: opt-in, and off by default for that reason. */
+        if (target && getenv("HOS_FPS_FORCE")) {
+            int *const words[] = {(int *)GP(mod + 0x270 + 0x58), (int *)GP(mod + 0x270 + 0x28),
+                                  (int *)GP(mod + 0x270 + 0x2c), (int *)GP(mod + 0x2c8)};
+            for (size_t i = 0; i < sizeof words / sizeof words[0]; i++)
+                if (*words[i] > 0 && *words[i] < target) *words[i] = target;
+        }
     }
     if (!rx_option(0, 1)) {   /* (the Insert menu: per frame) */
         int *slot = (int *)GP(mod + 0x2c8);
