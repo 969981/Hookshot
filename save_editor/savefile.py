@@ -201,6 +201,8 @@ class FieldInfo:
     save_file: str | None = None
     save_file_index: int | None = None
     size: int | None = None
+    provenance: str | None = None
+    note: str | None = None
 
 
 @dataclass
@@ -742,7 +744,7 @@ def load_schema(path: str | os.PathLike[str]) -> Schema:
     a bare name (its Murmur3 hash is computed).
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     schema = Schema(path=path)
 
     if path.suffix.lower() == ".json":
@@ -772,6 +774,10 @@ def load_schema(path: str | os.PathLike[str]) -> Schema:
                     info.save_file_index = int(value["save_file_index"])
                 if value.get("size") is not None:
                     info.size = int(value["size"])
+                if value.get("provenance") is not None:
+                    info.provenance = str(value["provenance"])
+                if value.get("note") is not None:
+                    info.note = str(value["note"])
                 schema.fields[entry_hash] = info
             else:
                 raise ValueError(

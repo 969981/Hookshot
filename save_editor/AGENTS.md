@@ -78,14 +78,23 @@ python -I -B save_editor/tests/test_schema_report.py
 python -I -B save_editor/tests/test_acceptance.py
 python -I -B save_editor/tests/test_byml.py
 python -I -B save_editor/tests/test_gamedata.py
+python -I -B save_editor/tests/test_import_names.py
+python -I -B save_editor/tests/test_label_diff.py
 python -I -B tests/run_all.py save_editor
 ```
 
 The read-only helpers are `compare.py`, `schema_report.py`, `acceptance.py`,
-`byml.py`, `gamedata.py` and `extract_gamedata.py`. They must stay read-only:
-no `SaveFile.save`, no `backup_file`, no generated schema committed, and no
-game launch. `extract_gamedata.py` may use Python 3.14's `compression.zstd` or
-the `zstandard` package; the core editor remains stdlib-only.
+`byml.py`, `gamedata.py`, `extract_gamedata.py`, `import_names.py` and
+`label_diff.py`. They must stay read-only: no `SaveFile.save`, no
+`backup_file`, no generated schema/names committed, and no game launch.
+`extract_gamedata.py` may use Python 3.14's `compression.zstd` or the
+`zstandard` package; the core editor remains stdlib-only.
+
+Name provenance is part of the data model: `FieldInfo.provenance` is
+`totk`, `oot-scan`, `curated` or `semantic`, and `FieldInfo.note` records why a
+semantic label was chosen. Never overwrite a curated name with a lower-priority
+source; `import_names.py` enforces this. `label_diff.py` writes labels only to
+its `--out` file, never to a save.
 
 The last command also picks up `save_editor/tests/test_*.py` through
 `tests/run_all.py`. Real-save coverage is opt-in via `HOOKSHOT_SAVE_DIR`

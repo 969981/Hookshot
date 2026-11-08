@@ -109,25 +109,33 @@ one of two completion criteria:
   debug/development build, a symbol dump, or a community OoT Switch 2 name
   table. Without one, do not claim >50%.
 
+**Chosen: Option A.** The import, coverage and diff tooling is in place; the
+remaining work is OoT-specific curation and in-game verification.
+
 #### Option A work
 
-- [ ] Add `import_names.py`: read `schema.json`, TotK CSV/WordList, the OoT
+- [x] Add `import_names.py`: read `schema.json`, TotK CSV/WordList, the OoT
   binary scan and a curated overlay; validate every exact name with Murmur3;
   record provenance (`totk`, `oot-scan`, `curated`, `semantic`); reject the
   seven bad CSV rows. Priority: curated > OoT scan > TotK.
-- [ ] Extend `schema_report.py` with `--by-type`, `--by-save-file`,
-  `--named-only` and a critical-field checklist (`PlayerStatus.Life/MaxLife/
-  CurrentRupee/SavePos`, `World_PlayerPos`, `CaptionData.LocationName/Pos/
-  ScreenShot`, `Sequence_CurrentBanc`, `OptionData.*`).
-- [ ] Add `label_diff.py BEFORE.sav AFTER.sav --label "..." --names names.json`:
+  Validation against Product.110: **219 exact names** (207 TotK + 12 OoT),
+  plus semantic overlay entries.
+- [x] Extend `schema_report.py` with `--by-type`, `--by-save-file`,
+  `--named-only`, provenance counts and a critical-field checklist
+  (`PlayerStatus.Life/MaxLife/CurrentRupee/SavePos`, `World_PlayerPos`,
+  `CaptionData.LocationName/Pos/ScreenShot`, `Sequence_CurrentBanc`,
+  `OptionData.*`). The current real-tree report has 0 type/version mismatches
+  and every critical field `OK`.
+- [x] Add `label_diff.py BEFORE.sav AFTER.sav --label "..." --names names.json`:
   use the `compare` machinery, list changed hashes and append semantic labels
-  with provenance and a note.
+  with provenance and a note; `--hash`, `--name`, `--force`, `--dry-run`.
 - [ ] Curate OoT-specific inventory, equipment, song, medallion, stone,
   skulltula and trial fields from controlled saves: rupee, heart, item pickup,
-  equipment, song, chest and scene/save-point changes.
+  equipment, song, chest and scene/save-point changes. `0x0CCCC6CD` is the first
+  semantic entry (`CaptionData.SpawnName`).
 - [ ] Verify the curated fields in game: edit, load, observe the HUD/Load
   screen, save and reload.
-- [ ] Update `README.md` and `AGENTS.md` with the import/labelling workflow.
+- [x] Update `README.md` and `AGENTS.md` with the import/labelling workflow.
   Generated names and schemas stay in `%TEMP%` or the user's save folder and
   are never committed.
 

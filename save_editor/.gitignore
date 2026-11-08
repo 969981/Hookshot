@@ -2,7 +2,9 @@
 *.sav
 save-backups/
 names.json
+*.names.json
 *.schema.json
+curated*.json
 GameDataList*.byml
 
 # Python

@@ -214,6 +214,17 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(table[0xA3DB7114], "Game")
         self.assertEqual(table[enum_hash], "Test.Enum")
 
+    def test_schema_json_with_bom(self) -> None:
+        path = self.root / "bom.json"
+        path.write_bytes(
+            b"\xef\xbb\xbf"
+            + json.dumps(
+                {"0x%08X" % savefile.murmur3_32("Test.Int"): "Test.Int"}
+            ).encode("utf-8")
+        )
+        schema = savefile.load_schema(path)
+        self.assertEqual(schema.name(savefile.murmur3_32("Test.Int")), "Test.Int")
+
     def test_plain_names_json_and_text(self) -> None:
         plain = self.root / "names.json"
         plain.write_text(

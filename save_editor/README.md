@@ -147,6 +147,54 @@ curate later. Enum labels work without names, for example:
 writes only fields that can appear in a save. `--no-defaults` omits
 `DefaultValue` for a smaller table.
 
+### Importing names
+
+The full schema has types, defaults and enums; names are sparse. Merge the
+available sources (all optional, read-only):
+
+```powershell
+python save_editor/import_names.py `
+  --schema "$env:TEMP\GameDataList.schema.json" `
+  --totk-csv "$env:TEMP\GameDataListFull.csv" `
+  --totk-wordlist "$env:TEMP\WordList.txt" `
+  --oot-scan "I:\Hookshot\.hookshot_exefs\main" `
+  --curated "$env:TEMP\curated.json" `
+  --out "$env:TEMP\GameDataList.names.json"
+```
+
+- TotK CSV/WordList names are accepted only when
+  `murmur3_32(name) == hash`; this currently yields **207** validated names.
+- The OoT binary scan adds the printable OoT paths (12 in this build).
+- A curated overlay wins over both; an overlay name that does not hash to the
+  field is recorded as a **semantic** label (`provenance: semantic`).
+- `--schema` may be omitted with `--save` to build a typed table from a save.
+
+See the current coverage:
+
+```powershell
+python save_editor/schema_report.py "I:\Hookshot\user\save" `
+  --names "$env:TEMP\GameDataList.names.json" `
+  --by-type --by-save-file --named-only --strict
+```
+
+This prints exact/semantic/unknown counts, breakdowns by type and save file,
+and a critical-field checklist (`PlayerStatus.Life`, `MaxLife`,
+`CurrentRupee`, `SavePos`, `CaptionData.*`, `Sequence_CurrentBanc`,
+`OptionData.CameraRotateSpeed`, ...).
+
+For OoT-specific fields, compare two saves and label the changes:
+
+```powershell
+python save_editor/label_diff.py before.sav after.sav `
+  --label "collected heart piece" `
+  --names "$env:TEMP\GameDataList.names.json" `
+  --out "$env:TEMP\curated.json"
+```
+
+`--hash` restricts the change set; `--name` supplies an exact path for a
+single change; `--dry-run` shows the labels without writing. Generated names
+and schemas stay in `%TEMP%` or the user's save folder and are never committed.
+
 ### Editing
 
 `set` accepts:
@@ -192,6 +240,8 @@ edit should still be tested in game before relying on that.
 - Name/schema tables (JSON or TSV), auto-discovery, and schema enum labels.
 - Full GameDataList schema: `extract_gamedata.py` (dictionary + BYML) and
   `gamedata.py` (types, defaults, reset bits, save-file index, enums).
+- Name import: `import_names.py` (TotK CSV/WordList, OoT scan, curated
+  overlay), coverage reporting and `label_diff.py` for save experiments.
 - Read-only diagnostics: `compare`, `schema_report`, `acceptance`.
 - Atomic writes and automatic backups.
 
@@ -218,9 +268,10 @@ disagree on scene, spawn, or position.
 
 ## Not yet
 
-- Field names for most hashes. The GameDataList has types/defaults/enums but
-  no `HashText`; `--scan-game` finds only a few printable paths. Curate the
-  rest with `--merge` or save-diff experiments.
+- Field names for most hashes. The GameDataList has no `HashText`; the TotK
+  CSV/WordList and OoT scan give about 219 exact names. OoT-specific inventory,
+  equipment, quest and event fields still need curated save-diff labels; the
+  tooling for that is `import_names.py` + `label_diff.py`.
 - Editing arrays, binaries, or growing the data area.
 - A GUI. The parser and CLI are intended to be the stable core.
 - Updating `caption.sav` together with `progress.sav` after a position/scene
@@ -297,6 +348,8 @@ python -I -B save_editor/tests/test_schema_report.py
 python -I -B save_editor/tests/test_acceptance.py
 python -I -B save_editor/tests/test_byml.py
 python -I -B save_editor/tests/test_gamedata.py
+python -I -B save_editor/tests/test_import_names.py
+python -I -B save_editor/tests/test_label_diff.py
 python -I -B tests/run_all.py save_editor
 ```
 

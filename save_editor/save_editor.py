@@ -680,6 +680,10 @@ def cmd_names(args: argparse.Namespace) -> int:
             item["save_file_index"] = info.save_file_index
         if info.size is not None:
             item["size"] = info.size
+        if info.provenance is not None:
+            item["provenance"] = info.provenance
+        if info.note is not None:
+            item["note"] = info.note
         fields["0x%08X" % entry_hash] = item
 
     payload: dict[str, Any] = {"version": schema.version, "fields": fields}
