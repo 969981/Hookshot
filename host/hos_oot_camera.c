@@ -10,11 +10,45 @@
  * so a reader that checks it gets the renderer's own defaults on another game version where the
  * patch site is left out. */
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "hos.h"
 
 volatile float hos_oot_cam_near = 0.0f;
 volatile float hos_oot_cam_far = 0.0f;
 volatile float hos_oot_cam_tan_half_fov = 0.0f;
 volatile int hos_oot_camera_valid = 0;
+/* The guest addresses of sead's projection object and of the 4x4 it writes. Published so the view
+   projection can be identified from real data: this matrix is the projection alone, and a temporal
+   upscaler reprojects with view * projection. */
+volatile uint64_t hos_oot_proj_object = 0;
+volatile uint64_t hos_oot_proj_matrix = 0;
+
+/* HOS_CAMERA_DUMP=1: once, a window of floats around each published object, so the view matrix can
+   be found by reading what is there rather than by guessing an offset. Guest addresses only; no
+   game data leaves the machine. */
+void hos_oot_camera_dump(void) {
+    static int done;
+    const char *on = getenv("HOS_CAMERA_DUMP");
+    if (done || !on || !*on || *on == '0' || !hos_oot_camera_valid) return;
+    done = 1;
+    for (int which = 0; which < 2; which++) {
+        const uint64_t base = which ? hos_oot_proj_matrix : hos_oot_proj_object;
+        if (!base) continue;
+        for (int row = 0; row < 8; row++) {
+            char line[200];
+            int n = snprintf(line, sizeof line, "camera: %s +%#03x:", which ? "matrix" : "object", row * 32);
+            for (int i = 0; i < 8; i++) {
+                float v;
+                memcpy(&v, (const char *)GP(base + (uint64_t)row * 32 + (uint64_t)i * 4), 4);
+                n += snprintf(line + n, sizeof line - n, " %.4g", (double)v);
+            }
+            hos_log("%s", line);
+        }
+    }
+}
 
 /* The renderer's side: the field of view in radians, or 0 when nothing has been published.
    tan_half_fov is what the game stores (1 / it becomes the projection's m11), so the angle is

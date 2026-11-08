@@ -2611,6 +2611,18 @@ struct IndexBind {
 thread_local IndexBind last_ib;
 int64_t st_desc_reused;
 
+/// (hookshot) The last depth target the game bound with a colour target, kept for an upscaler that
+/// has to derive motion from it. Ocarina hands its own upscaler no depth at all
+/// (docs/upscaling.md), so the scene's own depth buffer is the only one there is. Written where the
+/// targets are resolved, which is once per NOP_SET_RT rather than per draw.
+struct SceneDepth {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0, height = 0;
+};
+SceneDepth scene_depth;
+
 /// (hookshot) Once per distinct render target set, with RX_VK_MRT_CENSUS=1: how many colour attachments the game
 /// binds at once, their formats and the extent. Off by default and free while off.
 ///
@@ -2692,6 +2704,12 @@ Targets targets(NvnState& s) {
         }
     }
     mrt_census(at);
+    // (the scene's depth, for an upscaler's reprojection: the largest one seen, so a shadow map or
+    // a quarter-resolution effect pass does not displace the one the scene was drawn with)
+    if (at.depth && at.depth_view && at.n >= 1 &&
+        (uint64_t)at.width * at.height >= (uint64_t)scene_depth.width * scene_depth.height) {
+        scene_depth = {at.depth->image, at.depth_view, at.depth_format, at.width, at.height};
+    }
     targets_serial = s.rt_serial;
     cached_targets = at;
     return at;
@@ -5516,10 +5534,19 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         std::lock_guard lk(mu);
         if (said[p.key]++ == 0) {
             const char* why = upscale::temporal_refusal(req);
+            float near_plane = 0.0f, far_plane = 0.0f;
+            const float tan_half = hos_oot_camera(&near_plane, &far_plane);
             logf("vk: upscale seam %016llx: %s, output %ux%u, inputs %ux%u; a temporal backend %s%s",
                  (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
                  req.output_height, req.inputs.render_width, req.inputs.render_height,
                  why ? "could not be given this: " : "could be given this", why ? why : "");
+            // (what a backend would be given besides the dispatch: the camera the lifted code
+            // published and the scene depth the targets kept, neither of which is in this dispatch)
+            logf("vk: upscale seam %016llx: camera %s (near %.4f far %.1f fov %.1f deg), scene depth "
+                 "%ux%u format %d",
+                 (unsigned long long)p.key, tan_half > 0.0f ? "published" : "not published yet",
+                 near_plane, far_plane, tan_half > 0.0f ? 2.0f * std::atan(tan_half) * 57.29578f : 0.0f,
+                 scene_depth.width, scene_depth.height, (int)scene_depth.format);
         }
     }
     // (hookshot) FSR 3.1 in the dispatch's place, opt-in with RX_VK_FSR=1 and only where the

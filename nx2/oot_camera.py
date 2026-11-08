@@ -15,6 +15,11 @@ swap them before taking their difference. Rather than decide what that flag mean
 smaller of the two as the near plane and the larger as the far, and publishes nothing unless both
 are positive and ordered. A projection with a near plane behind the eye is not one to hand an
 upscaler.
+
+It also publishes the guest addresses of the projection object and of the 4x4 it writes. The view
+projection a temporal upscaler reprojects with is not this matrix -- this is the projection alone --
+and rather than guess which offset of which object holds the view, HOS_CAMERA_DUMP=1 logs a window
+of floats around both so the matrix can be identified from what it contains.
 """
 
 MAIN = 0x80020000
@@ -29,7 +34,9 @@ PUBLISH = (
     "memcpy(&_f0, &_c0, 4); memcpy(&_f1, &_c1, 4); memcpy(&_ft, &_ct, 4); "
     "{ const float _nr = _f0 < _f1 ? _f0 : _f1, _fr = _f0 < _f1 ? _f1 : _f0; "
     "if (_nr > 0.0f && _fr > _nr && _ft > 0.0f) { hos_oot_cam_near = _nr; hos_oot_cam_far = _fr; "
-    "hos_oot_cam_tan_half_fov = _ft; hos_oot_camera_valid = 1; } } }"
+    "hos_oot_cam_tan_half_fov = _ft; hos_oot_camera_valid = 1; } } "
+    "{ extern volatile uint64_t hos_oot_proj_object, hos_oot_proj_matrix; "
+    "hos_oot_proj_object = _cp; hos_oot_proj_matrix = c->x[1]; } }"
     "   /* (nx2/oot_camera.py: the camera a temporal upscaler needs) */"
 )
 

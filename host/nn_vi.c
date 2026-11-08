@@ -194,6 +194,8 @@ static float text_scale(const char *env, int menu) {
 }
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
+    void hos_oot_camera_dump(void);   /* (host/hos_oot_camera.c: once, with HOS_CAMERA_DUMP=1) */
+    hos_oot_camera_dump();
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
        unset and the 3D came out black. The dynamic path runs a few frames first, as when the menu turns it on in game) */
     hos_fixed_resolution = !rx_option(2, 1) && hos_dynres_runs >= 30;
