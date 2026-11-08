@@ -126,6 +126,15 @@
                 <TextBox x:Name="OutPath" Style="{StaticResource Path}" TextChanged="PathsChanged"/>
                 <Button x:Name="ChangeButton" Grid.Column="1" Style="{StaticResource Quiet}" Margin="10,0,0,0" Content="Change" Click="BrowseOut"/>
               </Grid>
+              <!-- the build files: how much, where (Storage.cs), and choosing the place -->
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="WorkNote" Style="{StaticResource Note}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                <Button x:Name="WorkChange" Grid.Column="1" Style="{StaticResource LinkButton}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center"
+                        Content="Change" Click="BrowseWork"/>
+                <Button x:Name="WorkReset" Grid.Column="2" Style="{StaticResource LinkButton}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center"
+                        Content="Default" Click="ResetWork"/>
+              </Grid>
             </StackPanel>
             <StackPanel Grid.Column="2">
               <TextBlock x:Name="LanguageLabel" Style="{StaticResource Label}" Text="GAME LANGUAGE"/>
