@@ -130,8 +130,8 @@ These need no dump and are what CI runs, on every pull request and every push to
 python -I -B tests/run_all.py
 ```
 
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/vk/tests` and a
-byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
+It runs every `tests/test_*.py`, `nx2/test_*.py` and `save_editor/tests/test_*.py` in its own process, the C++ unit
+tests under `gpu/vk/tests` and a byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
 `test_*.py` file is picked up by itself: no workflow to edit.
 

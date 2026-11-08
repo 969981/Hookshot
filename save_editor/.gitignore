@@ -1,0 +1,9 @@
+# Never commit saves, game-derived schemas, or generated name tables.
+*.sav
+save-backups/
+names.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/

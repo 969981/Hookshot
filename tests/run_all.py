@@ -1,6 +1,7 @@
-"""Every game-free check in one run: each tests/test_*.py and nx2/test_*.py in its own process, the C++ unit tests under
-gpu/vk/tests and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
-printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
+"""Every game-free check in one run: each tests/test_*.py, nx2/test_*.py and save_editor/tests/test_*.py in its own
+process, the C++ unit tests under gpu/vk/tests and a byte-compile of every tracked Python file. All of them run even
+when one fails; the failures are printed whole at the end, with a table of every check (slowest first), also to
+$GITHUB_STEP_SUMMARY when it is set.
 Exits 1 when anything failed.
 
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [name ...]
@@ -188,7 +189,10 @@ def main():
     tools = find_tools()
 
     checks = []
-    tests = sorted(d + "/" + f for d in ("tests", "nx2") for f in os.listdir(os.path.join(ROOT, d))
+    # save_editor is a standalone tool folder with its own tests; include it
+    # so a format change is checked by the same runner as the game's tests.
+    test_dirs = ("tests", "nx2", "save_editor/tests")
+    tests = sorted(d + "/" + f for d in test_dirs for f in os.listdir(os.path.join(ROOT, d))
                    if f.startswith("test_") and f.endswith(".py"))
     for rel in tests:
         oses, reason = SKIP.get(rel, (set(), ""))
