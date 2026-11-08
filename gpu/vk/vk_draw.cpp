@@ -6198,6 +6198,11 @@ void pipeline_cache_save(bool force) {
                     const bool ok = fwrite(data.data(), 1, n, f) == n;
                     fclose(f);
                     if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+                } else if (FILE* g = fopen(pcache_path.c_str(), "wb")) {
+                    // (linux: the sandbox lets the game write its own state files but make no new file in its folder
+                    // (host/posix/sandbox_linux.c): the cache in place. Cut short by a crash, the driver's header check drops it)
+                    fwrite(data.data(), 1, n, g);
+                    fclose(g);
                 }
             }
         }

@@ -479,6 +479,18 @@ static int game_main(int argc, char **argv) {
     if (getenv("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
+#if defined(__linux__) && !defined(A64_MEM_ZERO)
+    {   /* (linux) the Landlock sandbox (host/posix/sandbox_linux.c), before the renderer starts and before any save is read */
+        void hos_sandbox_apply(const char *game_dir, const char *user_dir);
+        char dir[MAX_PATH];
+        const DWORD len = hos_game_path_a(dir, MAX_PATH);
+        char *slash = len ? strrchr(dir, SEP) : NULL;
+        if (slash) *slash = 0;
+        char user[MAX_PATH];
+        if (!realpath(hos_user_dir, user)) snprintf(user, sizeof user, "%s", hos_user_dir);
+        hos_sandbox_apply(slash ? dir : ".", user);
+    }
+#endif
     if (!reserve_guest()) {
         fprintf(stderr, "cannot reserve the guest window\n");
         return 1;
