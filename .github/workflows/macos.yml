@@ -111,11 +111,24 @@ jobs:
           "$(brew --prefix llvm)/bin/clang" -fsyntax-only -std=gnu11 \
             -Ihost/posix host/posix/win32_posix.c
 
-      - name: Upload macOS build
+      - name: Describe renderer artifact
+        run: |
+          cat > work/sa/build/README.txt <<'EOF'
+          This is Hookshot's macOS Vulkan renderer library, not a standalone app.
+
+          Do not execute hookshot_vk.dylib directly. To build and run the game,
+          provide your own game dump and follow the macOS instructions in readme.md:
+
+            python3 -I nx2/make_game.py --nup ~/your-game.nup --out ~/Games/Hookshot --language en-US
+            ./builder/macos/hookshot-launch ~/Games/Hookshot
+          EOF
+
+      - name: Upload macOS renderer
         uses: actions/upload-artifact@v4
         with:
-          name: Hookshot-macos-${{ runner.arch }}
+          name: Hookshot-macos-renderer-arm64
           path: |
             work/sa/build/hookshot_vk.dylib
             work/sa/build/hookshot_vk.dylib.map
+            work/sa/build/README.txt
           if-no-files-found: error

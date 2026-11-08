@@ -128,6 +128,9 @@ python3 -I nx2/make_game.py --nup ~/your-game.nup --out ~/Games/Hookshot --langu
 The game executable is `hookshot`, and the renderer is `hookshot_vk.dylib`. A Vulkan 1.3-capable MoltenVK device is
 required; macOS does not support the Linux AppImage, so its compiler and libraries must be installed locally.
 
+The GitHub Actions artifact named `Hookshot-macos-renderer-arm64` contains only the renderer library for CI validation.
+It is not executable by itself and does not include a game dump; use `make_game.py` above to create a playable game folder.
+
 ### Updating to a newer release
 
 A new release is not a patch to your game folder: the game is built again from your copy, with the new code. Your
