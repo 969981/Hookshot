@@ -157,7 +157,8 @@ bool start() {
         listed += (listed.empty() ? "" : ", ") + std::string(name);
         unsigned v[3] = {0, 0, 0};
         sscanf(name, "%u.%u.%u", &v[0], &v[1], &v[2]);
-        if (v[0] == 4 && (v[1] > best[1] || (v[1] == best[1] && v[2] >= best[2]))) {
+        // (the first of equal versions: a Vulkan FSR 4 build lists its Auto, which picks the GPU's model, before INT8 and FP8)
+        if (v[0] == 4 && (!fsr.version_id || v[1] > best[1] || (v[1] == best[1] && v[2] > best[2]))) {
             std::memcpy(best, v, sizeof best);
             fsr.version_id = ids[i];
         }
@@ -247,6 +248,35 @@ void barriers(VkCommandBuffer cmd, const VkImageMemoryBarrier2* b, uint32_t n) {
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
+#ifndef _WIN32
+/// (linux) a Vulkan FSR 4 build takes no frame without an exposure, and the game's colour is tonemapped already: a 1x1 R32F of 1
+bool unit_exposure(VkCommandBuffer cmd, DlssImage& out) {
+    static VkImage image = VK_NULL_HANDLE;
+    static VmaAllocation allocation{};
+    const bool made = image != VK_NULL_HANDLE;
+    if (!made) {
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D, ci.format = VK_FORMAT_R32_SFLOAT, ci.extent = {1, 1, 1}, ci.mipLevels = 1, ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT, ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (!create_image(ci, image, allocation)) return image = VK_NULL_HANDLE, false;
+    }
+    out = DlssImage{image, VK_NULL_HANDLE, VK_FORMAT_R32_SFLOAT, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT};
+    if (!made) {
+        const VkImageMemoryBarrier2 to_clear = barrier(out, 0, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        barriers(cmd, &to_clear, 1);
+        const VkClearColorValue one{{1.0f, 0.0f, 0.0f, 0.0f}};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1, &range);
+        const VkImageMemoryBarrier2 to_read = barrier(out, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        barriers(cmd, &to_read, 1);
+    }
+    return true;
+}
+#endif
+
 }  // namespace
 
 bool fsr4_available() {
@@ -276,6 +306,10 @@ bool fsr4_evaluate(VkCommandBuffer cmd, const DlssImage& color, const DlssImage&
         reset = true;
     }
     if (color.width > fsr.max_w || color.height > fsr.max_h) return false;   // (a render size past the output: not an upscale)
+#ifndef _WIN32
+    DlssImage exposure{};
+    if (!unit_exposure(cmd, exposure)) return false;
+#endif
     const auto now = std::chrono::steady_clock::now();
     const float frame_ms = fsr.evals ? std::chrono::duration<float, std::milli>(now - fsr.last).count() : 1000.0f / 30.0f;
     fsr.last = now;
@@ -295,6 +329,9 @@ bool fsr4_evaluate(VkCommandBuffer cmd, const DlssImage& color, const DlssImage&
     d.depth = resource(depth, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.motionVectors = resource(motion, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.output = resource(output, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+#ifndef _WIN32
+    d.exposure = resource(exposure, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+#endif
     d.jitterOffset = {jitter_x, jitter_y};
     d.motionVectorScale = {1.0f, 1.0f};   // (render pixels already, towards the previous frame)
     d.renderSize = {color.width, color.height};
