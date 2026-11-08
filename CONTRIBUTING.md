@@ -143,6 +143,7 @@ window, including one started to update a game, uses Automatic again.
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 | `python -I scripts/hookshot_mcp.py --check` | The MCP server for automated in-game tests (needs the `mcp` package; see [docs/mcp.md](docs/mcp.md)). |
+| `python -I -B scripts/pr_check.py --base main` | A read-only pre-PR check: game-derived paths, LF endings, commit format and the full test suite. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
@@ -188,11 +189,13 @@ gigabytes and are derived from the game.
 ### When you add a fix or a check
 
 - Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
-  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Wire the test into `.github/workflows/source-regressions.yml`: add a `run:` step, and add the test file and every
-  source file it reads to both the `push` and `pull_request` `paths` lists. Without the paths, the check does not run
-  when the code changes.
+  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture. A new `test_*.py` file
+  is picked up by itself; no workflow or `paths:` list has to be edited.
+- If the test needs a compiler, headers or a Python package, add it to `ARGS` or `MODULES` in `tests/run_all.py`; the
+  runner skips a missing tool, and CI's `--strict` makes that a failure.
 - Keep the test fast enough for the 10-minute CI job, and make it pass on both Ubuntu and Windows where it can.
+- Before opening a pull request, run `python -I -B scripts/pr_check.py --base main`. It is read-only and checks the
+  changed paths, line endings, commit subjects and trailers, then runs the game-free suite.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 

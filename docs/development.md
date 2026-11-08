@@ -32,6 +32,7 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_vk.dll` |
 | `powershell -File scripts/run-vk.ps1 [-Window] [-Seconds 120] [-Name x]` | a muted test run on Vulkan, with screenshots in `work/runs/<name>/shots` |
 | `python -I scripts/hookshot_mcp.py` | the MCP server for automated in-game tests: scripted input and on-demand screenshots ([docs/mcp.md](mcp.md)) |
+| `python -I -B scripts/pr_check.py --base main` | a read-only pre-PR audit: forbidden paths, LF endings, commit format and trailers, then the game-free suite |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>`, named from the linker maps |
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
