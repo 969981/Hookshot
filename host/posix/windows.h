@@ -577,6 +577,9 @@ int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type);
 #define ANTIALIASED_QUALITY 4
 #define CLEARTYPE_QUALITY 5
 #define DEFAULT_PITCH 0
+#pragma pack(push, 2)
+typedef struct { WORD bfType; DWORD bfSize; WORD bfReserved1, bfReserved2; DWORD bfOffBits; } BITMAPFILEHEADER;   /* (the 14 bytes of a .bmp) */
+#pragma pack(pop)
 typedef struct {
     DWORD biSize;
     LONG biWidth, biHeight;
