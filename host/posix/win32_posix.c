@@ -1066,7 +1066,11 @@ BOOL SetEndOfFile(HANDLE h) {
 }
 BOOL FlushFileBuffers(HANDLE h) {
     if (!is(h, H_FILE)) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
+#ifdef __APPLE__
+    return fsync(((HFile *)h)->fd) == 0 ? TRUE : fail_errno();
+#else
     return fdatasync(((HFile *)h)->fd) == 0 || errno == EINVAL ? TRUE : fail_errno();
+#endif
 }
 DWORD GetFileType(HANDLE h) {
     struct stat st;
