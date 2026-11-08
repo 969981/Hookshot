@@ -167,7 +167,7 @@ class ButtonIconsTests(unittest.TestCase):
 
     def test_library(self):
         version, key, font_size, count, first, n, tables_at, tables = struct.unpack_from("<IIIIIIII", self.data, 4)
-        self.assertEqual((version, key, first, n, tables), (2, KEY, 0xE040, len(bi.CODEPOINTS), 1))
+        self.assertEqual((version, key, first, n, tables), (3, KEY, 0xE040, len(bi.CODEPOINTS), 1))
         for want in (0x01000045, 0x02000057, 0x03000000, 0x10000300 | bi.EAST, 0x10000100 | bi.SOUTH, 0x20000000 | 0xE040):
             self.assertIn(want, self.glyphs)
 
@@ -202,6 +202,7 @@ class ButtonIconsTests(unittest.TestCase):
         self.assertLessEqual(len(frame) + 288, bi.RSTB_FONT)               # (and the font fits it)
         otf, key = bi.bfotf_decode(frame)
         self.assertEqual(key, KEY)
+        self.last_otf = otf
         font = TTFont(io.BytesIO(otf))
         self.assertEqual(font["hhea"].numberOfHMetrics, len(font.getGlyphOrder()))
         return font
@@ -240,8 +241,34 @@ class ButtonIconsTests(unittest.TestCase):
     def test_patch_rstb(self):
         table, before = bi.patch_rstb(rstb(14856))
         self.assertEqual((before, rstb_entry(table)), (14856, bi.RSTB_FONT))
-        table, before = bi.patch_rstb(rstb(500000))                       # (never lowered)
-        self.assertEqual(rstb_entry(table), 500000)
+        table, before = bi.patch_rstb(rstb(600000))                       # (never lowered)
+        self.assertEqual(rstb_entry(table), 600000)
+
+    def test_live_switch(self):
+        """the font holds every family's icons; writing hkic's glyph numbers into the cmap, as host/button_icons_live.c
+        does in the game's memory, makes A the PS5 circle (it was the E key)"""
+        font = self.font_for(0, "keyboard")
+        otf = bytearray(self.last_otf)
+        at = otf.find(b"HOOKSHOT-ICONS-1")
+        self.assertGreater(at, 0)
+        fams, first, n, cur = struct.unpack_from(">IIII", otf, at + 16)
+        self.assertEqual((fams, first, n, cur), (5, 0xE040, len(bi.CODEPOINTS), 0))
+        gl = at + 32
+        rel = gl + ((fams * n * 2 + 3) & ~3)
+        glyph = lambda f, i: struct.unpack_from(">H", otf, gl + (f * n + i) * 2)[0]
+        order = font.getGlyphOrder()
+        self.assertEqual(order.index(font.getBestCmap()[0xE040]), glyph(0, 0))    # A: the keyboard's glyph now
+        self.assertNotEqual(glyph(0, 0), glyph(3, 0))
+        for i in range(n):                                                      # (host/button_icons_live.c's point)
+            r = struct.unpack_from(">i", otf, rel + i * 4)[0]
+            if r:
+                struct.pack_into(">I", otf, at + r, glyph(3, i))
+        switched = TTFont(io.BytesIO(bytes(otf)))
+        circle = bounds(switched, 0xE040)
+        self.assertAlmostEqual(circle[2] - circle[0], 560, delta=2)
+        base = TTFont(io.BytesIO(self.external))
+        self.assertEqual(drawing(switched, 0xE05E), drawing(base, 0xE05E))       # (the sticks on a pad: the game's)
+        self.assertEqual(drawing(switched, 0x20), drawing(base, 0x20))           # (other characters untouched)
 
     def test_playstation(self):
         font = self.font_for(3, "ps5")

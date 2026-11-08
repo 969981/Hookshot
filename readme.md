@@ -248,8 +248,10 @@ key_a=69,13
 The game's button prompts and HUD show the buttons of what you play with: keyboard and mouse keys (as bound), or the
 buttons of an Xbox, PlayStation 4, PlayStation 5 or Switch controller (as bound, by position). With **Button icons** on
 Auto (Insert menu, Controller tab) it is the controller connected when the game starts, or keyboard and mouse when
-there is none; the setting can also fix one family. The game reads the icons at its start, so a change shows from the
-next start. `HOS_BUTTON_ICONS=0` keeps the game's own; `keyboard`, `xbox`, `ps4`, `ps5` or `switch` sets one. The builder
+there is none; the setting can also fix one family. On Auto the icons then follow the device you play with (a controller's
+buttons or sticks, or a bound key), without a restart, and **F8** goes round the families to see them; glyphs the game
+already drew may stay until it draws them again (being found out). `HOS_BUTTON_ICONS_LIVE=0` keeps the start's icons.
+`HOS_BUTTON_ICONS=0` keeps the game's own; `keyboard`, `xbox`, `ps4`, `ps5` or `switch` sets one. The builder
 makes the icons from your game files (`hookshot_icons.bin`); a mod that replaces the External font wins over them.
 
 ## Mods

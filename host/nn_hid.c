@@ -632,6 +632,7 @@ static int bound_down(int i, int mouse) {   /* (kmap_down: Enter with Alt is ful
 }
 
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
+    int played_pad = 0;   /* (a controller's buttons or sticks this read: the button icons follow it) */
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
@@ -669,6 +670,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         uint64_t pb = 0;
         int32_t ps[4] = {0};
         pads_read(&pb, ps);
+        played_pad = pb || abs(ps[0]) > 12000 || abs(ps[1]) > 12000 || abs(ps[2]) > 12000 || abs(ps[3]) > 12000;
         static int after_menu;
         if (rx_option(1, 0)) after_menu = 1;
         else if (after_menu && !pad_raw_now) after_menu = 0;
@@ -678,8 +680,10 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         }
     }
     binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons after the mouse, below) */
+    uint64_t key_buttons = 0;
     for (int i = 0; i < HOS_SW_N; i++)
-        if (bound_down(i, 0)) *buttons |= 1ULL << i;
+        if (bound_down(i, 0)) key_buttons |= 1ULL << i;
+    *buttons |= key_buttons;
     int32_t mouse[4] = {0};
     /* (hookshot) the mouse turns the camera itself (mouse_native.c); as the right stick while no camera is found, or
        always with the menu's Mouse camera "As the stick" (option 22) or HOS_MOUSE_NATIVE=0 */
@@ -698,7 +702,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     mouse_buttons_arm(mouse_on != 0);
     if (mouse_on)
         for (int i = 0; i < HOS_SW_N; i++)
-            if (bound_down(i, 1)) *buttons |= 1ULL << i;
+            if (bound_down(i, 1)) *buttons |= 1ULL << i, key_buttons |= 1ULL << i;
     /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default) */
     const int m = mouse_on != 0;
     const int cx = bound_down(HOS_KEY_CAM_RIGHT, m) - bound_down(HOS_KEY_CAM_LEFT, m),
@@ -707,6 +711,10 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
                              (bound_down(HOS_KEY_MOVE_UP, m) - bound_down(HOS_KEY_MOVE_DOWN, m)) * 32767, cx * 32767,
                              cy * 32767};
     stick_max(stick, keys);
+    {   /* (hookshot) the button icons follow the device played with (button_icons_live.c); F8 goes round them */
+        void hos_button_icons_input(int pad, int keys, int f8);
+        hos_button_icons_input(played_pad, key_buttons || keys[0] || keys[1] || keys[2] || keys[3], key(VK_F8));
+    }
     {
         const int32_t g = abs(stick[2]) > abs(stick[3]) ? abs(stick[2]) : abs(stick[3]);
         if (g > stick_given_peak) stick_given_peak = g;

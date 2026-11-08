@@ -62,8 +62,9 @@ from fontTools.ttLib import TTFont  # noqa: E402
 EXTERNAL = ("Font2", "Scalable", "External.Nin_Ounce_NVN2.bfotf.zs")
 LETTERING = ("Font2", "Scalable", "ClarimoUDPE-DemiBold.Nin_Ounce_NVN2.bfotf.zs")
 MAGIC = 0x7F9A0218
-VERSION = 2
-RSTB_FONT = 131072          # the External font's buffer in the size table (its own: 14 856)
+VERSION = 3
+RSTB_FONT = 524288          # the External font's buffer in the size table (its own: 14 856; every family's icons in it)
+FAMILIES = 5                # keyboard and mouse, Xbox, PlayStation 4, PlayStation 5, Switch: a glyph each for each codepoint
 FONT_KEY = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf"   # (the size table's name for it: the path without .zs)
 
 BOTTOM, TOP = 20, 580                       # a button glyph's height (the game's A: 19 to 583)
@@ -547,8 +548,12 @@ def build_from(ext, key, lettering, tables=()):
         if code in cmap:
             glyphs[0x20000000 | code] = original(code)
 
-    # the font with its CFF's Top DICT offsets as five-byte numbers (fixed_offsets), for host/button_icons.c
-    otf = fixed_offsets(ext)
+    # the font with an empty glyph for each family's icon of each codepoint (host/button_icons.c fills them, and points the
+    # codepoints at one family's: switching families is then a few bytes of the cmap in the game's memory), and its CFF's
+    # Top DICT offsets as five-byte numbers (fixed_offsets)
+    base_count = len(font.getGlyphOrder())
+    full_map = sorted(font.getBestCmap().items())
+    otf = fixed_offsets(with_slots(font, FAMILIES * len(CODEPOINTS)))
     check_charstrings_offset(otf)
     entries, blob = [], bytearray()
     for gid, o in sorted(glyphs.items()):
@@ -558,9 +563,11 @@ def build_from(ext, key, lettering, tables=()):
         entries.append(struct.pack("<IHhhhhHII", gid, width, start[0], start[1], end[0], end[1], 0, len(blob), len(cs)))
         blob += cs
     otf_padded = otf + b"\0" * (-len(otf) % 4)
-    order = {name: i for i, name in enumerate(font.getGlyphOrder())}
+    order = {name: i for i, name in enumerate(font.getGlyphOrder()[:base_count])}
     gids = b"".join(struct.pack("<H", order[cmap[c]] if c in cmap else 0) for c in CODEPOINTS)
     gids += b"\0" * (-len(gids) % 4)
+    # the font's whole character map (host/button_icons.c writes the cmap again: a group of its own for each icon)
+    gids += struct.pack("<II", base_count, len(full_map)) + b"".join(struct.pack("<IHH", c, order[g], 0) for c, g in full_map)
     blob += b"\0" * (-len(blob) % 4)
     rst = bytearray()
     for path, table in tables:
@@ -574,6 +581,30 @@ def build_from(ext, key, lettering, tables=()):
     body = otf_padded + gids + b"".join(entries) + bytes(blob)
     return (b"HKIC" + struct.pack("<IIIIIIII", VERSION, key, len(otf), len(entries), CODEPOINTS[0], len(CODEPOINTS),
                                   head_len + len(body), len(tables)) + body + bytes(rst)), glyphs
+
+
+def with_slots(font, count):
+    """the font's bytes with count empty glyphs after its own (hkslot0...), each its own width table entry"""
+    from fontTools.misc.psCharStrings import T2CharString
+    order = font.getGlyphOrder()
+    cff = font["CFF "].cff
+    top = cff.topDictIndex[0]
+    names = ["hkslot%d" % i for i in range(count)]
+    chars = top.CharStrings
+    for n in names:
+        cs = T2CharString(program=["endchar"], private=top.Private, globalSubrs=cff.GlobalSubrs)
+        if chars.charStringsAreIndexed:   # (a font read from bytes: names point into the INDEX)
+            chars.charStrings[n] = len(chars.charStringsIndex)
+            chars.charStringsIndex.append(cs)
+        else:
+            chars.charStrings[n] = cs
+        font["hmtx"][n] = (0, 0)
+    font.setGlyphOrder(order + names)
+    top.charset = order + names
+    font["maxp"].numGlyphs = len(order) + count
+    buf = io.BytesIO()
+    font.save(buf)
+    return buf.getvalue()
 
 
 def otf_table(otf, tag):

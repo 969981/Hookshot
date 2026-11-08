@@ -16,7 +16,8 @@ typedef intptr_t LONG_PTR;
 typedef struct { uint64_t x[32]; } Ctx;
 enum { GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000,
        VK_MENU = 0x12, VK_RETURN = 0x0d, VK_LEFT = 0x25, VK_UP, VK_RIGHT, VK_DOWN,
-       VK_LBUTTON = 1, VK_RBUTTON = 2, VK_MBUTTON = 4, VK_XBUTTON1 = 5, VK_XBUTTON2 = 6 };
+       VK_LBUTTON = 1, VK_RBUTTON = 2, VK_MBUTTON = 4, VK_XBUTTON1 = 5, VK_XBUTTON2 = 6,
+       VK_F8 = 0x77 };   /* (fork: F8 goes round the button icons) */
 static int front, menu_background, bootstrap_polls, pad_merges, key_queries, mouse_queries, focus_queries, commands;
 typedef int64_t LONG64;
 volatile LONG64 hos_present_count = 1000;
@@ -72,6 +73,7 @@ int hos_mouse_native(void) { return -1; }
 static void mouse_setup(void) {}
 static void mouse_sens_keys(void) {}
 static void mouse_report(void) {}
+void hos_button_icons_input(int pad, int keys, int f8) { (void)pad; (void)keys; (void)f8; }   /* (button_icons_live.c) */
 static int32_t stick_given_peak;
 int mouse_stick(int32_t *x, int32_t *y, int held) { (void)x; (void)y; (void)held; mouse_queries++; return 0; }
 void rx_request_frame_dump(void) { commands++; }

@@ -31,7 +31,7 @@ void hos_log(const char *fmt, ...);               /* hos_log.c (hos.h is not nee
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pad_family(int wait_ms);              /* pad_sdl.c: 0 none, 1 Xbox, 2 PS4, 3 PS5, 4 Switch */
 
-enum { FAM_KEYS, FAM_XBOX, FAM_PS4, FAM_PS5, FAM_SWITCH };
+enum { FAM_KEYS, FAM_XBOX, FAM_PS4, FAM_PS5, FAM_SWITCH, FAMILIES };
 static const char *const fam_name[] = {"keyboard and mouse", "Xbox", "PlayStation 4", "PlayStation 5", "Switch"};
 #define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"
 #define MAGIC 0x7F9A0218u
@@ -206,7 +206,7 @@ static int glyph_for(int fam, uint32_t cp, Made *m) {
 }
 
 /* ---- the font ---- */
-typedef struct { uint32_t tag; const uint8_t *data; uint32_t len; } Table;
+typedef struct { uint32_t tag; const uint8_t *data; uint32_t len, out_at; } Table;
 
 static int tables_of(const uint8_t *otf, size_t size, Table *t, int max) {
     if (size < 12) return 0;
@@ -276,6 +276,12 @@ static size_t charstrings_operand(const uint8_t *d, size_t n, size_t data_at) {
 static void write_sfnt(Buf *out, const uint8_t *orig_header, Table *t, int n) {
     uint8_t head[12];
     memcpy(head, orig_header, 12);
+    put16(head + 4, (uint32_t)n);   /* (the table count, and the binary search fields after it as for n) */
+    {
+        uint32_t p2 = 1, e = 0;
+        while (p2 * 2 <= (uint32_t)n) p2 *= 2, e++;
+        put16(head + 6, p2 * 16), put16(head + 8, e), put16(head + 10, (uint32_t)n * 16 - p2 * 16);
+    }
     put(out, head, 12);
     size_t at = 12 + (size_t)n * 16;
     const size_t dir = out->n;
@@ -290,6 +296,7 @@ static void write_sfnt(Buf *out, const uint8_t *orig_header, Table *t, int n) {
         }
         uint8_t *e = out->p + dir + (size_t)i * 16;
         put32(e, t[i].tag), put32(e + 4, sum), put32(e + 8, (uint32_t)at), put32(e + 12, t[i].len);
+        t[i].out_at = (uint32_t)at;
         put(out, t[i].data, t[i].len);
         const uint32_t pad = (4 - t[i].len % 4) % 4;
         put(out, zero, pad);
@@ -297,13 +304,20 @@ static void write_sfnt(Buf *out, const uint8_t *orig_header, Table *t, int n) {
     }
 }
 
-/* the font with the glyphs of family fam: Buf filled, how many glyphs were changed; -1 on a font it cannot read */
-static int remake(const uint8_t *otf, size_t size, const uint16_t *gids, uint32_t cp_first, uint32_t cp_count, int fam,
-                  Buf *out) {
-    Table t[32];
+/* The font for the game: every family's icon of each codepoint in the builder's empty glyphs (slot base + family * cp_count
+   + i; a codepoint a family leaves as it is keeps the game's glyph), the cmap written again with a group of its own for
+   each codepoint, the icon codepoints pointing at family fam's, and an "hkic" table that host/button_icons_live.c finds
+   in the game's memory to point them at another family's: its marker, the families' glyph for each codepoint and where
+   each codepoint's group's glyph number is. Buf filled, how many of fam's glyphs were changed; -1 on a font it cannot
+   read. */
+#define LIVE_MARKER "HOOKSHOT-ICONS-1"
+static int remake(const uint8_t *otf, size_t size, const uint16_t *gids, uint32_t cp_first, uint32_t cp_count,
+                  uint32_t slot_base, const uint8_t *map, uint32_t map_n, int fam, Buf *out) {
+    Table t[34];
     const int n = tables_of(otf, size, t, 32);
     Table *cff = table(t, n, "CFF "), *hmtx = table(t, n, "hmtx"), *hhea = table(t, n, "hhea"), *maxp = table(t, n, "maxp");
-    if (!cff || !hmtx || !hhea || !maxp || hhea->len < 36 || maxp->len < 6) return -1;
+    Table *cmap = table(t, n, "cmap");
+    if (!cff || !hmtx || !hhea || !maxp || !cmap || hhea->len < 36 || maxp->len < 6 || cp_count > 64) return -1;
     const uint8_t *c = cff->data;
     const size_t clen = cff->len;
     uint32_t cnt, ccount;
@@ -318,17 +332,24 @@ static int remake(const uint8_t *otf, size_t size, const uint16_t *gids, uint32_
     cs_at = be32(c + operand);
     if (!cff_index(c, clen, cs_at, &ccount, &cosz, &cs_base, &cs_end)) return -1;
     const uint32_t nglyphs = be16(maxp->data + 4);
-    if (ccount != nglyphs) return -1;
+    if (ccount != nglyphs || slot_base + FAMILIES * cp_count > nglyphs) return -1;
 
-    /* the new glyphs */
+    /* every family's glyphs */
     Made *made = (Made *)calloc(nglyphs, sizeof *made);
+    uint16_t famgid[FAMILIES][64];
     int changed = 0;
-    for (uint32_t i = 0; i < cp_count; i++) {
-        const uint16_t g = gids[i];
-        if (!g || g >= nglyphs || made[g].cs.n) continue;
-        if (glyph_for(fam, cp_first + i, &made[g])) changed++;
-        else made[g].cs.n = 0;
-    }
+    for (int f = 0; f < FAMILIES; f++)
+        for (uint32_t i = 0; i < cp_count; i++) {
+            const uint32_t slot = slot_base + (uint32_t)f * cp_count + i;
+            famgid[f][i] = gids[i];
+            if (!gids[i]) continue;
+            if (glyph_for(f, cp_first + i, &made[slot])) {
+                famgid[f][i] = (uint16_t)slot;
+                if (f == fam) changed++;
+            } else {
+                made[slot].cs.n = 0;
+            }
+        }
 
     /* the CharStrings INDEX, at the end of the CFF */
     Buf idx = {0};
@@ -367,12 +388,56 @@ static int remake(const uint8_t *otf, size_t size, const uint16_t *gids, uint32_
     uint8_t newhhea[64];
     memcpy(newhhea, hhea->data, hhea->len < sizeof newhhea ? hhea->len : sizeof newhhea);
     put16(newhhea + 34, nglyphs);
+
+    /* the cmap: one encoding (3, 10), format 12, a group for each codepoint (the builder's map, sorted) */
+    Buf newcmap = {0};
+    uint8_t ch[12 + 16];
+    put16(ch, 0), put16(ch + 2, 1), put16(ch + 4, 3), put16(ch + 6, 10), put32(ch + 8, 12);
+    put16(ch + 12, 12), put16(ch + 14, 0), put32(ch + 16, 16 + map_n * 12), put32(ch + 20, 0), put32(ch + 24, map_n);
+    put(&newcmap, ch, sizeof ch);
+    uint32_t group_at[64] = {0};   /* (each icon codepoint's group's glyph number: where in the cmap) */
+    for (uint32_t k = 0; k < map_n; k++) {
+        uint32_t cp, g16;
+        memcpy(&cp, map + k * 8, 4);
+        g16 = (uint32_t)map[k * 8 + 4] | (uint32_t)map[k * 8 + 5] << 8;
+        if (cp >= cp_first && cp < cp_first + cp_count) {
+            g16 = famgid[fam][cp - cp_first];
+            group_at[cp - cp_first] = (uint32_t)newcmap.n + 8;
+        }
+        uint8_t gr[12];
+        put32(gr, cp), put32(gr + 4, cp), put32(gr + 8, g16);
+        put(&newcmap, gr, 12);
+    }
+
+    /* hkic: the marker, the families, the current one, their glyphs, where the groups' glyph numbers are (from hkic) */
+    Buf hk = {0};
+    put(&hk, LIVE_MARKER, 16);
+    uint8_t hh[16];
+    put32(hh, FAMILIES), put32(hh + 4, cp_first), put32(hh + 8, cp_count), put32(hh + 12, (uint32_t)fam);
+    put(&hk, hh, 16);
+    for (int f = 0; f < FAMILIES; f++)
+        for (uint32_t i = 0; i < cp_count; i++) {
+            uint8_t g2[2];
+            put16(g2, famgid[f][i]);
+            put(&hk, g2, 2);
+        }
+    while (hk.n % 4) put_byte(&hk, 0);
+    const size_t rel_at = hk.n;
+    for (uint32_t i = 0; i < cp_count; i++) put(&hk, "\0\0\0\0", 4);
+
     cff->data = newcff.p, cff->len = (uint32_t)newcff.n;
     hmtx->data = newhmtx.p, hmtx->len = (uint32_t)newhmtx.n;
     hhea->data = newhhea;
-    write_sfnt(out, otf, t, n);
+    cmap->data = newcmap.p, cmap->len = (uint32_t)newcmap.n;
+    Table *hkt = &t[n];
+    hkt->tag = (uint32_t)'h' << 24 | (uint32_t)'k' << 16 | (uint32_t)'i' << 8 | 'c';
+    hkt->data = hk.p, hkt->len = (uint32_t)hk.n;
+    write_sfnt(out, otf, t, n + 1);
+    /* the groups' places, now that the tables have theirs (signed, from hkic's start; 0: the codepoint has none) */
+    for (uint32_t i = 0; i < cp_count; i++)
+        if (group_at[i]) put32(out->p + hkt->out_at + rel_at + i * 4, (uint32_t)((int64_t)cmap->out_at + group_at[i] - hkt->out_at));
     for (uint32_t g = 0; g < nglyphs; g++) free(made[g].cs.p);
-    free(made), free(idx.p), free(newcff.p), free(newhmtx.p);
+    free(made), free(idx.p), free(newcff.p), free(newhmtx.p), free(newcmap.p), free(hk.p);
     return changed;
 }
 
@@ -392,6 +457,7 @@ static int option_from_file(void) {   /* button_icons= in hookshot_options.ini i
     return v;
 }
 
+static int start_family = -1, live_wanted, auto_mode;   /* (host/button_icons_live.c) */
 static int choose(const char **why) {
     const char *e = getenv("HOS_BUTTON_ICONS");
     if (e && *e) {
@@ -413,6 +479,7 @@ static int choose(const char **why) {
     }
     const int f = hos_sdl_pad_family(1500);
     *why = f ? "the controller connected at the start" : "no controller connected at the start";
+    auto_mode = 1;   /* (Auto: the icons follow what is played with, host/button_icons_live.c) */
     return f;
 }
 
@@ -438,7 +505,8 @@ typedef struct { char path[MAX_PATH]; uint32_t before; const uint8_t *data; uint
 static uint8_t *bin;
 static size_t bin_size;
 static char game_dir[MAX_PATH];
-static uint32_t font_key, font_size, cp_first, cp_count;
+static uint32_t font_key, font_size, cp_first, cp_count, slot_base, map_n;
+static const uint8_t *map;   /* (the font's whole character map: {u32 codepoint, u16 glyph, u16 pad}) */
 static size_t font_at, gids_at;
 static SizeTable tables[4];
 static int ntables;
@@ -472,13 +540,21 @@ static int load_bin(void) {
         return 0;
     }
     memcpy(h, bin + 4, sizeof h);
-    if (h[0] != 2) {
-        hos_log("button icons: %s is of another version (%u; this one reads 2): the game's own", path, h[0]);
+    if (h[0] != 3) {
+        hos_log("button icons: %s is of another version (%u; this one reads 3): the game's own", path, h[0]);
         return 0;
     }
     font_key = h[1], font_size = h[2], lib_n = h[3], cp_first = h[4], cp_count = h[5];
     font_at = 36, gids_at = font_at + ((font_size + 3) & ~(size_t)3);
-    const size_t lib_at = gids_at + ((cp_count * 2 + 3) & ~(size_t)3);
+    const size_t map_at = gids_at + ((cp_count * 2 + 3) & ~(size_t)3);   /* (then the font's whole character map) */
+    if (map_at + 8 > got) {
+        hos_log("button icons: %s is cut short: the game's own", path);
+        return 0;
+    }
+    memcpy(&slot_base, bin + map_at, 4);
+    memcpy(&map_n, bin + map_at + 4, 4);
+    map = bin + map_at + 8;
+    const size_t lib_at = map_at + 8 + (size_t)map_n * 8;
     const size_t cs_at = lib_at + (size_t)lib_n * sizeof(LibGlyph);
     size_t at = h[6];
     if (cs_at > got || at > got) {
@@ -540,7 +616,8 @@ static int make_font(void) {
     const char *why = "";
     const int fam = choose(&why);
     Buf otf = {0};
-    const int changed = remake(bin + font_at, font_size, (const uint16_t *)(bin + gids_at), cp_first, cp_count, fam, &otf);
+    const int changed = remake(bin + font_at, font_size, (const uint16_t *)(bin + gids_at), cp_first, cp_count, slot_base, map,
+                               map_n, fam, &otf);
     if (changed < 0) {
         hos_log("button icons: the font in hookshot_icons.bin could not be read: the game's own");
         free(otf.p);
@@ -566,7 +643,9 @@ static int make_font(void) {
     for (size_t i = 0; i < otf.n; i++) otf.p[i] ^= k[i & 3];
     put(&bf, otf.p, otf.n);
     const int ok = write_zs("hookshot_icons_font.zs", bf.p, bf.n, made_path, sizeof made_path);
-    if (ok) hos_log("button icons: %s (%s): %d glyphs, %zu bytes", fam_name[fam], why, changed, bf.n);
+    if (ok) hos_log("button icons: %s (%s): %d glyphs, %zu bytes; every family's in it for switching", fam_name[fam], why,
+                    changed, bf.n);
+    if (ok) start_family = fam, live_wanted = auto_mode;
     free(otf.p), free(bf.p);
     return ok;
 }
@@ -603,4 +682,14 @@ int hos_button_icons_romfs(const char *rel, char *out, size_t cap) {
     }
     ReleaseSRWLockExclusive(&made_lock);
     return ok;
+}
+
+/* (host/button_icons_live.c) the family the font was made with, -1 if none was given to the game; *follow: Auto (the icons
+   follow the device played with), not a family the menu or HOS_BUTTON_ICONS fixed */
+int hos_button_icons_started(int *follow) {
+    AcquireSRWLockShared(&made_lock);
+    const int f = made_state > 0 ? start_family : -1;
+    *follow = live_wanted;
+    ReleaseSRWLockShared(&made_lock);
+    return f;
 }
