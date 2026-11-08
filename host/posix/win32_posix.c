@@ -12,6 +12,11 @@
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#ifdef __APPLE__
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+#endif
 #include <ucontext.h>
 #ifdef __linux__
 #include <linux/futex.h>
@@ -934,10 +939,13 @@ DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap) {
         else if (!realpath(di.dli_fname, path))
             snprintf(path, sizeof path, "%s", di.dli_fname);
         if (!path[0]) exe_path(path, sizeof path);
-    } else {
+    }
+#ifdef __linux__
+    else {
         void *lm = NULL;   /* (a handle from LoadLibraryA) */
         if (dlinfo(m, RTLD_DI_LINKMAP, &lm) == 0 && lm) snprintf(path, sizeof path, "%s", ((const char **)lm)[1]);
     }
+#endif
     if (!cap) return 0;
     const size_t n = strlen(path);
     const size_t k = n < cap - 1 ? n : cap - 1;

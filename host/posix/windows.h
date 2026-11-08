@@ -28,6 +28,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+extern char **environ;
 
 /* ---- types ---- */
 typedef int BOOL;
