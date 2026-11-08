@@ -77,11 +77,13 @@ task. A GUI and the optional in-game page are not done yet.
 
 ### Phase 2 remaining — field names
 
-Status: **schema complete; names blocked on a source**. The GameDataList has
-12,019 saved hashes with types/defaults/enums, but no `HashText` or name
-strings. Only about 12 full OoT paths are printable in the build. The public
-TotK `GameDataListFull.csv` gives 214 OoT hash matches, of which **207 validate**
-with `murmur3_32(name) == hash` (about 1.8% of the schema). That includes:
+Status: **Option A tooling complete; OoT-specific curation ongoing.** The
+GameDataList has 12,019 saved hashes with types/defaults/enums but no
+`HashText` or name strings. Only about 12 full OoT paths are printable in the
+build. The public TotK `GameDataListFull.csv` gives 214 OoT hash matches, of
+which **207 validate** with `murmur3_32(name) == hash`; with the OoT scan that
+is **219 exact names** (about 1.8% of the schema), plus semantic labels from
+the curated overlay. That includes:
 
 ```
 PlayerStatus.Life                 0x31AB5580
