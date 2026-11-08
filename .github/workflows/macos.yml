@@ -93,7 +93,15 @@ jobs:
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
         run: |
-          python -I nx2/build.py --standalone --jobs "$(python -c 'import os; print(os.cpu_count() or 1)')"
+          jobs="$(python -c 'import os; print(os.cpu_count() or 1)')"
+          echo "Starting macOS Vulkan renderer build with ${jobs} jobs"
+          python -I nx2/build.py --standalone --jobs "$jobs" &
+          build_pid=$!
+          while kill -0 "$build_pid" 2>/dev/null; do
+            echo "macOS renderer build still running ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
+            sleep 60
+          done
+          wait "$build_pid"
           test -f work/sa/build/hookshot_vk.dylib
           file work/sa/build/hookshot_vk.dylib
           otool -L work/sa/build/hookshot_vk.dylib
