@@ -11,6 +11,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 
 #include "vk_internal.h"
 
@@ -22,7 +26,12 @@
 namespace mkwvk {
 namespace {
 
+#ifdef _WIN32
 constexpr const char* kLoader = "amd_fidelityfx_loader_vk.dll";
+#else
+// (linux) no AMD loader exists there: the upscaler library itself, which exports the ffx entry points (a Vulkan FSR 4 build)
+constexpr const char* kLoader = "amd_fidelityfx_upscaler_vk.so";
+#endif
 
 struct Fsr {
     bool tried = false, ok = false;
@@ -37,6 +46,9 @@ struct Fsr {
     VkDeviceContext device_context{};
     ffxCreateBackendVKDesc backend{};
     ffxOverrideVersion version{};
+#ifndef _WIN32
+    ffxCreateBackendVKDesc_DEPRECATED legacy_backend{};   // (linux) the backend description a Vulkan FSR 4 build like fsr4-vk reads
+#endif
     ffxCreateContextDescUpscale upscale{};
     ffxContext context = nullptr;
     uint32_t max_w = 0, max_h = 0;   // (the context's sizes: the output's, the most the render size can be)
@@ -70,13 +82,28 @@ std::vector<std::string> loader_dirs() {
     return d;
 }
 
+void* symbol(const char* name) {
+#ifdef _WIN32
+    return (void*)GetProcAddress(fsr.lib, name);
+#else
+    return dlsym(fsr.lib, name);
+#endif
+}
+
 bool start() {
     fsr.tried = true;
     for (const std::string& dir : loader_dirs()) {
+#ifdef _WIN32
         const std::string path = dir + "\\" + kLoader;
         if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         // (the upscaler DLL the loader picks lies beside it: the loader's folder first in the search)
         fsr.lib = LoadLibraryExA(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+#else
+        const std::string path = dir + "/" + kLoader;
+        if (access(path.c_str(), R_OK) != 0) continue;
+        fsr.lib = (HMODULE)dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (!fsr.lib) logf("vk: fsr4: %s not loaded: %s", path.c_str(), dlerror());
+#endif
         if (fsr.lib) {
             logf("vk: fsr4: %s", path.c_str());
             break;
@@ -87,10 +114,10 @@ bool start() {
         logf("vk: fsr4: %s not found (RX_FSR4_DIR, or beside hookshot.exe with amd_fidelityfx_upscaler_vk.dll)", kLoader);
         return false;
     }
-    fsr.create = (PfnFfxCreateContext)(void*)GetProcAddress(fsr.lib, "ffxCreateContext");
-    fsr.destroy = (PfnFfxDestroyContext)(void*)GetProcAddress(fsr.lib, "ffxDestroyContext");
-    fsr.query = (PfnFfxQuery)(void*)GetProcAddress(fsr.lib, "ffxQuery");
-    fsr.dispatch = (PfnFfxDispatch)(void*)GetProcAddress(fsr.lib, "ffxDispatch");
+    fsr.create = (PfnFfxCreateContext)symbol("ffxCreateContext");
+    fsr.destroy = (PfnFfxDestroyContext)symbol("ffxDestroyContext");
+    fsr.query = (PfnFfxQuery)symbol("ffxQuery");
+    fsr.dispatch = (PfnFfxDispatch)symbol("ffxDispatch");
     if (!fsr.create || !fsr.destroy || !fsr.query || !fsr.dispatch) {
         fsr.reason = "the AMD loader lacks the FSR API";
         logf("vk: fsr4: %s lacks the FSR API's entry points", kLoader);
@@ -160,6 +187,16 @@ bool make_context(uint32_t w, uint32_t h) {
     fsr.version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
     fsr.version.versionId = fsr.version_id;
     fsr.backend.header.pNext = &fsr.version.header;
+#ifndef _WIN32
+    // (linux) fsr4-vk looks for the SDK's older backend description, not ffxCreateBackendVKDesc: without it, it finds no device
+    // and creation returns FFX_API_RETURN_ERROR_PARAMETER. Both stay chained
+    fsr.legacy_backend = {};
+    fsr.legacy_backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED;
+    fsr.legacy_backend.vkDevice = fsr.device_context.vkDevice;
+    fsr.legacy_backend.vkPhysicalDevice = fsr.device_context.vkPhysicalDevice;
+    fsr.legacy_backend.vkDeviceProcAddr = fsr.device_context.vkDeviceProcAddr;
+    fsr.version.header.pNext = &fsr.legacy_backend.header;
+#endif
     fsr.upscale = {};
     fsr.upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     fsr.upscale.header.pNext = &fsr.backend.header;
@@ -212,6 +249,16 @@ bool fsr4_available() {
     return fsr.ok;
 }
 const char* fsr4_reason() { return fsr.reason; }
+
+bool fsr4_wants_descriptor_buffer() {
+#ifdef _WIN32
+    return false;
+#else
+    for (const std::string& dir : loader_dirs())
+        if (access((dir + "/" + kLoader).c_str(), R_OK) == 0) return true;
+    return false;
+#endif
+}
 
 bool fsr4_evaluate(VkCommandBuffer cmd, const DlssImage& color, const DlssImage& depth, const DlssImage& motion,
                    const DlssImage& output, float jitter_x, float jitter_y, bool reset) {

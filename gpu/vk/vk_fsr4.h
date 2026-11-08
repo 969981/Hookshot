@@ -15,6 +15,8 @@ namespace mkwvk {
 /// among those it lists. Made at the first use (no instance or device extensions needed), once. True when there is one
 bool fsr4_available();
 const char* fsr4_reason();   // (why not, short: the menu and the log)
+/// (linux) a Vulkan FSR 4 library such as fsr4-vk's is there and records with descriptor buffers: the device has to enable them
+bool fsr4_wants_descriptor_buffer();
 
 /// Records one FSR evaluation on cmd: color (perceptual, tonemapped: FSR's LDR mode), depth (standard, not inverted) and motion
 /// (render pixels, towards the previous frame) at the render size, output (RGBA16F, STORAGE | SAMPLED) at the output size. All
