@@ -4,6 +4,10 @@ This is an experimental standalone path. The default remains 60 Hz. `HOS_FPS_TAR
 0 through 120; values through 60 keep the existing limiter-floor behavior. A target from 61 through 120 opts into
 higher native pacing when Game speed is Real time. Per frame and `HOS_NO_PACING` keep the 60-Hz policy.
 
+`HOS_REALTIME_WINDOW` keeps the upstream averaging option: five samples by default, with values clamped to
+1 through 5; 1 uses the last interval alone. A changed sampling window starts a fresh timing epoch. Target-rate
+scaling is applied after that same average.
+
 Higher native rates automatically use the last successfully committed host timestep at the verified game clock
 input. No second runtime flag is needed. A missing or invalid committed sample preserves the original loaded
 value. Committed rates below 60 are valid under an active higher target, so load does not force the clock back
@@ -34,12 +38,18 @@ On Windows, run it from a compiler development shell. `gcc` or a path to `cl.exe
 
 ## Validation status
 
-The public implementation was built from upstream `40c3f85` plus this change, using the audited
+The refresh onto upstream `7398e5ab` preserves its renderer API3, controls, text-speed patch and realtime-window
+option. Both Clang and MSVC pass nine focused authored checks, including window1-5 parity with the upstream
+60-Hz trace, 60/70/75 movie transitions, combined patcher idempotence and the original-load negative control.
+The upstream text-speed check also passes. A matching fresh lift, full build and runtime comparison of this
+refreshed source have not run yet.
+
+The historical public implementation was built from upstream `40c3f85` plus this change, using the audited
 `foliage-linux-updater` toolkit (release `170ce53`). Both Clang and MSVC passed the eight focused authored
 regressions, including the original-load negative control. A fresh standalone lift in a separate work directory
 installed the hook through the production patcher; reverse/reapply and idempotence checks reproduced the
 generated file byte-for-byte. The native build completed without failures. No private hand-edited generation,
-clock-override flag or tracing was used for these current-source results.
+clock-override flag or tracing was used for those historical-source results.
 
 Runtime checks used Windows, an RTX 5090 and Ryzen 7 9800X3D, TV/profile0, Real time and frame generation off:
 

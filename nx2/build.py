@@ -145,10 +145,11 @@ def vk_sources():
 
 
 def cpm_dirs():
-    """Eden's CPM package caches, read only: RX_CPM, this project's work/eg clone, mkw-recomp's, the shared
-    Eglantine checkout's (Vulkan and SPIR-V headers, VMA, FFmpeg)"""
+    """CPM packages: RX_CPM, packaged tools/cpm, then legacy project caches.
+    The packages provide Vulkan and SPIR-V headers, VMA and FFmpeg."""
     eden_ns2 = os.path.dirname(kit.ROOT)
-    return [d for d in (os.environ.get("RX_CPM"), os.path.join(kit.WORK, "eg", ".cache", "cpm"),
+    return [d for d in (os.environ.get("RX_CPM"), os.path.join(kit.ROOT, "cpm"),
+                        os.path.join(kit.WORK, "eg", ".cache", "cpm"),
                         os.path.join(eden_ns2, "mkw-recomp", "work", "eg", ".cache", "cpm"),
                         os.path.join(eden_ns2, "Eglantine", ".cache", "cpm")) if d and os.path.isdir(d)]
 
@@ -545,6 +546,13 @@ def main():
         if os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
             import shutil
             shutil.copyfile(sdl, sdl_dst)
+        # (SDL2.dll is sdl2-compat: the SDL2 calls on SDL3, whose controller support is current (a Steam Controller user's
+        # report). It loads SDL3.dll from beside it)
+        sdl3 = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL3.dll")
+        sdl3_dst = os.path.join(out, "SDL3.dll")
+        if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
+            import shutil
+            shutil.copyfile(sdl3, sdl3_dst)
     if vk_prebuilt and a.standalone and not a.only:
         import shutil
         shutil.copyfile(vk_prebuilt, os.path.join(out, VK_LIB))

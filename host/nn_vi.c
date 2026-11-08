@@ -125,7 +125,16 @@ static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
 int hos_vi_native_interval(Ctx *c, int requested) {
     (void)c;
-    present_interval = requested < 1 ? 1 : requested > 4 ? 4 : requested;
+    /* (hookshot) OoT's frame-rate controller asks for 2, 3 or 4 vsyncs a frame whenever one runs long (480 changes a minute
+       in Kokiri): paced to them, frames snapped to 33, 50 and 67 ms, the stutter, and the frame rate sat far under what the
+       PC managed. With game time following the clock (the Insert menu's Real time, realtime_step), a frame is shown as soon
+       as it is ready, 60 at most; the game still reads back its own interval. HOS_GAME_INTERVAL=1, or Game speed Per frame:
+       paced to the game's interval, as before */
+    static int game_interval = -1;
+    if (game_interval < 0) game_interval = getenv("HOS_GAME_INTERVAL") && atoi(getenv("HOS_GAME_INTERVAL")) != 0;
+    int rx_option(int id, int otherwise);
+    const int clamped = requested < 1 ? 1 : requested > 4 ? 4 : requested;
+    present_interval = game_interval || !rx_option(0, 1) ? clamped : 1;
     return requested;
 }
 /* (hookshot) The window's textures as the console's display queue has them: each present is shown at its display
@@ -202,6 +211,13 @@ extern volatile uint64_t hos_gfx_module;
 volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: nx2/oot_patches.py) */
 volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fixed path's scale) */
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
+volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: nx2/oot_patches.py) */
+/* The Insert menu's Text speed (0 Normal, 1 2x, 2 4x, 3 Instant), HOS_TEXT_SPEED=<0..3> over it: what the time of a letter
+   animation's step is multiplied by. Instant: the page at once, as the game's own skip on A */
+static float text_scale(const char *env, int menu) {
+    const int v = env && *env ? atoi(env) : menu;
+    return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
+}
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
     static int target = -1, log_on = -1;
@@ -209,6 +225,7 @@ static void realtime_step(int64_t now) {
     static int no_pacing = -1;
     static int warned_per_frame, warned_no_pacing;
     static int last_written_nominal;
+    static unsigned window = 5;
     static HosRateLimiter limiter;
     static HosRateStepper stepper;
     if (target < 0) {
@@ -219,10 +236,17 @@ static void realtime_step(int64_t now) {
         }
         log_on = getenv("HOS_FPS_LOG") != NULL;
         no_pacing = getenv("HOS_NO_PACING") != NULL;
+        window = hos_rate_parse_window(getenv("HOS_REALTIME_WINDOW"));
     }
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
        unset and the 3D came out black. The dynamic path runs a few frames first, as when the menu turns it on in game) */
     hos_fixed_resolution = !rx_option(2, 1) && hos_dynres_runs >= 30;
+    {
+        static const char *env;
+        static int looked;
+        if (!looked) looked = 1, env = getenv("HOS_TEXT_SPEED");
+        hos_text_scale = text_scale(env, rx_option(5, 0));
+    }
     {   /* (the Insert menu's Resolution: the fixed path's scale, live; HOS_RES_SCALE below stays over it) */
         const int percent = rx_option(3, 0);
         if (percent > 0 && !getenv("HOS_RES_SCALE")) {
@@ -280,14 +304,14 @@ static void realtime_step(int64_t now) {
         int *slot = (int *)GP(mod + 0x2c8);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
         last_written_nominal = 0;
-        hos_rate_stepper_update(&stepper, now, 0, rate, NULL, NULL);
+        hos_rate_stepper_update_window(&stepper, now, 0, rate, window, NULL, NULL);
         return;
     }
     static long long steps;
     int *slot = (int *)GP(mod + 0x2c8);
     int fps = 0;
     double ratio = 0.0;
-    if (!hos_rate_stepper_update(&stepper, now, 1, rate, &fps, &ratio)) {
+    if (!hos_rate_stepper_update_window(&stepper, now, 1, rate, window, &fps, &ratio)) {
         InterlockedExchange(&main_rate_committed_state, 0);
         return;
     }

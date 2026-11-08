@@ -11,18 +11,26 @@ static int fail(const char *name, int line) {
 
 #define CHECK(name, cond) do { if (!(cond)) return fail((name), __LINE__); } while (0)
 
-static int step_at(HosRateStepper *s, int64_t t, int realtime, int hz, int expected) {
+static int step_at_window(HosRateStepper *s, int64_t t, int realtime, int hz, unsigned window, int expected) {
     int fps = -1;
     double ratio = 0.0;
-    const int ready = hos_rate_stepper_update(s, t, realtime, hz, &fps, &ratio);
+    const int ready = hos_rate_stepper_update_window(s, t, realtime, hz, window, &fps, &ratio);
     if (ready) hos_rate_stepper_commit(s, fps, ratio);
     return ready && fps == expected;
 }
 
-static int epoch_at(HosRateStepper *s, int64_t t, int realtime, int hz) {
+static int step_at(HosRateStepper *s, int64_t t, int realtime, int hz, int expected) {
+    return step_at_window(s, t, realtime, hz, 5, expected);
+}
+
+static int epoch_at_window(HosRateStepper *s, int64_t t, int realtime, int hz, unsigned window) {
     int fps = -1;
     double ratio = 0.0;
-    return !hos_rate_stepper_update(s, t, realtime, hz, &fps, &ratio);
+    return !hos_rate_stepper_update_window(s, t, realtime, hz, window, &fps, &ratio);
+}
+
+static int epoch_at(HosRateStepper *s, int64_t t, int realtime, int hz) {
+    return epoch_at_window(s, t, realtime, hz, 5);
 }
 
 static int advance(HosRateStepper *s, int64_t *now, int64_t interval_ns, int max_hz,
@@ -44,7 +52,7 @@ typedef struct LegacyRateStepper {
     int64_t last_ns;
 } LegacyRateStepper;
 
-static int legacy_rate_update(LegacyRateStepper *s, int64_t now, int max_hz, int *fps_out) {
+static int legacy_rate_update_window(LegacyRateStepper *s, int64_t now, int max_hz, unsigned window, int *fps_out) {
     const double dt = (double)(now - s->last_ns) / 1e9;
     s->last_ns = now;
     if (dt <= 0.0 || dt > 0.25) {
@@ -52,8 +60,8 @@ static int legacy_rate_update(LegacyRateStepper *s, int64_t now, int max_hz, int
         s->carry = 0.0;
         return 0;
     }
-    s->samples[s->next++ % 5] = dt;
-    if (s->count < 5) s->count++;
+    s->samples[s->next++ % window] = dt;
+    if (s->count < window) s->count++;
     double sum = 0.0;
     for (unsigned i = 0; i < s->count; i++) sum += s->samples[i];
     double ratio = sum / s->count * 60.0 + s->carry;
@@ -67,6 +75,34 @@ static int legacy_rate_update(LegacyRateStepper *s, int64_t now, int max_hz, int
     if (s->carry > 0.5) s->carry = 0.5;
     if (s->carry < -0.5) s->carry = -0.5;
     *fps_out = fps;
+    return 1;
+}
+
+static int legacy_rate_update(LegacyRateStepper *s, int64_t now, int max_hz, int *fps_out) {
+    return legacy_rate_update_window(s, now, max_hz, 5, fps_out);
+}
+
+/* The upstream 60-Hz averaging/rounding trace, including stalls, for every allowed window. */
+static int upstream_window_parity(unsigned window) {
+    static const int64_t intervals[] = {16666667LL, 10000000LL, 24000000LL, 50000000LL,
+                                        12000000LL, 33333333LL, 300000000LL};
+    HosRateStepper current = {0};
+    LegacyRateStepper upstream = {0};
+    int64_t now = 0;
+    if (!epoch_at_window(&current, now, 1, 60, window)) return 0;
+    for (int i = 0; i < 700; i++) {
+        int fps = -1, expected = -1;
+        double ratio = 0.0;
+        now += intervals[i % (sizeof intervals / sizeof intervals[0])];
+        const int ready = hos_rate_stepper_update_window(&current, now, 1, 60, window, &fps, &ratio);
+        const int upstream_ready = legacy_rate_update_window(&upstream, now, 60, window, &expected);
+        if (ready != upstream_ready) return 0;
+        if (ready) {
+            if (fps != expected) return 0;
+            hos_rate_stepper_commit(&current, fps, ratio);
+        }
+        if (current.carry != upstream.carry || current.count != upstream.count) return 0;
+    }
     return 1;
 }
 
@@ -217,7 +253,7 @@ static int mixed_and_jitter(void) {
 
 /* A VI/limiter/timestep simulation using the production policies: start at the
    requested rate, acquire 30-fps pictures, then receive only empty/EOS output. */
-static int movie_rate_case(int target) {
+static int movie_rate_case_window(int target, unsigned window) {
     HosRateLimiter limiter = {0};
     HosRateStepper stepper = {0};
     int64_t now = 1000000000LL, last_picture = 0;
@@ -225,30 +261,30 @@ static int movie_rate_case(int target) {
     int rate = hos_rate_effective_hz(target, 1, 0, hos_rate_recent_video_picture(now, last_picture));
     int limit = hos_rate_limiter_apply(&limiter, 60, target, rate);
     CHECK("idle native rate", rate == high_hz && limit == high_hz);
-    CHECK("idle epoch", epoch_at(&stepper, now, 1, rate));
+    CHECK("idle epoch", epoch_at_window(&stepper, now, 1, rate, window));
     now += hos_rate_period_ns(rate, 1);
-    CHECK("idle timestep", step_at(&stepper, now, 1, rate, high_hz));
+    CHECK("idle timestep", step_at_window(&stepper, now, 1, rate, window, high_hz));
 
     last_picture = now;   /* a queued picture was acquired, including one whose PTS is zero */
     rate = hos_rate_effective_hz(target, 1, 0, hos_rate_recent_video_picture(now, last_picture));
     limit = hos_rate_limiter_apply(&limiter, limit, target, rate);
     CHECK("movie starts at 60 including owned limiter", rate == 60 && limit == 60);
     CHECK("movie nominal restored", hos_rate_restore_nominal(high_hz, high_hz) == 60);
-    if (high_hz > 60) CHECK("movie resets step window", epoch_at(&stepper, now, 1, rate));
+    if (high_hz > 60) CHECK("movie resets step window", epoch_at_window(&stepper, now, 1, rate, window));
     for (int frame = 1; frame <= 60; frame++) {
         now += hos_rate_period_ns(60, 1);
         if (!(frame % 2)) last_picture = now;   /* successful picture every other VI frame */
         rate = hos_rate_effective_hz(target, 1, 0, hos_rate_recent_video_picture(now, last_picture));
         limit = hos_rate_limiter_apply(&limiter, limit, target, rate);
         CHECK("30 fps movie keeps VI and limiter at 60", rate == 60 && limit == 60);
-        CHECK("movie timestep is 60", step_at(&stepper, now, 1, rate, 60));
+        CHECK("movie timestep is 60", step_at_window(&stepper, now, 1, rate, window, 60));
     }
     for (int frame = 0; frame < 15; frame++) {   /* empty/EOS returns do not publish new activity */
         now += hos_rate_period_ns(60, 1);
         rate = hos_rate_effective_hz(target, 1, 0, hos_rate_recent_video_picture(now, last_picture));
         limit = hos_rate_limiter_apply(&limiter, limit, target, rate);
         CHECK("short decode gaps keep cap", rate == 60 && limit == 60);
-        CHECK("empty output keeps normal timestep sampling", step_at(&stepper, now, 1, rate, 60));
+        CHECK("empty output keeps normal timestep sampling", step_at_window(&stepper, now, 1, rate, window, 60));
     }
     now = last_picture + HOS_RATE_VIDEO_GRACE_NS;
     CHECK("last grace nanosecond active", hos_rate_recent_video_picture(now, last_picture));
@@ -256,9 +292,9 @@ static int movie_rate_case(int target) {
     rate = hos_rate_effective_hz(target, 1, 0, hos_rate_recent_video_picture(now, last_picture));
     limit = hos_rate_limiter_apply(&limiter, limit, target, rate);
     CHECK("empty/EOS output eventually releases cap", rate == high_hz && limit == high_hz);
-    if (high_hz > 60) CHECK("movie exit resets step window", epoch_at(&stepper, now, 1, rate));
+    if (high_hz > 60) CHECK("movie exit resets step window", epoch_at_window(&stepper, now, 1, rate, window));
     now += hos_rate_period_ns(rate, 1);
-    CHECK("resumed timestep", step_at(&stepper, now, 1, rate, high_hz));
+    CHECK("resumed timestep", step_at_window(&stepper, now, 1, rate, window, high_hz));
 
     rate = hos_rate_effective_hz(target, 0, 0, 0);
     limit = hos_rate_limiter_apply(&limiter, limit, target, rate);
@@ -267,7 +303,31 @@ static int movie_rate_case(int target) {
     return 0;
 }
 
+static int movie_rate_case(int target) {
+    return movie_rate_case_window(target, 5);
+}
+
 int main(void) {
+    CHECK("upstream default five samples", hos_rate_parse_window(NULL) == 5);
+    CHECK("upstream one-sample override", hos_rate_parse_window("1") == 1);
+    CHECK("upstream intermediate override", hos_rate_parse_window("3") == 3);
+    CHECK("upstream five-sample override", hos_rate_parse_window("5") == 5);
+    CHECK("upstream lower bound", hos_rate_parse_window("0") == 1 && hos_rate_parse_window("-3") == 1);
+    CHECK("upstream upper bound", hos_rate_parse_window("9") == 5);
+    CHECK("upstream atoi behavior", hos_rate_parse_window("") == 1 && hos_rate_parse_window("other") == 1 &&
+                                         hos_rate_parse_window("3tail") == 3);
+    for (unsigned window = 1; window <= 5; window++) {
+        CHECK("60-Hz trace matches upstream averaging", upstream_window_parity(window));
+        CHECK("configured-window movie simulation60", !movie_rate_case_window(60, window));
+        CHECK("configured-window movie simulation70", !movie_rate_case_window(70, window));
+        CHECK("configured-window movie simulation75", !movie_rate_case_window(75, window));
+    }
+    HosRateStepper configured = {0};
+    CHECK("configured window epoch", epoch_at_window(&configured, 0, 1, 75, 1));
+    CHECK("configured window sample", step_at_window(&configured, 13333333LL, 1, 75, 1, 75));
+    CHECK("window change resets sample epoch", epoch_at_window(&configured, 26666666LL, 1, 75, 3) &&
+                                               configured.count == 0 && configured.carry == 0.0 && configured.window == 3);
+    CHECK("changed-window first sample", step_at_window(&configured, 39999999LL, 1, 75, 3, 75));
     int target = -1;
     CHECK("unset default", hos_rate_parse_target(NULL, &target) == HOS_RATE_UNSET && target == 0);
     CHECK("zero keeps opt-out", hos_rate_parse_target("0", &target) == HOS_RATE_UNSET && target == 0);

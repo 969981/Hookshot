@@ -21,6 +21,13 @@ def fixture(load=None, name="f_80706be0"):
     return "void %s(Ctx *__restrict A64_NOESC c) {\n    %s\n    authored_first(c);\n    authored_second(c);\n}\n" % (name, load or PATCHES.CLOCK_LOAD)
 
 
+def other_switches():
+    # Authored scaffolding around the production patch signatures.
+    return ('#include "a64.h"\nvoid authored_resolution(void) {\n' + PATCHES.OLD + "\n" +
+            PATCHES.LABEL + "\n" + PATCHES.SCALE_OLD + "\n}\n" + PATCHES.TEXT_HEAD + "\n" +
+            "goto L_80b1e1b4;\n" + PATCHES.TEXT_OLD + "}\n")
+
+
 class NativeClockPatchTests(unittest.TestCase):
     def setUp(self):
         parent = Path(tempfile.gettempdir()).resolve()
@@ -93,10 +100,25 @@ class NativeClockPatchTests(unittest.TestCase):
         paths = [self.temp / "code_000.c", self.temp / "code_001.c"]
         for target in paths:
             target.write_text(fixture(), encoding="utf-8", newline="\n")
+        other = self.temp / "code_002.c"
+        other.write_text(other_switches(), encoding="utf-8", newline="\n")
+        paths.append(other)
         before = [path.read_bytes() for path in paths]
         with self.assertRaisesRegex(RuntimeError, "multiple MAIN"):
             PATCHES.apply(self.temp, native_clock=True)
         self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_native_text_and_resolution_switches_compose_idempotently(self):
+        target = self.temp / "code_000.c"
+        target.write_text(other_switches() + fixture(), encoding="utf-8", newline="\n")
+        PATCHES.apply(self.temp, native_clock=True)
+        first = target.read_bytes()
+        source = first.decode("utf-8")
+        self.assertEqual(source.count(PATCHES.CLOCK_PATCH), 1)
+        self.assertEqual(source.count(PATCHES.TEXT_NEW), 1)
+        self.assertEqual(source.count(PATCHES.NEW), 1)
+        PATCHES.apply(self.temp, native_clock=True)
+        self.assertEqual(target.read_bytes(), first)
 
     def test_non_standalone_and_legacy_default_emit_no_host_hook(self):
         target = self.temp / "code_000.c"

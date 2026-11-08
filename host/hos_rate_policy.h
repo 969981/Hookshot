@@ -9,6 +9,12 @@
 #define HOS_RATE_MAX_HZ 120
 #define HOS_RATE_VIDEO_GRACE_NS 250000000LL
 
+/* Preserve HOS_REALTIME_WINDOW's upstream atoi/default/bounds semantics. */
+static inline unsigned hos_rate_parse_window(const char *text) {
+    const int window = text ? atoi(text) : 5;
+    return window < 1 ? 1u : window > 5 ? 5u : (unsigned)window;
+}
+
 enum {
     HOS_RATE_INVALID = -1,
     HOS_RATE_UNSET = 0,
@@ -102,7 +108,7 @@ typedef struct HosRateStepper {
     int64_t last_ns;
     double samples[5];
     double carry, desired_ratio;
-    unsigned count, next;
+    unsigned count, next, window;
     int realtime, max_hz, initialized;
 } HosRateStepper;
 
@@ -111,6 +117,7 @@ static inline void hos_rate_stepper_reset(HosRateStepper *s, int64_t now, int re
     for (unsigned i = 0; i < 5; i++) s->samples[i] = 0.0;
     s->carry = s->desired_ratio = 0.0;
     s->count = s->next = 0;
+    s->window = 5;
     s->realtime = realtime;
     s->max_hz = max_hz;
     s->initialized = 1;
@@ -118,11 +125,13 @@ static inline void hos_rate_stepper_reset(HosRateStepper *s, int64_t now, int re
 
 /* Return 1 when a guest nominal frame rate is available. Mode/rate transitions and
    long stalls establish a fresh timing window instead of carrying stale elapsed time. */
-static inline int hos_rate_stepper_update(HosRateStepper *s, int64_t now, int realtime, int max_hz,
-                                          int *fps_out, double *ratio_out) {
+static inline int hos_rate_stepper_update_window(HosRateStepper *s, int64_t now, int realtime, int max_hz,
+                                                unsigned window, int *fps_out, double *ratio_out) {
     if (max_hz < HOS_RATE_DEFAULT_HZ || max_hz > HOS_RATE_MAX_HZ) max_hz = HOS_RATE_DEFAULT_HZ;
-    if (!s->initialized || s->realtime != realtime || s->max_hz != max_hz || !realtime) {
+    window = window < 1 ? 1 : window > 5 ? 5 : window;
+    if (!s->initialized || s->realtime != realtime || s->max_hz != max_hz || s->window != window || !realtime) {
         hos_rate_stepper_reset(s, now, realtime, max_hz);
+        s->window = window;
         return 0;
     }
 
@@ -133,8 +142,8 @@ static inline int hos_rate_stepper_update(HosRateStepper *s, int64_t now, int re
         s->carry = 0.0;
         return 0;
     }
-    s->samples[s->next++ % 5] = dt;
-    if (s->count < 5) s->count++;
+    s->samples[s->next++ % window] = dt;
+    if (s->count < window) s->count++;
     double sum = 0.0;
     for (unsigned i = 0; i < s->count; i++) sum += s->samples[i];
     const double desired_ratio = sum / s->count * 60.0 + s->carry;
@@ -149,6 +158,11 @@ static inline int hos_rate_stepper_update(HosRateStepper *s, int64_t now, int re
     *fps_out = fps;
     *ratio_out = ratio;
     return 1;
+}
+
+static inline int hos_rate_stepper_update(HosRateStepper *s, int64_t now, int realtime, int max_hz,
+                                          int *fps_out, double *ratio_out) {
+    return hos_rate_stepper_update_window(s, now, realtime, max_hz, 5, fps_out, ratio_out);
 }
 
 /* Commit rounding carry only after the caller confirms the guest slot is writable. */
