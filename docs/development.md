@@ -52,26 +52,36 @@ target is an x86-64 executable run under Rosetta 2, not a native arm64 executabl
 input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
 macOS. This provides a real Apple Silicon/Metal path while leaving native arm64 as follow-up work.
 
-Install Xcode Command Line Tools, Rosetta 2, and x86-64 builds of Python 3 (with the Python modules listed above),
-SDL2 2.26 or newer, FFmpeg and `wgpu-native`. On Apple Silicon, the SDL2, FFmpeg, and `wgpu-native` binaries must all be x86-64;
-Homebrew packages from the native arm64 prefix cannot be linked into this build. `wgpu-native` must include its
-matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`, built with Metal support. Then build from an
-x86-64 shell, for example:
+The `macOS platform` workflow uploads a `HookshotBuilder-macos-x86_64` artifact containing a command-line builder,
+the Hookshot source, an x86-64 Python runtime and modules, SDL2, static FFmpeg/dav1d, and Metal-enabled `wgpu-native`.
+It does not contain game data or a built game. Download and unpack it on the target Mac; Xcode Command Line Tools
+and Rosetta 2 must be installed there. From Terminal, provide your own `.nup` dump:
+
+```sh
+./HookshotBuilder/HookshotBuilder.command --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+```
+
+The package is x86-64 under Rosetta on Apple Silicon, not native arm64. For development outside the artifact, use
+x86-64 builds of SDL2 2.26 or newer and `wgpu-native`; Homebrew packages from the native arm64 prefix cannot be linked
+into this build. `wgpu-native` must include its matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`,
+built with Metal support. Set `HOOKSHOT_FFMPEG` to the static FFmpeg/dav1d prefix (or provide FFmpeg through
+`pkg-config`) and build from an x86-64 shell, for example:
 
 ```sh
 export WGPU_NATIVE=/path/to/x86_64-wgpu-native
 export HOOKSHOT_SDL2=/path/to/x86_64/libSDL2-2.0.0.dylib
-export PKG_CONFIG_PATH=/path/to/x86_64/ffmpeg/lib/pkgconfig
+export HOOKSHOT_FFMPEG=/path/to/x86_64/ffmpeg
 arch -x86_64 python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
 ```
 
 The normal builder command validates the x86-64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
-then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder.
+then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder;
+FFmpeg is statically linked when `HOOKSHOT_FFMPEG` points to the packaged static libraries.
 For lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4`
 writes the executable and libraries under `work/sa/build/`. Set `RX_BACKEND=metal` to make the renderer choice
 explicit (Metal is the macOS default). As on other platforms, the local game dump is required to generate and build
-the game. The `macOS platform` workflow checks the x86-64 POSIX shims and build selection on an Apple Silicon runner;
-it is a compile smoke test, not a game build or a downloadable/notarized app release.
+the game. The workflow packages and validates builder dependencies without running a game build; it is not a
+notarized app release.
 
 ## Layout
 

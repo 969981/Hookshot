@@ -83,6 +83,47 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
                        capture_output=True, text=True)
 
+    def test_macos_preflight_accepts_bundled_static_ffmpeg(self):
+        source = ROOT / "nx2" / "make_game.py"
+        script = r"""
+import os, runpy, sys, tempfile, types
+from pathlib import Path
+from unittest.mock import patch
+sys.platform = "darwin"
+builder = runpy.run_path(sys.argv[1])
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    wgpu = root / "wgpu"
+    sdl = root / "libSDL2-2.0.0.dylib"
+    ffmpeg = root / "ffmpeg"
+    for path in (wgpu / "include/webgpu/webgpu.h", wgpu / "lib/libwgpu_native.dylib", sdl):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    headers = ("libavcodec/avcodec.h", "libswscale/swscale.h", "libswresample/swresample.h",
+               "libavutil/avutil.h", "dav1d/dav1d.h")
+    libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a", "libdav1d.a")
+    for relative in headers + libs:
+        path = ffmpeg / ("include" if relative.endswith(".h") else "lib") / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    toolchain = types.SimpleNamespace(find=lambda name: sys.executable)
+    env = {"WGPU_NATIVE": str(wgpu), "HOOKSHOT_SDL2": str(sdl), "HOOKSHOT_FFMPEG": str(ffmpeg)}
+    with patch.dict(os.environ, env), patch("shutil.which", return_value="tool"), \
+         patch("subprocess.run", side_effect=run), patch.dict(sys.modules, {"toolchain": toolchain}):
+        builder["check_macos_toolchain"]()
+    assert [c for c in commands if c[0] == "lipo"] == [
+        ["lipo", str(sdl), "-verify_arch", "x86_64"],
+        ["lipo", str(wgpu / "lib/libwgpu_native.dylib"), "-verify_arch", "x86_64"],
+    ] + [["lipo", str(ffmpeg / "lib" / lib), "-verify_arch", "x86_64"] for lib in libs]
+    assert not any(c[0] == "pkg-config" for c in commands)
+"""
+        subprocess.run([sys.executable, "-I", "-c", script, str(source)], check=True,
+                       capture_output=True, text=True)
+
     def test_macos_runtime_supplies_non_linux_profiler_entry_point(self):
         source = (ROOT / "host" / "posix" / "macos_stubs.c").read_text(encoding="utf-8")
         self.assertIn("void hos_prof_start(void)", source)

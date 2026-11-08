@@ -289,6 +289,7 @@ def check_macos_toolchain():
     """Validate the x86-64 Rosetta compiler and graphics/audio libraries before the long lift."""
     wgpu = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "wgpu-native"))
     sdl = os.environ.get("HOOKSHOT_SDL2", "")
+    ffmpeg = os.environ.get("HOOKSHOT_FFMPEG", "")
     if not os.path.isfile(os.path.join(wgpu, "include", "webgpu", "webgpu.h")):
         fail("macOS needs x86-64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
     if not os.path.isfile(os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
@@ -297,7 +298,18 @@ def check_macos_toolchain():
         fail("macOS needs an x86-64 SDL2 dylib: set HOOKSHOT_SDL2 to libSDL2-2.0.0.dylib.")
     if not shutil.which("lipo"):
         fail("Install Xcode Command Line Tools to verify macOS dependency architectures.")
-    for library in (sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
+    libraries = [sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")]
+    if ffmpeg:
+        headers = ("libavcodec/avcodec.h", "libswscale/swscale.h", "libswresample/swresample.h",
+                   "libavutil/avutil.h", "dav1d/dav1d.h")
+        missing_headers = [h for h in headers if not os.path.isfile(os.path.join(ffmpeg, "include", h))]
+        static_libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a", "libdav1d.a")
+        missing_libs = [l for l in static_libs if not os.path.isfile(os.path.join(ffmpeg, "lib", l))]
+        if missing_headers or missing_libs:
+            missing = missing_headers + missing_libs
+            fail("macOS needs the Hookshot static FFmpeg package; missing: %s" % ", ".join(missing))
+        libraries += [os.path.join(ffmpeg, "lib", l) for l in static_libs]
+    for library in libraries:
         r = subprocess.run(["lipo", library, "-verify_arch", "x86_64"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode:
@@ -316,12 +328,13 @@ def check_macos_toolchain():
     if r.returncode:
         fail("Xcode Command Line Tools could not link an x86-64 macOS test program: %s"
              % failure_reason((r.stdout + r.stderr).splitlines()))
-    if not shutil.which("pkg-config"):
-        fail("Install pkg-config and x86-64 FFmpeg development libraries for the macOS build.")
-    r = subprocess.run(["pkg-config", "--exists", "libavcodec", "libswscale", "libswresample", "libavutil"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if r.returncode:
-        fail("macOS needs x86-64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
+    if not ffmpeg:
+        if not shutil.which("pkg-config"):
+            fail("Install pkg-config and x86-64 FFmpeg development libraries for the macOS build.")
+        r = subprocess.run(["pkg-config", "--exists", "libavcodec", "libswscale", "libswresample", "libavutil"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            fail("macOS needs x86-64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
 
 
 def free_memory_gb():
