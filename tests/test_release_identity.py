@@ -158,6 +158,34 @@ class PackageTests(unittest.TestCase):
         self.assertFalse(out.exists())
         self.assertFalse((self.stage / "builder-identity.json").exists())
 
+    def test_reused_tool_parts_keep_current_app_identity(self):
+        out = self.output.parent / "parts"
+        previous = self.output.parent / "previous-setup.txt"
+        reused = ["part %s 123 . - - https://example.invalid/HookshotBuilder-%s-%s.zip" %
+                  ("b" * 64, name, "b" * 12) for name in setup_parts.TOOLS_PARTS]
+        previous.write_text("tag old\nidentity 1 %s\n%s\n" % ("a" * 40, "\n".join(reused)), encoding="utf-8")
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
+            self.assertEqual(setup_parts.build_parts(self.stage, TAG, out, repo=self.repo, reuse=previous), self.revision)
+        lines = (out / "hookshot-setup.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:2], ["tag " + TAG, "identity 1 " + self.revision])
+        for name, line in zip(setup_parts.TOOLS_PARTS, reused):
+            if (self.stage / "tools" / name).is_dir():
+                self.assertNotIn(line, lines)
+                self.assertEqual(len(list(out.glob("HookshotBuilder-%s-*.zip" % name))), 1)
+            else:
+                self.assertIn(line, lines)
+        self.assertNotIn("identity 1 " + "a" * 40, lines)
+        app = next(out.glob("HookshotBuilder-app-*.zip"))
+        with zipfile.ZipFile(app) as archive:
+            self.assertEqual(archive.read("HookshotBuilder/tools/revision.txt").decode(), self.revision + "\n")
+
+    def test_reuse_missing_tool_part_is_not_silently_omitted(self):
+        previous = self.output.parent / "previous-setup.txt"
+        previous.write_text("tag old\n", encoding="utf-8")
+        with mock.patch.object(setup_parts, "verify_staged", side_effect=packer.verify_staged):
+            with self.assertRaisesRegex(SystemExit, "no tools/.* in the package and no .* part"):
+                setup_parts.build_parts(self.stage, TAG, self.output.parent / "parts", repo=self.repo, reuse=previous)
+
     def test_parts_recheck_gui_bytes_written_and_clean_failed_part(self):
         out = self.output.parent / "parts"
         write = setup_parts.write_zip

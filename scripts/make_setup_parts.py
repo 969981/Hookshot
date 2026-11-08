@@ -1,6 +1,7 @@
 """The parts HookshotBuilder-Setup.exe downloads (builder/setup/setup.c), from a Hookshot Builder package folder.
 
     python -I scripts/make_setup_parts.py <package folder> <tag> <out folder> [--base <url the parts are served from>]
+                                          [--reuse <an earlier release's hookshot-setup.txt>]
 
 A release is split by how often each part changes, so an update downloads only what changed: the builder's own code (a few MB)
 in every release, the .NET runtime, Python, emsdk, the CPM packages and third_party only when they change. llvm-mingw comes from
@@ -10,6 +11,10 @@ has the same SHA-256 in the next release, and the setup takes it from its downlo
 Writes <out>/hookshot-setup.txt and one HookshotBuilder-<part>-<sha256 prefix>.zip per part (upload the ones the builder-parts
 release lacks). Scripts the build does not use (.ps1, .bat, .js,
 .html: antivirus machine-learning guesses fire on them) are left out.
+
+--reuse: a part whose tools/<name> folder the package lacks is taken from that list as it is (its line, with its URL), so a
+package made in CI (.github/workflows/windows-builder.yml) carries the Python, emsdk, CPM and wgpu-native parts the maintainer
+made. Without the folder and without the part in that list it is an error.
 """
 import argparse
 import hashlib
@@ -65,7 +70,7 @@ def write_zip(path, root, names, sources, gui_hashes):
     return h.hexdigest(), os.path.getsize(path)
 
 
-def build_parts(package, tag, out, base=None, repo=None):
+def build_parts(package, tag, out, base=None, repo=None, reuse=None):
     root = os.path.abspath(package)
     if not os.path.isfile(os.path.join(root, "HookshotBuilder.exe")):
         sys.exit("not a Hookshot Builder package folder: %s" % root)
@@ -93,10 +98,22 @@ def build_parts(package, tag, out, base=None, repo=None):
     for t in TOOLS_PARTS:
         if os.path.isdir(os.path.join(root, "tools", t)):
             parts[t] = files_under(root, "tools/" + t)
-    # Unknown lines are ignored by the standalone installer; the managed updater requires this capability and identity.
+    reused = {}
+    if reuse:
+        with open(reuse, encoding="utf-8") as f:
+            for line in f.read().splitlines():
+                w = line.split()
+                if len(w) == 7 and w[0] == "part" and w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-"):
+                    reused[w[6].rsplit("/", 1)[-1][len("HookshotBuilder-"):].rsplit("-", 1)[0]] = line
+    # The managed updater requires the current app/source identity even when unchanged tool parts are reused.
     lines = ["tag %s" % tag, "identity 1 %s" % revision]
     for name in ("app", "dotnet") + TOOLS_PARTS:
         if not parts.get(name):
+            if reuse and name in TOOLS_PARTS:
+                if name not in reused:
+                    sys.exit("no tools/%s in the package and no %s part in %s" % (name, name, reuse))
+                lines.append(reused[name])
+                print("%-12s (as in %s)" % (name, os.path.basename(reuse)), flush=True)
             continue
         zp = os.path.join(out, "HookshotBuilder-%s.zip" % name)
         sha, size = write_zip(zp, root, parts[name], sources, gui_hashes)
@@ -118,8 +135,9 @@ def main():
     p.add_argument("tag")
     p.add_argument("out")
     p.add_argument("--base", help="where the parts are served from (default: this repository's builder-parts release)")
+    p.add_argument("--reuse", help="an earlier hookshot-setup.txt: the parts the package has no folder for, from it")
     a = p.parse_args()
-    build_parts(a.package, a.tag, a.out, a.base)
+    build_parts(a.package, a.tag, a.out, a.base, reuse=a.reuse)
 
 
 if __name__ == "__main__":
