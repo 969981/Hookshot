@@ -15,10 +15,19 @@ other icons in those glyphs' place:
 A cap's lettering is ClarimoUDPE-DemiBold, from the same romfs; the cut-outs are contours wound the other way (CFF fills
 by the non-zero rule). Nothing of the game's goes into the source tree: all of it is made from the player's files here.
 
-hookshot_icons.bin (little-endian): "HKIC", u32 version 1, u32 the font's obfuscation key, u32 font size, u32 glyph
-count, u32 first codepoint (U+E040), u32 codepoint count, the font (padded to 4 bytes), the font's glyph index for each
+The game gives each file a buffer of the size its resource size table says (System/Resource/ResourceSizeTable.Product.
+<version>.rsizetable.zs, RESTBL: the CRC-32 of the path without .zs, and the size): the External font has 14 856 bytes
+(its 14 568 and 288), and the font with other icons in it is larger (a first one of 25 332 bytes: the game's loader gave
+the font code nothing, and the game crashed at its start). The table goes in too, its entry for the External font raised
+to RSTB_FONT, and host/button_icons.c gives it to the game in the table's place.
+
+hookshot_icons.bin (little-endian): "HKIC", u32 version 2, u32 the font's obfuscation key, u32 font size, u32 glyph
+count, u32 first codepoint (U+E040), u32 codepoint count, u32 where the tables are, u32 how many, the font (padded to 4
+bytes), the font's glyph index for each
 codepoint (u16, 0: none; padded to 4 bytes), then per library glyph {u32 id, u16 width, i16 start x, i16 start y,
-i16 end x, i16 end y, u16 pad, u32 offset, u32 length}, sorted by id, and the charstrings (offsets from their start).
+i16 end x, i16 end y, u16 pad, u32 offset, u32 length}, sorted by id, the charstrings (offsets from their start), and
+per size table {u32 path length, the RomFS path (padded to 4), u32 the font's size in it before, u32 size, the table as
+the game has it decompressed, the font's entry raised (padded to 4)}.
 Glyph ids:
   0x01000000 | vk           a key at button height (vk 1, 2, 4: the mouse with that button filled; 0: none)
   0x02000000 | vk           the same at a third of the cluster (a small cap; the mouse's buttons as LMB RMB MMB)
@@ -53,7 +62,9 @@ from fontTools.ttLib import TTFont  # noqa: E402
 EXTERNAL = ("Font2", "Scalable", "External.Nin_Ounce_NVN2.bfotf.zs")
 LETTERING = ("Font2", "Scalable", "ClarimoUDPE-DemiBold.Nin_Ounce_NVN2.bfotf.zs")
 MAGIC = 0x7F9A0218
-VERSION = 1
+VERSION = 2
+RSTB_FONT = 131072          # the External font's buffer in the size table (its own: 14 856)
+FONT_KEY = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf"   # (the size table's name for it: the path without .zs)
 
 BOTTOM, TOP = 20, 580                       # a button glyph's height (the game's A: 19 to 583)
 CLUSTER_LO, CLUSTER_HI = -60, 680           # the movement keys' cluster: the line's whole height
@@ -466,15 +477,51 @@ def charstring(o):
 
 # ---- the library --------------------------------------------------------------------------------------------------
 
+def patch_rstb(data, key=FONT_KEY, size=RSTB_FONT):
+    """(the table with key's entry at least size, key's size before; 0 when the table has none for it)"""
+    import zlib
+    if data[:6] != b"RESTBL":
+        raise ValueError("not a resource size table")
+    _, strsz, ncrc, nname = struct.unpack_from("<IIII", data, 6)
+    out = bytearray(data)
+    h, before = zlib.crc32(key.encode()), 0
+    for i in range(ncrc):
+        at = 22 + i * 8
+        if struct.unpack_from("<I", out, at)[0] == h:
+            before = struct.unpack_from("<I", out, at + 4)[0]
+            struct.pack_into("<I", out, at + 4, max(before, size))
+    at = 22 + ncrc * 8
+    for i in range(nname):   # (names whose CRC-32 collide with another's are kept by name)
+        if out[at:at + strsz].split(b"\0")[0].decode("utf-8", "replace") == key:
+            before = struct.unpack_from("<I", out, at + strsz)[0]
+            struct.pack_into("<I", out, at + strsz, max(before, size))
+        at += strsz + 4
+    return bytes(out), before
+
+
+def size_tables(romfs, dicts):
+    """[(RomFS path, the table decompressed)] for System/Resource/ResourceSizeTable.Product.*.rsizetable.zs"""
+    folder = os.path.join(romfs, "System", "Resource")
+    out = []
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if name.startswith("ResourceSizeTable.") and name.endswith(".rsizetable.zs"):
+            out.append(("System/Resource/" + name, read_zs(os.path.join(folder, name), dicts)))
+    return out
+
+
 def build(romfs):
     dicts = dictionaries(romfs)
     ext, key = bfotf_decode(read_zs(os.path.join(romfs, *EXTERNAL), dicts))
     lettering = TTFont(io.BytesIO(bfotf_decode(read_zs(os.path.join(romfs, *LETTERING), dicts))[0]))
-    return build_from(ext, key, lettering)
+    tables = size_tables(romfs, dicts)
+    if not tables:
+        raise SystemExit("no resource size table in %s/System/Resource: the game would not take a larger font" % romfs)
+    return build_from(ext, key, lettering, tables)
 
 
-def build_from(ext, key, lettering):
-    """hookshot_icons.bin from the External font (an OpenType font's bytes), its key and the lettering's font"""
+def build_from(ext, key, lettering, tables=()):
+    """hookshot_icons.bin from the External font (an OpenType font's bytes), its key, the lettering's font and the
+    resource size tables [(RomFS path, decompressed)]"""
     font = TTFont(io.BytesIO(ext))
     L = Lettering(lettering)
     gs, cmap = font.getGlyphSet(), font.getBestCmap()
@@ -514,8 +561,19 @@ def build_from(ext, key, lettering):
     order = {name: i for i, name in enumerate(font.getGlyphOrder())}
     gids = b"".join(struct.pack("<H", order[cmap[c]] if c in cmap else 0) for c in CODEPOINTS)
     gids += b"\0" * (-len(gids) % 4)
-    return (b"HKIC" + struct.pack("<IIIIII", VERSION, key, len(otf), len(entries), CODEPOINTS[0], len(CODEPOINTS)) +
-            otf_padded + gids + b"".join(entries) + bytes(blob)), glyphs
+    blob += b"\0" * (-len(blob) % 4)
+    rst = bytearray()
+    for path, table in tables:
+        patched, before = patch_rstb(table)
+        if not before:
+            raise SystemExit("%s has no entry for %s" % (path, FONT_KEY))
+        p = path.encode()
+        rst += struct.pack("<I", len(p)) + p + b"\0" * (-len(p) % 4)
+        rst += struct.pack("<II", before, len(patched)) + patched + b"\0" * (-len(patched) % 4)
+    head_len = 4 + 8 * 4
+    body = otf_padded + gids + b"".join(entries) + bytes(blob)
+    return (b"HKIC" + struct.pack("<IIIIIIII", VERSION, key, len(otf), len(entries), CODEPOINTS[0], len(CODEPOINTS),
+                                  head_len + len(body), len(tables)) + body + bytes(rst)), glyphs
 
 
 def otf_table(otf, tag):

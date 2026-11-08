@@ -9,7 +9,9 @@ the font) and checks:
 - A bound to E shows a key cap (wider than the box), the movement keys a cluster (taller than a cap), the right stick
   the mouse; on the PS5 pad A bound to the right face button shows the circle (round, not the box); what nothing is
   bound to, and glyphs that are not buttons, stay as they were;
-- the frame decodes with no dictionary, and the width table has every glyph.
+- the frame decodes with no dictionary, and the width table has every glyph;
+- the resource size table the game gets has the font's buffer raised (the game's 14 856 bytes were too few for the font
+  with other icons: the game crashed at its start), and with a mod's own table the font is left out when it does not fit.
 python -I -B tests/test_button_icons.py   (Linux: host/posix's windows.h; needs a C compiler)
 """
 import io
@@ -38,6 +40,25 @@ except ImportError:   # (no zstandard here: the builder's Python has it)
     HAVE = False
 
 KEY = 0xA6018502
+RSTB_PATH = "System/Resource/ResourceSizeTable.Product.100.Nin_Ounce_NVN2.rsizetable.zs"
+
+
+def rstb(font_size=14856):
+    """a resource size table: the External font's entry and another"""
+    import zlib
+    entries = sorted([(zlib.crc32(bi.FONT_KEY.encode()), font_size), (zlib.crc32(b"Other/file.bin"), 100)])
+    return b"RESTBL" + struct.pack("<IIII", 1, 160, len(entries), 0) + b"".join(struct.pack("<II", h, v) for h, v in entries)
+
+
+def rstb_entry(data):
+    import zlib
+    h = zlib.crc32(bi.FONT_KEY.encode())
+    n = struct.unpack_from("<I", data, 14)[0]
+    for i in range(n):
+        k, v = struct.unpack_from("<II", data, 22 + i * 8)
+        if k == h:
+            return v
+    return None
 
 
 def box_font(name, glyphs):
@@ -92,10 +113,21 @@ int hos_binding(int set, int b, int slot) {
     default: return 0;
     }
 }
+/* T_MOD_RSTB=1: a mod has its own size table */
+int hos_mods_romfs(const char *rel, char *out, size_t cap) {
+    if (!getenv("T_MOD_RSTB") || !strstr(rel, "rsizetable")) return 0;
+    snprintf(out, cap, "mod");
+    return 1;
+}
 int hos_button_icons_romfs(const char *rel, char *out, size_t cap);
 int main(void) {
     char out[1024];
     if (hos_button_icons_romfs("Font2/Scalable/Symbol.Nin_Ounce_NVN2.bfotf.zs", out, sizeof out)) return 3;   /* (another font) */
+    if (!getenv("T_MOD_RSTB")) {   /* (the game reads its size table first) */
+        if (!hos_button_icons_romfs("System/Resource/ResourceSizeTable.Product.100.Nin_Ounce_NVN2.rsizetable.zs", out, sizeof out))
+            return 4;
+        puts(out);
+    }
     if (!hos_button_icons_romfs("Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs", out, sizeof out)) return 2;
     puts(out);
     return 0;
@@ -124,7 +156,7 @@ class ButtonIconsTests(unittest.TestCase):
         self.external = box_font("External", boxes + [("space", 0x20, (0, 0, 1, 1), 250)])
         letters = [(ch, ord(ch), (30, 0, 470, 700), 520) for ch in "?ABDESW"]
         self.lettering = TTFont(io.BytesIO(box_font("Lettering", letters)))
-        self.data, self.glyphs = bi.build_from(self.external, KEY, self.lettering)
+        self.data, self.glyphs = bi.build_from(self.external, KEY, self.lettering, [(RSTB_PATH, rstb())])
 
     def test_fixed_offsets_keep_every_glyph(self):
         fixed = bi.fixed_offsets(self.external)
@@ -134,12 +166,12 @@ class ButtonIconsTests(unittest.TestCase):
             self.assertEqual(drawing(a, code), drawing(b, code))
 
     def test_library(self):
-        version, key, font_size, count, first, n = struct.unpack_from("<IIIIII", self.data, 4)
-        self.assertEqual((version, key, first, n), (1, KEY, 0xE040, len(bi.CODEPOINTS)))
+        version, key, font_size, count, first, n, tables_at, tables = struct.unpack_from("<IIIIIIII", self.data, 4)
+        self.assertEqual((version, key, first, n, tables), (2, KEY, 0xE040, len(bi.CODEPOINTS), 1))
         for want in (0x01000045, 0x02000057, 0x03000000, 0x10000300 | bi.EAST, 0x10000100 | bi.SOUTH, 0x20000000 | 0xE040):
             self.assertIn(want, self.glyphs)
 
-    def font_for(self, pad, family_env):
+    def run_c(self, env_extra):
         if sys.platform == "win32":
             self.skipTest("host/posix's windows.h stands in for Windows here")
         cc = shutil.which("gcc") or shutil.which("clang")
@@ -155,11 +187,19 @@ class ButtonIconsTests(unittest.TestCase):
                                     str(ROOT / "host" / "button_icons.c"), str(tmp / "stubs.c"), "-o", str(exe)],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
-            env = dict(os.environ, T_DIR=str(tmp), T_PAD=str(pad), HOS_BUTTON_ICONS=family_env)
+            env = dict(os.environ, T_DIR=str(tmp), **env_extra)
             run = subprocess.run([str(exe)], text=True, capture_output=True, env=env, timeout=60)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            raw = Path(run.stdout.strip().splitlines()[-1]).read_bytes()
-        frame = zstandard.ZstdDecompressor().decompress(raw, max_output_size=1 << 26)
+            files = [Path(line).read_bytes() for line in run.stdout.splitlines() if line.startswith(str(tmp))]
+        return run, files
+
+    def font_for(self, pad, family_env):
+        run, files = self.run_c({"T_PAD": str(pad), "HOS_BUTTON_ICONS": family_env})
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        table = zstandard.ZstdDecompressor().decompress(files[0], max_output_size=1 << 26)
+        self.assertEqual(rstb_entry(table), bi.RSTB_FONT)                  # the font's buffer raised
+        self.assertEqual(len(table), len(rstb()))
+        frame = zstandard.ZstdDecompressor().decompress(files[-1], max_output_size=1 << 26)
+        self.assertLessEqual(len(frame) + 288, bi.RSTB_FONT)               # (and the font fits it)
         otf, key = bi.bfotf_decode(frame)
         self.assertEqual(key, KEY)
         font = TTFont(io.BytesIO(otf))
@@ -184,6 +224,24 @@ class ButtonIconsTests(unittest.TestCase):
         self.assertAlmostEqual(mouse[2] - mouse[0], 360, delta=2)
         self.assertEqual(drawing(font, 0xE041), drawing(base, 0xE041))   # B: nothing bound, the game's own
         self.assertEqual(drawing(font, 0xE048), drawing(base, 0xE048))   # power: not a button of the game's
+
+    def test_mod_size_table(self):
+        """a mod's own size table: the game keeps its 14 856 bytes for the font, and the larger font is left out"""
+        # (the stand-in fonts are small: a game entry of 1 000 bytes, which the font does not fit)
+        self.data, _ = bi.build_from(self.external, KEY, self.lettering, [(RSTB_PATH, rstb(1000))])
+        run, files = self.run_c({"T_PAD": "0", "HOS_BUTTON_ICONS": "keyboard", "T_MOD_RSTB": "1"})
+        self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+        self.assertIn("a mod's", run.stdout)
+        # and a font that fits the game's own entry is still given with a mod's table
+        self.data, _ = bi.build_from(self.external, KEY, self.lettering, [(RSTB_PATH, rstb(14856))])
+        run, files = self.run_c({"T_PAD": "0", "HOS_BUTTON_ICONS": "keyboard", "T_MOD_RSTB": "1"})
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_patch_rstb(self):
+        table, before = bi.patch_rstb(rstb(14856))
+        self.assertEqual((before, rstb_entry(table)), (14856, bi.RSTB_FONT))
+        table, before = bi.patch_rstb(rstb(500000))                       # (never lowered)
+        self.assertEqual(rstb_entry(table), 500000)
 
     def test_playstation(self):
         font = self.font_for(3, "ps5")

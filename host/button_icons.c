@@ -432,20 +432,28 @@ static void zstd_raw(Buf *out, const uint8_t *d, size_t n) {
     } while (at < n);
 }
 
-/* ---- nn_fs.c ---- */
-static SRWLOCK made_lock = SRWLOCK_INIT;
-static int made_state;           /* 0 not tried, 1 made, -1 none */
-static char made_path[MAX_PATH];
+/* ---- the library file, read once ---- */
+typedef struct { char path[MAX_PATH]; uint32_t before; const uint8_t *data; uint32_t len; char served[MAX_PATH]; } SizeTable;
+static uint8_t *bin;
+static size_t bin_size;
+static char game_dir[MAX_PATH];
+static uint32_t font_key, font_size, cp_first, cp_count;
+static size_t font_at, gids_at;
+static SizeTable tables[4];
+static int ntables;
 
-static int make_font(void) {
+int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
+
+/* hookshot_icons.bin read and checked; 0 (and said why) when it cannot be used */
+static int load_bin(void) {
     const char *e = getenv("HOS_BUTTON_ICONS");
     if (e && !strcmp(e, "0")) return 0;
-    char dir[MAX_PATH], bin_path[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, dir, sizeof dir);
-    while (n && dir[n - 1] != '\\' && dir[n - 1] != '/') n--;
-    dir[n] = 0;
-    snprintf(bin_path, sizeof bin_path, "%shookshot_icons.bin", dir);
-    FILE *f = fopen(bin_path, "rb");
+    DWORD n = GetModuleFileNameA(NULL, game_dir, sizeof game_dir);
+    while (n && game_dir[n - 1] != '\\' && game_dir[n - 1] != '/') n--;
+    game_dir[n] = 0;
+    char path[MAX_PATH + 32];
+    snprintf(path, sizeof path, "%shookshot_icons.bin", game_dir);
+    FILE *f = fopen(path, "rb");
     if (!f) {
         hos_log("button icons: no hookshot_icons.bin beside the executable (the builder makes it): the game's own");
         return 0;
@@ -453,74 +461,145 @@ static int make_font(void) {
     fseek(f, 0, SEEK_END);
     const long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    uint8_t *bin = (uint8_t *)malloc((size_t)size);
-    const size_t got = fread(bin, 1, (size_t)size, f);
+    bin = (uint8_t *)malloc(size > 0 ? (size_t)size : 1);
+    const size_t got = size > 0 ? fread(bin, 1, (size_t)size, f) : 0;
     fclose(f);
-    uint32_t hdr[7];
-    if (got != (size_t)size || size < 28 || memcmp(bin, "HKIC", 4)) {
-        hos_log("button icons: %s is not one (the game's own)", bin_path);
-        free(bin);
+    bin_size = got;
+    uint32_t h[8];
+    if (got != (size_t)size || got < 36 || memcmp(bin, "HKIC", 4)) {
+        hos_log("button icons: %s is not one (the game's own)", path);
         return 0;
     }
-    memcpy(hdr, bin + 4, sizeof hdr - 4);
-    const uint32_t version = hdr[0], key = hdr[1], font_size = hdr[2], nglyph = hdr[3], cp_first = hdr[4], cp_count = hdr[5];
-    const size_t font_at = 28, gids_at = font_at + ((font_size + 3) & ~3u);
-    const size_t lib_at = gids_at + ((cp_count * 2 + 3) & ~3u);
-    const size_t cs_at = lib_at + (size_t)nglyph * sizeof(LibGlyph);
-    if (version != 1 || cs_at > (size_t)size) {
-        hos_log("button icons: %s is of another version (%u): the game's own", bin_path, version);
-        free(bin);
+    memcpy(h, bin + 4, sizeof h);
+    if (h[0] != 2) {
+        hos_log("button icons: %s is of another version (%u; this one reads 2): the game's own", path, h[0]);
         return 0;
     }
-    lib = (const LibGlyph *)(bin + lib_at), lib_n = nglyph, lib_cs = bin + cs_at;
-    for (uint32_t i = 0; i < nglyph; i++)
-        if (cs_at + lib[i].off + lib[i].len > (size_t)size) {
-            hos_log("button icons: %s is cut short: the game's own", bin_path);
-            free(bin);
+    font_key = h[1], font_size = h[2], lib_n = h[3], cp_first = h[4], cp_count = h[5];
+    font_at = 36, gids_at = font_at + ((font_size + 3) & ~(size_t)3);
+    const size_t lib_at = gids_at + ((cp_count * 2 + 3) & ~(size_t)3);
+    const size_t cs_at = lib_at + (size_t)lib_n * sizeof(LibGlyph);
+    size_t at = h[6];
+    if (cs_at > got || at > got) {
+        hos_log("button icons: %s is cut short: the game's own", path);
+        return 0;
+    }
+    lib = (const LibGlyph *)(bin + lib_at), lib_cs = bin + cs_at;
+    for (uint32_t i = 0; i < lib_n; i++)
+        if (cs_at + lib[i].off + lib[i].len > at) {
+            hos_log("button icons: %s is cut short: the game's own", path);
             return 0;
         }
+    for (uint32_t i = 0; i < h[7] && ntables < 4; i++) {   /* the resource size tables, the font's entry raised */
+        if (at + 4 > got) return 0;
+        uint32_t plen;
+        memcpy(&plen, bin + at, 4);
+        at += 4;
+        if (plen >= MAX_PATH || at + plen > got) return 0;
+        SizeTable *t = &tables[ntables];
+        memcpy(t->path, bin + at, plen);
+        t->path[plen] = 0;
+        at += (plen + 3) & ~3u;
+        if (at + 8 > got) return 0;
+        memcpy(&t->before, bin + at, 4);
+        memcpy(&t->len, bin + at + 4, 4);
+        at += 8;
+        if (at + t->len > got) return 0;
+        t->data = bin + at;
+        at += (t->len + 3) & ~3u;
+        ntables++;
+    }
+    if (!ntables) {
+        hos_log("button icons: %s has no resource size table (an older builder): the game's own", path);
+        return 0;
+    }
+    return 1;
+}
+
+/* ---- nn_fs.c ---- */
+static SRWLOCK made_lock = SRWLOCK_INIT;
+static volatile LONG ready;      /* 0 not looked, 1 icons on, -1 off */
+static int made_state;           /* the font: 0 not made, 1 made, -1 none */
+static char made_path[MAX_PATH + 32];
+
+/* a file the game gets in place of one of its own: the data in a zstd frame of raw blocks, written beside the executable */
+static int write_zs(const char *name, const uint8_t *d, size_t n, char *path, size_t cap) {
+    Buf zs = {0};
+    zstd_raw(&zs, d, n);
+    snprintf(path, cap, "%s%s", game_dir, name);
+    FILE *f = fopen(path, "wb");
+    const int ok = f && fwrite(zs.p, 1, zs.n, f) == zs.n;
+    if (f) fclose(f);
+    free(zs.p);
+    if (!ok) hos_log("button icons: could not write %s", path);
+    return ok;
+}
+
+static int make_font(void) {
     const char *why = "";
     const int fam = choose(&why);
     Buf otf = {0};
     const int changed = remake(bin + font_at, font_size, (const uint16_t *)(bin + gids_at), cp_first, cp_count, fam, &otf);
     if (changed < 0) {
-        hos_log("button icons: the font in %s could not be read: the game's own", bin_path);
-        free(bin);
+        hos_log("button icons: the font in hookshot_icons.bin could not be read: the game's own");
+        free(otf.p);
         return 0;
     }
-    /* obfuscated as the game's (the font padded to four bytes) */
-    while (otf.n % 4) put_byte(&otf, 0);
+    while (otf.n % 4) put_byte(&otf, 0);   /* (obfuscated as the game's, the font padded to four bytes) */
+    /* a mod's size table is not ours: then the font only if it fits the game's own entry (288: the table's margin) */
+    for (int i = 0; i < ntables; i++) {
+        char mod[MAX_PATH];
+        if (hos_mods_romfs(tables[i].path, mod, sizeof mod) && otf.n + 8 + 288 > tables[i].before) {
+            hos_log("button icons: a mod's %s keeps the font at %u bytes, and this one is %zu: the game's own", tables[i].path,
+                    tables[i].before, otf.n + 8);
+            free(otf.p);
+            return 0;
+        }
+    }
     Buf bf = {0};
     uint8_t h[8];
-    put32(h, MAGIC ^ key), put32(h + 4, (uint32_t)otf.n ^ key);
+    put32(h, MAGIC ^ font_key), put32(h + 4, (uint32_t)otf.n ^ font_key);
     put(&bf, h, 8);
     uint8_t k[4];
-    put32(k, key);
+    put32(k, font_key);
     for (size_t i = 0; i < otf.n; i++) otf.p[i] ^= k[i & 3];
     put(&bf, otf.p, otf.n);
-    Buf zs = {0};
-    zstd_raw(&zs, bf.p, bf.n);
-    snprintf(made_path, sizeof made_path, "%shookshot_icons_font.zs", dir);
-    f = fopen(made_path, "wb");
-    const int ok = f && fwrite(zs.p, 1, zs.n, f) == zs.n;
-    if (f) fclose(f);
-    free(otf.p), free(bf.p), free(zs.p), free(bin);
-    lib = NULL, lib_n = 0;
-    if (!ok) {
-        hos_log("button icons: could not write %s: the game's own", made_path);
-        return 0;
-    }
-    hos_log("button icons: %s (%s): %d glyphs", fam_name[fam], why, changed);
-    return 1;
+    const int ok = write_zs("hookshot_icons_font.zs", bf.p, bf.n, made_path, sizeof made_path);
+    if (ok) hos_log("button icons: %s (%s): %d glyphs, %zu bytes", fam_name[fam], why, changed, bf.n);
+    free(otf.p), free(bf.p);
+    return ok;
 }
 
-/* the file the game gets for a RomFS path ("Font2/...", no mount): 1 and out filled for the button font */
+/* the file the game gets for a RomFS path ("Font2/...", no mount; after mods): 1 and out filled for the button icons' font
+   and the resource size table that lets the game take it */
 int hos_button_icons_romfs(const char *rel, char *out, size_t cap) {
-    if (_stricmp(rel, FONT_PATH)) return 0;
+    if (!ready) {
+        AcquireSRWLockExclusive(&made_lock);
+        if (!ready) InterlockedExchange(&ready, load_bin() ? 1 : -1);
+        ReleaseSRWLockExclusive(&made_lock);
+    }
+    if (ready < 0) return 0;
+    int i = 0;
+    while (i < ntables && _stricmp(rel, tables[i].path)) i++;
+    const int font = !_stricmp(rel, FONT_PATH);
+    if (i == ntables && !font) return 0;
     AcquireSRWLockExclusive(&made_lock);
-    if (!made_state) made_state = make_font() ? 1 : -1;
-    const int ok = made_state > 0;
-    if (ok) snprintf(out, cap, "%s", made_path);
+    int ok = 0;
+    if (font) {
+        if (!made_state) made_state = make_font() ? 1 : -1;
+        if ((ok = made_state > 0)) snprintf(out, cap, "%s", made_path);
+    } else {
+        SizeTable *t = &tables[i];
+        if (!t->served[0]) {
+            char name[64];
+            snprintf(name, sizeof name, "hookshot_icons_rstb%d.zs", i);
+            if (write_zs(name, t->data, t->len, t->served, sizeof t->served))
+                hos_log("button icons: %s with the font's buffer raised from %u bytes", t->path, t->before);
+            else
+                t->served[0] = 1;   /* (could not write: the game's own) */
+        }
+        if ((ok = t->served[0] > 1)) snprintf(out, cap, "%s", t->served);
+    }
     ReleaseSRWLockExclusive(&made_lock);
     return ok;
 }
