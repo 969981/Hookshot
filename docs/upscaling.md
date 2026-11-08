@@ -40,13 +40,16 @@ cache, the opening and Kokiri Forest:
 | Scene | 1536x864 internal, resolved by the game's own network into a 2048x1152 scene |
 | Present | 2560x1440 |
 
-So **Ocarina already runs at its target frame rate**, and an upscaler is not what gets it there.
-What one would buy is a higher internal resolution at the same frame rate, or headroom in the areas
-this run did not reach. That is worth knowing before spending more effort on it: the argument for
-FSR or DLSS here is image quality at a given cost, not frames.
+**60 fps is the floor here, not the target.** The game's own limiter lives at `mod + 0xfc` and the
+engine's adaptive controller writes any rate from 40 up when variable refresh is on (`+0x231`), so
+`HOS_FPS_TARGET=<fps>` can ask for more; the real-time frame step at `main+0x6e6cc4` already keeps
+game speed honest at whatever rate comes out. What an upscaler buys against that is the two things
+a floor does not give you: a higher internal resolution at the same rate, and the headroom to hold
+a higher rate at all. The scene is 1536x864 for a 2560x1440 present — there is a lot of resolution
+being left behind, and that is the gap FSR or DLSS closes.
 
-The same numbers also say the obvious thing about where the time goes: 1106 draws and 148 passes a
-frame at 60 fps is not an upscaler-shaped problem.
+So the argument for this work is image quality and headroom at a given cost. It is not "getting to
+60", and this document should not be read as saying the job is done at 60.
 
 ## Correction: the game's network is not a temporal upscaler
 
