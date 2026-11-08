@@ -4508,7 +4508,50 @@ void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkInd
     last_ib = {b, (uint64_t)offset, (uint32_t)type, true};
 }
 
+/// (hookshot) RX_VK_VP_HUNT=1: find the view projection a scene draw reads, by looking for a value
+/// only it can hold. The camera publishes tan(fovy/2) = 0.41421, so the projection's m11 is
+/// 1/0.41421 = 2.41421, and a row-major 4x4 keeps m11 five floats in. This scans each bound uniform
+/// buffer for that number and logs the stage, the slot, the byte offset and the sixteen floats
+/// starting five back, which is the candidate matrix. Off by default; stops after a few hits.
+///
+/// Better than guessing at another object's offsets: whatever this finds is the matrix the draw
+/// itself used, which is the one the depth was rendered with. docs/upscaling.md.
+static void vp_hunt(const NvnState& s) {
+    static const bool on = getenv("RX_VK_VP_HUNT") != nullptr;
+    if (!on) return;
+    static std::atomic<int> told{0};
+    if (told.load(std::memory_order_relaxed) >= 8) return;
+    for (int stage = 0; stage < kNvnStages; stage++) {
+        for (int slot = 0; slot < 16; slot++) {
+            const nvn_p_bind_buf& u = s.ubo[stage][slot];
+            if (!u.addr || u.size < 24) continue;
+            const uint64_t bytes = u.size < 2048 ? u.size : 2048;
+            for (uint64_t off = 20; off + 4 <= bytes; off += 4) {
+                uint32_t word = 0;
+                if (!ub_read(u.addr + off, &word, 4)) break;
+                float v = 0;
+                memcpy(&v, &word, 4);
+                if (!(v > 2.4139f && v < 2.4145f)) continue;
+                char line[420];
+                int n = snprintf(line, sizeof line,
+                                 "vk: vp hunt: stage %d slot %d, m11 at +%llu, matrix from +%llu:",
+                                 stage, slot, (unsigned long long)off, (unsigned long long)(off - 20));
+                for (int i = 0; i < 16 && n < 380; i++) {
+                    uint32_t w2 = 0;
+                    float f2 = 0;
+                    if (ub_read(u.addr + off - 20 + (uint64_t)i * 4, &w2, 4)) memcpy(&f2, &w2, 4);
+                    n += snprintf(line + n, sizeof line - n, " %.4g", (double)f2);
+                }
+                logf("%s", line);
+                if (told.fetch_add(1, std::memory_order_relaxed) + 1 >= 8) return;
+                break;   // (one hit per buffer is enough to name it)
+            }
+        }
+    }
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+    vp_hunt(s);
     PROF(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
