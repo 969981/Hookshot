@@ -58,6 +58,9 @@ DEFAULTS = {
     "out": "",
     "language": "en-US",
     "check_minutes": 15,
+    # the builder's work folder (its generated code and compiled objects, about 4 GB). Empty: "work" beside
+    # HookshotBuilder.exe, on the same drive as the tools, not %LOCALAPPDATA%\HookshotBuilder on C:, which filled a C: drive
+    "work": "",
 }
 LANGUAGES = ["en-US", "en-GB", "fr", "fr-CA", "de", "it", "es", "es-419", "pt-BR", "nl", "pl", "ru", "ja", "ko", "zh-Hans", "zh-Hant"]
 STAGES = [("download", "Downloading the new source"), ("sync", "Updating the build tools"), ("read", "Reading your game files"),
@@ -249,7 +252,11 @@ def build_command(cfg):
         cmd += ["--nup", cfg["nup"]]
     else:
         cmd += ["--romfs", cfg["romfs"], "--exefs", cfg["exefs"]]
-    return cmd + ["--out", cfg["out"], "--language", cfg["language"]]
+    return cmd + ["--out", cfg["out"], "--language", cfg["language"], "--work", work_folder(cfg)]
+
+
+def work_folder(cfg):
+    return cfg.get("work") or os.path.join(HOME, "work")
 
 
 def settings_problem(cfg):
