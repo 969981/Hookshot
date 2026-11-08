@@ -1072,6 +1072,13 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
             ok = ok && st.module;
         }
         if (!ok) {
+            // Program owns the stage containers, but their Vulkan handles are not RAII-managed.
+            for (Stage& st : p->stages) {
+                if (st.module) {
+                    vkDestroyShaderModule(dev.device, st.module, nullptr);
+                    st.module = VK_NULL_HANDLE;
+                }
+            }
             static int logged;
             if (r.bad && logged++ < 20)
                 logf("vk: program cache: the record of program %016llx at %lld (%zu bytes) is not whole: left out, translated again",
