@@ -12,7 +12,6 @@ PY_TAG=20261026
 PY_VER=3.12.16
 SDL_VER=2.32.10
 FFMPEG_VER=9.0.2
-DAV1D_VER=1.5.4
 WGPU_VER=v29.0.1.1
 MIN_MACOS=10.15
 
@@ -49,53 +48,28 @@ if [ ! -f "$DEPS/sdl2/lib/libSDL2-2.0.0.dylib" ]; then
     rm -rf "$DEPS/src-sdl2"
 fi
 
-# ---- FFmpeg and dav1d, static and position-independent for the game executable ----
+# ---- FFmpeg, static and position-independent for the game executable ----
 P=$DEPS/ffmpeg
-if [ ! -f "$P/lib/libavcodec.a" ] || [ ! -f "$P/lib/libdav1d.a" ]; then
-    rm -rf "$P" "$DEPS/src-dav1d" "$DEPS/src-ffmpeg"
-    fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz" dav1d.tar.gz
-    mkdir -p "$DEPS/src-dav1d"
-    tar -xzf "$DL/dav1d.tar.gz" -C "$DEPS/src-dav1d" --strip-components=1
-    cat > "$DEPS/macos-x86_64.ini" <<'EOF'
-[binaries]
-c = ['clang', '-arch', 'x86_64', '-mmacosx-version-min=10.15']
-ar = 'ar'
-strip = 'strip'
-nasm = 'nasm'
-
-[built-in options]
-c_args = ['-arch', 'x86_64', '-mmacosx-version-min=10.15']
-c_link_args = ['-arch', 'x86_64', '-mmacosx-version-min=10.15']
-
-[host_machine]
-system = 'darwin'
-cpu_family = 'x86_64'
-cpu = 'x86_64'
-endian = 'little'
-EOF
-    meson setup "$DEPS/src-dav1d/build" "$DEPS/src-dav1d" --cross-file "$DEPS/macos-x86_64.ini" \
-        --prefix="$P" --libdir=lib --buildtype=release --default-library=static \
-        -Db_staticpic=true -Denable_tools=false -Denable_tests=false -Denable_examples=false
-    ninja -C "$DEPS/src-dav1d/build" -j "$JOBS" install
-
+if [ ! -f "$P/lib/libavcodec.a" ]; then
+    rm -rf "$P" "$DEPS/src-ffmpeg"
     fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz" ffmpeg.tar.xz
     mkdir -p "$DEPS/src-ffmpeg"
     tar -xJf "$DL/ffmpeg.tar.xz" -C "$DEPS/src-ffmpeg" --strip-components=1
     (
         cd "$DEPS/src-ffmpeg"
-        PKG_CONFIG_PATH="$P/lib/pkgconfig" CFLAGS="-arch x86_64 -mmacosx-version-min=$MIN_MACOS -fPIC" \
+        CFLAGS="-arch x86_64 -mmacosx-version-min=$MIN_MACOS -fPIC" \
             LDFLAGS="-arch x86_64 -mmacosx-version-min=$MIN_MACOS" \
-            ./configure --prefix="$P" --pkg-config-flags=--static --arch=x86_64 --target-os=darwin \
-            --enable-cross-compile --cc=clang --enable-static --disable-shared --enable-pic \
+            ./configure --prefix="$P" --arch=x86_64 --target-os=darwin \
+            --cc=clang --enable-static --disable-shared --enable-pic \
             --disable-programs --disable-doc --disable-network --disable-autodetect \
             --disable-everything --disable-avformat --disable-avfilter --disable-avdevice \
             --enable-avcodec --enable-swscale --enable-swresample --enable-avutil \
-            --enable-libdav1d --enable-decoder=vp8,vp9,libdav1d --enable-parser=vp8,vp9,av1
+            --enable-decoder=vp8,vp9,av1 --enable-parser=vp8,vp9,av1
         make -j"$JOBS"
         make install
     )
-    rm -rf "$DEPS/src-dav1d" "$DEPS/src-ffmpeg" "$P/share"
-    for lib in libavcodec.a libswscale.a libswresample.a libavutil.a libdav1d.a; do
+    rm -rf "$DEPS/src-ffmpeg" "$P/share"
+    for lib in libavcodec.a libswscale.a libswresample.a libavutil.a; do
         lipo "$P/lib/$lib" -verify_arch x86_64
     done
 fi
@@ -116,10 +90,8 @@ mkdir -p "$L"
 cp "$DEPS/sdl2/LICENSE.txt" "$L/SDL2-LICENSE.txt"
 curl -fsSL --retry 5 -o "$L/FFmpeg-COPYING.LGPLv2.1" \
     "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1"
-curl -fsSL --retry 5 -o "$L/dav1d-COPYING" \
-    "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING"
 curl -fsSL --retry 5 -o "$L/wgpu-native-LICENSE-APACHE" \
-    "https://raw.githubusercontent.com/gfx-rs/wgpu-native/$WGPU_VER/LICENSE-APACHE"
+    "https://raw.githubusercontent.com/gfx-rs/wgpu-native/$WGPU_VER/LICENSE.APACHE"
 curl -fsSL --retry 5 -o "$L/wgpu-native-LICENSE-MIT" \
-    "https://raw.githubusercontent.com/gfx-rs/wgpu-native/$WGPU_VER/LICENSE-MIT"
+    "https://raw.githubusercontent.com/gfx-rs/wgpu-native/$WGPU_VER/LICENSE.MIT"
 echo "macOS builder dependencies: $(du -sh "$DEPS" | cut -f1)"

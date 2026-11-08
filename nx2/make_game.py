@@ -301,9 +301,9 @@ def check_macos_toolchain():
     libraries = [sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")]
     if ffmpeg:
         headers = ("libavcodec/avcodec.h", "libswscale/swscale.h", "libswresample/swresample.h",
-                   "libavutil/avutil.h", "dav1d/dav1d.h")
+                   "libavutil/avutil.h")
         missing_headers = [h for h in headers if not os.path.isfile(os.path.join(ffmpeg, "include", h))]
-        static_libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a", "libdav1d.a")
+        static_libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a")
         missing_libs = [l for l in static_libs if not os.path.isfile(os.path.join(ffmpeg, "lib", l))]
         if missing_headers or missing_libs:
             missing = missing_headers + missing_libs

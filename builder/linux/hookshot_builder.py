@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs)
 
-CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
+CONFIG = os.path.join(os.path.expanduser("~/Library/Application Support"), "Hookshot", "builder.ini") if sys.platform == "darwin" else \
+    os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
           "finish": "Putting the game folder together"}
 
@@ -67,6 +68,8 @@ def desktop_exec(path):
 
 def add_to_menu(folder):
     """an entry in the applications menu that starts the game"""
+    if sys.platform == "darwin":
+        return
     icon = os.path.join(folder, "hookshot.png")
     src = os.path.join(ROOT, "assets", "hookshot.png")
     if os.path.exists(src):
@@ -300,7 +303,8 @@ class Builder(tk.Tk):
             except OSError:
                 pass
             ttk.Button(self.buttons, text="Play", command=lambda: self.play_and_close(folder)).pack(side="right", padx=4)
-            ttk.Button(self.buttons, text="Open folder", command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=4)
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            ttk.Button(self.buttons, text="Open folder", command=lambda: subprocess.Popen([opener, folder])).pack(side="right", padx=4)
         else:
             self.stage_text.set("The build stopped: %s" % getattr(self, "error", "see the lines above"))
             ttk.Button(self.buttons, text="Back", command=self.show_form).pack(side="right", padx=4)

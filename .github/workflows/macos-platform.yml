@@ -48,8 +48,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/cache@v4
+        with:
+          path: build-macos/deps
+          key: macos-builder-deps-${{ hashFiles('scripts/macos/deps.sh') }}
+
       - name: Install dependency build tools
-        run: brew install cmake meson ninja nasm pkgconf
+        run: brew install cmake nasm
 
       - name: Install Rosetta
         run: |
@@ -58,7 +63,7 @@ jobs:
           fi
 
       - name: Build builder dependencies
-        run: arch -x86_64 /bin/bash scripts/macos/deps.sh
+        run: bash scripts/macos/deps.sh
 
       - name: Validate bundled builder toolchain
         env:
@@ -67,6 +72,7 @@ jobs:
           HOOKSHOT_FFMPEG: ${{ github.workspace }}/build-macos/deps/ffmpeg
         run: |
           arch -x86_64 build-macos/deps/python/bin/python3 -I -B tests/test_macos_build_path.py
+          arch -x86_64 build-macos/deps/python/bin/python3 -I -c "import tkinter"
           arch -x86_64 build-macos/deps/python/bin/python3 -I -c \
             "import runpy; runpy.run_path('nx2/make_game.py')['check_macos_toolchain']()"
           arch -x86_64 build-macos/deps/python/bin/python3 -I scripts/macos/check-renderer.py
@@ -76,6 +82,7 @@ jobs:
 
       - name: Verify packaged builder starts
         run: |
+          test -d build-macos/package/HookshotBuilder/HookshotBuilder.app
           cd build-macos/package/HookshotBuilder
           ./HookshotBuilder.command --help
 

@@ -33,6 +33,12 @@ EOF
 chmod +x "$ROOT/HookshotBuilder.command"
 cp scripts/macos/README.txt "$ROOT/README.txt"
 
+APP=$ROOT/HookshotBuilder.app
+osacompile -o "$APP" scripts/macos/Builder.applescript
+mkdir -p "$APP/Contents/Resources"
+ln -s ../../../tools "$APP/Contents/Resources/tools"
+test -x "$APP/Contents/MacOS/applet"
+
 mkdir -p "$OUT"
 cd "$STAGE"
 ditto -c -k --sequesterRsrc --keepParent HookshotBuilder "$OUT/HookshotBuilder-macos-x86_64.zip"

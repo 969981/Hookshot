@@ -100,8 +100,8 @@ with tempfile.TemporaryDirectory() as tmp:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     headers = ("libavcodec/avcodec.h", "libswscale/swscale.h", "libswresample/swresample.h",
-               "libavutil/avutil.h", "dav1d/dav1d.h")
-    libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a", "libdav1d.a")
+               "libavutil/avutil.h")
+    libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a")
     for relative in headers + libs:
         path = ffmpeg / ("include" if relative.endswith(".h") else "lib") / relative
         path.parent.mkdir(parents=True, exist_ok=True)
