@@ -1,0 +1,29 @@
+name: macOS platform
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-posix:
+    # Apple Silicon runner; Hookshot's current native context-switching assembly requires x86-64.
+    runs-on: macos-14-xlarge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build configuration test
+        run: python -I -B tests/test_macos_build_path.py
+
+      - name: Compile macOS POSIX host shims
+        run: |
+          clang -target x86_64-apple-macos10.15 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+            -Ihost/posix -Ihost -Ithird_party/a64-kit/rt host/posix/win32_posix.c host/hos_main.c host/rx_backend.c
+          clang -target x86_64-apple-macos10.15 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+            -Ihost/posix -Ihost -Ithird_party/a64-kit/rt host/posix/display_sdl.c host/posix/macos_stubs.c

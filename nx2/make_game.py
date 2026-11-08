@@ -29,8 +29,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
-LINUX = os.name != "nt"
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+LINUX = sys.platform.startswith("linux")
+MACOS = sys.platform == "darwin"
+BESIDE = (["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else
+          ["hookshot", "libSDL2-2.0.0.dylib", "libwgpu_native.dylib"] if MACOS else
+          ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"])
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -282,6 +285,45 @@ def check_linux_compiler():
              "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
 
 
+def check_macos_toolchain():
+    """Validate the x86-64 Rosetta compiler and graphics/audio libraries before the long lift."""
+    wgpu = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "wgpu-native"))
+    sdl = os.environ.get("HOOKSHOT_SDL2", "")
+    if not os.path.isfile(os.path.join(wgpu, "include", "webgpu", "webgpu.h")):
+        fail("macOS needs x86-64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
+    if not os.path.isfile(os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
+        fail("macOS needs libwgpu_native.dylib in WGPU_NATIVE/lib.")
+    if not sdl or not os.path.isfile(sdl):
+        fail("macOS needs an x86-64 SDL2 dylib: set HOOKSHOT_SDL2 to libSDL2-2.0.0.dylib.")
+    if not shutil.which("lipo"):
+        fail("Install Xcode Command Line Tools to verify macOS dependency architectures.")
+    for library in (sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
+        r = subprocess.run(["lipo", "-verify_arch", "x86_64", library],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            fail("macOS dependency must contain x86_64 code for Rosetta: %s" % library)
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    cc = toolchain.find("clang")
+    if not os.path.isfile(cc):
+        fail("Install Xcode Command Line Tools to build Hookshot for macOS.")
+    with tempfile.TemporaryDirectory() as d:
+        src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("int main(void) { return 0; }\n")
+        r = subprocess.run([cc, "--target=x86_64-apple-macos10.15", src, "-o", exe],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        fail("Xcode Command Line Tools could not link an x86-64 macOS test program: %s"
+             % failure_reason((r.stdout + r.stderr).splitlines()))
+    if not shutil.which("pkg-config"):
+        fail("Install pkg-config and x86-64 FFmpeg development libraries for the macOS build.")
+    r = subprocess.run(["pkg-config", "--exists", "libavcodec", "libswscale", "libswresample", "libavutil"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        fail("macOS needs x86-64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
+
+
 def free_memory_gb():
     """The memory free for the compilers now, in GB (None: not known)"""
     try:
@@ -300,6 +342,17 @@ def free_memory_gb():
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable:"):
                 return int(line.split()[1]) / (1 << 20)
+    except FileNotFoundError:
+        if sys.platform == "darwin":
+            try:
+                r = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5, check=True)
+                page_size = re.search(r"page size of (\d+) bytes", r.stdout)
+                pages = sum(int(value.replace(".", "")) for name, value in
+                            re.findall(r"^Pages (free|inactive|speculative|purgeable):\s+([\d.]+)", r.stdout, re.M))
+                if page_size and pages:
+                    return pages * int(page_size.group(1)) / (1 << 30)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                return None
     except Exception:
         return None
     return None
@@ -374,6 +427,8 @@ def check_mingw():
 
 def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
+    if MACOS:
+        return check_macos_toolchain()
     if LINUX:
         return check_linux_compiler()
     if bundled_mingw():
@@ -434,7 +489,7 @@ def stop_stray_compilers(work, default_work):
     update mid-build) keeps its files open: the next build stopped at once with 'OSError: [Errno 22]' writing sa/gen/a64_fpx.h, or
     WinError 1224 on the play profile. Only that build goes: an earlier make_game on this work folder, the build and lift steps
     whose make_game is gone, and compilers whose command line names this work folder. Never this build or what started it."""
-    if LINUX:
+    if os.name != "nt":
         return
     ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'clang*' -or $_.Name -like 'ld.lld*' -or $_.Name -like 'python*' } "
           "| Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
@@ -477,7 +532,7 @@ def drop_stale_objects(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
     __iob_func. The headers the compiler finds are noted, and when they change the compiled objects go"""
-    if LINUX:
+    if os.name != "nt":
         return
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import hashlib
@@ -588,7 +643,8 @@ def main():
     p.add_argument("--romfs")
     p.add_argument("--exefs")
     p.add_argument("--out")
-    p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
+    p.add_argument("--work", default=os.path.join(os.path.expanduser("~/Library/Caches"), "HookshotBuilder")
+                   if MACOS else os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
                    if LINUX else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())

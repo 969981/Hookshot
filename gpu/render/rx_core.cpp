@@ -1,6 +1,10 @@
 // The renderer's core: the WebGPU device and the window's surface, batches (one command encoder and its upload
 // memory per GPU submission), render targets, clears, the 3D engine's draw methods (suyu's DrawManager), present.
+#if defined(_MSC_VER)
 #include <intrin.h>
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <atomic>
@@ -340,12 +344,17 @@ bool init_device(HWND hwnd) {
 #else
     WGPUInstanceExtras extras{};
     extras.chain.sType = (WGPUSType)WGPUSType_InstanceExtras;
+#ifdef __APPLE__
+    extras.backends = WGPUInstanceBackend_Metal;
+#else
     const char* be = getenv("RX_BACKEND");
     extras.backends = !be                           ? WGPUInstanceBackend_Primary
                       : !_stricmp(be, "vulkan")     ? WGPUInstanceBackend_Vulkan
                       : !_stricmp(be, "dx12")       ? WGPUInstanceBackend_DX12
                       : !_stricmp(be, "gl")         ? WGPUInstanceBackend_GL
+                      : !_stricmp(be, "metal")      ? WGPUInstanceBackend_Metal
                                                     : WGPUInstanceBackend_Primary;
+#endif
     if (getenv("RX_VALIDATION")) extras.flags = WGPUInstanceFlag_Validation | WGPUInstanceFlag_Debug;
     // RX_SHADER_NAMES=1: the debug flag alone (no validation layers): naga names SPIR-V variables after the WGSL ones,
     // so RenderDoc's shader debugger shows f_0, u_12, in_attr3... of the dumped WGSL (RX_DUMP_WGSL)
@@ -383,6 +392,14 @@ bool init_device(HWND hwnd) {
         return false;
     }
     if (hwnd) {
+#ifdef __APPLE__
+        WGPUSurfaceSourceMetalLayer src{};
+        src.chain.sType = WGPUSType_SurfaceSourceMetalLayer;
+        src.layer = hwnd;
+        WGPUSurfaceDescriptor sd{};
+        sd.nextInChain = &src.chain;
+        surface = wgpuInstanceCreateSurface(dev.instance, &sd);
+#else
         WGPUSurfaceSourceWindowsHWND src{};
         src.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
         src.hinstance = GetModuleHandleA(nullptr);
@@ -390,6 +407,7 @@ bool init_device(HWND hwnd) {
         WGPUSurfaceDescriptor sd{};
         sd.nextInChain = &src.chain;
         surface = wgpuInstanceCreateSurface(dev.instance, &sd);
+#endif
     }
 #endif
 

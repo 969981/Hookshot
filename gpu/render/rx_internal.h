@@ -11,6 +11,11 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
 
 #include <webgpu/webgpu.h>
 #ifdef __EMSCRIPTEN__

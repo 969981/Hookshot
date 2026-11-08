@@ -45,6 +45,34 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 `HOS_INPUT_BACKGROUND=0` overrides that option. `HOS_INPUT_EXCLUSIVE=1` controls merging the player's devices while
 the script's existing exclusive interval is active; it is not a focus override.
 
+## macOS (Apple Silicon, first build path)
+
+The current runtime has x86-64 context-switch assembly and x86-specific synchronization code, so this first macOS
+target is an x86-64 executable run under Rosetta 2, not a native arm64 executable. It uses SDL2 for the window and
+input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
+macOS. This provides a real Apple Silicon/Metal path while leaving native arm64 as follow-up work.
+
+Install Xcode Command Line Tools, Rosetta 2, and x86-64 builds of Python 3 (with the Python modules listed above),
+SDL2 2.26 or newer, FFmpeg and `wgpu-native`. On Apple Silicon, the SDL2, FFmpeg, and `wgpu-native` binaries must all be x86-64;
+Homebrew packages from the native arm64 prefix cannot be linked into this build. `wgpu-native` must include its
+matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`, built with Metal support. Then build from an
+x86-64 shell, for example:
+
+```sh
+export WGPU_NATIVE=/path/to/x86_64-wgpu-native
+export HOOKSHOT_SDL2=/path/to/x86_64/libSDL2-2.0.0.dylib
+export PKG_CONFIG_PATH=/path/to/x86_64/ffmpeg/lib/pkgconfig
+arch -x86_64 python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+```
+
+The normal builder command validates the x86-64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
+then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder.
+For lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4`
+writes the executable and libraries under `work/sa/build/`. Set `RX_BACKEND=metal` to make the renderer choice
+explicit (Metal is the macOS default). As on other platforms, the local game dump is required to generate and build
+the game. The `macOS platform` workflow checks the x86-64 POSIX shims and build selection on an Apple Silicon runner;
+it is a compile smoke test, not a game build or a downloadable/notarized app release.
+
 ## Layout
 
 | Path | What |
@@ -53,7 +81,7 @@ the script's existing exclusive interval is active; it is not a focus override.
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c` |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`), with Eden's shader recompiler and sirit |
-| `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the exe falls back to, its op stream (`rx_nvn.h`), suyu's decoders |
+| `gpu/render/`, `gpu/third_party/` | the WebGPU renderer (Metal on macOS), its op stream (`rx_nvn.h`), suyu's decoders |
 | `scripts/` | test runs and the profile reader |
 | `third_party/` | a64-kit (unmodified), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only) |
 

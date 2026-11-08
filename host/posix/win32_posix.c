@@ -1,4 +1,4 @@
-/* (linux) The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
+/* The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
    hookshot_vk.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
 #define _GNU_SOURCE
 #include <windows.h>
@@ -9,10 +9,17 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <limits.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
+#include <sys/sysctl.h>
+#else
 #include <linux/futex.h>
+#include <sys/syscall.h>
+#endif
 #include <signal.h>
 #include <sys/resource.h>
-#include <sys/syscall.h>
 #include <sys/time.h>
 #include <ucontext.h>
 
@@ -50,9 +57,22 @@ static int64_t now_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
+static uint64_t current_tid(void) {
+#ifdef __APPLE__
+    uint64_t tid = 0;
+    pthread_threadid_np(NULL, &tid);
+    return tid;
+#else
+    return (uint64_t)syscall(SYS_gettid);
+#endif
+}
 static struct timespec abs_after_ms(DWORD ms) {
     struct timespec ts;
+#ifdef __APPLE__
+    clock_gettime(CLOCK_REALTIME, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     ts.tv_sec += ms / 1000;
     ts.tv_nsec += (long)(ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) ts.tv_sec++, ts.tv_nsec -= 1000000000L;
@@ -61,7 +81,9 @@ static struct timespec abs_after_ms(DWORD ms) {
 static void monitor_init(pthread_mutex_t *mu, pthread_cond_t *cv) {
     pthread_condattr_t a;
     pthread_condattr_init(&a);
+#ifndef __APPLE__
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(cv, &a);
     pthread_condattr_destroy(&a);
     pthread_mutex_init(mu, NULL);
@@ -77,7 +99,79 @@ static void monitor_init(pthread_mutex_t *mu, pthread_cond_t *cv) {
         }                                                                                                             \
     } while (0)
 
-/* ---- futexes: condition variables, WaitOnAddress ---- */
+/* ---- address waits: futexes on Linux, condition buckets on macOS ---- */
+#ifdef __APPLE__
+typedef struct { pthread_mutex_t mu; pthread_cond_t cv; } WaitBucket;
+static WaitBucket wait_buckets[64];
+static pthread_once_t wait_buckets_once = PTHREAD_ONCE_INIT;
+static void wait_buckets_init(void) {
+    for (size_t i = 0; i < sizeof wait_buckets / sizeof wait_buckets[0]; i++) {
+        pthread_mutex_init(&wait_buckets[i].mu, NULL);
+        pthread_cond_init(&wait_buckets[i].cv, NULL);
+    }
+}
+static WaitBucket *wait_bucket(const volatile void *addr) {
+    pthread_once(&wait_buckets_once, wait_buckets_init);
+    return &wait_buckets[((uintptr_t)addr >> 2) & 63];
+}
+static BOOL bucket_wait(WaitBucket *b, DWORD ms, int (*changed)(void *), void *arg) {
+    int r = 0;
+    if (ms == INFINITE) {
+        while (!changed(arg)) pthread_cond_wait(&b->cv, &b->mu);
+    } else {
+        const struct timespec until = abs_after_ms(ms);
+        while (!changed(arg) && r != ETIMEDOUT) r = pthread_cond_timedwait(&b->cv, &b->mu, &until);
+    }
+    if (!changed(arg) && r == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
+    return TRUE;
+}
+typedef struct { CONDITION_VARIABLE *cv; uint32_t seq; } CvWait;
+static int cv_changed(void *p) {
+    CvWait *w = (CvWait *)p;
+    return __atomic_load_n(&w->cv->seq, __ATOMIC_SEQ_CST) != w->seq;
+}
+static void wake_cv(CONDITION_VARIABLE *cv, int all) {
+    WaitBucket *b = wait_bucket(cv);
+    __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
+    pthread_mutex_lock(&b->mu);
+    if (all) pthread_cond_broadcast(&b->cv); else pthread_cond_signal(&b->cv);
+    pthread_mutex_unlock(&b->mu);
+}
+void WakeConditionVariable(CONDITION_VARIABLE *cv) { wake_cv(cv, 0); }
+void WakeAllConditionVariable(CONDITION_VARIABLE *cv) { wake_cv(cv, 1); }
+static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*relock)(void *, ULONG), void *l, ULONG flags) {
+    WaitBucket *b = wait_bucket(cv);
+    CvWait wait = {cv, __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST)};
+    pthread_mutex_lock(&b->mu);
+    unlock(l);
+    const BOOL result = bucket_wait(b, ms, cv_changed, &wait);
+    pthread_mutex_unlock(&b->mu);
+    relock(l, flags);
+    return result;
+}
+typedef struct { volatile void *addr; void *compare; SIZE_T size; } AddressWait;
+static int address_changed(void *p) {
+    AddressWait *w = (AddressWait *)p;
+    return memcmp((const void *)w->addr, w->compare, w->size) != 0;
+}
+BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
+    WaitBucket *b = wait_bucket(addr);
+    AddressWait wait = {addr, compare, size};
+    pthread_mutex_lock(&b->mu);
+    if (address_changed(&wait)) { pthread_mutex_unlock(&b->mu); return TRUE; }
+    const BOOL result = bucket_wait(b, ms, address_changed, &wait);
+    pthread_mutex_unlock(&b->mu);
+    return result;
+}
+static void wake_address(void *addr) {
+    WaitBucket *b = wait_bucket(addr);
+    pthread_mutex_lock(&b->mu);
+    pthread_cond_broadcast(&b->cv);
+    pthread_mutex_unlock(&b->mu);
+}
+void WakeByAddressSingle(void *addr) { wake_address(addr); }
+void WakeByAddressAll(void *addr) { wake_address(addr); }
+#else
 static long futex(volatile uint32_t *a, int op, uint32_t v, const struct timespec *ts) {
     return syscall(SYS_futex, a, op, v, ts, NULL, 0);
 }
@@ -135,6 +229,7 @@ BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
 }
 void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
 void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+#endif
 
 /* ---- time ---- */
 void Sleep(DWORD ms) {
@@ -195,7 +290,7 @@ static HThread *thread_self(void) {
     if (!self_thread) {   /* (a thread this file did not start: the main thread, a library's) */
         HThread *t = thread_new();
         t->th = pthread_self();
-        t->tid = (pid_t)syscall(SYS_gettid);
+        t->tid = (pid_t)current_tid();
         t->refs = 1;   /* (kept for the thread's life) */
         self_thread = t;
     }
@@ -219,7 +314,7 @@ static void thread_finish(DWORD code) {
 static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
     self_thread = t;
-    t->tid = (pid_t)syscall(SYS_gettid);
+    t->tid = (pid_t)current_tid();
     thread_finish(t->fn(t->arg));
     return NULL;
 }
@@ -274,7 +369,11 @@ BOOL SetThreadPriority(HANDLE h, int p) {
     if (!t) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
     t->priority = p;
     const int nice = p <= THREAD_PRIORITY_IDLE ? 19 : p <= THREAD_PRIORITY_LOWEST ? 10 : p == THREAD_PRIORITY_BELOW_NORMAL ? 5 : 0;
+#ifndef __APPLE__
     if (nice && t->tid) setpriority(PRIO_PROCESS, (id_t)t->tid, nice);
+#else
+    (void)nice;
+#endif
     return TRUE;
 }
 int GetThreadPriority(HANDLE h) {
@@ -282,6 +381,11 @@ int GetThreadPriority(HANDLE h) {
     return t ? t->priority : 0;
 }
 DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
+#ifdef __APPLE__
+    (void)h, (void)mask;
+    last_error = ERROR_NOT_SUPPORTED;
+    return 0;
+#else
     HThread *t = thread_of(h);
     if (!t || !mask) { last_error = ERROR_INVALID_PARAMETER; return 0; }
     cpu_set_t old, want;
@@ -293,8 +397,17 @@ DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
     DWORD_PTR r = 0;
     for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &old)) r |= (DWORD_PTR)1 << i;
     return r ? r : 1;
+#endif
 }
 BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
+#ifdef __APPLE__
+    (void)p;
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) n = 1;
+    if (n > (long)(sizeof(DWORD_PTR) * 8)) n = sizeof(DWORD_PTR) * 8;
+    *proc = *sys = n == (long)(sizeof(DWORD_PTR) * 8) ? ~(DWORD_PTR)0 : (((DWORD_PTR)1 << n) - 1);
+    return TRUE;
+#else
     (void)p;
     cpu_set_t s;
     CPU_ZERO(&s);
@@ -305,6 +418,7 @@ BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
     *proc = m;
     *sys = n >= 64 ? ~(DWORD_PTR)0 : (((DWORD_PTR)1 << n) - 1);
     return TRUE;
+#endif
 }
 int WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR w, int n, LPSTR s, int cap, LPCSTR def, BOOL *used) {
     (void)cp, (void)flags, (void)def;
@@ -354,7 +468,11 @@ HRESULT SetThreadDescription(HANDLE h, PCWSTR name) {
     t->name[sizeof t->name - 1] = 0;
     char shortname[16];
     snprintf(shortname, sizeof shortname, "%s", t->name);   /* (the kernel keeps 15 characters) */
+#ifdef __APPLE__
+    if (pthread_equal(pthread_self(), t->th)) pthread_setname_np(shortname);
+#else
     pthread_setname_np(t->th, shortname);
+#endif
     return S_OK;
 }
 HRESULT GetThreadDescription(HANDLE h, PWSTR *name) {
@@ -371,6 +489,11 @@ static void filetime_ns(FILETIME *ft, int64_t ns) {
     ft->dwLowDateTime = (DWORD)t, ft->dwHighDateTime = (DWORD)(t >> 32);
 }
 BOOL GetThreadTimes(HANDLE h, FILETIME *create, FILETIME *exit_, FILETIME *kernel, FILETIME *user) {
+#ifdef __APPLE__
+    (void)h, (void)create, (void)exit_, (void)kernel, (void)user;
+    last_error = ERROR_NOT_SUPPORTED;
+    return FALSE;
+#else
     HThread *t = thread_of(h);
     clockid_t clk;
     struct timespec ts;
@@ -378,6 +501,7 @@ BOOL GetThreadTimes(HANDLE h, FILETIME *create, FILETIME *exit_, FILETIME *kerne
     filetime_ns(create, 0), filetime_ns(exit_, 0), filetime_ns(kernel, 0);
     filetime_ns(user, (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
     return TRUE;
+#endif
 }
 /* (no suspending another thread: the samplers that do it find nothing to sample) */
 DWORD SuspendThread(HANDLE h) { (void)h; last_error = ERROR_NOT_SUPPORTED; return (DWORD)-1; }
@@ -477,8 +601,11 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
         pthread_mutex_unlock(&t->mu);
     } else if (is(h, H_TIMER)) {
         const int64_t due = ((HTimer *)h)->due;
-        struct timespec ts = {(time_t)(due / 1000000000LL), (long)(due % 1000000000LL)};
-        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
+        while (now_ns() < due) {
+            const int64_t left = due - now_ns();
+            struct timespec ts = {(time_t)(left / 1000000000LL), (long)(left % 1000000000LL)};
+            while (nanosleep(&ts, &ts) && errno == EINTR) {}
+        }
         r = WAIT_OBJECT_0;
     } else {
         last_error = ERROR_INVALID_HANDLE;
@@ -635,7 +762,12 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect) {
     const uintptr_t page = 4096;
     if (type & MEM_RESET) {   /* (the contents are not wanted any more: they read as zero after this) */
         const uintptr_t lo = ((uintptr_t)addr + page - 1) & ~(page - 1), hi = ((uintptr_t)addr + size) & ~(page - 1);
-        if (hi > lo) madvise((void *)lo, hi - lo, MADV_DONTNEED);
+        if (hi > lo) {
+#ifdef __APPLE__
+            memset((void *)lo, 0, hi - lo);
+#endif
+            madvise((void *)lo, hi - lo, MADV_DONTNEED);
+        }
         return addr;
     }
     if (addr && (type & MEM_COMMIT) && !(type & MEM_RESERVE)) {
@@ -661,6 +793,9 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect) {
 BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
     if (type & MEM_DECOMMIT) {   /* (kept mapped: decommitted memory reads as zero when touched again) */
         const uintptr_t lo = (uintptr_t)addr & ~(uintptr_t)4095, hi = ((uintptr_t)addr + size + 4095) & ~(uintptr_t)4095;
+#ifdef __APPLE__
+        if (hi > lo) memset((void *)lo, 0, hi - lo);
+#endif
         return madvise((void *)lo, hi - lo, MADV_DONTNEED) == 0 ? TRUE : fail_errno();
     }
     if (type & MEM_RELEASE) {
@@ -695,6 +830,26 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T size
         return sizeof *mbi;
     }
     /* (anything else: the kernel's map of the process) */
+#ifdef __APPLE__
+    mach_vm_address_t region = page;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    const kern_return_t kr = mach_vm_region(mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
+                                             (vm_region_info_t)&info, &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    if (kr != KERN_SUCCESS || page < region || page >= region + region_size) return sizeof *mbi;
+    mbi->AllocationBase = (void *)(uintptr_t)region;
+    mbi->RegionSize = (SIZE_T)(region + region_size - page);
+    const vm_prot_t prot = info.protection;
+    mbi->State = prot ? MEM_COMMIT : MEM_RESERVE;
+    mbi->Protect = mbi->AllocationProtect = !(prot & VM_PROT_READ) ? PAGE_NOACCESS
+                                                 : prot & VM_PROT_EXECUTE ? ((prot & VM_PROT_WRITE) ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ)
+                                                 : (prot & VM_PROT_WRITE) ? PAGE_READWRITE : PAGE_READONLY;
+    mbi->Type = 0x20000;
+    return sizeof *mbi;
+#else
     FILE *f = fopen("/proc/self/maps", "r");
     char line[512];
     uintptr_t prev_end = 0;
@@ -720,16 +875,31 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T size
     }
     if (f) fclose(f);
     return sizeof *mbi;
+#endif
 }
 
 /* ---- modules ---- */
 static void exe_path(char *out, size_t cap) {
+#ifdef __APPLE__
+    char path[PATH_MAX], resolved[PATH_MAX];
+    uint32_t n = sizeof path;
+    if (_NSGetExecutablePath(path, &n) != 0 || !realpath(path, resolved)) {
+        if (cap) out[0] = 0;
+        return;
+    }
+    if (cap) snprintf(out, cap, "%s", resolved);
+#else
     const ssize_t n = readlink("/proc/self/exe", out, cap - 1);
     out[n > 0 ? n : 0] = 0;
+#endif
 }
-/* a Windows library name, as the Linux one: SDL2.dll -> libSDL2-2.0.so.0, vulkan-1.dll -> libvulkan.so.1, x.dll -> x.so */
-static const char *linux_name(const char *base) {
+/* Windows library names mapped to their POSIX equivalents. */
+static const char *posix_name(const char *base) {
+#ifdef __APPLE__
+    static const char *map[][2] = {{"sdl2.dll", "libSDL2-2.0.0.dylib"}, {"vulkan-1.dll", "libvulkan.1.dylib"}};
+#else
     static const char *map[][2] = {{"sdl2.dll", "libSDL2-2.0.so.0"}, {"vulkan-1.dll", "libvulkan.so.1"}};
+#endif
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
         if (!strcasecmp(base, map[i][0])) return map[i][1];
     return NULL;
@@ -741,14 +911,18 @@ HMODULE LoadLibraryA(LPCSTR name) {
     for (char *p = path; *p; p++) if (*p == '\\') *p = '/';
     char *slash = strrchr(path, '/');
     char *base = slash ? slash + 1 : path;
-    const char *mapped = linux_name(base);
+    const char *mapped = posix_name(base);
     if (mapped) {
         snprintf(base, sizeof path - (size_t)(base - path), "%s", mapped);
     } else {
         const size_t n = strlen(path);
         if (n > 4 && !strcasecmp(path + n - 4, ".dll")) {
             if (!slash) return NULL;   /* (a Windows system library: kernel32, xinput, imm32 ...) */
+#ifdef __APPLE__
+            strcpy(path + n - 4, ".dylib");
+#else
             strcpy(path + n - 4, ".so");
+#endif
         }
     }
     HMODULE m = dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -787,7 +961,9 @@ DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap) {
         if (!path[0]) exe_path(path, sizeof path);
     } else {
         void *lm = NULL;   /* (a handle from LoadLibraryA) */
+#ifndef __APPLE__
         if (dlinfo(m, RTLD_DI_LINKMAP, &lm) == 0 && lm) snprintf(path, sizeof path, "%s", ((const char **)lm)[1]);
+#endif
     }
     if (!cap) return 0;
     const size_t n = strlen(path);
@@ -1070,20 +1246,38 @@ static struct sigaction previous[32];
 static pthread_mutex_t handlers_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void context_from(CONTEXT *c, const ucontext_t *uc) {
+#ifdef __APPLE__
+    const x86_thread_state64_t *g = &uc->uc_mcontext->__ss;
+    c->Rax = g->__rax, c->Rcx = g->__rcx, c->Rdx = g->__rdx, c->Rbx = g->__rbx;
+    c->Rsp = g->__rsp, c->Rbp = g->__rbp, c->Rsi = g->__rsi, c->Rdi = g->__rdi;
+    c->R8 = g->__r8, c->R9 = g->__r9, c->R10 = g->__r10, c->R11 = g->__r11;
+    c->R12 = g->__r12, c->R13 = g->__r13, c->R14 = g->__r14, c->R15 = g->__r15;
+    c->Rip = g->__rip, c->EFlags = g->__rflags, c->ContextFlags = CONTEXT_FULL;
+#else
     const greg_t *g = uc->uc_mcontext.gregs;
     c->Rax = (DWORD64)g[REG_RAX], c->Rcx = (DWORD64)g[REG_RCX], c->Rdx = (DWORD64)g[REG_RDX], c->Rbx = (DWORD64)g[REG_RBX];
     c->Rsp = (DWORD64)g[REG_RSP], c->Rbp = (DWORD64)g[REG_RBP], c->Rsi = (DWORD64)g[REG_RSI], c->Rdi = (DWORD64)g[REG_RDI];
     c->R8 = (DWORD64)g[REG_R8], c->R9 = (DWORD64)g[REG_R9], c->R10 = (DWORD64)g[REG_R10], c->R11 = (DWORD64)g[REG_R11];
     c->R12 = (DWORD64)g[REG_R12], c->R13 = (DWORD64)g[REG_R13], c->R14 = (DWORD64)g[REG_R14], c->R15 = (DWORD64)g[REG_R15];
     c->Rip = (DWORD64)g[REG_RIP], c->EFlags = (DWORD)g[REG_EFL], c->ContextFlags = CONTEXT_FULL;
+#endif
 }
 static void context_to(ucontext_t *uc, const CONTEXT *c) {
+#ifdef __APPLE__
+    x86_thread_state64_t *g = &uc->uc_mcontext->__ss;
+    g->__rax = c->Rax, g->__rcx = c->Rcx, g->__rdx = c->Rdx, g->__rbx = c->Rbx;
+    g->__rsp = c->Rsp, g->__rbp = c->Rbp, g->__rsi = c->Rsi, g->__rdi = c->Rdi;
+    g->__r8 = c->R8, g->__r9 = c->R9, g->__r10 = c->R10, g->__r11 = c->R11;
+    g->__r12 = c->R12, g->__r13 = c->R13, g->__r14 = c->R14, g->__r15 = c->R15;
+    g->__rip = c->Rip;
+#else
     greg_t *g = uc->uc_mcontext.gregs;
     g[REG_RAX] = (greg_t)c->Rax, g[REG_RCX] = (greg_t)c->Rcx, g[REG_RDX] = (greg_t)c->Rdx, g[REG_RBX] = (greg_t)c->Rbx;
     g[REG_RSP] = (greg_t)c->Rsp, g[REG_RBP] = (greg_t)c->Rbp, g[REG_RSI] = (greg_t)c->Rsi, g[REG_RDI] = (greg_t)c->Rdi;
     g[REG_R8] = (greg_t)c->R8, g[REG_R9] = (greg_t)c->R9, g[REG_R10] = (greg_t)c->R10, g[REG_R11] = (greg_t)c->R11;
     g[REG_R12] = (greg_t)c->R12, g[REG_R13] = (greg_t)c->R13, g[REG_R14] = (greg_t)c->R14, g[REG_R15] = (greg_t)c->R15;
     g[REG_RIP] = (greg_t)c->Rip;
+#endif
 }
 static void on_signal(int sig, siginfo_t *si, void *uctx) {
     ucontext_t *uc = (ucontext_t *)uctx;
@@ -1097,7 +1291,11 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
     rec.ExceptionAddress = (void *)(uintptr_t)ctx.Rip;
     if (sig == SIGSEGV || sig == SIGBUS) {
         rec.NumberParameters = 2;
+#ifdef __APPLE__
+        rec.ExceptionInformation[0] = (uc->uc_mcontext->__es.__err & 2) ? 1 : 0;
+#else
         rec.ExceptionInformation[0] = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;   /* (1: a write) */
+#endif
         rec.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
     }
     EXCEPTION_POINTERS ep = {&rec, &ctx};
@@ -1220,7 +1418,11 @@ int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type) {
     (void)w, (void)type;
     fprintf(stderr, "%s: %s\n", caption ? caption : "Hookshot", text ? text : "");
     typedef int (*ShowFn)(uint32_t, const char *, const char *, void *);
+#ifdef __APPLE__
+    void *sdl = dlopen("libSDL2-2.0.0.dylib", RTLD_NOW | RTLD_NOLOAD);
+#else
     void *sdl = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
+#endif
     ShowFn show = sdl ? (ShowFn)dlsym(sdl, "SDL_ShowSimpleMessageBox") : NULL;
     if (show) show(0x10, caption ? caption : "Hookshot", text ? text : "", NULL);
     return 1;

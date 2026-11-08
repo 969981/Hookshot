@@ -1,5 +1,5 @@
-/* (linux) The part of the Win32 API Hookshot's runtime and Vulkan back end use, on POSIX: host/posix is on the include
-   path of Linux builds only (nx2/build.py), so `#include <windows.h>` finds this file and the Windows code paths stay
+/* The part of the Win32 API Hookshot's runtime and Vulkan back end use, on POSIX: host/posix is on the include
+   path of Linux and macOS builds (nx2/build.py), so `#include <windows.h>` finds this file and the Windows code paths stay
    as they are. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut),
    gdi_posix.c (the bit of GDI the Insert menu draws its text with) and display_sdl.c (the window, keyboard, mouse).
 
@@ -25,6 +25,22 @@
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+#ifndef MAP_STACK
+#define MAP_STACK 0
+#endif
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0
+#endif
+#ifndef MADV_DONTNEED
+#ifdef MADV_FREE_REUSABLE
+#define MADV_DONTNEED MADV_FREE_REUSABLE
+#else
+#define MADV_DONTNEED 4
+#endif
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -148,7 +164,11 @@ void SetLastError(DWORD e);
 #define InterlockedCompareExchangePointer InterlockedCompareExchange
 #define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #define _ReadWriteBarrier() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+#if defined(__aarch64__)
+#define YieldProcessor() __builtin_arm_yield()
+#else
 #define YieldProcessor() __builtin_ia32_pause()
+#endif
 
 /* ---- locks: SRW locks are POSIX rwlocks (zero-initialised is valid, as on Windows); condition variables a futex
    word, so they wait with either an SRW lock or a critical section ---- */

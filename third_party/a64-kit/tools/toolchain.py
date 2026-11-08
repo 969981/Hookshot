@@ -1,4 +1,4 @@
-import os, shutil
+import os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -14,6 +14,14 @@ def mingw():
 
 
 def find(tool):
+    if sys.platform == "darwin" and tool in ("clang", "clang++"):
+        xcrun = shutil.which("xcrun")
+        if xcrun:
+            result = subprocess.run([xcrun, "--find", tool], capture_output=True, text=True)
+            if result.returncode == 0:
+                path = result.stdout.strip()
+                if path:
+                    return path
     if mingw() and (tool in ("clang", "clang++", "lld") or tool.startswith("llvm-")):
         path = os.path.join(mingw(), "bin", ("ld.lld" if tool == "lld" else tool) + ".exe")
         if os.path.isfile(path):

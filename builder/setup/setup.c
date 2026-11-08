@@ -376,7 +376,7 @@ static DWORD WINAPI work(LPVOID unused) {
             ok = http_get(api, mem_sink, &man, 0, L"application/octet-stream") && man.p;
             if (!ok) g_http_status = first;
         }
-        if (!ok && g_http_status && g_http_status < 500) break;   /* (404 and the like: trying again changes nothing) */
+        if (!ok && g_http_status >= 400 && g_http_status < 500) break;   /* (a 200 response can still have a truncated body) */
     }
     if (!ok)
         fail(g_http_status == 404
@@ -451,7 +451,7 @@ static DWORD WINAPI work(LPVOID unused) {
                     BCryptCloseAlgorithmProvider(a, 0);
                     InterlockedExchange(&g_percent, -1);
                     hex(d, 32, have);
-                    if (!got && g_http_status && g_http_status < 500) break;
+                    if (!got && g_http_status >= 400 && g_http_status < 500) break;
                 }
                 if (!got) DeleteFileW(part), fail(g_http_status >= 500
                     ? L"Downloading part %d of %d failed: GitHub's download servers are failing right now (tried 4 times). This is on "
