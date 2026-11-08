@@ -100,6 +100,7 @@ Each row is one pull request, and each one is useful on its own.
 | 2 | A vendor-neutral seam at `taau_stand_in`, with the stand-in as its only backend | No behaviour change, and it is the review that decides the shape |
 | 3 | FSR 3.1 temporal upscaling as the first backend | MIT sources, no external runtime, works on every vendor, so it is the backend that can be the default |
 | 4 | DLSS Super Resolution: Streamline on Windows, NGX on Linux | Needs a user-supplied runtime, so it comes after a working fallback exists |
+| 4b | FSR 4 through AMD's runtime, behind the same seam | The same API as row 3, so it is a backend rather than a rewrite; AMD hardware only |
 | 5 | Presets, quality modes and DLAA in the Insert menu and `hookshot_options.ini` | Settings for backends that exist, rather than settings-first |
 | 6 | Frame generation from real motion and depth | Replaces the block matcher's guess where the inputs are available |
 
@@ -138,18 +139,49 @@ sits beside the binary. The same two backends therefore need two loaders behind 
 Neither backend may be a build requirement: a tree with no SDK present builds, and a machine with no
 runtime present runs, with the stand-in.
 
-## Ray Reconstruction
+## Denoising upscalers, and how to find out
 
-Ray Reconstruction (DLSS's denoising upscaler) is **not** on the list above, and should not be
-promised for this game. It replaces a ray-traced renderer's denoiser, and it needs guide buffers —
-albedo, normals, roughness, specular hit distance — that only a ray-traced or G-buffer pipeline
-produces. OoT's Switch 2 build is rasterized, and nothing in the replayed command stream identifies
-such targets: a search of `gpu/` finds no normal, albedo or roughness target anywhere. Turning it on
-with color, motion and depth alone would give a different upscaling network, not denoising, and would
-be a worse-documented version of row 4.
+NVIDIA calls it Ray Reconstruction, AMD calls it Ray Regeneration (RDNA 4 and newer only). Both are the same kind of
+thing and neither takes colour, motion and depth: they replace a ray-traced renderer's denoiser, and they want guide
+buffers — albedo, normals, roughness, specular hit distance. Nothing in `gpu/` names such a target, and this game is
+rasterized, so the working assumption has been that they cannot be given what they need here.
 
-If the intent is "the newest DLSS quality", that is the transformer presets in row 5, on top of
-Super Resolution in row 4.
+That assumption is now testable rather than repeated. A deferred renderer writes its guides as several colour
+attachments of one extent in one pass, so `RX_VK_MRT_CENSUS=1` logs each distinct render target set once — how many
+colour attachments the game binds together, their formats and the extent — from `targets()`, which resolves once per
+`NOP_SET_RT` rather than per draw. Off by default and free while off.
+
+Two outcomes, both useful:
+
+- **Never more than one colour attachment.** There is no G-buffer, there are no guides, and a denoising upscaler is
+  settled as not applicable to this title. Say so in the docs and stop proposing it.
+- **Three or four at one extent.** Guides may exist, and identifying which attachment is which becomes the same kind
+  of work the input contract above already is.
+
+Until that log has been read off a run, this section states a question, not a conclusion.
+
+What *is* deliverable, and is what "the newest upscaling" means in practice on each vendor:
+
+| | |
+|---|---|
+| NVIDIA | DLSS Super Resolution with the transformer presets, and DLAA at native resolution. A neural network upscaler, through NGX on Linux and Streamline on Windows |
+| AMD | FSR 4's machine-learning upscaler, reached through the FSR 3.1 API that row 4 below targets. Radeon RX 9000/7000/6000; AMD's own API falls back to FSR 3.1.6 elsewhere |
+| Everyone | FSR 3.1 compiled from the SDK sources in this tree, which needs no runtime and no particular vendor |
+
+## FSR 3 and FSR 4 are two backends, not two versions
+
+FSR 4 is not source-available: it ships as prebuilt signed libraries inside AMD's SDK releases, so it cannot come out
+of `third_party/fidelityfx-sdk/`. It is reached by loading AMD's runtime (`amd_fidelityfx_loader_vk.dll` and
+`amd_fidelityfx_upscaler_vk.dll`, which the user supplies) and asking it for a provider. That makes FSR 4 a *second
+backend* behind the same seam, not an upgrade of the first:
+
+- **FSR 3.1, from the SDK sources here.** No runtime, no downloads, every vendor and both platforms. This is the one
+  that can be a default.
+- **FSR 4, through AMD's runtime.** AMD hardware, where the installed runtime exposes a provider; it must not
+  silently become FSR 3 or FSR 2, because then nobody can tell which ran.
+
+The API that reaches FSR 4 is the FSR 3.1 API, which AMD kept stable for exactly this, so integrating 3.1 properly is
+the path to 4 rather than a detour away from it.
 
 ## Frame generation, honestly
 

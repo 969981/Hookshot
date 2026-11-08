@@ -2587,6 +2587,36 @@ struct IndexBind {
 thread_local IndexBind last_ib;
 int64_t st_desc_reused;
 
+/// (hookshot) Once per distinct render target set, with RX_VK_MRT_CENSUS=1: how many colour attachments the game
+/// binds at once, their formats and the extent. Off by default and free while off.
+///
+/// This is here to answer one question with evidence instead of assumption. A denoising upscaler -- NVIDIA's DLSS
+/// Ray Reconstruction, AMD's FSR Ray Regeneration -- does not take colour, motion and depth; it takes a ray-traced
+/// renderer's guide buffers, which means albedo, normals, roughness and specular hit distance. A deferred renderer
+/// writes those as several colour attachments of one extent in one pass. So if this game never binds more than one
+/// colour attachment, it has no G-buffer, there are no guides to hand such an upscaler, and the question is closed;
+/// if it binds three or four at one extent, there may be. docs/upscaling.md records what the census found.
+static void mrt_census(const Targets& at) {
+    static const bool on = getenv("RX_VK_MRT_CENSUS") != nullptr;
+    if (!on) return;
+    uint64_t key = (uint64_t)at.n | ((uint64_t)at.width << 8) | ((uint64_t)at.height << 32);
+    for (int i = 0; i < at.n && i < 8; i++) key = key * 1000003ull + (uint64_t)at.color_format[i];
+    key = key * 1000003ull + (at.depth ? (uint64_t)at.depth_format + 1 : 0);
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    {
+        std::lock_guard lk(mu);
+        if (seen.size() >= 512 || !seen.insert(key).second) return;
+    }
+    char line[400];
+    int k = snprintf(line, sizeof line, "vk: targets %d colour %ux%u:", at.n, at.width, at.height);
+    for (int i = 0; i < at.n && i < 8 && k < 340; i++)
+        k += snprintf(line + k, sizeof line - k, " %u", (unsigned)at.color_format[i]);
+    if (at.n == 0 && k < 340) k += snprintf(line + k, sizeof line - k, " (none)");
+    if (at.depth && k < 340) k += snprintf(line + k, sizeof line - k, ", depth %u", (unsigned)at.depth_format);
+    logf("%s", line);
+}
+
 thread_local uint64_t targets_serial = ~0ull;   // (the state's render targets resolved once per NOP_SET_RT)
 thread_local Targets cached_targets;
 
@@ -2637,6 +2667,7 @@ Targets targets(NvnState& s) {
             }
         }
     }
+    mrt_census(at);
     targets_serial = s.rt_serial;
     cached_targets = at;
     return at;
