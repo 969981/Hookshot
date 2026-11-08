@@ -89,6 +89,7 @@ on:
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
+      - tests/test_warm_marker.py
       - tests/test_slow_frame_limit.py
       - tests/test_3d_view_create_flags.py
       - tests/test_present_trace.py
@@ -248,6 +249,7 @@ on:
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
+      - tests/test_warm_marker.py
       - tests/test_slow_frame_limit.py
       - tests/test_3d_view_create_flags.py
       - tests/test_present_trace.py
@@ -512,6 +514,9 @@ jobs:
       - name: Check shader preparation saves the pipeline cache
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prepare_cache_save.py
+      - name: Check shader preparation's driver step is left out only after two failed starts
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_warm_marker.py --cxx g++
       - name: Check multi-second frames remain in the requested slow log
         if: runner.os == 'Linux'
         run: python -I -B tests/test_slow_frame_limit.py

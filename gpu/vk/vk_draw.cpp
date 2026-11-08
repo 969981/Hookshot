@@ -5038,6 +5038,18 @@ bool precompile_wanted() {
     if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
     return on;
 }
+/// (hookshot) prepare_run's driver step begun: how many starts in a row had begun it and not ended it (closed, or a crash in the
+/// driver), the file now counting this one too. An empty file, an older build's, counts as one
+int warm_marker(const std::string& path) {
+    int ended_inside = 0;
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        if (fscanf(f, "%d", &ended_inside) != 1) ended_inside = 1;
+        fclose(f);
+    }
+    if (ended_inside < 2)
+        if (FILE* f = fopen(path.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
+    return ended_inside;
+}
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): once for this translator
 void prepare_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -5062,15 +5074,20 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
     // nothing: a kept library costs memory, and our pipeline cache would be read in whole at every start. A driver whose compiler
     // crashes on one of them (it happens: TotK Recomp's issue 30) would crash here at every start: the file says this step began and
     // did not end, and the next start goes without it. Those libraries are then built when a draw first needs them
+    // (hookshot) two starts in a row, as the precompile's: one counted, closing the window while the driver compiled (it looks stuck
+    // at 99% on AMD after an update) left the step out at the next start, and the stamp written below kept it out for that version.
+    // Every compute pipeline was then built in the precompile or in play: 205 s more before an RX 6650 XT's game started
     const std::string warming = path + ".warming";
     bool warm = gpl_wanted() && !getenv("RX_VK_NO_WARM");
     bool warm_cs = !getenv("RX_VK_NO_WARM");
-    if (FILE* f = fopen(warming.c_str(), "rb")) {
-        fclose(f);
-        warm = warm_cs = false;
-        logf("vk: the last start did not finish the driver's part of the shaders: left out");
-    } else if (warm || warm_cs) {
-        if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+    if (warm || warm_cs) {
+        const int ended_inside = warm_marker(warming);
+        if (ended_inside >= 2) {
+            warm = warm_cs = false;
+            logf("vk: the last two starts did not finish the driver's part of the shaders: left out");
+        } else if (ended_inside) {
+            logf("vk: the last start did not finish the driver's part of the shaders (closed, or it crashed there): trying it once more");
+        }
     }
     auto blank = std::make_unique<NvnState>();
     blank->nvattr = 16;
