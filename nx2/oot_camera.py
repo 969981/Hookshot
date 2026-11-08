@@ -23,10 +23,23 @@ of floats around both so the matrix can be identified from what it contains.
 """
 
 MAIN = 0x80020000
-SITE = 0x3485cc0
-WORD = 0x2d558400   # (ldp s0, s1, [x0, #0xac]: the same word nx2/oot_wide.py checks)
 
-PUBLISH = (
+# The same four sites nx2/oot_wide.py patches for the camera ratio: sead's perspective projection
+# matrix update and its three inlined copies. The projection object is in a different register in
+# each, which is the second argument of oot_wide's _ratio() at the same offsets. Patching only the
+# out-of-line copy published nothing in a real run, because the path that runs is inlined.
+SITES = (
+    # (offset, the original word, the register holding the projection, whether x1 is known to hold
+    #  the 4x4 it writes: verified only in the out-of-line copy, and the dump dereferences it)
+    (0x3485cc0, 0x2d558400, 0, True),
+    (0x4f1e8, 0x2d558ea0, 21, False),
+    (0x23b9a8, 0x2d558c00, 0, False),
+    (0x33b82c, 0x2d558440, 2, False),
+)
+
+def _publish(base, with_matrix):
+    matrix = ("hos_oot_proj_matrix = c->x[1]; " if with_matrix else "")
+    return (
     "{ extern volatile float hos_oot_cam_near, hos_oot_cam_far, hos_oot_cam_tan_half_fov; "
     "extern volatile int hos_oot_camera_valid; const uint64_t _cp = c->x[0]; "
     "uint32_t _c0 = (uint32_t)recomp_load32(c, _cp + 0x98), _c1 = (uint32_t)recomp_load32(c, _cp + 0x9c), "
@@ -35,24 +48,28 @@ PUBLISH = (
     "{ const float _nr = _f0 < _f1 ? _f0 : _f1, _fr = _f0 < _f1 ? _f1 : _f0; "
     "if (_nr > 0.0f && _fr > _nr && _ft > 0.0f) { hos_oot_cam_near = _nr; hos_oot_cam_far = _fr; "
     "hos_oot_cam_tan_half_fov = _ft; hos_oot_camera_valid = 1; } } "
-    "{ extern volatile uint64_t hos_oot_proj_object, hos_oot_proj_matrix; "
-    "hos_oot_proj_object = _cp; hos_oot_proj_matrix = c->x[1]; } }"
+    "{ extern volatile uint64_t hos_oot_proj_object, hos_oot_proj_matrix; (void)hos_oot_proj_matrix; "
+    "hos_oot_proj_object = _cp; " + matrix + "} }"
     "   /* (nx2/oot_camera.py: the camera a temporal upscaler needs) */"
-)
+    ).replace("const uint64_t _cp = c->x[0];", "const uint64_t _cp = c->x[%d];" % base)
 
 
 def install(lifter, img):
-    """Appends the publish to the projection update. 0 when the site's word differs (another game
-    version), which leaves the renderer on its own defaults."""
-    pc = MAIN + SITE
-    try:
-        have = img.word(pc)
-    except Exception:
-        have = None
-    if have != WORD:
-        print("camera: main+%#x holds %s, not %08x: left out"
-              % (SITE, "?" if have is None else "%08x" % have, WORD))
-        return 0
-    lifter.after[pc] = lifter.after.get(pc, "") + "\n" + PUBLISH
-    print("camera: the projection update publishes the near plane, far plane and field of view")
-    return 1
+    """Appends the publish to every projection update site. A site whose word differs is left out;
+    0 sites leaves the renderer on its own defaults."""
+    n = 0
+    for off, word, base, with_matrix in SITES:
+        pc = MAIN + off
+        try:
+            have = img.word(pc)
+        except Exception:
+            have = None
+        if have != word:
+            print("camera: main+%#x holds %s, not %08x: left out"
+                  % (off, "?" if have is None else "%08x" % have, word))
+            continue
+        lifter.after[pc] = lifter.after.get(pc, "") + "\n" + _publish(base, with_matrix)
+        n += 1
+    print("camera: %d of %d projection sites publish the near plane, far plane and field of view"
+          % (n, len(SITES)))
+    return n
