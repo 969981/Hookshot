@@ -932,7 +932,37 @@ public partial class MainWindow : Window
         }
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
+        _ = ShowStorageUse();
     }
+
+    // (issue: 5 GB and more left in %LOCALAPPDATA% and never said. Said here, with the way to let it go)
+    async Task ShowStorageUse()
+    {
+        StorageRow.Visibility = Visibility.Collapsed;
+        var (total, freeable) = await Task.Run(Storage.Measure);
+        if (total < 100L << 20) return;
+        StorageNote.Text = freeable >= 100L << 20
+            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}). {Storage.Gb(freeable)} of it only makes the next " +
+              "update quicker and can be freed: your game keeps playing, and the next update then takes about as long as this build."
+            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}): the builder itself.";
+        FreeButton.Visibility = freeable >= 100L << 20 ? Visibility.Visible : Visibility.Collapsed;
+        FreeButton.IsEnabled = true;
+        FreeButton.Content = "Free up space";
+        StorageRow.Visibility = Visibility.Visible;
+    }
+
+    async void FreeSpace(object sender, RoutedEventArgs e)
+    {
+        FreeButton.IsEnabled = false;
+        FreeButton.Content = "Freeing…";
+        var left = await Task.Run(Storage.Free);
+        await ShowStorageUse();
+        if (left >= 100L << 20)
+            StorageNote.Text += $" ({Storage.Gb(left)} could not be deleted: a file is in use. Close the game and the builder, and delete the folder's contents by hand.)";
+    }
+
+    void ShowStorage(object sender, RoutedEventArgs e) =>
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Storage.Base}\"") { UseShellExecute = true });
 
     void ShortcutsChanged(object sender, RoutedEventArgs e)
     {
