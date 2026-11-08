@@ -1,0 +1,61 @@
+name: Apply issue triage
+
+# Phase 0 of ROADMAP.md, run by hand from Actions > Apply issue triage.
+# The default is a dry run: it prints the labels and comments without changing anything.
+# `apply` writes labels; the other switches add comments, close linked duplicates and pin
+# the canonical trackers. The script itself is scripts/triage_issues.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Write to the tracker (off is a dry run)
+        type: boolean
+        default: false
+      comments:
+        description: Post the duplicate / needs-info / retest comments
+        type: boolean
+        default: false
+      close_duplicates:
+        description: Close linked duplicates (only after the canonical fix is verified)
+        type: boolean
+        default: false
+      pin:
+        description: Pin the canonical trackers
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    name: Apply the roadmap appendix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check the roadmap and label plan
+        run: python -I -B tests/test_triage_plan.py
+      - name: Apply the disposition
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLY: ${{ inputs.apply }}
+          COMMENTS: ${{ inputs.comments }}
+          CLOSE_DUPLICATES: ${{ inputs.close_duplicates }}
+          PIN: ${{ inputs.pin }}
+        run: |
+          args=()
+          if [ "$APPLY" = "true" ]; then args+=(--apply); else args+=(--dry-run); fi
+          if [ "$COMMENTS" = "true" ]; then args+=(--comments); fi
+          if [ "$CLOSE_DUPLICATES" = "true" ]; then args+=(--close-duplicates); fi
+          if [ "$PIN" = "true" ]; then args+=(--pin); fi
+          python -I scripts/triage_issues.py --repo "${{ github.repository }}" "${args[@]}"

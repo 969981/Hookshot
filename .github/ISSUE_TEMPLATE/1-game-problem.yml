@@ -7,15 +7,17 @@ body:
       value: |
         Thanks for testing. Before you start:
         - **Check the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) first.** Every release includes all the fixes before it, and yours may already be fixed.
+        - **Read [known issues and the first 30 minutes](https://github.com/NotRexed/Hookshot/blob/main/docs/known-issues.md).** Black screens, black movies, exposure flicker, AMD/RADV performance and cache resets are covered there with the issue that tracks each one.
         - **Search the open issues.** If yours is there, add your details to it instead.
-        - English, please.
+        - English, please. One problem per issue.
         - **Never attach game files**: no hookshot.exe, image.bin, the `.bin` caches, romfs or exefs files, keys or saves.
+        Reports without `hookshot_log.txt` may be labelled `needs-log`; without it there is usually nothing to reproduce.
   - type: input
     id: version
     attributes:
       label: Hookshot version
-      description: The release you built (its name on the Releases page, such as `movie-sync`), or the first line of `hookshot_log.txt` if it starts with `hookshot`.
-      placeholder: movie-sync
+      description: The release name shown beside "Hookshot" in the Insert menu, or the first line of `hookshot_log.txt` if it starts with `hookshot`. Do not write "latest".
+      placeholder: "0.1.0 (source 1a2b3c4d)"
     validations:
       required: true
   - type: dropdown
@@ -35,6 +37,17 @@ body:
     attributes:
       label: What happened
       description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows the problem, starting from a new game or a named save.
+      placeholder: |
+        1. Load slot 2
+        2. Walk out of Link's house
+        3. Open the Insert menu
     validations:
       required: true
   - type: input
@@ -102,7 +115,9 @@ body:
       options:
         - label: I'm on the newest release, or the problem is still there on it.
           required: true
-        - label: I searched the open issues for this problem.
+        - label: I read the known issues page and my problem is not one of the listed cases with a workaround.
+          required: true
+        - label: I searched the open issues for this problem and attached the log from the run that shows it.
           required: true
         - label: I'm not attaching game files, keys, hookshot.exe, the .bin caches or saves.
           required: true

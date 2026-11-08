@@ -4,7 +4,17 @@ labels: [enhancement]
 body:
   - type: markdown
     attributes:
-      value: Search the open issues first; if someone asked already, add to theirs. English, please.
+      value: |
+        Search the open issues first; if someone asked already, add to theirs instead of opening a second request.
+        [ROADMAP.md](https://github.com/NotRexed/Hookshot/blob/main/ROADMAP.md) lists the features already planned and the
+        ones waiting behind crashes and performance fixes. English, please.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: The thing you cannot do today, not only the feature you want.
+    validations:
+      required: true
   - type: textarea
     id: idea
     attributes:

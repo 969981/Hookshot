@@ -42,8 +42,13 @@ game data, leave it out.
 - English, please.
 - One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
 - Report the version you actually ran: the release name, or the first line of `hookshot_log.txt`.
+- Read [known issues](docs/known-issues.md) first. Black screens, black movies, exposure flicker, AMD/RADV
+  performance and cache resets are covered there with the canonical issue for each one.
 - Test without ReShade, shader-cache tools, overlays and frame-generation injectors when you report a graphics or
   performance problem. They change what Hookshot does.
+
+Triaging the tracker follows [docs/triage.md](docs/triage.md). The roadmap appendix is the source of truth; the
+triage script is a dry run unless `--apply` is passed.
 
 ## Development setup
 

@@ -81,6 +81,11 @@ on:
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+      - ROADMAP.md
+      - docs/known-issues.md
+      - .github/labels.json
+      - scripts/triage_issues.py
+      - tests/test_triage_plan.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -162,6 +167,11 @@ on:
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+      - ROADMAP.md
+      - docs/known-issues.md
+      - .github/labels.json
+      - scripts/triage_issues.py
+      - tests/test_triage_plan.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -285,6 +295,8 @@ jobs:
         run: python -I -B nx2/test_version.py
       - name: Check the release changelog entry
         run: python -I -B tests/test_changelog.py
+      - name: Check the issue roadmap and triage plan
+        run: python -I -B tests/test_triage_plan.py
       - name: Check a repeated draw keeps its program and pipeline
         if: runner.os == 'Linux'
         run: python -I -B tests/test_same_draw.py

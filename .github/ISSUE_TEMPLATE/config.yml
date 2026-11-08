@@ -3,6 +3,12 @@ contact_links:
   - name: Newest release
     url: https://github.com/NotRexed/Hookshot/releases/latest
     about: Every release includes all the fixes before it. Try the newest before reporting.
+  - name: Known issues and the first 30 minutes
+    url: https://github.com/NotRexed/Hookshot/blob/main/docs/known-issues.md
+    about: Black screens, black movies, exposure flicker, AMD/RADV performance, cache resets and build stops, with the issue that tracks each one.
+  - name: Roadmap
+    url: https://github.com/NotRexed/Hookshot/blob/main/ROADMAP.md
+    about: What is being fixed first, what is a duplicate of what, and which features are waiting.
   - name: Issue guidelines
-    url: https://github.com/NotRexed/Hookshot/issues/159
-    about: What to check before opening an issue.
+    url: https://github.com/NotRexed/Hookshot/blob/main/docs/issue-guidelines.md
+    about: What to check, what to include, and what happens after you report.

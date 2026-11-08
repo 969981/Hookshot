@@ -156,25 +156,44 @@ P0/P1 work. Community testers are explicitly credited.
 
 Goal: make the tracker usable before writing more fixes.
 
-- [ ] Add labels: `area/build`, `area/runtime`, `area/vulkan`, `area/audio`, `vendor/amd`,
-      `vendor/intel`, `vendor/nvidia`, `type/crash`, `type/regression`, `type/duplicate`,
-      `needs-log`, `needs-retest`, `good-first-fix`.
-- [ ] Pin the canonical trackers: #503 (build), #150 (device lost), #309 (black screen),
-      #195 (cache), #287 (null pool), #145 (flashes), #319 (ground lines), #302 (AMD
-      foliage), #36 (overexposure), #105 (VRAM), #17 (Intel), #11 (foliage/textures).
-- [ ] Apply the Appendix dispositions: link and close duplicates, ask for the missing log
-      on `Info` issues, and mark `Retest` issues with the release to try.
-- [ ] Rewrite the issue chooser text from #159: version, GPU/driver, log, where in the
-      game, one topic per issue, latest release first. State that reports without a log
-      may be closed as `needs-log`.
-- [ ] Show the release name/version in the Insert menu and keep the first log line
-      authoritative (#325, #481).
-- [ ] Publish a "Known issues / first 30 minutes" page: shader warm-up, AV1 extension,
-      cache reset, AMD driver minimum, Intel status, how to set `hookshot_env.txt`.
-- [ ] Freeze forced updates while a build is running; batch releases (answer #421/#493).
+The maintainer runbook is [docs/triage.md](docs/triage.md). The label source is
+[.github/labels.json](.github/labels.json) and the tool is
+[scripts/triage_issues.py](scripts/triage_issues.py), dry-run by default. The manual
+workflow is [.github/workflows/triage-issues.yml](.github/workflows/triage-issues.yml).
 
-Exit criteria: every open issue has a label and a disposition; the top twelve trackers
-are pinned; a new reporter can find the right tracker in under a minute.
+- [x] Define labels: `area/build`, `area/runtime`, `area/rendering`, `area/audio`,
+      `area/input`, `area/tools`, `vendor/amd`, `vendor/intel`, `vendor/nvidia`,
+      `type/crash`, `type/regression`, `type/duplicate`, `type/feature`, `status/*`,
+      `needs-log`, `needs-retest`, `needs-triage`, `priority/p0`-`p2`, `good-first-fix`.
+- [ ] Run the triage tool with `--apply` to create the labels and add them upstream. This
+      needs a token or workflow run with `issues: write`; a read-only token can only dry
+      run it.
+- [ ] Pin the canonical trackers: #503 (build), #150 (device lost), #309 (black screen),
+      #195 (cache), #287 (null pool), #500 (texture builder), #145 (flashes), #319
+      (ground lines), #302 (AMD foliage), #36 (overexposure), #105 (VRAM), #17 (Intel),
+      #11 (foliage/textures). `scripts/triage_issues.py --pin` does this after the write
+      step.
+- [x] Put every issue's disposition in the Appendix and make the tool link duplicates,
+      request the missing log on `Info` issues, and mark `Retest` issues with the release
+      to try.
+- [ ] Run the disposition step upstream. The default tool closes nothing: duplicates stay
+      open until the canonical fix is verified.
+- [x] Rewrite the issue chooser text (#159): version, GPU/driver, log, where in the game,
+      steps, one topic per issue, latest release first, and the `needs-log` rule. The new
+      text is in [docs/issue-guidelines.md](docs/issue-guidelines.md) and the three forms.
+- [x] Show the release name/version in the Insert menu and keep the first log line
+      authoritative (#325, #481). This was already implemented in `gpu/vk/vk_menu.cpp`
+      and `host/hos_main.c`; no change was needed.
+- [x] Publish [Known issues and the first 30 minutes](docs/known-issues.md): shader
+      warm-up, AV1 extension, cache reset, AMD driver minimum, Intel status, how to set
+      `hookshot_env.txt`, and the canonical tracker for each symptom.
+- [ ] Freeze forced updates while a build is running; the policy is documented in
+      `docs/known-issues.md` and the build form, and installer retention is PR #514. It
+      still needs to be enforced as a release habit.
+
+Exit criteria: every open issue has a label and a disposition; the canonical trackers are
+pinned; a new reporter can find the right tracker in under a minute. The repository half of
+this phase is complete; the upstream write steps are the remaining action.
 
 ---
 

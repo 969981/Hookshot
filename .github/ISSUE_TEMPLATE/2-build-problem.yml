@@ -5,13 +5,17 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before you start: check the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) and the [build requirements](https://github.com/NotRexed/Hookshot#what-you-need) (Visual Studio Build Tools with "Desktop development with C++" and the Windows SDK, about 60 GB free), and search the open issues. English, please. Never attach game files.
+        Before you start:
+        - Check the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) and the [build requirements](https://github.com/NotRexed/Hookshot#what-you-need) (about 60 GB free; the builder brings its own compiler, so Visual Studio is only needed for the builder itself).
+        - Read [known issues](https://github.com/NotRexed/Hookshot/blob/main/docs/known-issues.md#building), especially the worker count, `HOOKSHOT_JOBS` and the "do not update during a build" note.
+        - Search the open issues; build-time reports with the worker line belong in #503, installer copies in #493, and a stopped step in its own issue.
+        - English, please. Never attach game files.
   - type: input
     id: version
     attributes:
       label: Builder version
-      description: The release you downloaded (its name on the Releases page).
-      placeholder: movie-sync
+      description: The release name on the Releases page, or the version shown by the builder. Do not write "latest".
+      placeholder: "0.1.0"
     validations:
       required: true
   - type: dropdown
@@ -33,25 +37,49 @@ body:
         - romfs and exefs folders
     validations:
       required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it stopped
+      options:
+        - Reading the game files
+        - Translating (lift)
+        - Compiling
+        - Finishing
+        - Before the build started (installer, tools, download)
+        - I do not know
+    validations:
+      required: true
   - type: textarea
     id: error
     attributes:
       label: The error
-      description: Copy the text the builder shows, with the failed step's details (text, not a screenshot of it).
+      description: Copy the whole stopped-step text, with the failing file and exit status. Text, not a screenshot.
       render: text
+    validations:
+      required: true
+  - type: textarea
+    id: workerline
+    attributes:
+      label: The build's first lines
+      description: Copy the lines that say how many compilers ran and how much memory was free. They start with "build:" and "the compiler:".
+      render: text
+      placeholder: |
+        build: 8 compilers at once (16 CPU threads, 31 GB of memory free; HOOKSHOT_JOBS=<n> to change)
+        the compiler: ...\tools\llvm-mingw (no Visual Studio needed)
     validations:
       required: true
   - type: input
     id: toolchain
     attributes:
-      label: Visual Studio or Build Tools version, and Windows SDK version
-      description: Windows only. Visual Studio Installer shows both.
-      placeholder: Build Tools 2022 17.14, Windows SDK 10.0.26100
+      label: Compiler and Windows SDK version (command-line builds only)
+      description: The builder prints the compiler it uses. For a Visual Studio build, the installer shows the Build Tools and SDK versions.
+      placeholder: llvm-mingw 2026-xx, MSVC 14.44, Windows SDK 10.0.26100
   - type: input
     id: system
     attributes:
-      label: Operating system and free space on the output drive
-      placeholder: "Windows 11 24H2, 210 GB free on D:"
+      label: Operating system, CPU threads, RAM and free space on the output drive
+      placeholder: "Windows 11 24H2, 16 threads, 32 GB, 210 GB free on D:"
     validations:
       required: true
   - type: checkboxes
@@ -61,7 +89,9 @@ body:
       options:
         - label: I'm on the newest release, or it still fails on it.
           required: true
-        - label: I searched the open issues for this error.
+        - label: I did not start a builder update while this build was running.
+          required: true
+        - label: I searched the open issues for this error and attached the full stopped-step output.
           required: true
         - label: I'm not attaching game files or anything built from them.
           required: true

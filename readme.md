@@ -53,6 +53,9 @@ of the game.
 | Hyrule Field and the rest of the game | ❓ Not tested yet |
 | AMD and Intel cards | ❓ Never tested |
 
+The plan for the open tracker is in [ROADMAP.md](ROADMAP.md); the short version for players is
+[Known issues and the first 30 minutes](docs/known-issues.md).
+
 ## How to build
 
 The game does not come ready-made: it is built on your PC from your copy.
@@ -178,15 +181,21 @@ To build from the command line you also need:
 
 ### If something goes wrong
 
+[Known issues and the first 30 minutes](docs/known-issues.md) has the short version of the tracker: black screens,
+movies without picture, exposure flicker, AMD/RADV performance, build stops, cache resets and the canonical issue for
+each one. Check it before opening a report.
+
 | Problem | What to do |
 |---|---|
 | "Hookshot supports build e0f3ccfa" | Check that you chose the right game with its update installed |
 | The game opens and closes | Update your graphics driver |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
+| Black screen but the sound works | Read [the black-screen table](docs/known-issues.md#black-screen-with-audio); the log says which cause it is |
+| Movies are black but the sound works | Install Microsoft's free AV1 Video Extension from the Store |
 | The game is in the wrong language | Change the code in `language.txt` beside the game. The file lists them all |
 
 If the problem continues, report it with where you were in the game, your graphics card and a screenshot or video.
-Never send game files.
+Attach `hookshot_log.txt` and never send game files.
 
 ## In-game menu
 
