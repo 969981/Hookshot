@@ -165,9 +165,24 @@ with tempfile.TemporaryDirectory() as tmp:
     def test_macos_renderer_uses_sdl_pixel_dimensions(self):
         renderer = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")
         window = (ROOT / "host" / "posix" / "display_sdl.c").read_text(encoding="utf-8")
+        sdl = (ROOT / "host" / "hos_sdl.c").read_text(encoding="utf-8")
         self.assertIn("hos_posix_window_pixel_size(&width, &height)", renderer)
         self.assertIn("void hos_posix_window_pixel_size(int *width, int *height)", window)
         self.assertIn("window_pixel_size(window, width, height)", window)
+        renderer_thread = window[window.index("static DWORD WINAPI renderer_main"):window.index("void hos_renderer_wait")]
+        display_loop = window[window.index("void hos_display_loop"): ]
+        self.assertNotIn("hos_sdl_metal_create_view", renderer_thread)
+        self.assertLess(display_loop.index("hos_sdl_metal_create_view(window)"), display_loop.index("CreateThread"))
+        self.assertIn('GET(Metal_CreateView, "SDL_Metal_CreateView")', sdl)
+        self.assertIn("WIN_METAL", sdl)
+
+    def test_linux_guest_memory_optimizations_are_guarded_from_macos(self):
+        source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+        self.assertIn("#ifdef __linux__\n    /* The window is a memfd's", source)
+        self.assertIn("#ifdef __linux__\n                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE,", source)
+        self.assertIn("#ifdef __linux__\n    if (!getenv(\"HOS_THP\")) madvise", source)
+        self.assertIn("#ifdef __linux__\n    return madvise(p, n, hos_guest_memfd >= 0 ? MADV_REMOVE", source)
+        self.assertIn("    return 1;\n#endif\n}", source)
 
 
 if __name__ == "__main__":
