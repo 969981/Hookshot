@@ -568,6 +568,7 @@ struct Targets {
 struct PipeEntry {
     std::atomic<bool> ready{false};
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};   // (a fast-linked one first, the worker's full build over it)
+    std::atomic<bool> started{false};   // (its full build has begun: a worker's, or that of the draw that waited for it)
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
 int64_t st_draws, st_skipped, st_dispatches, st_passes, st_mesh, st_pending_skips, st_waits;
@@ -632,7 +633,11 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
     return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
 }
 #endif
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
+/// (hookshot) How build_graphics makes a whole pipeline: Full, with the driver's optimizer, into the pipeline cache; Quick, without
+/// the optimizer and the cache, for a draw that waits; Cached, only when the pipeline cache has it already (nothing compiled)
+enum class BuildHow { Full, Quick, Cached };
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
+                          BuildHow how = BuildHow::Full);
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
 /// (Maxwell keeps its texels; Vulkan writes undefined values: TOTK's maxwell.md 1.1)
@@ -891,15 +896,57 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo;
     jobs_push([job] {
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
+        if (job->e->started.exchange(true)) return;   // (the draw that waited for it built it: pipeline_build_waited)
         if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
         job->e->ready.store(true, std::memory_order_release);
     });
     return remember(e);
 }
 
+// (hookshot) A draw that has to wait for its pipeline (its targets hold no earlier picture to show instead) does not wait in line
+// behind the background builds, nor for the driver's optimizer. Waiting, a new area's first frame stood still while its pipelines
+// were built one after another: 31 s and 62 s on an RX 6650 XT after v2.0.2's new shaders, the stall as long as all their compiles
+// added up, AMD's optimizer taking seconds to minutes on some (Lichii #200, #210). First the pipeline cache, without compiling: one
+// met in an earlier session is there, whole, in milliseconds. Then, on AMD, one without the optimizer on the spot, which the worker's
+// full build replaces when it is done; elsewhere, or when that fails, the draw takes its own full build from the queue and makes it
+// on this thread. RX_VK_QUICK_PIPELINES=1: the quick build on any GPU, =0: never
+bool quick_pipelines() {
+    static const bool on = [] {
+        if (const char* e = getenv("RX_VK_QUICK_PIPELINES")) return atoi(e) != 0;
+        return dev.props.vendorID == 0x1002;
+    }();
+    return on;
+}
+void pipeline_build_waited(PipeEntry& e, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    if (e.ready.load(std::memory_order_acquire)) return;
+    if (dev.vk13.pipelineCreationCacheControl && !e.started.load(std::memory_order_acquire))
+        if (const VkPipeline cached = build_graphics(p, s, at, topo, -1, BuildHow::Cached)) {
+            e.started.store(true, std::memory_order_release);   // (the worker's build, not begun yet, is not needed)
+            VkPipeline none = VK_NULL_HANDLE;
+            if (!e.pipeline.compare_exchange_strong(none, cached)) vkDestroyPipeline(dev.device, cached, nullptr);
+            e.ready.store(true, std::memory_order_release);
+            jobs_notify();
+            return;
+        }
+    if (quick_pipelines())
+        if (const VkPipeline quick = build_graphics(p, s, at, topo, -1, BuildHow::Quick)) {
+            VkPipeline none = VK_NULL_HANDLE;
+            // (never over the worker's full build, if it came first: this one has drawn nothing yet)
+            if (!e.pipeline.compare_exchange_strong(none, quick)) vkDestroyPipeline(dev.device, quick, nullptr);
+            e.ready.store(true, std::memory_order_release);
+            jobs_notify();
+            return;
+        }
+    if (e.started.exchange(true)) return;   // (a worker is building it: waited for)
+    if (const VkPipeline full = build_graphics(p, s, at, topo)) e.pipeline = full;
+    e.ready.store(true, std::memory_order_release);
+    jobs_notify();
+}
+
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
-/// shader, 3 fragment output
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+/// shader, 3 fragment output. how: BuildHow, for a whole pipeline
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, BuildHow how) {
+    const bool quick = how == BuildHow::Quick;
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -1070,7 +1117,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     {   // (local) RX_VK_NOOPT=1: build every pipeline without the driver's optimizer. AMD's proprietary compiler crashes
         // (-13 here) or takes minutes on some Ocarina shaders it builds in seconds unoptimized (Lichii #200, #210).
         static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
-        if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        if (noopt || quick) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         // (from PR 430, YunaraDebugs: on AMD the task and mesh programs (OoT's foliage culling, following pointers through its
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
         // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
@@ -1091,7 +1138,9 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             }
         }
     }
-    const VkResult r = guarded_graphics(part >= 0 ? VK_NULL_HANDLE : pcache, &ci, &pl);
+    // (a quick one stays out of the pipeline cache: the next start builds the full one from the notes)
+    if (how == BuildHow::Cached) ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    VkResult r = guarded_graphics(part >= 0 || quick ? VK_NULL_HANDLE : pcache, &ci, &pl);
     if (part >= 0) {
         if (r != VK_SUCCESS) {
             static std::atomic<int> logged;
@@ -1100,14 +1149,34 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         }
         return pl;
     }
+    if (how == BuildHow::Cached) {   // (not in the cache: VK_PIPELINE_COMPILE_REQUIRED, nothing made, nothing to say)
+        const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+        if (us >= 200000)   // (a driver that compiled anyway)
+            logf("vk: graphics pipeline of %016llx: SLOW cache lookup, %lld ms", (unsigned long long)p.key, (long long)(us / 1000));
+        return r == VK_SUCCESS ? pl : VK_NULL_HANDLE;
+    }
+    if (r != VK_SUCCESS && !(ci.flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)) {
+        // (hookshot) AMD's optimizer fails on some that build without it (-13: 6eaa646d07ea4e43 and 5fa56485a6b07619 on an RX 6650
+        // XT, every start): drawn unoptimized rather than left out
+        static std::atomic<int> logged;
+        if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d): built again without the optimizer", (unsigned long long)p.key, (int)r);
+        ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        pl = VK_NULL_HANDLE;
+        r = guarded_graphics(pcache, &ci, &pl);
+    }
     if (r != VK_SUCCESS) {
         static std::atomic<int> logged;
         if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
         pl = VK_NULL_HANDLE;
     }
     st_pipelines++;
-    pcache_built_since_save++;
-    st_pipeline_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    if (!quick) pcache_built_since_save++;
+    const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    st_pipeline_us += us;
+    // (hookshot) as the compute pipelines' (dispatch): the ones that stop the game when a draw waits for them
+    if (us >= 200000)
+        logf("vk: graphics pipeline of %016llx: SLOW compile, %lld ms%s", (unsigned long long)p.key, (long long)(us / 1000),
+             quick ? " (quick, without the optimizer: a draw waited for it)" : "");
     return pl;
 }
 
@@ -4247,7 +4316,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
         if (may_skip) return void(st_pending_skips++);
-        wait_for(pe->ready);
+        const auto t0 = std::chrono::steady_clock::now();
+        pipeline_build_waited(*pe, p, s, at, topo);   // (here and now, unless a worker has begun it)
+        jobs_wait(pe->ready);
+        st_waits++;
+        st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }
     const VkPipeline pl = pe->pipeline;
     if (!pl) SKIP_HERE();
