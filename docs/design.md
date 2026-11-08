@@ -145,6 +145,9 @@ id (`hos_game_is_mkw`); OoT gets its own once its pacer is found, never by addre
 - **The production build** (`nx2/test_dll.py`, when a `hookshot_game.dll` is built).
 - **In the game**: `scripts/run-vk.ps1` screenshots, the flash detector, frame dumps (`RX_VK_DUMP*`), the sampled
   profiler (`HOS_SAMPLE` + `scripts/prof.py`), and Eglantine as the A/B reference for what a frame should look like.
+- **Scripted in-game tests** (`scripts/hookshot_mcp.py`, `docs/mcp.md`): an MCP agent launches a run, sends timed pad
+  input through `HOS_INPUT_LIVE` / `HOS_INPUT_SCRIPT_ONLY`, and gets on-demand PNGs through `RX_VK_SHOT_FILE`
+  (`RX_SCREENSHOT_FILE` on the WebGPU fallback).
 
 ## 8. Rules
 

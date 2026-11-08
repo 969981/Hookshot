@@ -142,6 +142,7 @@ window, including one started to update a game, uses Automatic again.
 | `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `python -I scripts/hookshot_mcp.py --check` | The MCP server for automated in-game tests (needs the `mcp` package; see [docs/mcp.md](docs/mcp.md)). |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
@@ -163,7 +164,8 @@ failure's output. Name a check to run only the ones whose path contains it (`pyt
 
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
-cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
+cache in `RX_CPM` or `build-linux/deps/cpm`), or a Python package (`zstandard`, and `mcp` for the MCP server's test).
+A check whose tool is missing is skipped and
 says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
 that cannot run in CI (a GPU, the game, a Visual Studio prompt) and the few that run on Linux only; `--no-skip` runs
 them anyway.

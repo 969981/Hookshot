@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <set>
 #include <functional>
@@ -1589,11 +1590,31 @@ void report_period() {
     period_frames = 0;
 }
 /// RX_SCREENSHOT=<dir>: the presented image every 5 s as <dir>/frame_<n>.png (synchronous readback: debugging only).
+/// RX_SCREENSHOT_FILE=<file>: the next presented image written to the path in that file, which is deleted (the MCP
+/// server and scripted tests use this for a screenshot on demand).
 std::atomic<int64_t> screenshot_interval{-1};   // (rx_set_screenshot_ms at the end of this file)
 void screenshot(Image* im) {
     static const char* dir = getenv("RX_SCREENSHOT");
+    static const char* request_file = getenv("RX_SCREENSHOT_FILE");
+    static char requested[1024];
+    static bool have_request;
+    if (!have_request && request_file) {
+        if (FILE* f = std::fopen(request_file, "rb")) {
+            if (std::fgets(requested, sizeof requested, f)) {
+                size_t n = std::strlen(requested);
+                while (n && (requested[n - 1] == '\n' || requested[n - 1] == '\r' || requested[n - 1] == ' ' ||
+                             requested[n - 1] == '\t'))
+                    requested[--n] = 0;
+                have_request = n > 0;
+            }
+            std::fclose(f);
+        }
+        std::remove(request_file);
+        if (have_request) hos_log("rx: screenshot requested: %s", requested);
+    }
     static int64_t last;
-    if (!dir || !im || (im->format != WGPUTextureFormat_RGBA8Unorm && im->format != WGPUTextureFormat_RGBA8UnormSrgb))
+    if ((!dir && !have_request) || !im ||
+        (im->format != WGPUTextureFormat_RGBA8Unorm && im->format != WGPUTextureFormat_RGBA8UnormSrgb))
         return;
     // RX_SCREENSHOT_MS=<ms>: another interval; RX_SCREENSHOT_AFTER=<s>: none before that
     if (screenshot_interval < 0)
@@ -1601,8 +1622,8 @@ void screenshot(Image* im) {
     static const int64_t after = getenv("RX_SCREENSHOT_AFTER") ? atoll(getenv("RX_SCREENSHOT_AFTER")) * 1000000000LL : 0;
     static const int64_t start = hos_now_ns();
     const int64_t now = hos_now_ns();
-    if (now - start < after) return;
-    if (last && now - last < screenshot_interval) return;
+    if (!have_request && now - start < after) return;
+    if (!have_request && last && now - last < screenshot_interval) return;
     last = now;
     wait_submitted();   // (the frame's batches are on the submit thread)
     const size_t stride = ((size_t)im->width * 4 + 255) & ~size_t(255), size = stride * im->height;
@@ -1640,8 +1661,13 @@ void screenshot(Image* im) {
     if (done.status == WGPUMapAsyncStatus_Success) {
         const auto* px = static_cast<const uint8_t*>(wgpuBufferGetConstMappedRange(buffer, 0, size));
         static int n;
-        char path[512];
-        std::snprintf(path, sizeof path, "%s/frame_%03d.png", dir, n++);
+        char path[1024];
+        if (have_request) {
+            std::snprintf(path, sizeof path, "%s", requested);
+            have_request = false;
+        } else {
+            std::snprintf(path, sizeof path, "%s/frame_%03d.png", dir ? dir : "", n++);
+        }
         // the image is drawn with alpha that the display ignores: store it opaque
         std::vector<uint8_t> copy(px, px + size);
         for (size_t i = 3; i < copy.size(); i += 4) copy[i] = 255;

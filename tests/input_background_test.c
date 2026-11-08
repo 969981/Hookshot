@@ -45,6 +45,7 @@ int64_t hos_now_ns(void) { return now_ns; }
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
 }
+void hos_log_flush(void) {}
 HWND GetForegroundWindow(void) { focus_queries++; return (HWND)(uintptr_t)(front ? 1 : 2); }
 DWORD GetWindowThreadProcessId(HWND window, DWORD *pid) { *pid = window == (HWND)(uintptr_t)1 ? 10 : 20; return 1; }
 DWORD GetCurrentProcessId(void) { return 10; }
@@ -173,6 +174,29 @@ int main(int argc, char **argv) {
         !strcmp(name, "wall") || !strcmp(name, "zero") || !strcmp(name, "empty")) {
         frame_clock_case(name);
         printf("PASS: actual input frame clock %s\n", name);
+        free(memory);
+        return 0;
+    }
+    if (!strcmp(name, "analog")) {
+        packet(0, 0, 0, 0);   /* starts the script and gives parse_presses a free slot */
+        CHECK(parse_presses("0:LX=32767+LY=-16384/100", 0, 1) == 1);
+        CHECK(presses[0].stick[0] == 32767 && presses[0].stick[1] == -16384);
+        CHECK(parse_presses("0:RX=-32768+RY=12345/100", 0, 1) == 1);
+        CHECK(presses[1].stick[2] == -32767 && presses[1].stick[3] == 12345);
+        CHECK(parse_presses("0:A+LX=99999/100", 0, 1) == 1);
+        CHECK((presses[2].buttons & (1ULL << B_A)) && presses[2].stick[0] == 32767);
+        CHECK(parse_presses("0:LX=hello/100", 0, 1) == 1);   /* an unreadable value is no stick */
+        CHECK(presses[3].stick[0] == 0);
+        printf("PASS: actual analog stick tokens\n");
+        free(memory);
+        return 0;
+    }
+    if (!strcmp(name, "script-only")) {
+        front = 1;   /* even in front, a script-only run takes nothing from the player's devices */
+        packet(1ULL << B_A, 0, 32767, 0);
+        CHECK(pad_merges == 0 && key_queries == 0 && mouse_queries == 0);
+        CHECK(bootstrap_polls == 1);
+        printf("PASS: actual script-only input route\n");
         free(memory);
         return 0;
     }

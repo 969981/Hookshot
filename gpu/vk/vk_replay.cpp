@@ -2334,6 +2334,27 @@ VmaAllocation made_buf_alloc = nullptr;
 void* made_map = nullptr;
 VmaAllocation shot_image_alloc = nullptr;
 
+// (RX_VK_SHOT_FILE: a test asks for one PNG of the next present. The file holds the output path and is deleted when
+// read; a path waiting for a present with no picture stays here until one comes.) (replay_mu)
+bool shot_requested = false;
+char shot_request_path[1024];
+/// Reads RX_VK_SHOT_FILE when it appeared. Returns true with the path when a request was consumed.
+bool read_shot_request(char* path, size_t cap) {
+    const char* file = getenv("RX_VK_SHOT_FILE");
+    if (!file) return false;
+    FILE* f = fopen(file, "rb");
+    if (!f) return false;
+    bool got = false;
+    if (fgets(path, (int)cap, f)) {
+        size_t n = strlen(path);
+        while (n && (path[n - 1] == '\n' || path[n - 1] == '\r' || path[n - 1] == ' ' || path[n - 1] == '\t')) path[--n] = 0;
+        got = n > 0;
+    }
+    fclose(f);
+    std::remove(file);
+    return got;
+}
+
 bool offscreen_init() {
     if (off_image) return true;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -2648,6 +2669,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     }
     static const char* shots = getenv("RX_VK_SHOTS");
     static const int shot_every = getenv("RX_VK_SHOT_EVERY") ? std::max(1, atoi(getenv("RX_VK_SHOT_EVERY"))) : 300;
+    static const char* shot_file = getenv("RX_VK_SHOT_FILE");
     VkImage src = VK_NULL_HANDLE;
     VkImageView direct_view = VK_NULL_HANDLE;
     uint32_t sw = 0, sh = 0;
@@ -2709,7 +2731,15 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         }
         ts_anchor_ns = host->ticks() * 32;
         dump_present(presents);
-        if (src && (dev.offscreen || shots) && offscreen_init()) {
+        // (RX_VK_SHOT_FILE: a test asks for one present as a PNG. When a readback is already in flight, the request
+        // waits for the next present; nothing is lost.)
+        static struct { bool on; uint64_t value; int64_t presents; std::string path; } pending{};
+        if (!pending.on && !shot_requested && shot_file && read_shot_request(shot_request_path, sizeof shot_request_path)) {
+            shot_requested = true;
+            logf("vk: screenshot requested at present %lld: %s", (long long)presents, shot_request_path);
+        }
+        const bool take_request = shot_requested && !pending.on;
+        if (src && (dev.offscreen || shots || take_request) && offscreen_init()) {
             if (dev.offscreen) {
                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -2718,7 +2748,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (RX_VK_SHOT_FROM / _TO: every present in that range too)
             static const int64_t shot_from = getenv("RX_VK_SHOT_FROM") ? atoll(getenv("RX_VK_SHOT_FROM")) : -1;
             static const int64_t shot_to = getenv("RX_VK_SHOT_TO") ? atoll(getenv("RX_VK_SHOT_TO")) : -1;
-            shot = shots && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to));
+            shot = take_request || (shots && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to)));
             // (RX_VK_SHOT_GO=<file>: every present while that file is there too, a test's run of frames)
             static const char* shot_go = getenv("RX_VK_SHOT_GO");
             if (shots && shot_go && !shot) {
@@ -2728,7 +2758,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (RX_VK_SHOT_MADE=1: the frame interpolation made before it too, written beside it as vk_N_made.png)
             static const bool shot_made = getenv("RX_VK_SHOT_MADE") != nullptr;
             uint32_t mw = 0, mh = 0;
-            made_src = shot && shot_made && interpolated ? framegen_made_image(&mw, &mh) : VK_NULL_HANDLE;
+            made_src = shot && shots && shot_made && interpolated ? framegen_made_image(&mw, &mh) : VK_NULL_HANDLE;
             if (made_src) {
                 static VkImage made_image = VK_NULL_HANDLE;
                 static VmaAllocation made_alloc = nullptr;
@@ -2824,15 +2854,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         // (a shot is read once the GPU reached its frame, at a later present, and written on a thread of its own:
         // waiting for the GPU and encoding the PNG there took the replay ~570 ms a shot, and frequent shots
         // halved the frame rate test runs measured. RX_VK_SHOT_MADE shots are taken at once, as before.)
-        static struct { bool on; uint64_t value; int64_t presents; } pending{};
-        auto take = [&](uint64_t at_value, int64_t at_present) {
+        auto take = [&](uint64_t at_value, int64_t at_present, std::string path) {
             wait_value(at_value);
             const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
             auto px = std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
             // (RX_VK_DUMP_BLACK=<n>: a shot with 12-90% pure black pixels in a lit picture, or a green cast over it,
             // dumps the next frame, n times at most: the glitches some scenes show now and then)
             static int black_left = getenv("RX_VK_DUMP_BLACK") ? atoi(getenv("RX_VK_DUMP_BLACK")) : 0;
-            if (black_left > 0) {
+            if (black_left > 0 && shots) {
                 const uint8_t* q0 = px->data();
                 uint64_t black = 0, white = 0, sum = 0, ch[3] = {};
                 const uint64_t n = (uint64_t)kShotW * kShotH;
@@ -2865,7 +2894,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (RX_VK_FLASH=1, with RX_VK_SHOT_EVERY=1: a frame that differs from both its neighbours in a part of the
             // picture where they agree is a one-frame flash: the three are written as flash_<present>_{a,b,c}.png and
             // the next frame is dumped (a few times). The other shots are written every 300th present only.)
-            static const bool flash = getenv("RX_VK_FLASH") && atoi(getenv("RX_VK_FLASH")) != 0;
+            static const bool flash = shots && getenv("RX_VK_FLASH") && atoi(getenv("RX_VK_FLASH")) != 0;
             if (flash) {
                 constexpr uint32_t W = 64, H = 36;
                 auto small = std::make_shared<std::vector<uint8_t>>(W * H * 3);
@@ -2950,20 +2979,29 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 sa = sb, pa = pb, sb = small, pb = px, present_b = at_present;
                 if (at_present % 300) return;
             }
-            std::string path = std::string(shots) + "/vk_" + std::to_string(1000000 + at_present).substr(1) + ".png";
+            if (path.empty()) {
+                if (!shots) return;
+                path = std::string(shots) + "/vk_" + std::to_string(1000000 + at_present).substr(1) + ".png";
+            }
             std::thread([px, path, at_present] {
                 write_png(path.c_str(), px->data(), kShotW, kShotH);
                 logf("vk: present %lld written to %s", (long long)at_present, path.c_str());
             }).detach();
         };
-        if (pending.on && (shot || completed() >= pending.value)) take(pending.value, pending.presents), pending.on = false;
+        if (pending.on && (shot || completed() >= pending.value)) {
+            take(pending.value, pending.presents, pending.path);
+            pending.on = false;
+            pending.path.clear();
+        }
         if (shot && made_src && made_map) {
-            take(value, presents);
+            take(value, presents, take_request ? std::string(shot_request_path) : std::string());
+            if (take_request) shot_requested = false;
             char path[1024];
-            snprintf(path, sizeof path, "%s/vk_%06lld_made.png", shots, (long long)presents);
+            snprintf(path, sizeof path, "%s/vk_%06lld_made.png", shots ? shots : "", (long long)presents);
             write_png(path, (const uint8_t*)made_map, kShotW, kShotH);
         } else if (shot) {
-            pending = {true, value, presents};
+            pending = {true, value, presents, take_request ? std::string(shot_request_path) : std::string()};
+            if (take_request) shot_requested = false;
         }
         log_frame_stats();
     }
