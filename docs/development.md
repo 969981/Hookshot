@@ -51,6 +51,7 @@ The current runtime has x86-64 context-switch assembly and x86-specific synchron
 target is an x86-64 executable run under Rosetta 2, not a native arm64 executable. It uses SDL2 for the window and
 input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
 macOS. This provides a real Apple Silicon/Metal path while leaving native arm64 as follow-up work.
+The executable targets macOS 13.3 or newer because Apple's C++20 floating-point formatting support requires it.
 
 The `macOS platform` workflow uploads a `HookshotBuilder-macos-x86_64` artifact containing a command-line builder,
 the Hookshot source, an x86-64 Python runtime and modules, SDL2, static FFmpeg, and Metal-enabled `wgpu-native`.

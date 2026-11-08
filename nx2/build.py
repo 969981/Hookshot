@@ -57,7 +57,7 @@ VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
-    target = ["--target=x86_64-apple-macos10.15"] if MACOS else toolchain.native_target()
+    target = ["--target=x86_64-apple-macos13.3"] if MACOS else toolchain.native_target()
     if MACOS:
         target += toolchain.macos_sysroot_flags()
     return target + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])

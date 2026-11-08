@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory() as sdk:
             "POSIX_HOST": True,
             "EXE": "hookshot",
             "MARCH": "x86-64",
-            "target": ["--target=x86_64-apple-macos10.15", "-isysroot", "/MacOSX.sdk"],
+            "target": ["--target=x86_64-apple-macos13.3", "-isysroot", "/MacOSX.sdk"],
         })
 
     def test_game_builder_selects_macos_bundle_files(self):

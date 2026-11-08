@@ -7,6 +7,7 @@ runtime and modules, SDL2, static FFmpeg libraries, and wgpu-native.
 It does not include game data or a built game. You must provide your own
 legally obtained .nup dump. Xcode Command Line Tools and Rosetta 2 are required
 on the Mac where you build.
+The generated executable requires macOS 13.3 or newer.
 
 Double-click HookshotBuilder.app to open the Hookshot Builder interface. It
 matches the existing builder flow: choose your dump and output folder, then

@@ -325,7 +325,7 @@ def check_macos_toolchain():
         src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
         with open(src, "w", encoding="utf-8") as f:
             f.write("int main(void) { return 0; }\n")
-        r = subprocess.run([cc, "--target=x86_64-apple-macos10.15"] + toolchain.macos_sysroot_flags() +
+        r = subprocess.run([cc, "--target=x86_64-apple-macos13.3"] + toolchain.macos_sysroot_flags() +
                            [src, "-o", exe],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:

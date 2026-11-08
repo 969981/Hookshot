@@ -24,7 +24,7 @@ jobs:
       - name: Link x86-64 macOS executable
         run: |
           printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/macos-probe.c"
-          clang --target=x86_64-apple-macos10.15 "$RUNNER_TEMP/macos-probe.c" -o "$RUNNER_TEMP/macos-probe"
+          clang --target=x86_64-apple-macos13.3 "$RUNNER_TEMP/macos-probe.c" -o "$RUNNER_TEMP/macos-probe"
           lipo "$RUNNER_TEMP/macos-probe" -verify_arch x86_64
 
       - name: Compile macOS POSIX host shims
@@ -34,10 +34,10 @@ jobs:
             > "$RUNNER_TEMP/a64-generated/a64_suyu.h"
           printf '/* Generated per-game floating-point helpers are unused by these host translation units. */\n' \
             > "$RUNNER_TEMP/a64-generated/a64_fpx.h"
-          clang -target x86_64-apple-macos10.15 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+          clang -target x86_64-apple-macos13.3 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
             host/posix/win32_posix.c host/hos_main.c host/rx_backend.c
-          clang -target x86_64-apple-macos10.15 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
+          clang -target x86_64-apple-macos13.3 -fsyntax-only -D_GNU_SOURCE -Wno-everything \
             -I"$RUNNER_TEMP/a64-generated" -Ihost/posix -Ihost -Ithird_party/a64-kit/rt \
             host/posix/display_sdl.c host/posix/macos_stubs.c
 
