@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 const char *hos_romfs_dir, *hos_user_dir;
 
@@ -39,19 +42,86 @@ static void mount(const char *name, const char *root, int writable) {
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
+/* ---- untrusted paths -------------------------------------------------------------------------------------------
+   The paths come from the game, and the game builds some of them from what it reads (a save from someone else, a
+   file in it): they must not leave their mount's folder. The part inside the mount is names only: no ".." (nor "..."
+   or ". .", which Windows trims to ".."), no backslash (a separator on Windows) and no colon (a drive or a stream). */
+static int rel_ok(const char *rest) {
+    for (const char *p = rest; *p;) {
+        const char *e = p;
+        int dots = 0, others = 0;
+        for (; *e && *e != '/'; e++) {
+            if (*e == '\\' || *e == ':') return 0;
+            if (*e == '.') dots++;
+            else if (*e != ' ') others++;
+        }
+        if (dots >= 2 && !others) return 0;
+        p = *e ? e + 1 : e;
+    }
+    return 1;
+}
+
+/* 1 when path names a symbolic link (or, on Windows, a reparse point that names another place: a symbolic link or a
+   junction; OneDrive's placeholders are reparse points too, and stay usable) */
+static int is_link(const char *path) {
+#ifdef _WIN32
+    WIN32_FIND_DATAA fd;
+    const DWORD at = GetFileAttributesA(path);
+    if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
+    HANDLE f = FindFirstFileA(path, &fd);
+    if (f == INVALID_HANDLE_VALUE) return 1;
+    FindClose(f);
+    return (fd.dwReserved0 & 0x20000000u) != 0;   /* (IsReparseTagNameSurrogate: symbolic links, junctions) */
+#else
+    char p[MAX_PATH];
+    snprintf(p, sizeof p, "%s", path);
+    for (char *q = p; *q; q++) if (*q == '\\') *q = '/';
+    struct stat st;
+    return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
+#endif
+}
+
+/* 1 when a folder or file of full below its mount's root (root itself may be a link: the player's choice) is a link: a
+   save folder unpacked from an archive can hold one to anywhere, and the game would then read and write there */
+static int link_below(const char *root, const char *full) {
+    const size_t n = strlen(root);
+    if (strncmp(full, root, n) || (full[n] != '\\' && full[n] != '/' && full[n])) return 1;
+    char part[MAX_PATH];
+    snprintf(part, sizeof part, "%s", full);
+    for (size_t i = n + 1; i <= strlen(full); i++) {
+        if (full[i] != '\\' && full[i] != '/' && full[i]) continue;
+        part[i] = 0;
+        if (i > n + 1 && is_link(part)) return 1;
+        part[i] = full[i];
+    }
+    return 0;
+}
+
+static void refused(const char *guest, const char *why) {
+    static volatile LONG n;
+    if (InterlockedIncrement(&n) <= 20) hos_log("fs: refused %s: %s", guest, why);
+}
+
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
-   is unknown. */
+   is unknown, or the path would leave it (rel_ok) or go through a link below its root (link_below). */
 static int host_path(const char *guest, char *out, size_t cap, int *writable) {
     const char *colon = strchr(guest, ':');
     if (!colon) return 0;
     size_t n = (size_t)(colon - guest);
-    int ok = 0;
+    int ok = 0, from_mod = 0;
+    char root[MAX_PATH] = "";
+    const char *rest = colon + 1;
+    while (*rest == '/') rest++;
+    if (!rel_ok(rest)) {
+        refused(guest, "not a plain path inside its mount");
+        return 0;
+    }
     AcquireSRWLockShared(&mount_lock);
     for (int i = 0; i < nmounts; i++) {
         if (strlen(mounts[i].name) == n && !strncmp(mounts[i].name, guest, n)) {
-            const char *rest = colon + 1;
-            while (*rest == '/') rest++;
-            if (mounts[i].writable || !hos_mods_romfs(rest, out, cap)) snprintf(out, cap, "%s/%s", mounts[i].root, rest);
+            from_mod = !mounts[i].writable && hos_mods_romfs(rest, out, cap);
+            if (!from_mod) snprintf(out, cap, "%s/%s", mounts[i].root, rest);
+            snprintf(root, sizeof root, "%s", mounts[i].root);
             if (writable) *writable = mounts[i].writable;
             ok = 1;
             break;
@@ -59,6 +129,11 @@ static int host_path(const char *guest, char *out, size_t cap, int *writable) {
     }
     ReleaseSRWLockShared(&mount_lock);
     for (char *p = out; ok && *p; p++) if (*p == '/') *p = '\\';
+    for (char *p = root; *p; p++) if (*p == '/') *p = '\\';
+    if (ok && !from_mod && link_below(root, out)) {   /* (a mod's file: the player's own install) */
+        refused(guest, "a symbolic link below the mount's folder");
+        return 0;
+    }
     return ok;
 }
 
@@ -190,6 +265,13 @@ HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
+/* (POSIX) the file itself, never a symbolic link's target (O_NOFOLLOW: host/posix/win32_posix.c), should one appear
+   after host_path looked. Not on Windows: there the flag would open OneDrive's placeholders as they are, unread. */
+#ifdef _WIN32
+#define FS_OPEN_FLAGS FILE_ATTRIBUTE_NORMAL
+#else
+#define FS_OPEN_FLAGS (FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT)
+#endif
 int hos_blank_cached_icon(const char *guest, const char *host);   /* (totk_icon_cache.c: TOTK's fused weapon icons) */
 /* HOS_FS_TRACE=1: every file opened (or not found) is logged */
 static int fs_trace(void) {
@@ -202,7 +284,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     char path[MAX_PATH];
     int writable = 0;
     const char *g = gstr(ARG(1));
-    if (!host_path(g, path, sizeof path, &writable)) { hos_log("fs: OpenFile(%s): unknown mount", g); RET(R_PATH_NOT_FOUND); return; }
+    if (!host_path(g, path, sizeof path, &writable)) { hos_log("fs: OpenFile(%s): unknown mount or refused path", g); RET(R_PATH_NOT_FOUND); return; }
     int want_write = (ARG(2) & 6) != 0;
     if (want_write && !writable) { RET(R_PATH_NOT_FOUND); return; }
     /* (mkw-recomp) HOS_NO_MOVIES=1: MKW's WebM movies (cup openings, billboards, emblems) are not found, and the
@@ -236,7 +318,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
        Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms) */
     const int away = hos_vcore_away();
     HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                           NULL, OPEN_EXISTING, FS_OPEN_FLAGS, NULL);
     if (away) hos_vcore_back();
     if (h == INVALID_HANDLE_VALUE) {
         if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);
@@ -342,7 +424,7 @@ HLE(_ZN2nn2fs10CreateFileEPKcl) {
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     make_dirs(path);
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FS_OPEN_FLAGS, NULL);
     if (h == INVALID_HANDLE_VALUE) { RET(GetLastError() == ERROR_FILE_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND); return; }
     LARGE_INTEGER sz;
     sz.QuadPart = (LONGLONG)ARG(1);
@@ -374,7 +456,8 @@ static void delete_tree(const char *dir) {
             if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
             char sub[MAX_PATH];
             snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub);
+            if (is_link(sub)) { if (!DeleteFileA(sub)) RemoveDirectoryA(sub); }   /* (the link goes, never what it names) */
+            else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub);
             else DeleteFileA(sub);
         } while (FindNextFileA(f, &fd));
         FindClose(f);

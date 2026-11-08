@@ -836,7 +836,7 @@ HANDLE GetStdHandle(DWORD which) {
     return INVALID_HANDLE_VALUE;
 }
 HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD share, void *attr, DWORD disposition, DWORD flags, HANDLE tmpl) {
-    (void)share, (void)attr, (void)flags, (void)tmpl;
+    (void)share, (void)attr, (void)tmpl;
     char path[PATH_MAX];
     slashes(path, sizeof path, name);
     int o = (access & GENERIC_READ) && (access & GENERIC_WRITE) ? O_RDWR : (access & GENERIC_WRITE) ? O_WRONLY : O_RDONLY;
@@ -847,9 +847,12 @@ HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD share, void *attr, DWORD dis
     case TRUNCATE_EXISTING: o |= O_TRUNC; break;
     default: break;
     }
+    /* FILE_FLAG_OPEN_REPARSE_POINT: a symbolic link is refused, not followed (host/nn_fs.c's game files). (Windows
+       would open the link itself; nothing here wants that) */
+    if (flags & FILE_FLAG_OPEN_REPARSE_POINT) o |= O_NOFOLLOW;
     const int fd = open(path, o | O_CLOEXEC, 0644);
     if (fd < 0) {
-        last_error = errno == EEXIST ? ERROR_FILE_EXISTS : error_of(errno);
+        last_error = errno == EEXIST ? ERROR_FILE_EXISTS : errno == ELOOP ? ERROR_ACCESS_DENIED : error_of(errno);
         return INVALID_HANDLE_VALUE;
     }
     struct stat st;
