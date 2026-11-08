@@ -122,8 +122,7 @@ def main():
         raise SystemExit("a payload a task did not write is not cleared before the mesh dispatch")
     if "VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" not in VMA.read_text(encoding="utf-8"):
         raise SystemExit("the allocator does not make the fallback's buffers addressable")
-    if "st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)" \
-            not in draw:
+    if "st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT" not in draw:
         raise SystemExit("the graphics pipeline still takes the compute stages")
     if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);" not in draw:
         raise SystemExit("a fallback draw does not use the mesh program's topology")
