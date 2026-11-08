@@ -9,7 +9,9 @@ on:
       - host/**
       - gpu/vk/**
       - builder/linux/**
-      - scripts/linux/**
+      - gpu/render/**
+      - scripts/**
+      - docs/env-vars.md
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -19,7 +21,9 @@ on:
       - host/**
       - gpu/vk/**
       - builder/linux/**
-      - scripts/linux/**
+      - gpu/render/**
+      - scripts/**
+      - docs/env-vars.md
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -155,6 +159,11 @@ jobs:
       - name: Check mesh and vertex dynamic state caching
         if: runner.os == 'Linux'
         run: python -I -B nx2/test_mesh_dynamic_state.py --cxx g++
+      - name: Check the pipeline notes merge tool
+        run: python -I -B tests/test_pipenotes.py
+      - name: Check docs/env-vars.md is up to date
+        if: runner.os == 'Linux'
+        run: python -I -B scripts/envvars.py --check
 
   spirv-global16:
     name: SPIR-V global halfword lowering
