@@ -719,10 +719,12 @@ public partial class MainWindow : Window
         ("lift", "Translate the game to PC code", "Translate the game to PC code"),
         ("compile", "Compile", "Compile changed files"),
         ("finish", "Put the game together", "Swap in the new game"),
+        ("shaders", "Prepare the shaders", "Prepare the shaders"),
     };
     static readonly Dictionary<string, (double From, double Size)> Weight = new()
     {
-        ["download"] = (0, 0.04), ["read"] = (0.04, 0.04), ["lift"] = (0.08, 0.14), ["compile"] = (0.22, 0.74), ["finish"] = (0.96, 0.04),
+        ["download"] = (0, 0.04), ["read"] = (0.04, 0.04), ["lift"] = (0.08, 0.14), ["compile"] = (0.22, 0.68), ["finish"] = (0.90, 0.02),
+        ["shaders"] = (0.92, 0.08),   // (hookshot --prepare-shaders: minutes on some GPUs, the first start's wait moved here)
     };
 
     void MakeRows(bool update)

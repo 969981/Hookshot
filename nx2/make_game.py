@@ -755,6 +755,28 @@ def ship_state_list(out):
     print("the shipped pipeline state list: %d pipelines" % ((os.path.getsize(src) - 12) // 528), flush=True)
 
 
+def prepare_shaders(cmd):
+    """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
+    some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start.
+    Its @@stage and @@progress lines go on to the builder; its own @@done and @@error would end or fail the build there, so they
+    go on as plain text. A PC whose Vulkan can't (exit 3), or any other failure, leaves the work to the first start, as before"""
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                             bufsize=1)
+    except OSError as e:
+        print("the shaders were not prepared now (%s): the game prepares them at its first start" % e, flush=True)
+        return 1
+    no_throttle(getattr(p, "_handle", None))
+    for line in p.stdout:
+        line = line.rstrip()
+        print(line if line.startswith(("@@stage ", "@@progress ")) or not line.startswith("@@") else line[2:], flush=True)
+    p.stdout.close()
+    code = p.wait()
+    if code:
+        print("the shaders were not prepared now (exit %d): the game prepares them at its first start" % code, flush=True)
+    return code
+
+
 def folder_language(out):
     """the language a game folder was built in: the code line of its language.txt"""
     try:
@@ -1236,6 +1258,8 @@ def main(a=None):
             for sub in ("sa", "objcache", "probe"):
                 shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
             print("the build files in %s were deleted (HOOKSHOT_KEEP_BUILD_FILES=1 keeps them for quicker updates)" % work, flush=True)
+    if not os.environ.get("HOOKSHOT_NO_PREPARE"):   # (=1: left to the first start, as before)
+        prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"])
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
                             kind="update" if a.update else "build")
