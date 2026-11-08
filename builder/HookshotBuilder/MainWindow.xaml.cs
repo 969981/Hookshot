@@ -35,6 +35,9 @@ public partial class MainWindow : Window
     bool updating, checking;
     double compiled;
     int filesDone, filesOf;
+    int filesChanged = -1, filesCompiled;
+    double compileEta = -1;
+    long thisCompile, previousTotal = -1;
     string lastFailure = "";
 
     public MainWindow()
@@ -68,6 +71,15 @@ public partial class MainWindow : Window
 
     async void Start()
     {
+        // (development) HOOKSHOT_TEST_SHORTCUTS=<game folder>: both shortcuts made for it, the result in the log beside the app, and out
+        if (Environment.GetEnvironmentVariable("HOOKSHOT_TEST_SHORTCUTS") is { Length: > 0 } testFolder)
+        {
+            Finder.Shortcuts(testFolder, true, true);
+            File.WriteAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "shortcut-test.txt"),
+                              $"desktop {File.Exists(Finder.DesktopLink)} start {File.Exists(Finder.StartLink)} error {Finder.ShortcutError}");
+            Application.Current.Shutdown();
+            return;
+        }
         Animate();
         var started = Stopwatch.StartNew();
         if (Environment.GetCommandLineArgs().Contains("--update"))
@@ -78,16 +90,208 @@ public partial class MainWindow : Window
             Updater.FromCommandLine(this);
             return;
         }
+        if (LaunchArg() is { } launchFolder)   // (Hookshot Launcher.exe in the game folder)
+        {
+            SplashText.Text = "Starting Hookshot…";
+            await Task.Delay(700);
+            ShowMain();
+            ShowLauncher(launchFolder);
+            return;
+        }
         SplashText.Text = "Looking for your game files…";
         var found = await Task.Run(Finder.FindDumps);
         dumps.AddRange(found);
         SplashText.Text = found.Count switch { 0 => "No game files found yet", 1 => "Found 1 game file", _ => $"Found {found.Count} game files" };
         var wait = 1700 - (int)started.ElapsedMilliseconds;
         if (wait > 0) await Task.Delay(wait);
+        ApplySettings();
         FillDumps();
         ShowMain();
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
         CheckAll();
+        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
+        RefreshMode();
+    }
+
+    // ================= what the button does: build, update the game, play it, or get the newer builder =================
+    // (as NX2navi's launcher: whatever version the player opens, it checks the latest release and says what is there)
+
+    enum Mode { Build, UpdateGame, UpToDate, UpdateBuilder }
+    Mode mode = Mode.Build;
+    string? latestTag, updateTarget;
+    bool sourcePicked;   // (the player chose game files here: a build from them, even over a game that is up to date)
+
+    /// The release a game folder was built with (its hookshot_version.txt), when it keeps its game files for updates
+    static string? GameVersion(string folder)
+    {
+        try
+        {
+            if (!Directory.Exists(System.IO.Path.Combine(folder, ".hookshot_exefs")) || !Directory.Exists(System.IO.Path.Combine(folder, "romfs")))
+                return null;
+            foreach (var line in File.ReadAllLines(System.IO.Path.Combine(folder, "hookshot_version.txt")))
+                if (line.StartsWith("version=")) return line[8..].Trim() is { Length: > 0 } v ? v : null;
+        }
+        catch (Exception) { }
+        return null;
+    }
+
+    void RefreshMode()
+    {
+        if (BuildButton == null || updating || runner != null) return;
+        var game = OutPath.Text.Length > 2 ? GameVersion(OutPath.Text) : null;
+        var builder = Tools.Find()?.Version;
+        // (the newest release known: GitHub's, else this builder's own. v2.0.0 took a GitHub that did not answer for "up to date")
+        updateTarget = latestTag ?? builder;
+        if (game != null && updateTarget != null && game != updateTarget && !sourcePicked) mode = Mode.UpdateGame;
+        else if (game != null && !sourcePicked) mode = Mode.UpToDate;
+        else if (latestTag != null && builder != null && builder != latestTag) mode = Mode.UpdateBuilder;
+        else mode = Mode.Build;
+        switch (mode)
+        {
+            case Mode.UpdateGame:
+                FilesTitle.Text = "Update available";
+                FilesSub.Text = $"Hookshot {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
+                                "its folder, compiling only what changed.";
+                BuildButton.Content = "Update";
+                break;
+            case Mode.UpToDate:
+                FilesTitle.Text = "Your game is up to date";
+                FilesSub.Text = latestTag == null
+                    ? $"Your game is {game}, as this builder. GitHub did not answer, so newer versions could not be checked."
+                    : $"{game} is the latest version. Pick game files below only to build it again from scratch.";
+                BuildButton.Content = "Play";
+                break;
+            case Mode.UpdateBuilder:
+                FilesTitle.Text = "Build your game";
+                FilesSub.Text = $"Hookshot Builder {latestTag} is available (this one is {builder}): update it first, then build.";
+                BuildButton.Content = "Update builder";
+                break;
+            default:
+                FilesTitle.Text = "Build your game";
+                FilesSub.Text = "Pick your game files and where the game goes. Hookshot does the rest, once.";
+                BuildButton.Content = "Build the game";
+                break;
+        }
+        BuildButton.IsEnabled = mode != Mode.Build || (SourceReady && OutPath.Text.Length > 2);
+        AboutText.Visibility = mode is Mode.Build ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ---- the launcher: Hookshot Launcher.exe in a game folder starts this with --launch <folder> (builder/setup/setup.c) ----
+    string launchFolder = "";
+
+    static string? LaunchArg()
+    {
+        var a = Environment.GetCommandLineArgs();
+        var i = Array.IndexOf(a, "--launch");
+        return i >= 0 && i + 1 < a.Length ? a[i + 1].TrimEnd('\\', '/') : null;
+    }
+
+    async void ShowLauncher(string folder)
+    {
+        launchFolder = folder;
+        OutPath.Text = folder;
+        StepPill.Visibility = Visibility.Collapsed;
+        var game = GameVersion(folder) ?? ReadVersion(folder);
+        LaunchVersion.Text = (game != null ? $"Hookshot {game}" : "Hookshot") + " · " + folder;
+        LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
+        ShowPage(LaunchPage);
+        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
+        updateTarget = latestTag ?? Tools.Find()?.Version;   // (GitHub's newest, else this builder's own)
+        if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (GitHub did not answer)";
+        else if (game != null && game != updateTarget && GameVersion(folder) != null)
+        {
+            LaunchStatus.Text = $"Update available: {updateTarget}";
+            LaunchStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0xC8, 0xFF));
+            LaunchStatus.FontWeight = FontWeights.SemiBold;
+            LaunchUpdate.Visibility = Visibility.Visible;
+        }
+        else if (game != null && game != updateTarget)
+            LaunchStatus.Text = $"{updateTarget} is out: build this folder again with the Hookshot Builder to get it";
+        else LaunchStatus.Text = latestTag == null ? "Up to date with this builder (GitHub did not answer)" : "Up to date";
+    }
+
+    /// (a folder built before it kept its game files has a version too: only shown)
+    static string? ReadVersion(string folder)
+    {
+        try
+        {
+            foreach (var line in File.ReadAllLines(System.IO.Path.Combine(folder, "hookshot_version.txt")))
+                if (line.StartsWith("version=")) return line[8..].Trim() is { Length: > 0 } v ? v : null;
+        }
+        catch (Exception) { }
+        return null;
+    }
+
+    /// The game in a folder: bin\hookshot.exe below its launcher (hookshot.exe), or hookshot.exe in a folder built before the launcher
+    static string GameExe(string folder)
+    {
+        var game = System.IO.Path.Combine(folder, "bin", "hookshot.exe");
+        return File.Exists(game) ? game : System.IO.Path.Combine(folder, "hookshot.exe");
+    }
+
+    /// (the launcher already checked for updates: the game does not ask again)
+    static void StartGame(string folder)
+    {
+        var si = new ProcessStartInfo(GameExe(folder)) { UseShellExecute = false, WorkingDirectory = folder };
+        si.Environment["HOOKSHOT_NO_UPDATE_CHECK"] = "1";
+        Process.Start(si);
+    }
+
+    void LaunchUpdateClick(object sender, RoutedEventArgs e) => Updater.UpdateFolder(this, launchFolder, updateTarget, fetched: false);
+
+    void LaunchPlayClick(object sender, RoutedEventArgs e)
+    {
+        StartGame(launchFolder);
+        Application.Current.Shutdown();
+    }
+
+    void LaunchFolderClick(object sender, RoutedEventArgs e) =>
+        Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
+
+    // ---- what the player chose last time (the install folder, the game files): builder-settings.json beside the versions ----
+    sealed class BuilderSettings
+    {
+        public string? Out { get; set; }
+        public string? Nup { get; set; }
+        public string? Romfs { get; set; }
+        public string? Exefs { get; set; }
+    }
+    static string SettingsPath => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
+
+    void ApplySettings()
+    {
+        BuilderSettings? s = null;
+        try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
+        if (s == null) return;
+        if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
+        if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
+        {
+            romfs = s.Romfs;
+            exefs = s.Exefs;
+            DumpList.Children.Insert(0, new TextBlock { Text = $"Using the folders {romfs} and {exefs} (as last time)", Style = (Style)FindResource("Note"),
+                                                        Margin = new Thickness(16, 12, 16, 12) });
+        }
+        else if (s.Nup != null && File.Exists(s.Nup))
+        {
+            if (!dumps.Any(d => string.Equals(d.Path, s.Nup, StringComparison.OrdinalIgnoreCase)))
+            {
+                var info = new FileInfo(s.Nup);
+                dumps.Insert(0, new Dump(info.FullName, "Last time", info.Length, info.LastWriteTime));
+            }
+            chosenNup = s.Nup;
+        }
+    }
+
+    void SaveSettings()
+    {
+        try
+        {
+            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs };
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
+            File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
+        }
+        catch (Exception) { }
     }
 
     /// (development) HOOKSHOT_UI_PREVIEW=build|ready|problem|update: one screen with made-up progress, nothing run
@@ -113,7 +317,7 @@ public partial class MainWindow : Window
                 ShowProblem("Files of the builder's own compiler are missing (clang.exe in tools\\llvm-mingw\\bin).", tools: true);
                 break;
             case "update":
-                BeginUpdate(OutPath.Text);
+                BeginUpdate(OutPath.Text, "honest-eta");
                 rows["download"].Done(); rows["download"].Small("3 MB · build tools unchanged");
                 rows["read"].Begin(); rows["read"].Done();
                 rows["lift"].Begin(); rows["lift"].Done();
@@ -198,7 +402,7 @@ public partial class MainWindow : Window
 
     void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage })
+        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage })
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         page.Opacity = 0;
         page.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(250)));
@@ -225,6 +429,10 @@ public partial class MainWindow : Window
             var name = new TextBlock { Text = System.IO.Path.GetFileName(d.Path), FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
             var meta = new TextBlock { Text = $"{d.Where} · {Finder.Size(d.Size)} · {Finder.Ago(d.Modified)}", Style = (Style)FindResource("Faint") };
             var texts = new StackPanel { Children = { name, meta }, Margin = new Thickness(0, 0, 12, 0) };
+            // (issue 563: "Can't be read" said why only in the chip's tooltip, which players did not find; the reason is in the row)
+            if (checks.TryGetValue(d.Path, out var why) && why is { Ok: false } && !why.Value.Text.StartsWith("This is build"))
+                texts.Children.Add(new TextBlock { Text = why.Value.Text, Style = (Style)FindResource("Faint"), TextWrapping = TextWrapping.Wrap,
+                                                   Foreground = (Brush)FindResource("Bad"), Margin = new Thickness(0, 4, 0, 0) });
             var grid = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
             var chip = Chip(d.Path);
             Grid.SetColumn(chip, 1);
@@ -279,6 +487,7 @@ public partial class MainWindow : Window
 
     void Choose(string path)
     {
+        sourcePicked = true;
         chosenNup = path;
         romfs = exefs = null;
         Refresh();
@@ -289,6 +498,7 @@ public partial class MainWindow : Window
         var info = new FileInfo(path);
         if (!dumps.Any(d => string.Equals(d.Path, info.FullName, StringComparison.OrdinalIgnoreCase)))
             dumps.Insert(0, new Dump(info.FullName, where, info.Length, info.LastWriteTime));
+        sourcePicked = true;
         chosenNup = info.FullName;
         romfs = exefs = null;
         FillDumps();
@@ -305,6 +515,7 @@ public partial class MainWindow : Window
     {
         if (BuildButton == null) return;
         BuildButton.IsEnabled = SourceReady && OutPath.Text.Length > 2;
+        ShowWork();
         try
         {
             var root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(OutPath.Text))!;
@@ -318,6 +529,7 @@ public partial class MainWindow : Window
         {
             SpaceText.Text = "Needs 60 GB";
         }
+        RefreshMode();
     }
 
     void Dropped(object sender, DragEventArgs e)
@@ -358,6 +570,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "That exefs folder has no file named main.", "Hookshot");
             return;
         }
+        sourcePicked = true;
         romfs = r;
         exefs = x;
         chosenNup = null;
@@ -374,6 +587,45 @@ public partial class MainWindow : Window
 
     void BrowseOut(object sender, RoutedEventArgs e) => OutPath.Text = PickFolder("Choose where the game goes") ?? OutPath.Text;
 
+    void BrowseWork(object sender, RoutedEventArgs e)
+    {
+        if (PickFolder("Choose where Hookshot keeps its build files") is not { } picked) return;
+        ChangeWork(picked);
+    }
+
+    void ResetWork(object sender, RoutedEventArgs e) => ChangeWork(null);
+
+    void ChangeWork(string? picked)
+    {
+        try { Storage.MoveWork(picked); }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"Hookshot cannot keep its build files there: {x.Message}", "Hookshot");
+        }
+        Refresh();
+    }
+
+    /// How much the build files take and where, said before the build (they stay after it, for quick updates)
+    void ShowWork()
+    {
+        if (WorkNote == null) return;
+        var work = Storage.Work;
+        WorkReset.Visibility = Storage.WorkChosen ? Visibility.Visible : Visibility.Collapsed;
+        WorkNote.Text = $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)}, kept in {work} so that updates are quick. They can be freed after the build.";
+        WorkNote.Foreground = (Brush)FindResource("InkSoft");
+        try
+        {
+            var root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(work))!;
+            var free = new DriveInfo(root).AvailableFreeSpace;
+            if (free < Storage.BuildFilesBytes)
+            {
+                WorkNote.Text += $" {root.TrimEnd('\\')} has only {Storage.Gb(free)} free.";
+                WorkNote.Foreground = (Brush)FindResource("Bad");
+            }
+        }
+        catch (Exception) { }
+    }
+
     void LanguageChanged(object sender, SelectionChangedEventArgs e)
     {
         if (LanguageBox.SelectedItem is not Language l) return;
@@ -387,8 +639,31 @@ public partial class MainWindow : Window
 
     // ================= 2: the build =================
 
-    void StartBuild(object sender, RoutedEventArgs e)
+    async void StartBuild(object sender, RoutedEventArgs e)
     {
+        switch (mode)
+        {
+            case Mode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
+                SaveSettings();
+                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false);
+                return;
+            case Mode.UpToDate:
+                finished = OutPath.Text;
+                Play(sender, e);
+                return;
+            case Mode.UpdateBuilder:
+                SaveSettings();
+                BuildButton.IsEnabled = false;
+                BuildButton.Content = "Getting the new builder…";
+                try { await Updater.RunLatestSetup(this, Array.Empty<string>()); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message + " You can also download HookshotBuilder.exe from the releases page.", "Hookshot");
+                    RefreshMode();
+                }
+                return;
+        }
+        SaveSettings();
         var tools = Tools.Find();
         if (tools == null)
         {
@@ -454,6 +729,11 @@ public partial class MainWindow : Window
         finished = "";
         compiled = 0;
         filesDone = filesOf = 0;
+        filesChanged = -1;
+        filesCompiled = 0;
+        compileEta = -1;
+        thisCompile = 0;
+        previousTotal = -1;
         ShowPage(BuildPage);
         CancelButton.Visibility = Visibility.Visible;
         SetProgress(updating ? Weight["read"].From : 0);
@@ -461,6 +741,7 @@ public partial class MainWindow : Window
         compileClock.Reset();
         clock.Start();
         Tick();
+        if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         runner = new Runner(tools, args, workers);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
@@ -490,11 +771,54 @@ public partial class MainWindow : Window
             }
             return;
         }
+        else if (line.StartsWith("@@plan ") || line.StartsWith("@@file ") || line.StartsWith("@@eta ") || line.StartsWith("@@times "))
+        {
+            Number(line);
+            return;
+        }
         else if (line.StartsWith("@@done ")) finished = line[7..];
         else if (FilesLine.Match(line) is { Success: true } m) filesOf = int.Parse(m.Groups[1].Value);
         else if (FileLine.IsMatch(line)) filesDone++;
-        if (current == "compile" && filesOf > 0 && rows.TryGetValue("compile", out var c)) c.Small($"{filesDone} of {filesOf} files");
+        if (current == "compile" && filesChanged < 0 && filesOf > 0 && rows.TryGetValue("compile", out var c))
+            c.Small($"{filesDone} of {filesOf} files");
         AddLog(line);
+    }
+
+    /// The compile timer's lines: build.py says which files this run really rebuilds and how long each took before (the
+    /// countdown), and make_game.py gives this build's times beside the last one's. Not shown in details: the compiler's
+    /// own lines there already carry each file's seconds.
+    void Number(string line)
+    {
+        var p = line.Split(' ');
+        switch (p[0])
+        {
+            case "@@plan" when p.Length == 3 && int.TryParse(p[1], out var changed) && int.TryParse(p[2], out var total):
+                filesChanged = changed;
+                filesOf = total;
+                filesCompiled = 0;
+                ChangedFiles();
+                break;
+            case "@@file" when p.Length == 4 && (p[3] is "new" or "again"):
+                filesCompiled++;
+                ChangedFiles();
+                break;
+            case "@@eta" when p.Length == 2 && double.TryParse(p[1], System.Globalization.NumberStyles.Float,
+                                                              System.Globalization.CultureInfo.InvariantCulture, out var eta):
+                compileEta = eta;
+                break;
+            case "@@times" when p.Length == 4:
+                long.TryParse(p[2], out thisCompile);
+                long.TryParse(p[3], out previousTotal);
+                break;
+        }
+    }
+
+    void ChangedFiles()
+    {
+        if (filesChanged < 0 || !rows.TryGetValue("compile", out var row)) return;
+        row.Small(filesChanged == 0 ? "Everything is already built"
+                : filesChanged >= filesOf ? $"{filesCompiled} of {filesChanged} files"
+                : $"{filesCompiled} of {filesChanged} changed files");
     }
 
     void AddLog(string line)
@@ -526,15 +850,27 @@ public partial class MainWindow : Window
     {
         foreach (var r in rows.Values) r.Tick();
         if (runner == null) return;
-        string left;
-        if (current == "compile" && compiled > 0.03)
+        var tail = updating ? ". Your current game stays as it is until the new one is complete." : " · your PC stays usable";
+        if (current == "compile")
         {
-            var rest = compileClock.Elapsed.TotalSeconds / compiled * (1 - compiled) + 60;
-            left = rest > 90 ? $"About {(int)Math.Round(rest / 60)} minutes left" : "About a minute left";
+            // (the timer of the compile itself, and the countdown build.py works out from what this PC measured before)
+            var left = compileEta >= 0 ? TimeLeft(compileEta)
+                : compiled > 0.03 ? TimeLeft(compileClock.Elapsed.TotalSeconds / compiled * (1 - compiled) + 60)
+                : "Estimating…";
+            BuildNote.Text = $"Compiling {Clock(compileClock.Elapsed)} · {left}{tail}";
+            return;
         }
-        else left = updating ? "Working…" : "Usually about 45 minutes";
-        BuildNote.Text = updating ? $"{left}. Your current game stays as it is until the new one is complete."
-                                  : $"{left} · your PC stays usable";
+        BuildNote.Text = (updating ? "Working…" : "Usually about 45 minutes") + tail;
+    }
+
+    static string Clock(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";
+
+    static string TimeLeft(double seconds)
+    {
+        if (seconds < 45) return "Less than a minute left";
+        if (seconds < 90) return "About a minute left";
+        var minutes = (int)Math.Round(seconds / 60);
+        return minutes >= 60 ? $"About {minutes / 60} h {minutes % 60} min left" : $"About {minutes} minutes left";
     }
 
     void Ended(string? failure)
@@ -584,11 +920,49 @@ public partial class MainWindow : Window
     {
         SetStep(2);
         ReadyTitle.Text = updating ? "Your game is updated" : "Your game is ready";
-        ReadyNote.Text = $"{(updating ? "Updated" : "Built")} in {Span(elapsed.Elapsed)} · {finished}";
+        var compiledNote = thisCompile > 0 ? $" (compiled in {Span(TimeSpan.FromSeconds(thisCompile))})" : "";
+        ReadyNote.Text = $"{(updating ? "Updated" : "Built")} in {Span(elapsed.Elapsed)}{compiledNote}{Against(elapsed.Elapsed)} · {finished}";
         if (!updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
             Finder.Shortcuts(finished, DesktopTick.IsChecked == true, StartTick.IsChecked == true);
+        else if (updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
+        {   // (the ones the player has, onto the folder's launcher; the boxes say which there are, and ticking one makes it)
+            DesktopTick.IsChecked = File.Exists(Finder.DesktopLink);
+            StartTick.IsChecked = File.Exists(Finder.StartLink);
+            Finder.RefreshShortcuts(finished);
+        }
+        if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
+        _ = ShowStorageUse();
     }
+
+    // (issue: 5 GB and more left in %LOCALAPPDATA% and never said. Said here, with the way to let it go)
+    async Task ShowStorageUse()
+    {
+        StorageRow.Visibility = Visibility.Collapsed;
+        var (total, freeable) = await Task.Run(Storage.Measure);
+        if (total < 100L << 20) return;
+        StorageNote.Text = freeable >= 100L << 20
+            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}). {Storage.Gb(freeable)} of it only makes the next " +
+              "update quicker and can be freed: your game keeps playing, and the next update then takes about as long as this build."
+            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}): the builder itself.";
+        FreeButton.Visibility = freeable >= 100L << 20 ? Visibility.Visible : Visibility.Collapsed;
+        FreeButton.IsEnabled = true;
+        FreeButton.Content = "Free up space";
+        StorageRow.Visibility = Visibility.Visible;
+    }
+
+    async void FreeSpace(object sender, RoutedEventArgs e)
+    {
+        FreeButton.IsEnabled = false;
+        FreeButton.Content = "Freeing…";
+        var left = await Task.Run(Storage.Free);
+        await ShowStorageUse();
+        if (left >= 100L << 20)
+            StorageNote.Text += $" ({Storage.Gb(left)} could not be deleted: a file is in use. Close the game and the builder, and delete the folder's contents by hand.)";
+    }
+
+    void ShowStorage(object sender, RoutedEventArgs e) =>
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Storage.Base}\"") { UseShellExecute = true });
 
     void ShortcutsChanged(object sender, RoutedEventArgs e)
     {
@@ -597,12 +971,24 @@ public partial class MainWindow : Window
 
     static string Span(TimeSpan t) => t.TotalHours >= 1 ? $"{(int)t.TotalHours} h {t.Minutes} min" : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes} minutes" : $"{t.Seconds} seconds";
 
+    /// This build beside the last one on this PC (build_times.json, through make_game.py's @@times): "last time 45 minutes
+    /// (4 minutes faster)"
+    string Against(TimeSpan now)
+    {
+        if (previousTotal <= 0) return "";
+        var last = TimeSpan.FromSeconds(previousTotal);
+        var diff = last.TotalSeconds - now.TotalSeconds;
+        var how = Math.Abs(diff) < 30 ? "about the same"
+                : diff > 0 ? $"{Span(TimeSpan.FromSeconds(diff))} faster" : $"{Span(TimeSpan.FromSeconds(-diff))} slower";
+        return $" · last time {Span(last)} ({how})";
+    }
+
     void OpenFolder(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{finished}\"") { UseShellExecute = true });
 
     void Play(object sender, RoutedEventArgs e)
     {
-        Process.Start(new ProcessStartInfo(System.IO.Path.Combine(finished, "hookshot.exe")) { UseShellExecute = true, WorkingDirectory = finished });
+        StartGame(finished);
         WindowState = WindowState.Minimized;
     }
 
@@ -685,15 +1071,13 @@ public partial class MainWindow : Window
 
     CancellationTokenSource? download;
 
-    public void BeginUpdate(string folder)
+    public void BeginUpdate(string folder, string? tag)
     {
         updating = true;
         OutPath.Text = folder;
         finished = "";
-        var a = Environment.GetCommandLineArgs();
-        var i = Array.IndexOf(a, "--tag");
-        var to = i >= 0 && i + 1 < a.Length ? a[i + 1] : "the latest version";
-        var from = Tools.Find()?.Version;
+        var to = tag ?? "the latest version";
+        var from = GameVersion(folder) ?? Tools.Find()?.Version;
         StepPill.Visibility = Visibility.Collapsed;
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;
