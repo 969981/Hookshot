@@ -164,6 +164,8 @@ on:
       - host/nn_fs.c
       - third_party/fonttools/fonttools-4.60.1-py3-none-any.whl
       - tests/test_button_icons.py
+      - gpu/vk/vk_paths.h
+      - tests/test_windows_minmax.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -328,6 +330,8 @@ on:
       - host/nn_fs.c
       - third_party/fonttools/fonttools-4.60.1-py3-none-any.whl
       - tests/test_button_icons.py
+      - gpu/vk/vk_paths.h
+      - tests/test_windows_minmax.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -598,6 +602,9 @@ jobs:
       - name: Check the button icons' library and the font made from it
         if: runner.os == 'Linux'
         run: python -I -B tests/test_button_icons.py
+      - name: Check the renderer's windows.h leaves std::min and std::max alone
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_windows_minmax.py
 
   spirv-global16:
     name: SPIR-V global narrow load/store lowering
