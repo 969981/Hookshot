@@ -264,6 +264,7 @@ bool fsr_native_resolve(VkCommandBuffer cmd, Texture* output, VkImageView view, 
     next_frame();
     if (!fsr.input || fsr.input_frame != fsr.frame || !output || !view || output == fsr.input ||
         output->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || output->levels != 1 || output->layers != 1 ||
+        output->samples != VK_SAMPLE_COUNT_1_BIT ||
         output->width != fsr.input->width || output->height != fsr.input->height || fsr.last_frame == fsr.frame) return false;
     Scene* scene = nullptr;
     for (auto& [id, candidate] : fsr.scenes) if (candidate.depth->width == output->width && candidate.depth->height == output->height &&
