@@ -75,12 +75,88 @@ task. A GUI and the optional in-game page are not done yet.
 - [x] Enum labels are populated from `RawValues`; `dump`/`get` show them, e.g.
   `0xB80C70A8 ... 0xBE69DE49 (Empty)`.
 
-### Phase 2 remaining
+### Phase 2 remaining — field names
 
-- [ ] Field names for most hashes. The GameDataList has no `HashText`; only
-  ~12 paths are printable in this build. Curate the rest with `--merge` and
-  save-diff experiments. The type/default/enum schema is complete without
-  names.
+Status: **schema complete; names blocked on a source**. The GameDataList has
+12,019 saved hashes with types/defaults/enums, but no `HashText` or name
+strings. Only about 12 full OoT paths are printable in the build. The public
+TotK `GameDataListFull.csv` gives 214 OoT hash matches, of which **207 validate**
+with `murmur3_32(name) == hash` (about 1.8% of the schema). That includes:
+
+```
+PlayerStatus.Life                 0x31AB5580
+PlayerStatus.MaxLife              0xFBE01DA1
+PlayerStatus.CurrentRupee         0xA77921D7
+PlayerStatus.SavePos              0xC884818D
+World_PlayerPos                   0x8773F02D
+Sequence_CurrentBanc              0x1D6189DA
+CaptionData.LocationName          0xF74E0E8E
+CaptionData.Pos                   0x8B26618E
+CaptionData.ScreenShot            0x63696A32
+OptionData.CameraRotateSpeed      0x128D0120
+```
+
+Exact names for *most* hashes cannot be recovered from the retail build. Pick
+one of two completion criteria:
+
+- **A. Practical core coverage (recommended):** merge the 207 validated TotK
+  paths and the 12 OoT paths, then add semantic labels for OoT-specific
+  player, caption, option, sequence and inventory/equipment fields through
+  controlled save diffs. Leave the remaining event flags hash-addressed but
+  fully typed.
+- **B. Literal “most hashes” (>50%):** requires an external exact-name source:
+  the `.nup` package (check its TOC for `.nss`/symbols/debug metadata), a
+  debug/development build, a symbol dump, or a community OoT Switch 2 name
+  table. Without one, do not claim >50%.
+
+#### Option A work
+
+- [ ] Add `import_names.py`: read `schema.json`, TotK CSV/WordList, the OoT
+  binary scan and a curated overlay; validate every exact name with Murmur3;
+  record provenance (`totk`, `oot-scan`, `curated`, `semantic`); reject the
+  seven bad CSV rows. Priority: curated > OoT scan > TotK.
+- [ ] Extend `schema_report.py` with `--by-type`, `--by-save-file`,
+  `--named-only` and a critical-field checklist (`PlayerStatus.Life/MaxLife/
+  CurrentRupee/SavePos`, `World_PlayerPos`, `CaptionData.LocationName/Pos/
+  ScreenShot`, `Sequence_CurrentBanc`, `OptionData.*`).
+- [ ] Add `label_diff.py BEFORE.sav AFTER.sav --label "..." --names names.json`:
+  use the `compare` machinery, list changed hashes and append semantic labels
+  with provenance and a note.
+- [ ] Curate OoT-specific inventory, equipment, song, medallion, stone,
+  skulltula and trial fields from controlled saves: rupee, heart, item pickup,
+  equipment, song, chest and scene/save-point changes.
+- [ ] Verify the curated fields in game: edit, load, observe the HUD/Load
+  screen, save and reload.
+- [ ] Update `README.md` and `AGENTS.md` with the import/labelling workflow.
+  Generated names and schemas stay in `%TEMP%` or the user's save folder and
+  are never committed.
+
+Acceptance for A: 100% of the core `PlayerStatus`, `CaptionData`, `OptionData`
+and `Sequence` fields that exist have an exact or semantic name; every exact
+name satisfies `murmur3_32(name) == hash`; `schema_report --strict` reports
+0 type/version mismatches; `acceptance --pair` passes; `dump`/`get` show names
+and enum labels; `set` accepts them. The coverage report states exact,
+semantic and unnamed counts.
+
+Estimated effort: 2–4 days for `import_names`/coverage/`label_diff` tooling,
+plus 1–2 weeks for careful in-game curation.
+
+#### Option B work
+
+- [ ] Reconnect/provide the `.nup` and inspect its TOC for a `.nss`/symbol
+  file, debug metadata or a `GameDataList` JSON with `HashText`.
+- [ ] If none, scan all romfs printable strings in `.ainb`, `.bgyml`, `.pack`
+  and `.byml.zs` payloads; hash and match the 12,019 OoT hashes, parallelised
+  by directory.
+- [ ] If coverage is still low, run a bounded component search: components
+  from TotK CSV/WordList, OoT strings and `main` identifiers; prefixes such as
+  `PlayerStatus`, `CaptionData`, `OptionData`, `Sequence`, `World`,
+  `HavePlayedEvent`, `GameData`; combinations up to depth 4, every candidate
+  validated by Murmur3.
+- [ ] Only after an exact source exists, set a >50% coverage target and add
+  the resulting names to the schema.
+
+Estimated effort: 1–3 days if an exact source exists; open-ended otherwise.
 
 ## Phase 3 — useful fields
 
