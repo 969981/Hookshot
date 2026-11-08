@@ -263,7 +263,9 @@ void hos_display_loop(void) {
         SetEvent(renderer_up);
         for (;;) Sleep(1000);
     }
+#ifndef __APPLE__
     vk_window.window = window;
+#endif
     hos_posix_window[0] = 1;
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
