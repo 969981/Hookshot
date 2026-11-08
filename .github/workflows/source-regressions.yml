@@ -8,6 +8,8 @@ on:
       - nx2/**
       - host/**
       - gpu/vk/**
+      - builder/linux/**
+      - scripts/linux/**
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -16,6 +18,8 @@ on:
       - nx2/**
       - host/**
       - gpu/vk/**
+      - builder/linux/**
+      - scripts/linux/**
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
