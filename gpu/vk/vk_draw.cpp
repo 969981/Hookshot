@@ -5232,14 +5232,25 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     return true;
 }
 
-/// (hookshot) The sampled textures of the dispatch being recorded, in the terms the upscaler input contract uses
-/// (gpu/vk/upscale_contract.h). One place builds this, so the per-network log and the seam below cannot disagree
-/// about what a dispatch sampled.
-static void upscale_bindings(std::vector<upscale::Binding>& out) {
-    out.assign(draw_sampled.size(), upscale::Binding{});
-    for (size_t i = 0; i < draw_sampled.size(); ++i)
-        if (const Texture* t = draw_sampled[i])
-            out[i] = {upscale::kind_of(t->format, t->aspect), t->width, t->height};
+/// (hookshot) The dispatch's sampled textures in descriptor order, in the terms of the upscaler input contract
+/// (gpu/vk/upscale_contract.h). Resolved exactly as build_descriptors resolves them, including the storage-pointer
+/// guard, so index i here is dw.imgs[i] -- the descriptor a backend is actually handed.
+///
+/// draw_sampled cannot be used for this. It records a sampled texture only where the GPU has written it, and it
+/// records every storage image as well, so its indices are not descriptor slots and binding 0 of it is not
+/// dw.imgs[0]. An upscaler wired to that correspondence would read whichever texture happened to be bound first.
+static void upscale_bindings(const NvnState& s, const Stage& st, std::vector<upscale::Binding>& out) {
+    out.clear();
+    for (const auto& d : st.info.texture_descriptors) {
+        const VkImageViewType vt = view_type(d.type);
+        for (uint32_t k = 0; k < d.count; k++) {
+            const uint32_t handle = handle_is_storage_pointer(st.info, d, k) ? 0u : handle_of(s, st, d, k);
+            Texture* tex = nullptr;
+            if (handle) texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex);
+            out.push_back(tex ? upscale::Binding{upscale::kind_of(tex->format, tex->aspect), tex->width, tex->height}
+                              : upscale::Binding{});
+        }
+    }
 }
 
 /// (hookshot) OoT's gameplay TAAU network (fd029a317a9a4b94) stood in for: its input upscaled into its output
@@ -5406,15 +5417,13 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
-    // (hookshot) what a temporal backend would be given here, said once per program: the output this resolved, and
-    // the inputs the dispatch sampled. colour_binding stays unset on purpose. The renderer hands over
-    // dw.imgs[0], the first texture descriptor, while the contract indexes the textures the descriptor build
-    // recorded, and those two orders are not the same list: dw.imgs carries every texture descriptor, draw_sampled
-    // only those it resolved. Establishing which descriptor is the contract's colour is the first job of the
-    // backend that needs it, not something to assume here.
+    // (hookshot) what a temporal backend would be given here, said once per program. The bindings are in descriptor
+    // order, so the contract's colour is a descriptor slot: dw.imgs[req.colour_binding] is the view a backend reads,
+    // and the stand-in's own dw.imgs[0] is only that slot when the contract agrees it is.
     std::vector<upscale::Binding> bindings;
-    upscale_bindings(bindings);
+    upscale_bindings(s, st, bindings);
     req.inputs = upscale::classify(bindings.data(), bindings.size());
+    req.colour_binding = req.inputs.colour;
     req.output_width = std::max(1u, out->width >> level);
     req.output_height = std::max(1u, out->height >> level);
     req.output_writable = true;
@@ -5925,16 +5934,14 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             // upscaler could take this network's place rather than leaving it to be counted by hand later:
             // docs/upscaling.md
             std::vector<upscale::Binding> bindings;
-            upscale_bindings(bindings);
+            upscale_bindings(s, p.stages[0], bindings);
             std::vector<upscale::Role> roles(bindings.size(), upscale::Role::None);
             const upscale::Verdict v = upscale::classify(bindings.data(), bindings.size(), roles.data());
             char line[900];
             int n = snprintf(line, sizeof line, "vk: network %016llx: dispatch %ux%ux%u, %zu textures %zu images:", (unsigned long long)p.key, x, y, z,
                              p.stages[0].info.texture_descriptors.size(), p.stages[0].info.image_descriptors.size());
-            for (size_t i = 0; i < draw_sampled.size() && n < 840; ++i) {
-                const Texture* t = draw_sampled[i];
-                if (!t) continue;
-                n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+            for (size_t i = 0; i < bindings.size() && n < 840; ++i) {
+                n += snprintf(line + n, sizeof line - n, " %u:%ux%u", (unsigned)i, bindings[i].width, bindings[i].height);
                 if (roles[i] != upscale::Role::None && n < 840)
                     n += snprintf(line + n, sizeof line - n, "=%s", upscale::role_name(roles[i]));
             }

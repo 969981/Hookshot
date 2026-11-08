@@ -79,12 +79,12 @@ for itself.
 than a missing feature: the inputs must be complete, the output must be resolved, writable and no smaller than the
 render extent, and the colour the renderer hands over must be the colour the contract identified.
 
-That last clause does not hold yet, and the seam says so in its log rather than assuming it away. The renderer passes
-`dw.imgs[0]`, the first texture descriptor; the contract indexes the textures the descriptor build resolved
-(`draw_sampled`). Those are two different lists — the first carries every texture descriptor, the second only the
-ones it resolved — so binding 0 of one is not binding 0 of the other. Establishing which descriptor is the
-contract's colour is the first job of the backend that needs it. Until then `temporal_possible()` refuses, which is
-the point: it cannot be passed by accident.
+The bindings the contract reads are in **descriptor order**, resolved the way `build_descriptors` resolves them, so
+index `i` is `dw.imgs[i]` — the descriptor a backend is handed. That matters because the obvious shortcut is wrong:
+`draw_sampled` records a sampled texture only where the GPU has written it and records every storage image as well,
+so binding 0 of that list is not `dw.imgs[0]`. A backend wired to that correspondence would read whichever texture
+happened to be bound first and ghost, and the ghosting would be reported as a renderer bug rather than as a wrong
+binding. The stand-in's own `dw.imgs[0]` is the colour only when the contract agrees that slot 0 is the colour.
 
 The stand-in needs none of this. It is a spatial resolve, and it runs wherever `RX_VK_TAAU_KEYS` asks for it exactly
 as it did before the seam existed, including where the contract is not met. That property is what makes introducing
@@ -105,9 +105,18 @@ Each row is one pull request, and each one is useful on its own.
 
 ## What each vendor runtime allows
 
-**FSR.** AMD's FidelityFX sources are MIT. They can be vendored under `third_party/` with a
-`PROVENANCE.md`, unmodified, and need no runtime from the user. FSR 4's newer models arrive through
-AMD's own runtime library on Windows; the SDK path works everywhere.
+**FSR.** AMD's FidelityFX sources are MIT and can be vendored under `third_party/` with a `PROVENANCE.md`,
+unmodified. There are two integration routes, and they are not interchangeable:
+
+- *AMD's FidelityFX API*, loading AMD's own Vulkan runtime library at run time. This is what #577 does, and it has
+  already vendored the five MIT API headers under `third_party/fidelityfx/` with provenance. The runtime libraries
+  are AMD's and are not committed. FSR 4's newer models arrive this way, on Windows.
+- *The FidelityFX SDK sources*, where the upscaler's passes are recorded from AMD's MIT shader sources and no runtime
+  library is needed at all. This is the route that works on Linux as well as Windows.
+
+A second copy of FidelityFX in this tree would be worse than either. Whichever route a backend takes, it should build
+on the vendored copy #577 is adding rather than add its own folder, and declare that dependency the way #577 declares
+its own.
 
 **DLSS.** The Streamline headers are MIT and can be vendored the same way. **The runtime libraries are
 not**, must not be committed, and must not be bundled in a release. The user supplies them, or the
