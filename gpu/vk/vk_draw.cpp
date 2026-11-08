@@ -5213,7 +5213,7 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
     if (FILE* f = fopen(path.c_str(), "wb")) fwrite(&stamp, 8, 1, f), fclose(f);
 }
 
-void precompile_run(void (*progress)(size_t done, size_t total)) {
+void precompile_run(void (*progress)(size_t done, size_t total), bool hand_over) {
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
     // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
@@ -5235,7 +5235,16 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     if (FILE* f = fopen(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
     struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
     pcache_init();
-    std::vector<std::unique_ptr<PipeNote>> notes;
+    // (hookshot) what the workers use, kept by them: with hand_over they may still be building when the game starts (below)
+    struct Run {
+        std::vector<std::unique_ptr<PipeNote>> notes;
+        std::vector<PipeEntry*> entries;   // (each note's, made before the workers start; null: not built here)
+        std::vector<Program*> computes;
+        std::atomic<size_t> next{0}, done{0};
+    };
+    const auto run = std::make_shared<Run>();
+    auto& notes = run->notes;
+    auto& computes = run->computes;
     std::unordered_set<uint64_t> wanted;
     if (FILE* f = fopen(pipe_notes_path().c_str(), "rb")) {
         uint64_t head[2] = {0, 0};
@@ -5250,62 +5259,97 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         }
         fclose(f);
     }
-    std::vector<Program*> computes;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
         if (p.compute) computes.push_back(&p);
     });
+    // (hookshot) every note's entry made here, before the game: a draw that comes for one still building finds it begun, and draws a
+    // quick one meanwhile (pipeline_build_waited) instead of starting a second full build. The workers touch only their entries
+    run->entries.assign(notes.size(), nullptr);
+    for (size_t j = 0; j < notes.size(); j++) {
+        const PipeNote& n = *notes[j];
+        if (!program_find(n.prog, n.variant) || pipelines.count(n.key)) continue;
+        auto e = std::make_unique<PipeEntry>();
+        e->started.store(true, std::memory_order_relaxed);
+        run->entries[j] = e.get();
+        pipelines.emplace(n.key, std::move(e));
+    }
     const size_t total = notes.size() + computes.size();
-    std::atomic<size_t> next{0}, done{0};
-    const auto worker = [&] {
+    const auto worker = [run, total] {
+        auto& computes = run->computes;
         for (;;) {
-            const size_t i = next++;
+            const size_t i = run->next++;
             if (i >= total) return;
             if (i < computes.size()) {
                 Program& p = *computes[i];
-                VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-                ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = p.stages[0].module;
-                ci.stage.pName = "main";
-                pin_subgroup(ci.stage, p.workgroup[0]);
-                ci.layout = p.layout;
-                if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
-            } else {
-                PipeNote& n = *notes[i - computes.size()];
-                const Program* p = program_find(n.prog, n.variant);
-                if (p) {
-                    Targets at{};
-                    at.n = (int)n.n;
-                    at.samples = (VkSampleCountFlagBits)n.samples;
-                    at.depth_format = (VkFormat)n.depth_format;
-                    at.depth = n.has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
-                    for (int k = 0; k < 8; k++) at.color_format[k] = (VkFormat)n.color_format[k];
-                    const VkPipeline made = build_graphics(*p, n.s, at, (VkPrimitiveTopology)n.topo);
-                    std::lock_guard lk(note_mu);
-                    auto it = pipelines.find(n.key);
-                    if (it == pipelines.end()) {
-                        auto e = std::make_unique<PipeEntry>();
-                        e->pipeline = made;
-                        e->ready.store(true, std::memory_order_release);
-                        pipelines.emplace(n.key, std::move(e));
+                // (as a dispatch's worker build: state 1 while it builds, so a dispatch meanwhile is left out, not built twice)
+                int none = 0;
+                if (!p.compute_pipeline && p.compute_state.compare_exchange_strong(none, 1)) {
+                    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                    ci.stage.module = p.stages[0].module;
+                    ci.stage.pName = "main";
+                    pin_subgroup(ci.stage, p.workgroup[0]);
+                    ci.layout = p.layout;
+                    VkPipeline made = VK_NULL_HANDLE;
+                    if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &made) == VK_SUCCESS && made) {
+                        p.compute_pipeline = made;
+                        p.compute_state.store(2, std::memory_order_release);
+                    } else {
+                        p.compute_state.store(0, std::memory_order_release);   // (the dispatch tries it again, as before)
                     }
                 }
+            } else if (PipeEntry* e = run->entries[i - computes.size()]) {
+                const PipeNote& n = *run->notes[i - computes.size()];
+                const Program* p = program_find(n.prog, n.variant);
+                Targets at{};
+                at.n = (int)n.n;
+                at.samples = (VkSampleCountFlagBits)n.samples;
+                at.depth_format = (VkFormat)n.depth_format;
+                at.depth = n.has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
+                for (int k = 0; k < 8; k++) at.color_format[k] = (VkFormat)n.color_format[k];
+                // (over a quick one a draw that waited made meanwhile: that one is left alone, its draws may be on their way)
+                if (const VkPipeline made = build_graphics(*p, n.s, at, (VkPrimitiveTopology)n.topo)) e->pipeline = made;
+                e->ready.store(true, std::memory_order_release);
+                jobs_notify();
             }
-            done++;
+            run->done++;
         }
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
-    while (done.load() < total) {
-        if (progress) progress(done.load(), total);
+    // (hookshot) Once every pipeline has begun, the game waits a little for the last ones, then starts with them still building.
+    // AMD's optimizer took ~30 s each on seven of an RX 6650 XT's (and minutes on some, Lichii #200, #210): the console sat at 99%,
+    // two starts were closed as hung, and the second dropped the notes. They finish beside the game; a draw that needs one first
+    // draws with a quick one. Not in the builder's prepare-only run: no game to start. RX_VK_PRECOMPILE_TAIL_MS=<ms>, 0: all waited for
+    static const long long tail_ms = getenv("RX_VK_PRECOMPILE_TAIL_MS") ? atoll(getenv("RX_VK_PRECOMPILE_TAIL_MS")) : 3000;
+    std::chrono::steady_clock::time_point all_begun{};
+    bool handed = false;
+    while (run->done.load() < total) {
+        if (progress) progress(run->done.load(), total);
         Sleep(100);
-        if (next.load() >= total + threads.size()) break;
+        if (run->next.load() >= total + threads.size()) break;
+        if (hand_over && tail_ms > 0 && run->next.load() >= total) {
+            const auto now = std::chrono::steady_clock::now();
+            if (all_begun == std::chrono::steady_clock::time_point{}) all_begun = now;
+            else if (now - all_begun >= std::chrono::milliseconds(tail_ms)) {
+                handed = true;
+                break;
+            }
+        }
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (handed) {
+        for (std::thread& t : threads) t.detach();
+        const size_t left = total - std::min(total, run->done.load());
+        logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms; the game starts with %zu still building "
+             "(they finish beside it)", programs_n, notes.size(), computes.size(), ms, left);
+        return;
     }
     for (std::thread& t : threads) t.join();
-    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms", programs_n, notes.size(), computes.size(),
-         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms", programs_n, notes.size(), computes.size(), ms);
 }
 
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {

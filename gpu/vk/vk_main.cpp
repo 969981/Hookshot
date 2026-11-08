@@ -479,7 +479,7 @@ bool started_up() {
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
         prepare_run(progress);
-        precompile_run(progress);
+        precompile_run(progress, true);   // (the game starts while the last few still build: vk_draw.cpp)
         if (console) CloseHandle(console), console = nullptr, FreeConsole();
     }
     return true;

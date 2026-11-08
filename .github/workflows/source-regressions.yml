@@ -159,6 +159,7 @@ on:
       - tests/test_cas_loop_ceiling.py
       - gpu/vk/vk_draw.cpp
       - tests/test_equal_depth_margin.py
+      - tests/test_precompile_hand_over.py
       - tests/test_pipeline_wait.py
       - .github/workflows/source-regressions.yml
   pull_request:
@@ -319,6 +320,7 @@ on:
       - tests/test_cas_loop_ceiling.py
       - gpu/vk/vk_draw.cpp
       - tests/test_equal_depth_margin.py
+      - tests/test_precompile_hand_over.py
       - tests/test_pipeline_wait.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
@@ -584,6 +586,8 @@ jobs:
         run: python -I -B tests/test_cas_loop_ceiling.py
       - name: Check the EQUAL depth margin
         run: python -I -B tests/test_equal_depth_margin.py
+      - name: Check the game starts while the last precompiled pipelines build
+        run: python -I -B tests/test_precompile_hand_over.py
       - name: Check a draw that waits builds its own pipeline
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pipeline_wait.py --cxx g++
