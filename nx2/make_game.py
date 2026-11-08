@@ -35,8 +35,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
+WINDOWS = sys.platform == "win32"
 LINUX = sys.platform.startswith("linux")
 MACOS = sys.platform == "darwin"
+if not (WINDOWS or LINUX or MACOS):
+    raise SystemExit("Unsupported host platform: " + sys.platform)
 BESIDE = (["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else
           ["hookshot", "libSDL2-2.0.0.dylib", "libwgpu_native.dylib"] if MACOS else
           ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"])
@@ -552,9 +555,6 @@ def check_windows_sdk():
         return check_linux_compiler()
     if bundled_mingw():
         return check_mingw()
-    if CROSS:
-        fail("Building for Windows on Linux needs llvm-mingw: unpack its Linux release (github.com/mstorsjo/llvm-mingw) and set "
-             "HOOKSHOT_MINGW to its folder.")
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
     # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C

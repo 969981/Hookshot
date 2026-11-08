@@ -1,6 +1,10 @@
 #!/bin/bash
 # Build the native arm64 libraries and Python runtime used by Hookshot's macOS builder.
 set -euo pipefail
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "The macOS builder dependencies require an Apple Silicon macOS host." >&2
+    exit 1
+fi
 cd "$(dirname "$0")/../.."
 
 DEPS=${DEPS:-$PWD/build-macos/deps}

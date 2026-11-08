@@ -7,10 +7,14 @@ def emsdk():
     return os.environ.get("EMSDK") or (r"C:\emsdk" if os.name == "nt" else os.path.expanduser("~/emsdk"))
 
 
+def macos():
+    return sys.platform == "darwin"
+
+
 def windows():
     """(hookshot) the game is built for Windows: on Windows, or with RX_TARGET=windows on another system (a cross build, with
     llvm-mingw's release for that system in HOOKSHOT_MINGW)"""
-    return os.name == "nt" or os.environ.get("RX_TARGET", "").lower() == "windows"
+    return sys.platform == "win32" or os.environ.get("RX_TARGET", "").lower() == "windows"
 
 
 def mingw(host=False):
@@ -20,8 +24,8 @@ def mingw(host=False):
     return os.environ.get("HOOKSHOT_MINGW", "") if windows() and not (host and os.name != "nt") else ""
 
 
-def find(tool):
-    if sys.platform == "darwin" and tool in ("clang", "clang++"):
+def find(tool, host=False):
+    if macos() and tool in ("clang", "clang++") and not mingw(host):
         xcrun = shutil.which("xcrun")
         if xcrun:
             result = subprocess.run([xcrun, "--find", tool], capture_output=True, text=True)
@@ -29,8 +33,9 @@ def find(tool):
                 path = result.stdout.strip()
                 if path:
                     return path
-    if mingw() and (tool in ("clang", "clang++", "lld") or tool.startswith("llvm-")):
-        path = os.path.join(mingw(), "bin", ("ld.lld" if tool == "lld" else tool) + ".exe")
+    mingw_toolchain = mingw(host)
+    if mingw_toolchain and (tool in ("clang", "clang++", "lld") or tool.startswith("llvm-")):
+        path = os.path.join(mingw_toolchain, "bin", ("ld.lld" if tool == "lld" else tool) + ".exe")
         if os.path.isfile(path):
             return path
     root = emsdk()

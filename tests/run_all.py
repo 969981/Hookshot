@@ -20,8 +20,19 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WINDOWS = os.name == "nt"
-OS = "windows" if WINDOWS else "linux"
+
+
+def host_os():
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    raise RuntimeError("Unsupported host platform: " + sys.platform)
+
+
+OS = host_os()
 
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
@@ -56,14 +67,14 @@ MODULES = {
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
     # (the game: these run the lifted code of a real dump against Unicorn)
-    "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
-    "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
-    "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
+    "nx2/test_insn.py": ({"linux", "windows", "macos"}, "needs the game's modules (work/dump) and Unicorn"),
+    "nx2/test_leaf.py": ({"linux", "windows", "macos"}, "needs the game's modules (work/dump) and Unicorn"),
+    "nx2/test_dll.py": ({"linux", "windows", "macos"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
     # (a GPU)
-    "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
+    "nx2/test_bc_storage_views.py": ({"linux", "windows", "macos"}, "needs a Windows Vulkan device"),
     # (Linux only)
-    "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
-    "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
+    "tests/test_hookshot_launch.py": ({"windows", "macos"}, "the Linux launcher, a POSIX shell script"),
+    "tests/test_linux_update.py": ({"windows", "macos"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",

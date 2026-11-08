@@ -13,6 +13,13 @@ on:
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
+      - nx2/zbic.py
+      - tests/run_all.py
+      - tests/test_toolchain_platform.py
+      - scripts/linux/appimage.sh
+      - scripts/linux/deps.sh
+      - scripts/macos/deps.sh
+      - scripts/macos/package-builder.sh
       - third_party/a64-kit/lift/**
       - host/hos_setjmp.c
       - host/hos_thread.c

@@ -14,6 +14,10 @@
 #   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
 #                     'continuous' one, at packing time, fails whenever GitHub answers 504)
 set -euo pipefail
+if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+    echo "Linux AppImage dependencies require a Linux x86_64 host." >&2
+    exit 1
+fi
 cd "$(dirname "$0")/../.."
 DEPS=${DEPS:-$PWD/build-linux/deps}
 DL=$DEPS/downloads
