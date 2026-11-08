@@ -453,9 +453,7 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
 
 bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     if (!in.color || !in.depth || !in.motion) return false;
-    // (a guessed camera makes disocclusion wrong in a way that reads as a renderer bug, so a
-    // missing one is a refusal: docs/upscaling.md)
-    if (!(in.near_plane > 0.0f) || !(in.fov_y > 0.0f)) return false;
+    if (!(in.near_plane > 0.0f) || !(in.fov_y > 0.0f)) return false;   // (Inputs defaults them)
     if (!prepare(in.render_width, in.render_height, in.upscale_width, in.upscale_height)) return false;
 
     const bool first = g.first_evaluation;

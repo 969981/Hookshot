@@ -27,7 +27,42 @@ the composited frame, after the HUD. A temporal upscaler there has no depth, no 
 baked into its history. That is why the existing interpolator block-matches: it has nothing better to
 work from.
 
-## The integration point
+## Correction: the game's network is not a temporal upscaler
+
+**A run settles this, and it contradicts the section above.** With the per-network log reading the
+contract, the gameplay network reports:
+
+```
+vk: network fd029a317a9a4b94: dispatch 32x36x1, 1 textures 1 images: 0:1536x864; no upscaler inputs
+```
+
+**One sampled texture, one written image, and nothing else.** No motion, no depth. Every one of the
+eleven networks in the game is the same shape: at most two sampled textures, never a motion or depth
+target among them.
+
+So OoT's upscaler is a *single-image* neural upscaler, not a motion-vector temporal one, and the
+premise this document started from — that a vendor upscaler takes that dispatch's place — is wrong.
+FSR 3.1 and DLSS Super Resolution are temporal: they need motion and depth, and this dispatch is
+never handed either. `temporal_possible()` therefore refuses at it, correctly, and will keep
+refusing however the backend is wired.
+
+What the run does confirm is that the opportunity is real: the input is **1536x864** against a
+2048x1152 scene, so the game already renders the 3D at 75% and upscales. There is a genuine upscale
+to improve on.
+
+What it means is that the inputs have to be **assembled** rather than taken:
+
+- **Depth** exists — the census found D32 depth attached to the scene passes — but it has to be
+  carried to the resolve rather than read off this dispatch.
+- **Motion** does not exist anywhere in the frame as a target. It has to be derived, and the only
+  cheap source is the camera, which gives camera-only motion: correct for a still world, ghosting
+  on anything that moves by itself.
+
+That is precisely what #577 does, at the final resolve rather than at this dispatch, and this
+finding is the argument for its integration point over the one below. The contract, the census and
+the FSR passes stand; where they are plugged in has to change.
+
+## The integration point (superseded by the correction above)
 
 `taau_stand_in()` in `gpu/vk/vk_draw.cpp` already recognizes the network's dispatch by program key
 and substitutes its own resolve. A vendor upscaler replaces the same dispatch, under the same

@@ -24,11 +24,11 @@ struct Inputs {
     float jitter[2]{};
     /// Turns a motion vector into render pixels (the render size, for vectors in UV).
     float motion_scale[2]{1.0f, 1.0f};
-    /// The game's camera, which device_to_view_depth and tan_half_fov are built from. Both must be
-    /// real: a guessed near plane or field of view makes disocclusion wrong in a way that looks
-    /// like a renderer bug.
-    float near_plane = 0.0f;
-    float fov_y = 0.0f;
+    /// The game's camera, which device_to_view_depth and tan_half_fov are built from. That
+    /// conversion only scales FSR's disocclusion thresholds, so a typical camera is usable and is
+    /// what these default to; supplying the real one is better but is not a precondition.
+    float near_plane = 0.1f;
+    float fov_y = 60.0f * 3.14159265358979f / 180.0f;
     float frame_time_ms = 16.667f;
     bool reset = false;
     bool sharpen = false;

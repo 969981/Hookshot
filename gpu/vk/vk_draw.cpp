@@ -41,6 +41,7 @@
 #include "shaders/taau_upscale_comp_spv.h"
 #include "upscale_format.h"
 #include "upscale_seam.h"
+#include "vk_fsr3.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -5490,6 +5491,37 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                  (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
                  req.output_height, req.inputs.render_width, req.inputs.render_height,
                  why ? "could not be given this: " : "could be given this", why ? why : "");
+        }
+    }
+    // (hookshot) FSR 3.1 in the dispatch's place, opt-in with RX_VK_FSR=1 and only where the
+    // contract holds. Its own RGBA16F output is blitted into the game's target, which is the
+    // format conversion the game's network would have done itself.
+    static const bool fsr_wanted = getenv("RX_VK_FSR") && atoi(getenv("RX_VK_FSR")) != 0;
+    if (fsr_wanted && upscale::temporal_possible(req) && fsr3::supported()) {
+        fsr3::Inputs fi;
+        fi.color = dw.imgs[req.colour_binding].imageView;
+        fi.depth = dw.imgs[req.inputs.depth].imageView;
+        fi.motion = dw.imgs[req.inputs.motion].imageView;
+        fi.render_width = req.inputs.render_width, fi.render_height = req.inputs.render_height;
+        fi.upscale_width = req.output_width, fi.upscale_height = req.output_height;
+        fi.motion_scale[0] = (float)req.inputs.render_width;
+        fi.motion_scale[1] = (float)req.inputs.render_height;
+        // (the jitter the game's own network used is not extracted yet, so this says no sub-pixel
+        // offset: the picture is a plumbing check, not FSR at its quality. Logged once so a report
+        // of a soft image is not mistaken for FSR behaving badly)
+        if (fsr3::upscale(cmd, fi)) {
+            static std::atomic<int> told{0};
+            if (told++ == 0)
+                logf("vk: fsr3 standing in for %016llx (jitter not extracted yet: the image is a "
+                     "plumbing check, not FSR's quality)", (unsigned long long)p.key);
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            blit.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+            vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
+                           VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
+            return true;
         }
     }
     return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
