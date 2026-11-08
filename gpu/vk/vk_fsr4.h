@@ -11,7 +11,7 @@
 
 namespace mkwvk {
 
-/// (Windows only) The loader DLL from RX_FSR4_DIR, else the executable's folder, else the game folder; an FSR 4.x upscaler for this device
+/// The loader DLL (Linux: a Vulkan FSR 4 library) from RX_FSR4_DIR, else the executable's folder, else the game folder; an FSR 4.x upscaler for this device
 /// among those it lists. Made at the first use (no instance or device extensions needed), once. True when there is one
 bool fsr4_available();
 const char* fsr4_reason();   // (why not, short: the menu and the log)

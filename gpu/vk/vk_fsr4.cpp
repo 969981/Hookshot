@@ -4,8 +4,6 @@
 // (vk_fsr4_upscaler.cpp), GPL-3.0-or-later.
 #include "vk_fsr4.h"
 
-#ifdef _WIN32   // (AMD's signed FSR 4 runtime is Windows only: elsewhere FSR is never available, below)
-
 #include "vk_paths.h"
 
 #include <chrono>
@@ -369,16 +367,3 @@ void fsr4_stop() {
 }
 
 }  // namespace mkwvk
-
-#else
-
-namespace mkwvk {
-bool fsr4_available() { return false; }
-const char* fsr4_reason() { return "Windows only"; }
-bool fsr4_evaluate(VkCommandBuffer, const DlssImage&, const DlssImage&, const DlssImage&, const DlssImage&, float, float, bool) {
-    return false;
-}
-void fsr4_stop() {}
-}  // namespace mkwvk
-
-#endif
