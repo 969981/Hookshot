@@ -158,7 +158,27 @@ Two outcomes, both useful:
 - **Three or four at one extent.** Guides may exist, and identifying which attachment is which becomes the same kind
   of work the input contract above already is.
 
-Until that log has been read off a run, this section states a question, not a conclusion.
+**The log has now been read, and the naive reading of it is the opposite of what was expected.** A
+240 s run of the opening (`RX_VK_MRT_CENSUS=1`, 136 distinct target sets, 491 presents) found that
+the game *does* bind multi-attachment passes:
+
+| sets | colour attachments | what they are |
+|---|---|---|
+| 103 | 1 | the main scene at 2048x1152 B10G11R11, the 2560x1440 RGBA8 sRGB present, and the UI |
+| 18 | 0 | depth-only passes |
+| 7 | **6** | 1x1 through 64x64, every attachment B10G11R11: six faces of a cubemap down a mip chain, so an environment or irradiance probe |
+| 6 | 2 | 170x96 and 384x216 R16F + R32F with D32; 341x192 and 768x432 RGBA16F + RGBA16F with D32; 480x270 two B10G11R11; 960x540 B10G11R11 + R8 |
+| 2 | 3 | 341x192 and 768x432, R32F + *undefined* + R16F with D32 (slot 1 unbound) |
+
+So the count alone does not settle it — the formats and extents do. A deferred G-buffer is three or
+four attachments **at the main render resolution** carrying albedo (an 8-bit or sRGB colour),
+packed normals (RGB10A2 or RG16) and roughness/metallic. Nothing here is that. The main scene is a
+*single* HDR target; every multi-attachment pass is either a cubemap face chain or a small
+post-process at a quarter resolution or less, in single-channel float or HDR pairs.
+
+**Conclusion: there are no albedo, normal or roughness guides to give a denoising upscaler, so Ray
+Reconstruction and Ray Regeneration remain inapplicable to this title** — but on the evidence above
+rather than on the absence of a target named "normal" in `gpu/`, which was never a sound argument.
 
 What *is* deliverable, and is what "the newest upscaling" means in practice on each vendor:
 
