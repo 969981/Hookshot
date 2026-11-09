@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include "vk_menu.h"
 #include <deque>
+#include <unordered_set>
 #include <unordered_map>
 #include <thread>
 
@@ -1996,6 +1997,62 @@ void memory_cpu_owned(uint64_t guest, uint64_t size) {
     }
 }
 namespace {
+// Small ranges the CPU reads back (nvnMemoryPoolInvalidateMappedRange, nvnBufferInvalidateMappedRange) are the GPU's results: from the first
+// invalidate on, a binding wholly inside one is bound in guest memory, not the mirror, so the GPU's writes land where the CPU reads them, as on
+// the console's coherent memory, with no write-back to copy them. The CPU's read still waits for the submission (wb_pages_note below). Only
+// small ranges: a shader reaching large bindings in imported memory is slow on some drivers. RX_VK_RB_DIRECT=0: mirrored and written back
+constexpr uint64_t kRbDirectMax = 64u << 10;
+std::mutex rb_direct_mu;
+std::unordered_set<uint32_t> rb_direct_pages;
+std::vector<uint32_t> rb_direct_pending;
+std::atomic<int> rb_direct_pending_n{0};
+std::atomic<int64_t> st_rb_direct_binds{0}, st_rb_direct_bytes{0};
+bool rb_direct_on() { static const bool on = [] { const char* e = getenv("RX_VK_RB_DIRECT"); return e ? atoi(e) != 0 : true; }(); return on && mirror_on(); }
+struct RbRange { std::atomic<uint64_t> lo, hi; };   // (hi 0: a free slot. Bindings read these without a lock)
+RbRange rb_direct_ranges[512];
+std::atomic<int> rb_direct_range_n{0};
+bool rb_direct_inside(uint64_t guest, uint64_t size) {
+    if (!size) return false;
+    const int n = rb_direct_range_n.load(std::memory_order_acquire);
+    for (int i = 0; i < n; i++) {
+        const uint64_t hi = rb_direct_ranges[i].hi.load(std::memory_order_acquire);
+        if (guest + size <= hi && guest >= rb_direct_ranges[i].lo.load(std::memory_order_relaxed)) return true;
+    }
+    return false;
+}
+/// (rb_direct_mu held) false: the list is full, so the range stays mirrored and written back
+bool rb_direct_range_add(uint64_t lo, uint64_t hi) {
+    const int n = rb_direct_range_n.load(std::memory_order_relaxed);
+    int slot = -1;
+    for (int i = 0; i < n; i++) {
+        const uint64_t h = rb_direct_ranges[i].hi.load(std::memory_order_relaxed);
+        if (h && rb_direct_ranges[i].lo.load(std::memory_order_relaxed) <= lo && hi <= h) return true;
+        if (!h && slot < 0) slot = i;
+    }
+    if (slot < 0 && n >= 512) return false;
+    const int at = slot < 0 ? n : slot;
+    rb_direct_ranges[at].lo.store(lo, std::memory_order_relaxed);
+    rb_direct_ranges[at].hi.store(hi, std::memory_order_release);
+    if (slot < 0) rb_direct_range_n.store(n + 1, std::memory_order_release);
+    return true;
+}
+/// (rb_direct_mu held) the ranges in [lo, hi) are forgotten: their memory is no longer this pool's
+void rb_direct_range_forget(uint64_t lo, uint64_t hi) {
+    const int n = rb_direct_range_n.load(std::memory_order_relaxed);
+    for (int i = 0; i < n; i++) {
+        const uint64_t h = rb_direct_ranges[i].hi.load(std::memory_order_relaxed);
+        if (h && h <= hi && rb_direct_ranges[i].lo.load(std::memory_order_relaxed) >= lo)
+            rb_direct_ranges[i].hi.store(0, std::memory_order_release);
+    }
+}
+void rb_direct_forget_pool(uint64_t lo, uint64_t hi) {
+    std::lock_guard lk(rb_direct_mu);
+    rb_direct_range_forget(lo, hi);
+    const auto inside = [&](uint32_t pg) { const uint64_t g = (uint64_t)pg << kPageShift; return g >= lo && g < hi; };
+    std::erase_if(rb_direct_pages, inside);
+    std::erase_if(rb_direct_pending, inside);
+    rb_direct_pending_n.store((int)rb_direct_pending.size(), std::memory_order_relaxed);
+}
 // (a write-back's runs with the replay's own words cut out of them: runs of p, offsets in the pool)
 void cut_cpu_words(const Pool& p, std::vector<VkBufferCopy>& runs) {
     std::lock_guard lk(cpu_words_mu);
@@ -2031,6 +2088,7 @@ std::deque<std::map<uint64_t, Pool>::node_type> retired_pools;
 
 void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     Pool* old = &it->second;
+    rb_direct_forget_pool(old->lo, old->hi);
     shadow_free(*old);   // (its write-backs in this submission, if any, copied whole)
     guest_pages_set(old->lo, old->hi, 0);
     old->retired_value = std::max(old->last_value, mem_rec_value);
@@ -2425,6 +2483,34 @@ struct BindMemo {
 };
 thread_local BindMemo bind_memo[256];
 
+void memory_rb_direct_note(uint64_t guest, uint64_t size) {
+    if (!rb_direct_on() || !size || size > kRbDirectMax) return;
+    std::lock_guard lk(rb_direct_mu);
+    const uint64_t lo = guest & ~0xFFFull, hi = (guest + size + 0xFFF) & ~0xFFFull;
+    if (!rb_direct_range_add(lo, hi)) {
+        static int full;
+        if (!full++) logf("vk: read-back direct: the range list is full");
+        return;
+    }
+    for (uint64_t pg = guest >> kPageShift; pg <= (guest + size - 1) >> kPageShift; pg++)
+        if (rb_direct_pages.insert((uint32_t)pg).second) {
+            rb_direct_pending.push_back((uint32_t)pg);
+            rb_direct_pending_n.fetch_add(1, std::memory_order_relaxed);
+        }
+}
+static void rb_direct_apply() {   // (the page table's entries for new direct pages: at a binding, in the recording's table updates)
+    ParLock plk;
+    std::lock_guard lk(pools_mu);
+    std::vector<uint32_t> v;
+    { std::lock_guard rk(rb_direct_mu); v.swap(rb_direct_pending); rb_direct_pending_n.store(0, std::memory_order_relaxed); }
+    for (uint32_t pg : v) {
+        const uint64_t g = (uint64_t)pg << kPageShift;
+        if (Pool* p = pool_of(g, 4096)) guest_pages_set(g, g + 4096, p->address + (g - p->lo));
+    }
+    static size_t total = 0, logged_at = 0;
+    total += v.size();
+    if (total >= logged_at + 1024) logged_at = total, logf("vk: read-back direct: %zu pages", total);
+}
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (written) texture_gpu_wrote(gpu, size);
     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
@@ -2446,6 +2532,22 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         const BindMemo& m = bind_memo[bind_slot(guest, size)];
         if (bind_memo_hit(guest, size, gpu_bind_stamp(), m.guest, m.size, m.stamp, m.ref.buffer != VK_NULL_HANDLE))
             return m.ref;
+    }
+    if (rb_direct_on()) {
+        if (rb_direct_pending_n.load(std::memory_order_relaxed)) rb_direct_apply();
+        const uint64_t g0 = guest;
+        if (rb_direct_inside(g0, size)) {
+            ParLock plk;
+            std::lock_guard lk(pools_mu);
+            Pool* p = pool_of(g0, size);
+            if (!p) return {};
+            if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+            if (written) wb_pages_note(g0, g0 + size, mem_rec_value);   // (the CPU's read waits for this submission)
+            const int64_t nb = ++st_rb_direct_binds;
+            st_rb_direct_bytes += (int64_t)size;
+            if (nb % 20000 == 1) logf("vk: read-back direct: %lld bindings, %.1f KB each", (long long)nb, st_rb_direct_bytes.load() / 1024.0 / nb);
+            return remember({p->buffer, g0 - p->lo, size, 0});
+        }
     }
     // (a read binding of a pool this thread found before and whose mirror is in use this submission or that has none,
     // without the lock: every thread's, the replay thread's too (each draw binds several uniform buffers: the pool's
@@ -2787,6 +2889,13 @@ bool mirror_make(Pool& pool) {
             da.buffer = p->mirror;
             const uint64_t ma = vkGetBufferDeviceAddress(dev.device, &da);
             guest_pages_set(p->lo, p->hi, ma);
+            if (rb_direct_on()) {
+                std::lock_guard rk(rb_direct_mu);
+                for (uint32_t pg : rb_direct_pages) {
+                    const uint64_t g = (uint64_t)pg << kPageShift;
+                    if (g >= p->lo && g < p->hi) guest_pages_set(g, g + 4096, p->address + (g - p->lo));
+                }
+            }
             if (getenv("RX_VK_LOG_ADDR"))
                 logf("vk: addr mirror %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)p->lo, (unsigned long long)p->hi,
                      (unsigned long long)ma, (unsigned long long)(ma + n));
