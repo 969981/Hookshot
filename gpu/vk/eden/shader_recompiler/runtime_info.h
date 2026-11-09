@@ -107,6 +107,8 @@ struct RuntimeInfo {
     bool mesh_fallback_task{};
     /// (hookshot) the fallback's record slots: mesh workgroups past this one write nothing
     u32 mesh_fallback_capacity{};
+    /// (hookshot) the task program's threads: a fallback mesh workgroup is the slot task workgroup * threads + its index in the task
+    u32 mesh_fallback_task_threads{1};
 
     TessPrimitive tess_primitive{};
     TessSpacing tess_spacing{};
