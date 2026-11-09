@@ -273,6 +273,11 @@ const char* tx_output_res(int v) {
     return b;
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
+const char* tx_fps_lock(int v) {
+    static const char* t[] = {"Off", "30 fps", "60 fps", "Unlimited"};
+    if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
+    return t[v];
+}
 const char* tx_text_speed(int v) {
     static const char* t[] = {"Normal", "2x", "4x", "Instant"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
@@ -490,6 +495,9 @@ Row rows[] = {
      false, true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
      hn_speed},
+    {TAB_GAMEPLAY, "Frame rate", &opts.fps_lock, 0, 3, 1, tx_fps_lock,
+     "Holds the game's frames at an even 30 or 60 per second; Unlimited never waits between presents, the world then moving "
+     "with the wall clock. Keep Game speed at Real time, or a locked rate slows the game itself down.", nullptr},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
     {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
