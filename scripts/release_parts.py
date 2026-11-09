@@ -209,6 +209,11 @@ def package(a):
         if os.path.isfile(os.path.join(a.amd_fsr, "LICENSE.txt")):
             copy(os.path.join(a.amd_fsr, "LICENSE.txt"), os.path.join(tools, "amd-fsr", "LICENSE.txt"))
         print("AMD FSR runtime: %d DLLs from %s" % (n, a.amd_fsr))
+    # (hookshot) the repository the release is from, for the Builder's updater and the game's update check (nx2/version.py)
+    if a.repository:
+        with open(os.path.join(tools, "repository.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(a.repository.strip() + "\n")
+        print("repository: %s" % a.repository.strip())
     print("package folder: %s" % out)
     return 0
 
@@ -233,6 +238,7 @@ def main():
     s.add_argument("--list")
     s.add_argument("--vk", help="(hookshot) a hookshot_vk.dll built by CI, into tools/prebuilt")
     s.add_argument("--amd-fsr", help="(hookshot) a folder holding AMD's amd_fidelityfx_*_vk.dll, into tools/amd-fsr")
+    s.add_argument("--repository", help="(hookshot) owner/name the release is from, into tools/repository.txt")
     a = p.parse_args()
     return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 

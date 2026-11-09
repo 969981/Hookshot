@@ -97,7 +97,7 @@ jobs:
         working-directory: builder/setup
         run: |
           "$LLVM_MINGW/bin/x86_64-w64-mingw32-windres" setup.rc -O coff -o "$RUNNER_TEMP/setup_rc.o"
-          "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -mwindows -municode setup.c "$RUNNER_TEMP/setup_rc.o" \
+          "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -mwindows -municode -DHOOKSHOT_REPOSITORY="\"$GITHUB_REPOSITORY\"" setup.c "$RUNNER_TEMP/setup_rc.o" \
             -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
           ls -l "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
 
@@ -134,7 +134,7 @@ jobs:
         run: >-
           python -I scripts/release_parts.py package "$RUNNER_TEMP/package"
           --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/HookshotBuilder-Setup.exe" ${PREVIOUS:+--list "$PREVIOUS"}
-          --vk "$RUNNER_TEMP/vk/hookshot_vk.dll" --amd-fsr "$RUNNER_TEMP/amd-fsr"
+          --vk "$RUNNER_TEMP/vk/hookshot_vk.dll" --amd-fsr "$RUNNER_TEMP/amd-fsr" --repository "$GITHUB_REPOSITORY"
 
       - name: Setup parts
         run: |

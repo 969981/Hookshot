@@ -21,8 +21,26 @@ import urllib.request
 import zipfile
 
 LIST_NAME = "hookshot-linux.txt"
-LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
-LATEST_API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
+
+
+def _repository():
+    """(hookshot) owner/name of the repository releases come from: repository.txt in the AppImage's tools (written by
+    scripts/linux/appimage.sh from the repository its CI ran in), else NotRexed/Hookshot. nx2/version.py's rule"""
+    import re
+    here = os.environ.get("HOOKSHOT_TOOLS") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    try:
+        with open(os.path.join(here, "repository.txt"), encoding="utf-8") as f:
+            name = f.readline().strip()
+        if re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", name):
+            return name
+    except OSError:
+        pass
+    return "NotRexed/Hookshot"
+
+
+REPOSITORY = _repository()
+LATEST_LIST = "https://github.com/%s/releases/latest/download/%s" % (REPOSITORY, LIST_NAME)
+LATEST_API = "https://api.github.com/repos/%s/releases/latest" % REPOSITORY
 
 
 class Part(object):

@@ -58,6 +58,28 @@ def fingerprint(root=ROOT):
     return h.hexdigest()[:8]
 
 
+DEFAULT_REPOSITORY = "NotRexed/Hookshot"
+
+
+def repository(root=ROOT):
+    """(hookshot) The GitHub repository this release came from, as owner/name: where the game's update check, the Builder's
+    updater and the setup look for releases. HOOKSHOT_REPOSITORY, else a repository.txt at the root (written when a release
+    is packaged, from the repository its CI ran in: scripts/release_parts.py package, scripts/linux/appimage.sh), else
+    NotRexed/Hookshot. A fork's release then updates from the fork, and a source build from this repository as before."""
+    name = os.environ.get("HOOKSHOT_REPOSITORY", "").strip()
+    if not name:
+        try:
+            with open(os.path.join(root, "repository.txt"), encoding="utf-8") as f:
+                name = f.readline().strip()
+        except OSError:
+            pass
+    return name if re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", name or "") else DEFAULT_REPOSITORY
+
+
+def repository_define(root=ROOT):
+    return '-DHOOKSHOT_REPOSITORY="%s"' % repository(root)
+
+
 def describe(root=ROOT):
     """'movie-sync (source 1a2b3c4d)': safe to pass as a C string literal on any command line."""
     text = "%s (source %s)" % (release(root), fingerprint(root))

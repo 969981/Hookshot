@@ -426,14 +426,21 @@ static void wanted_tag(char *out, size_t n) {
 /* (an update to a named release reads THAT release's list: the latest/download link can answer with the release before it for a
    while after a publish, and the setup then installed the old version again and started it with --fetched, which builds without
    checking: players pressed Update and stayed on v2.0.3, 2026-11-08) */
+/* (hookshot) the repository the setup installs from, owner/name: given by CI (.github/workflows/windows-builder.yml) from the
+   repository it builds in, so a fork's setup installs the fork's release */
+#ifndef HOOKSHOT_REPOSITORY
+#define HOOKSHOT_REPOSITORY "NotRexed/Hookshot"
+#endif
+#define HOOKSHOT_WIDEN2(s) L##s
+#define HOOKSHOT_WIDEN(s) HOOKSHOT_WIDEN2(s)
 static const char *manifest_url(void) {
     static char u[1024];
     const char *e = getenv("HOOKSHOT_SETUP_LIST");
     char tag[128];
     wanted_tag(tag, sizeof tag);
     if (e && *e) snprintf(u, sizeof u, "%s", e);
-    else if (tag[0]) snprintf(u, sizeof u, "https://github.com/NotRexed/Hookshot/releases/download/%s/hookshot-setup.txt", tag);
-    else snprintf(u, sizeof u, "%s", "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-setup.txt");
+    else if (tag[0]) snprintf(u, sizeof u, "https://github.com/" HOOKSHOT_REPOSITORY "/releases/download/%s/hookshot-setup.txt", tag);
+    else snprintf(u, sizeof u, "%s", "https://github.com/" HOOKSHOT_REPOSITORY "/releases/latest/download/hookshot-setup.txt");
     return u;
 }
 
@@ -490,7 +497,7 @@ static DWORD WINAPI work(LPVOID unused) {
     if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
-                   L"https://github.com/NotRexed/Hookshot/releases/latest"
+                   L"https://github.com/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/latest"
              : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                                L"This is on GitHub's side: try again in a few minutes, or later today."
                              : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");

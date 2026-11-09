@@ -44,6 +44,8 @@ L=$APPDIR/usr/lib/hookshot
 cp -a nx2 host LICENSE readme.md assets "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
+# (hookshot) the repository releases come from, for the update checks (nx2/version.py repository, builder/linux/linux_update.py)
+printf '%s\n' "${GITHUB_REPOSITORY:-NotRexed/Hookshot}" > "$T/repository.txt"
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
