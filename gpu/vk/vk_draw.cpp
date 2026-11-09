@@ -744,15 +744,23 @@ __declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkCom
 // outside it goes to whoever had the signal before, so the game's own crash report is unchanged)
 static thread_local sigjmp_buf fault_jmp;
 static thread_local volatile sig_atomic_t fault_armed;
-static struct sigaction fault_previous[2];
-static const int fault_signals[2] = {SIGSEGV, SIGBUS};
+static const int fault_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+static constexpr int fault_signal_count = (int)(sizeof fault_signals / sizeof fault_signals[0]);
+static struct sigaction fault_previous[fault_signal_count];
+
+static int fault_slot(int sig) {
+    for (int i = 0; i < fault_signal_count; i++) {
+        if (fault_signals[i] == sig) return i;
+    }
+    return 0;
+}
 
 static void on_driver_fault(int sig, siginfo_t* si, void* ctx) {
     if (fault_armed) {
         fault_armed = 0;
         siglongjmp(fault_jmp, 1);
     }
-    const struct sigaction* p = &fault_previous[sig == SIGSEGV ? 0 : 1];
+    const struct sigaction* p = &fault_previous[fault_slot(sig)];
     if ((p->sa_flags & SA_SIGINFO) && p->sa_sigaction) {
         p->sa_sigaction(sig, si, ctx);
     } else if (p->sa_handler && p->sa_handler != SIG_IGN && p->sa_handler != SIG_DFL) {
@@ -765,13 +773,15 @@ static void on_driver_fault(int sig, siginfo_t* si, void* ctx) {
 static void install_driver_fault_guard() {
     static std::once_flag once;
     std::call_once(once, [] {
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < fault_signal_count; i++) {
             struct sigaction sa;
             memset(&sa, 0, sizeof sa);
             sa.sa_sigaction = on_driver_fault;
             sa.sa_flags = SA_SIGINFO;
             sigemptyset(&sa.sa_mask);
-            sigaction(fault_signals[i], &sa, &fault_previous[i]);
+            if (sigaction(fault_signals[i], &sa, &fault_previous[i]) != 0) {
+                logf("vk: the driver fault guard could not take signal %d: a fault in it ends the game", fault_signals[i]);
+            }
         }
     });
 }
