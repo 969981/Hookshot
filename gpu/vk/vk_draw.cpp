@@ -4508,6 +4508,57 @@ void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkInd
     last_ib = {b, (uint64_t)offset, (uint32_t)type, true};
 }
 
+/// (hookshot) The view projection a scene draw read, composed from the two matrices its uniform
+/// buffer carries. RX_VK_VP_HUNT found the layout and docs/upscaling.md records it: 192 bytes at
+/// stage 5 slot 0, a 3x4 row-major view at +0 (its last row implied 0,0,0,1), the 4x4 projection at
+/// +48, and the viewport with its reciprocals at +112.
+///
+/// Taken from the draw rather than from a game object, because this is the matrix the depth was
+/// actually rendered with, which is what a reprojection needs. Read through ub_read, so it is the
+/// submitted uniform data and not live guest memory.
+struct SceneViewProjection {
+    float m[16]{};      ///< row major, projection times view
+    bool have = false;
+};
+SceneViewProjection scene_vp;
+
+/// Recognizes the buffer by its own contents rather than by a program key: the projection's m11 is
+/// 1/tan(fovy/2) and its last row makes w = -z. A buffer that does not look like that is left alone.
+static void capture_view_projection(const NvnState& s) {
+    for (int stage = 0; stage < kNvnStages; stage++) {
+        for (int slot = 0; slot < 16; slot++) {
+            const nvn_p_bind_buf& u = s.ubo[stage][slot];
+            if (!u.addr || u.size < 112) continue;
+            float f[28];
+            if (!ub_read(u.addr, f, sizeof f)) continue;
+            // (the projection at +48: f[12..27]. m11 = f[17], and f[26] = -1 with f[27] = 0 is w = -z)
+            if (!(f[17] > 0.5f && f[17] < 20.0f) || f[26] > -0.5f || f[27] != 0.0f) continue;
+            if (f[13] != 0.0f || f[14] != 0.0f || f[16] != 0.0f) continue;   // (a clean projection)
+            const float* v = f;          // the 3x4 view
+            const float* pr = f + 12;    // the 4x4 projection
+            float vp[16];
+            for (int r = 0; r < 4; r++) {
+                for (int c = 0; c < 4; c++) {
+                    float sum = 0;
+                    for (int k = 0; k < 4; k++) {
+                        // (the view's implied fourth row is 0,0,0,1)
+                        const float vk = k < 3 ? v[k * 4 + c] : (c == 3 ? 1.0f : 0.0f);
+                        sum += pr[r * 4 + k] * vk;
+                    }
+                    vp[r * 4 + c] = sum;
+                }
+            }
+            memcpy(scene_vp.m, vp, sizeof vp);
+            scene_vp.have = true;
+            static std::atomic<int> told{0};
+            if (told++ == 0)
+                logf("vk: the scene's view projection: stage %d slot %d, view at +0 and projection "
+                     "at +48 (m11 %.3f)", stage, slot, (double)f[17]);
+            return;
+        }
+    }
+}
+
 /// (hookshot) RX_VK_VP_HUNT=1: find the view projection a scene draw reads, by looking for a value
 /// only it can hold. The camera publishes tan(fovy/2) = 0.41421, so the projection's m11 is
 /// 1/0.41421 = 2.41421, and a row-major 4x4 keeps m11 five floats in. This scans each bound uniform
@@ -4559,6 +4610,7 @@ static void vp_hunt(const NvnState& s) {
 
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     vp_hunt(s);
+    capture_view_projection(s);
     PROF(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
@@ -5615,7 +5667,10 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (fsr_here && scene_depth.view && fsr3::supported() &&
         scene_depth.width == req.inputs.render_width && scene_depth.height == req.inputs.render_height) {
         camera_motion::Matrix vp{};
-        if (hos_oot_view_projection && hos_oot_view_projection(vp.m)) {
+        bool have_vp = scene_vp.have;
+        if (have_vp) memcpy(vp.m, scene_vp.m, sizeof vp.m);
+        else if (hos_oot_view_projection) have_vp = hos_oot_view_projection(vp.m) != 0;
+        if (have_vp) {
             const VkImageView motion = camera_motion::record(cmd, scene_depth.view, scene_depth.format,
                                                              scene_depth.width, scene_depth.height, vp);
             if (motion) {

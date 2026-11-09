@@ -12,7 +12,8 @@
 
 namespace mkwvk::camera_motion {
 
-/// A view projection, row major as the shader multiplies it.
+/// A view projection, row major. record() transposes it for the shader, which loads a mat4 column
+/// by column.
 struct Matrix {
     float m[16]{};
 };

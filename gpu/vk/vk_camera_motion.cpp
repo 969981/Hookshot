@@ -160,12 +160,20 @@ VkImageView record(VkCommandBuffer cmd, VkImageView depth, VkFormat depth_format
     }
     if (!g.pipeline || !make_target(width, height)) return VK_NULL_HANDLE;
 
+    // GLSL loads a mat4 from sixteen floats column by column, and everything here is row major, so
+    // both matrices go in transposed. Getting this wrong does not fail: it reprojects through the
+    // transpose, which looks like plausible motion pointing the wrong way.
+    const auto transpose_into = [](const float* src, float* dst) {
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++) dst[c * 4 + r] = src[r * 4 + c];
+    };
     Push push{};
-    if (!invert(view_projection.m, push.inverse_view_projection)) return VK_NULL_HANDLE;
+    float inverse_row[16];
+    if (!invert(view_projection.m, inverse_row)) return VK_NULL_HANDLE;
+    transpose_into(inverse_row, push.inverse_view_projection);
     // The first frame, and the frame after a reset, have nothing to reproject through: this frame's
     // matrix stands in, which makes the motion exactly zero rather than arbitrary.
-    memcpy(push.previous_view_projection, g.have_previous ? g.previous.m : view_projection.m,
-           sizeof push.previous_view_projection);
+    transpose_into(g.have_previous ? g.previous.m : view_projection.m, push.previous_view_projection);
     push.render_size[0] = (int32_t)width, push.render_size[1] = (int32_t)height;
     // (reversed depth: the far plane is 0. A format that is not reversed would want 1 here, and
     // nothing in this game has been seen using one)
