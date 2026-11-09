@@ -149,7 +149,7 @@
           </Grid>
 
           <Grid Grid.Row="4" Margin="0,12,0,0">
-            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/></Grid.ColumnDefinitions>
             <Grid VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
               <Border Width="16" Height="16" CornerRadius="8" Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
@@ -162,6 +162,20 @@
               <ComboBox x:Name="WorkerBox" Style="{StaticResource Choice}" IsEditable="False"
                         AutomationProperties.Name="Build workers" AutomationProperties.LabeledBy="{Binding ElementName=WorkerLabel}"
                         ToolTip="Automatic uses available memory and any existing worker override. More workers need more memory and may not be faster.">
+                <ComboBox.FocusVisualStyle>
+                  <Style TargetType="Control">
+                    <Setter Property="Template">
+                      <Setter.Value><ControlTemplate><Border BorderBrush="{StaticResource Brand}" BorderThickness="2" CornerRadius="10" Margin="-2"/></ControlTemplate></Setter.Value>
+                    </Setter>
+                  </Style>
+                </ComboBox.FocusVisualStyle>
+              </ComboBox>
+            </StackPanel>
+            <StackPanel Grid.Column="4">
+              <TextBlock x:Name="MemoryLabel" Style="{StaticResource Label}" Text="BUILD MEMORY (GB)"/>
+              <ComboBox x:Name="MemoryBox" Style="{StaticResource Choice}" IsEditable="False"
+                        AutomationProperties.Name="Build memory" AutomationProperties.LabeledBy="{Binding ElementName=MemoryLabel}"
+                        ToolTip="Automatic leaves free memory to your other programs. A number lets the compilers take that many GB together, even if your other programs need it: close them, or the PC may slow down.">
                 <ComboBox.FocusVisualStyle>
                   <Style TargetType="Control">
                     <Setter Property="Template">
