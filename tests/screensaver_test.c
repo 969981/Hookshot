@@ -71,6 +71,7 @@ static LONG InterlockedExchangeAdd(volatile LONG *target, LONG value) {
 }
 static void mouse_capture(HWND w, int on) { (void)w; (void)on; unexpected(); }
 static void set_fullscreen(HWND w, int on) { (void)w; (void)on; unexpected(); }
+static void hos_vk_note_key_press(unsigned key) { (void)key; unexpected(); }
 static BOOL SetWindowPos(HWND w, HWND after, int x, int y, int width, int height, UINT flags) {
     (void)w; (void)after; (void)x; (void)y; (void)width; (void)height; (void)flags; unexpected(); return FALSE;
 }
