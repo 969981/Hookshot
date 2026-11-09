@@ -83,6 +83,15 @@ The release is made with the workflow's `GITHUB_TOKEN`, and the builds are calle
 personal access token is needed. A pull request opened by `GITHUB_TOKEN` does not start other workflows, though, so
 the release pull request has no checks of its own: it changes only the changelog and the manifest.
 
+## The nightly prerelease
+
+Every push to `main` also updates `nightly`, the latest development build. Once the Linux AppImage and Windows builder
+workflows have built that commit, their release jobs move the `nightly` tag to it and replace the files of the
+`nightly` prerelease with the same four files a release has (`scripts/release_upload.sh nightly ...`). The notes name
+the commit and its date. It is a prerelease, never "latest", and not a version: `nightly` is not a `v*` tag, so
+release-please, `git describe` and the builder's update check ignore it. A run that finishes after a newer push leaves
+it alone. Its new parts go to `linux-parts` and `builder-parts`, like a release's.
+
 ## Pre-releases
 
 A release candidate (`2.1.0-rc.1`) is a prerelease on GitHub and never "latest". There are two ways to make one:
