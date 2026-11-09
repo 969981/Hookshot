@@ -1095,6 +1095,7 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
                 break;
             }
             st.module = make_module(spirv);
+            if (p->mesh && dev.mesh_fallback) st.spirv = std::move(spirv);
             ok = ok && st.module;
         }
         if (!ok) {
@@ -1347,6 +1348,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             st.info = task_t->program.info;
             st.module = make_module(spirv);
             st.vk_stage = VK_SHADER_STAGE_TASK_BIT_EXT;
+            if (dev.mesh_fallback) st.spirv = spirv;
             st.c1 = task->c1;
             p.stages.push_back(std::move(st));
         }
@@ -1379,6 +1381,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         ms.info = mesh_t->program.info;
         ms.module = make_module(mspirv);
         ms.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+        if (dev.mesh_fallback) ms.spirv = mspirv;
         ms.c1 = mesh.c1;
         p.stages.push_back(std::move(ms));
         if (fsc) {
@@ -1407,6 +1410,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             f.nvn_stage = 1;
             f.info = fs->program.info;
             f.module = make_module(fspirv);
+            if (dev.mesh_fallback) f.spirv = fspirv;
             f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
             f.c1 = fsc->c1;
             p.stages.push_back(std::move(f));
@@ -1439,7 +1443,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
 /// An NVN2 mesh program: the stages that write the internal stage buffer are its task (attribute writes only, when
 /// there are two) and mesh programs; a header-only stage, its per-primitive outputs (shader_lock held)
 const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[8]) {
-    if (!dev.mesh_shader) return nullptr;
+    if (!dev.mesh_shader && !dev.mesh_fallback) return nullptr;
     const std::vector<Code>& cs = codes_of(s);
     const Code *fsc = nullptr, *prim = nullptr, *task = nullptr, *mesh = nullptr;
     for (const Code& c : cs) {

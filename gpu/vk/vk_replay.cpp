@@ -1234,6 +1234,7 @@ void maybe_split(VkCommandBuffer& cmd) {
 // recorded out of order left one-frame black scenes in play, 48-93 in a walk through Kakariko against none on the
 // replay thread alone, at about the same frame rate here: 36-40 fps against 38-41)
 int par_threads() {
+    if (dev.mesh_fallback) return 0;   // shared GPU scratch is recorded/submitted in draw order
     static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 0, 0, 8);
     return n;
 }
@@ -3483,6 +3484,7 @@ uint64_t get_pushed() { return fence(); }
 bool replay_start() {
     menu_init();
     if (!memory_init() || !vma_init(instance_proc())) return false;
+    if (!mesh_fallback_init()) return false;   // reserve scratch before textures fill the device budget
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo tsi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
