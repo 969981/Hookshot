@@ -6317,10 +6317,15 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // hardware that can run it. RX_VK_FSR=1 therefore brings us in here on its own.
     // RX_VK_FSR wins where it is set, so a test run is not at the mercy of a saved ini; otherwise
     // the Insert menu's "Scene upscaler" row decides. Read once: the backends cache what they are.
-    static const bool fsr_wanted = []() {
-        if (const char* e = getenv("RX_VK_FSR")) return atoi(e) != 0;
-        return scene_upscaler() == 1;
+    // (hookshot) RX_VK_FSR cannot change while the process runs, so it is asked once; the Insert
+    // menu's Upscaling row can change at any moment, so it is asked every dispatch. That is what
+    // lets a player turn FSR on and see it on the next frame instead of the next launch. The
+    // backend's own supported() still caches the device's answer, which cannot change.
+    static const int fsr_env = []() {
+        const char* e = getenv("RX_VK_FSR");
+        return e ? (atoi(e) != 0 ? 1 : 0) : -1;
     }();
+    const bool fsr_wanted = fsr_env >= 0 ? fsr_env != 0 : scene_upscaler() == 1;
     // (hookshot) Both vendor backends ask their own question: FSR whether this device can run its
     // passes, DLSS whether this is an NVIDIA driver reporting Super Resolution with an NGX runtime
     // loaded. Each answers once and caches, so this costs nothing per dispatch. upscale::choose

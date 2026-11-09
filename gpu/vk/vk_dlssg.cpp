@@ -32,19 +32,23 @@ constexpr uint32_t kMaxMade = 3;   ///< (DLSS 4's multi-frame generation: up to 
 /// `RX_VK_DLSSG=<1-3>` asks for this backend and says how many frames to make between two of the
 /// game's. Off is the default and costs nothing.
 uint32_t asked() {
-    static const uint32_t n = []() -> uint32_t {
-        if (const char* e = getenv("RX_VK_DLSSG"); e && *e) {
-            const int v = atoi(e);
-            return v <= 0 ? 0u : (uint32_t)std::min(v, (int)kMaxMade);
-        }
+    // (hookshot) The switch cannot change while the process runs; the menu row can. Read once and
+    // every time respectively, so the setting takes effect while playing. (DLSS frame generation
+    // still needs its device extensions, which are chosen before the device exists -- so turning it
+    // on mid-game reaches a device that may not carry them, and vk_framegen.cpp falls back.)
+    static const int env = []() {
+        const char* e = getenv("RX_VK_DLSSG");
+        return e && *e ? std::max(0, atoi(e)) : -1;
+    }();
+    if (env >= 0) return (uint32_t)std::min(env, (int)kMaxMade);
+    {
         // Otherwise the Insert menu: "Made frames by" picks DLSS, and "Frame generation" says how
         // many frames there are to make -- one fewer than the multiplier, since the last of each
         // set is the game's own frame.
         // The native "Frame generation" row: how many frames, not which library (vk_fsr3fi.cpp).
         const int made = std::clamp(opts.framegen - 1, 0, (int)kMaxMade);
         return (uint32_t)made;
-    }();
-    return n;
+    }
 }
 
 struct Image {
@@ -280,19 +284,24 @@ void ngx_shutdown() {}
 
 } // namespace
 
-bool supported() {
+/// What this build and device can do, which cannot change while they run.
+bool capable() {
     static const bool yes = []() {
-        if (!asked()) return false;   // (RX_VK_DLSSG: nothing below runs unless it is asked for)
         if (!kHaveSdk) {
             logf("vk: dlssg: this build has no NGX SDK (RX_VK_DLSS_SDK), so frame generation is "
                  "unavailable; the renderer's own interpolation is unaffected");
             return false;
         }
         if (!ngx_available()) return false;
-        logf("vk: dlssg: frame generation is available, %u made frame(s) asked for", asked());
+        logf("vk: dlssg: frame generation is available on this device");
         return true;
     }();
     return yes;
+}
+
+bool supported() {
+    // Not cached, so the menu row takes effect on the next frame: see asked().
+    return asked() != 0 && capable();
 }
 
 size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {

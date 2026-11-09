@@ -184,9 +184,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
-     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Uses DLSS or FSR 3 where the card and "
-     "the build allow it, and the renderer's own blend otherwise -- you do not pick. Adds a little input delay, and fast "
-     "motion or camera cuts can show artifacts."},
+     "Makes extra frames between the game's own (2x up to 8x), for smoother motion, and takes effect as you change it. "
+     "Uses DLSS or FSR 3 where the card and the build allow it, and the renderer's own blend otherwise -- you do not "
+     "pick. Adds a little input delay, and fast motion or camera cuts can show artifacts."},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
      "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
     {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,

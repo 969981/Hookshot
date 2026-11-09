@@ -317,11 +317,15 @@ constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_RE
 /// `RX_VK_FSR_FG=<1-3>` asks for this backend and says how many frames to make between two of the
 /// game's. Off is the default and costs nothing: nothing below runs and nothing is logged.
 uint32_t asked() {
-    static const uint32_t n = []() -> uint32_t {
-        if (const char* e = getenv("RX_VK_FSR_FG"); e && *e) {
-            const int v = atoi(e);
-            return v <= 0 ? 0u : (uint32_t)std::min(v, (int)kMaxMade);
-        }
+    // (hookshot) RX_VK_FSR_FG cannot change while the process runs, so it is read once; the Insert
+    // menu's row can change at any moment, so it is read every time. That difference is the whole
+    // of what makes the setting take effect while playing instead of at the next launch.
+    static const int env = []() {
+        const char* e = getenv("RX_VK_FSR_FG");
+        return e && *e ? std::max(0, atoi(e)) : -1;
+    }();
+    if (env >= 0) return (uint32_t)std::min(env, (int)kMaxMade);
+    {
         // Otherwise the Insert menu: "Made frames by" picks FSR, and "Frame generation" says how
         // many frames there are to make -- one fewer than the multiplier, since the last of each
         // set is the game's own frame. The same shape dlssg uses, so the two rows mean one thing.
@@ -329,8 +333,7 @@ uint32_t asked() {
         // to make, not which library makes them. Both backends are asked, and vk_framegen.cpp
         // tries DLSS first, this second, and keeps its own blend for what neither takes.
         return (uint32_t)std::clamp(opts.framegen - 1, 0, (int)kMaxMade);
-    }();
-    return n;
+    }
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.
@@ -659,23 +662,27 @@ void clear_images(VkCommandBuffer cmd, std::initializer_list<const Image*> image
 
 } // namespace
 
-bool supported() {
+/// What this device can do, which cannot change while it runs: asked once and kept.
+bool capable() {
     static const bool yes = []() {
-        if (!asked()) return false;   // (RX_VK_FSR_FG: nothing below runs unless it is asked for)
         if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) {
             logf("vk: fsr3fi: no push descriptors");
             return false;
         }
         if (!formats_supported() || !features_supported()) return false;
-        logf("vk: fsr3fi: FSR frame interpolation is available, %u made frame(s) asked for",
-             asked());
-        if (asked() > 1)
-            logf("vk: fsr3fi: FSR 3.1's interpolation has no phase input, so the %u frames of a set "
-                 "are the same midpoint frame; only the pacing differs",
-                 asked());
+        logf("vk: fsr3fi: FSR frame interpolation is available on this device");
+        logf("vk: fsr3fi: FSR 3.1's interpolation has no phase input, so a set's frames are the "
+             "same midpoint frame; only the pacing differs");
         return true;
     }();
     return yes;
+}
+
+bool supported() {
+    // Deliberately not cached: `asked()` follows the menu, so a player turning frame generation on
+    // mid-game gets it on the next frame rather than the next launch. The device half above is the
+    // part that is worth asking once.
+    return asked() != 0 && capable();
 }
 
 uint32_t frames_wanted() {
