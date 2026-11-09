@@ -151,6 +151,22 @@ jobs:
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
 
+      - name: Configure the authored IMNMX immediate fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/imnmx_immediate -B ${{ runner.temp }}/imnmx-immediate
+          -DREPO_ROOT=${{ github.workspace }}
+          -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
+      - name: Build the IMNMX immediate fixture
+        run: cmake --build ${{ runner.temp }}/imnmx-immediate --parallel 2
+      - name: Check actual IMNMX dataflow through Maxwell CFG and IR
+        run: ${{ runner.temp }}/imnmx-immediate/imnmx_immediate ${{ runner.temp }}/imnmx-immediate/modules
+      - name: Validate every IMNMX immediate module
+        shell: bash
+        run: |
+          for module in "${{ runner.temp }}"/imnmx-immediate/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 "$module"
+          done
+
   actionlint:
     name: Workflow lint (actionlint)
     runs-on: ubuntu-24.04
