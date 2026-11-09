@@ -1514,9 +1514,14 @@ uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to th
 
 void destroy_later(Texture& tex) {
     destroy_gen++;
-    if (!bc_pending.empty())   // (hookshot-amd: its layers still to come, with it)
+    if (!bc_pending.empty()) {   // (hookshot-amd: its layers still to come, with it)
+        const size_t was = bc_pending.size();
         bc_pending.erase(std::remove_if(bc_pending.begin(), bc_pending.end(), [&](const BcPending& p) { return p.tex == &tex; }),
                          bc_pending.end());
+        if (bc_pending.size() != was)
+            logf("vk: BC3 texture %#llx %ux%u x%u: destroyed with deferred layers still to come", (unsigned long long)tex.gpu,
+                 tex.width, tex.height, tex.layers);
+    }
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     for (auto& kv : tex.views)
         if (kv.second) d.views.push_back(kv.second);
@@ -1922,8 +1927,15 @@ void texture_bc_continue() {
         const uint64_t tail0 = level_geo(t, 0).offset;
         Ranges r;
         for (uint32_t l : p.layers) r.push_back({(uint64_t)l * ls + tail0, (uint64_t)(l + 1) * ls});
+        const size_t before = bc_pending.size();
         upload_astc_gpu(t, p.total, &r);   // (what does not fit goes back on the list)
         t.last_value = rec_value;          // (its image is written by this recording's upload)
+        if (bc_pending.size() == before) {   // (nothing of it went back: its last layers are in)
+            static int64_t finished;
+            if (finished++ < 40 || finished % 200 == 0)
+                logf("vk: BC3 texture %#llx %ux%u x%u: its last %zu deferred layers are in (%lld finished so far)",
+                     (unsigned long long)t.gpu, t.width, t.height, t.layers, p.layers.size(), (long long)finished);
+        }
     }
     for (; i < todo.size(); i++) bc_pending.push_back(std::move(todo[i]));
 }
