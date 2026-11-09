@@ -8,12 +8,14 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <initializer_list>
 #include <utility>
 #include <cstdlib>
 #include <vector>
 
 #include "vk_fsr3.h"
+#include "vk_gprof.h"    // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_texture.h"   // (full_barrier: what the rest of the renderer uses between passes)
 
 #include "shaders/fsr3_accumulate_comp_spv.h"
@@ -378,10 +380,15 @@ void record_pass(VkCommandBuffer cmd, const Pipeline& p, const PassInfo& info, c
         w.pImageInfo = info_ptr;
         writes.push_back(w);
     }
+    // (one timed span per pass with RX_VK_PASS_TIMING=1, so the profiler's report gives GPU ms by
+    //  pass name. Nine passes costing half a second between them needs a number per pass, not
+    //  another hypothesis)
+    const bool timed = gprof_begin(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
     vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0,
                               (uint32_t)writes.size(), writes.data());
     vkCmdDispatch(cmd, std::max(1u, groups_x), std::max(1u, groups_y), 1);
+    if (timed) gprof_end(cmd, std::string("fsr3 ") + info.name);
     // (every pass reads what the one before it wrote)
     memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
