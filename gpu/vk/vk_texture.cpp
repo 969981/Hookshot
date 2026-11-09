@@ -27,6 +27,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -2953,16 +2954,24 @@ void texture_frame(uint64_t completed) {
         const uint64_t over = pressure - allowed / 10 * 9;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
-    if (known && !by_blocks && used > allowed / 100 * 97) {
+    // (hookshot) not while VMA's blocks hold an eighth of the allowance free: new images take that space, the driver's count does
+    // not grow, and what this evicts frees space inside the blocks that the count keeps. Ten frames later it squeezed again: a
+    // ratchet. On a 4 GB RX 5500M (3337 MB used of 3337, 1224 MB free in the blocks) a paused game, whose scene draws nothing,
+    // lost 1700 MB of textures in seconds, made again on unpausing (the long wait), and the HUD's drawn textures went with them.
+    // RX_VK_SQUEEZE_ALWAYS=1: as before
+    static const bool squeeze_always = getenv("RX_VK_SQUEEZE_ALWAYS") != nullptr;
+    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
+    if (known && !by_blocks && used > allowed / 100 * 97 && !room_in_blocks) {
         const uint64_t over = used - allowed / 100 * 97;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
     if (frame_no % 600 == 0) {
         vma_log_heaps();
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
-             "MB), %zu textures", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
+             "MB), %zu textures%s", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
              (unsigned long long)(block_free >> 20), (unsigned long long)(total_bytes >> 20),
-             (unsigned long long)(budget >> 20), textures.size());
+             (unsigned long long)(budget >> 20), textures.size(),
+             known && used > allowed / 100 * 97 && room_in_blocks ? " (at the driver's limit, room in the blocks: not squeezed)" : "");
         // (what takes it: decoded ASTC, the GPU's images, the rest; the largest)
         uint64_t astc_b = 0, rt_b = 0, other_b = 0, recent_b = 0, baked_b = 0;
         size_t baked_n = 0;
@@ -3140,12 +3149,43 @@ void texture_frame(uint64_t completed) {
         // tiled pattern over the Deku Tree's planks and Hyrule Field's path, with a 16 GB card's textures at the 6 GB budget
         // (issue 386). RX_VK_EVICT_NO_FLUSH=1: not written back, as before)
         static const bool no_flush = getenv("RX_VK_EVICT_NO_FLUSH") != nullptr;
+        bool written_back = false;
         if (!no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex) &&
             flush_texture(*tex, tex->gpu, tex->gpu + tex->guest_size)) {
+            written_back = true;
             static std::atomic<int64_t> flushed{0};
             if (++flushed % 50 == 1) logf("vk: textures the GPU drew, written back into their memory before eviction: %lld so far", (long long)flushed.load());
         }
         watch_tex(tex, "evicted");
+        // (hookshot) a small texture the GPU drew has its texels only in the image unless written back: made again, it comes
+        // back over storage the GPU rendered, not uploaded, and empty (the hearts as black glyphs on a 4 GB RX 5500M until an
+        // area change). Which ones go, and why the keep above passed them over: once a size and format (the dynamic resolution's
+        // transient targets filled 200 lines in the first minute), 400 lines
+        if (tex->gpu_written && !written_back && tex->bytes <= (4ull << 20)) {
+            static std::mutex told_mu;
+            static std::set<std::tuple<uint32_t, uint32_t, uint32_t>> told_kinds;
+            bool tell = false;
+            {
+                std::lock_guard lk(told_mu);
+                tell = told_kinds.size() < 400 && told_kinds.insert({tex->width, tex->height, tex->nvn_format}).second;
+            }
+            if (tell) {
+                const auto g = gpu_owned.find(tex->gpu);
+                const char* why = !tex->released ? (overwritten ? "live, drawn over" : flushable(*tex) ? "live, write-back failed"
+                                                                                      : "live, not flushable")
+                                  : !keep_finalized_max ? "keeping is off"
+                                  : !tex->first_written ? "never drawn"
+                                  : tex->first_written != tex->last_written ? "drawn in more than one frame"
+                                  : g == gpu_owned.end() ? "its storage no longer the GPU's"
+                                  : g->second.first != tex->gpu + std::max<uint64_t>(tex->guest_size, 1) ? "its storage's range changed"
+                                  : overwritten ? "drawn over"
+                                  : "over the cap";
+                logf("vk: texture #%u %#llx %ux%u x%u NVN %#x (%llu KB) the GPU drew at frames %llu-%llu evicted, unused for "
+                     "%llu frames, its texels lost: %s", tex->id, (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers,
+                     tex->nvn_format, (unsigned long long)(tex->bytes >> 10), (unsigned long long)tex->first_written,
+                     (unsigned long long)tex->last_written, (unsigned long long)(frame_no - last), why);
+            }
+        }
         if (remade_log_on()) {
             std::lock_guard lk(evicted_mu);
             if (evicted_at.size() > 20000) evicted_at.clear();   // (a bound: only the recent ones matter)

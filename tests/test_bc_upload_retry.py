@@ -34,6 +34,12 @@ def main():
     scratch = scratch[:scratch.index("\n}\n")]
     if "create_buffer(out, out_usage, false, bc_out, bc_out_alloc, nullptr, !pool)" not in scratch:
         raise SystemExit("the BC3 scratch's output buffer cannot go to system memory when the VRAM is full")
+    # (the driver's-limit squeeze stops while VMA's blocks hold room: evicting then freed nothing the driver counts, and it
+    # squeezed again every 10 frames, draining a paused game's textures)
+    squeeze = tex[tex.index("const bool room_in_blocks"):]
+    squeeze = squeeze[:squeeze.index("budget = std::min")]
+    if "block_free >= allowed / 8" not in squeeze or "&& !room_in_blocks)" not in squeeze:
+        raise SystemExit("the 97% squeeze runs whatever room VMA's blocks hold (a ratchet that drains a paused game's textures)")
     print("failed BC3 uploads are tried again, with their cause logged")
 
 
