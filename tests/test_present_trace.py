@@ -44,6 +44,7 @@ static int64_t hos_now_ns(void) { ++reads; return clock_now; }
 static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void realtime_step(int64_t now) { (void)now; ++steps; }
+static int fps_lock_wanted(void) { return 0; }   /* (the Frame rate row / HOS_FPS_LOCK: the fixture paces as Off) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static uint64_t hos_ticks(void) { return 0; }
 '''

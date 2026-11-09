@@ -193,6 +193,27 @@ static float text_scale(const char *env, int menu) {
     return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
 }
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
+volatile uint32_t hos_unl_step_bits = 0;   /* (the float bits of 60.0 times the wall time between frames, 0 off: nx2/oot_patches.py patch_unlimited_step) */
+volatile uint64_t hos_unl_step_probe = 0;  /* (the object that step reads, +0x2c8: compared with the module we hold) */
+volatile uint64_t hos_unl_step_probe2 = 0; /* (f_80706be0's this, whose +0xd58 accumulates the step: is the world clock keeping time?) */
+
+/* The Frame rate menu row (option 10: 0 Off, 1 is 30, 2 is 60, 3 Unlimited) or HOS_FPS_LOCK=<fps>, which wins for test runs:
+   the rate to hold the game's frames at, 0 the emulator's usual pacing, -1 no wait between presents at all. Read every frame:
+   the menu changes it while the game runs */
+static int fps_lock_wanted(void) {
+    int rx_option(int id, int otherwise);
+    static int env, env_done;
+    if (!env_done) {
+        env_done = 1;
+        const char* s = getenv("HOS_FPS_LOCK");
+        const int v = s ? (!strcmp(s, "unlimited") ? -1 : atoi(s)) : 0;
+        if (v == -1 || (v >= 15 && v <= 240)) env = v, env_done = 2;   /* (the environment wins for test runs) */
+    }
+    if (env_done == 2) return env;
+    const int row = rx_option(10, 0);
+    return row == 1 ? 30 : row == 2 ? 60 : row == 3 ? -1 : 0;
+}
+
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
@@ -235,9 +256,12 @@ static void realtime_step(int64_t now) {
     }
     const uint64_t mod = hos_gfx_module;
     if (!mod) return;
+    const int lock = fps_lock_wanted();
     {   /* (hookshot) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
            variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
-           HOS_FPS_LOG=1: what the game asks for, every 300 presents */
+           HOS_FPS_LOCK=<fps> (or the Frame rate menu row): the limiter held down at that rate instead (every frame, and
+           variable refresh stays off so the controller cannot raise it back): a fixed 30 for an outside frame generator to
+           build on, paced for real in hos_vi_native_presented. HOS_FPS_LOG=1: what the game asks for, every 300 presents */
         static int target = -1, log_on = -1;
         static long long n;
         if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = getenv("HOS_FPS_LOG") != NULL;
@@ -247,43 +271,91 @@ static void realtime_step(int64_t now) {
                     *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58), *(int *)GP(mod + 0x270 + 0x28),
                     *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30));
         if (target && *limit > 0 && *limit < target) *limit = target;
+        if (lock >= 15 && lock <= 240) *limit = lock, *(uint8_t *)GP(mod + 0x231) = 0;   /* (after the raise: the lock wins both ways) */
     }
     if (!rx_option(0, 1)) {   /* (the Insert menu: per frame) */
         int *slot = (int *)GP(mod + 0x2c8);
+        hos_unl_step_bits = 0;   /* (the engine's own math again) */
+        static long long n_pf;
+        if (!(n_pf++ % 300)) hos_log("vi: game speed per frame: nominal %d, lock %d", *slot, lock);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
         return;
     }
-    static int64_t last;
-    static double samples[5], carry;
-    static unsigned count, next;
-    static long long steps;
-    const double dt = (now - last) / 1e9;
-    last = now;
-    if (dt <= 0 || dt > 0.25) { count = next = 0; carry = 0; return; }   /* (a load: the average starts again) */
-    /* (HOS_REALTIME_WINDOW=<1-5>: frames averaged for the step; 1: each step the last frame's own time) */
-    static int window = -1;
-    if (window < 0) {
-        window = getenv("HOS_REALTIME_WINDOW") ? atoi(getenv("HOS_REALTIME_WINDOW")) : 5;
-        window = window < 1 ? 1 : window > 5 ? 5 : window;
+    /* (the game loop's own rate: how many of these presents go by in a second of wall time. The instantaneous
+       inter-frame time was measured before and lied during a free-running loop (9000 fps counted against the
+       158 fps actually shown at the title), and its average sat under 1 and pinned the step at 1/60 s: at 158 fps
+       that ran the world at 2.6 times speed. The loop is paced, so a count over a second is its rate) */
+    static int64_t win_at;
+    static long long win_calls, steps;
+    static double measured = 60.0;
+    win_calls++;
+    if (!win_at) win_at = now;
+    if (now - win_at >= 100000000LL) {   /* (counted every tenth of a second and smoothed: a whole-second window held the
+                                            stale step through the second while the rate moved (121..134 in game), which felt
+                                            like speed-up and slow-down waves; the count inside the window is what makes it
+                                            robust, the instantaneous inter-frame time lied in bursts) */
+        const double inst = win_calls * 1e10 / (double)(now - win_at);
+        measured += (inst - measured) * 0.5;
+        win_at = now, win_calls = 0;
     }
-    samples[next++ % window] = dt;
-    if (count < (unsigned)window) count++;
-    double sum = 0;
-    for (unsigned i = 0; i < count; i++) sum += samples[i];
-    double ratio = sum / count * 60.0 + carry;
-    ratio = ratio < 1.0 ? 1.0 : ratio > 4.0 ? 4.0 : ratio;
-    int fps = (int)(60.0 / ratio + 0.5);
-    fps = fps < 15 ? 15 : fps > 60 ? 60 : fps;
+    /* the engine stores this as 60/fps in integer math, so anything above 60 needs the value we choose */
+    const double rate = lock >= 15 && lock <= 240 ? (double)lock
+                      : measured < 15 ? 15.0 : measured;   /* no upper clamp: the step divides by the rate itself, and
+                                                               clamping it (at 480 while the loop ran 580) advanced the
+                                                               world 1.2x fast in light scenes -- those were the surges */
+    const int fps_raw = (int)(rate + 0.5);
+    /* (the rate fields the game reads of its own are integer 60/fps, so above 60 the written value means nothing unless the
+       host float carries the step: above 60 only when Unlimited is chosen (the row or HOS_FPS_LOCK) and the step is on.
+       The step is on by default (HOS_UNL_STEP=0 puts it away); nx2/oot_patches.py patch_unlimited_step must be in the
+       build for the float to be read at all, an older lift keeps the engine's integer step. Clamped otherwise: with the
+       Frame rate row Off the written rate is the old 15..60, a smoothed 61 on a paced 60 loop included) */
+    static int unl_on = -1;
+    if (unl_on < 0) unl_on = !getenv("HOS_UNL_STEP") || atoi(getenv("HOS_UNL_STEP"));
+    const int fps = fps_raw > 60 && !(unl_on && (lock == -1 || lock > 60)) ? 60 : fps_raw;
     int *slot = (int *)GP(mod + 0x2c8);
-    if (*slot < 15 || *slot > 60) {
+    const int was = *slot;   /* (what the game had put there this frame: whether our last frame's write survived) */
+    if (*slot >= 15 && *slot <= 9999) {
+        *slot = fps;
+        /* (Above 60 the game fast-forwards: every one of its rate fields stores 60/fps with an INTEGER divide
+           (f_8348c5c0: +0xfc = 60 / w20, f_83b6f370 the same for the vsync controller), so nothing above 60 is
+           expressible and the per-frame step floors at 1/60 s. The step itself is the divide of nx2/oot_patches.py
+           (patch_unlimited_step): hos_unl_step_bits carries 60.0 times the wall time between frames to it, and it
+           divides by nothing. At or under 60 it stays 0 and the engine's own 60/nominal runs. The step is on unless
+           HOS_UNL_STEP=0; the probe records the object the step reads, to check it is the module whose slot we hold) */
+        if (unl_on && fps > 60) {
+            /* (the world advances by the wall time between presents: unlike 60 over the counted loop rate, this is
+               exact whatever the pacing does -- the sum of elapsed times IS the elapsed time. The counted rate broke
+               on bursty loops: the menu presented in bursts and the count swung 2300..6700, which made the menu choppy
+               and its animations slow. A hitch clamps at 20 ms so a load stall skips time instead of warping the world) */
+            static int64_t prev_now;
+            double dt = prev_now ? (now - prev_now) / 1e9 : 1.0 / 60.0;
+            prev_now = now;
+            if (dt > 0.02) dt = 0.02;
+            else if (dt < 0.0002) dt = 0.0002;
+            const float r = (float)(60.0 * dt);
+            memcpy((void *)&hos_unl_step_bits, &r, 4);
+        } else
+            hos_unl_step_bits = 0;
+    }
+    else {   /* (the game's own 0 during a load: leave it be until it comes back) */
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
-        return;
     }
-    carry = ratio - 60.0 / fps;
-    carry = carry > 0.5 ? 0.5 : carry < -0.5 ? -0.5 : carry;
-    *slot = fps;
-    if (!(steps++ % 3000)) hos_log("vi: real-time step on: ratio %.3f, game's frame rate %d", ratio, fps);
+    if (!(steps++ % 300)) {
+        /* (the accumulated clock of f_80706be0 (the double at [this+0xd58]) grows by one step per call: over 300 frames
+           it must gain 300 / the loop rate seconds for the world clock to keep time with the wall; fps / 60 / 60 * 300
+           / fps = a 1/60 s fixed step, the fast-forward) */
+        static double accum_prev; static int64_t at_prev;
+        double accum = 0.0;
+        if (hos_unl_step_probe2) memcpy(&accum, GP(hos_unl_step_probe2 + 0xd58), 8);
+        const double per_sec = at_prev ? (accum - accum_prev) * 1e9 / (now - at_prev) : 0.0;
+        accum_prev = accum, at_prev = now;
+        hos_log("vi: real-time step on: wrote %d (measured %.1f fps, lock %d), nominal before was %d, "
+                "engine limiter %d, tick %d, step object %llx %s us, step bits %08x, clock %.2f s, clock keeps %.2fx wall, acc at %llx",
+                fps, measured, lock, was, *(int *)GP(mod + 0xfc), *(int *)GP(mod + 0x270 + 0x58),
+                (unsigned long long)hos_unl_step_probe, hos_unl_step_probe == mod ? "is" : "is not",
+                hos_unl_step_bits, accum, per_sec, (unsigned long long)(hos_unl_step_probe2 + 0xd58));
+    }
 }
 /* HOS_PRESENT_TRACE=<csv>: native game present-call returns, not GPU completion or display times.
    Uses the existing frame ID/clock; a forced stop can lose the last second of buffered present records. */
@@ -321,7 +393,15 @@ void hos_vi_native_presented(void) {
         if (ms < 0) ms = getenv("HOS_FRAME_SLEEP_MS") ? atoi(getenv("HOS_FRAME_SLEEP_MS")) : 0;
         if (ms) hos_sleep_ns(ms * 1000000LL);
     }
-    const int64_t period = 1000000000LL / 60 * present_interval, now = hos_now_ns();
+    /* (the Frame rate row / HOS_FPS_LOCK: the present-to-present period, so the acquire that paces the game loop waits a
+       full 1/fps: a steady 30 for an outside frame generator. The field the game's own limiter sleeps on stays 60: TOTK
+       rewrote it after every write we made there, so the pacing is done here instead) */
+    const int fps_lock = fps_lock_wanted();
+    const int64_t period = fps_lock > 0 ? 1000000000LL / fps_lock
+                       : fps_lock < 0 ? 1000000 : 1000000000LL / 60 * present_interval, now = hos_now_ns();
+                       /* (Unlimited: a 1 ms floor, not nothing. The menu free-ran at 6600 presents a second: the engine's
+                          per-frame work per tick piles up at that rate. One thousand is plenty of headroom above any real
+                          display, and the world step is the wall time between frames, so the floor costs no speed) */
     realtime_step(now);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;

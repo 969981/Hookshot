@@ -146,6 +146,44 @@ def patch_dynres(s):
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + DECL, 1)
 
 
+# The unlimited real-time step (host/nn_vi.c, the Frame rate row at Unlimited): f_80706be0 (main+0x6e6be0) is the engine's
+# per-frame clock: it steps by (30.0 or 60.0, +0x24f bit 0) / scvtf([x21,#0x2c8]) at main+0x6e6cc4 and accumulates that into
+# the double at [x19+0xd58]. Every rate field the engine has stores 60/fps with an integer divide (f_8348c5c0:
+# +0xfc = 60 / w20, f_83b6f370 the same for the vsync controller), so nothing above 60 fps is expressible: the slot
+# stays 60, the step floors at 1/60 s and at 200 fps the world runs 3x fast. hos_unl_step_bits: the host's float
+# (60.0 times the wall time between frames, clamped) taken instead of the divide when it is nonzero, 0 with the engine's
+# own math. hos_unl_step_probe: the object the step really reads (+0x2c8), which the host compares with the module it holds.
+STEP_HEAD = "void f_80706be0(Ctx *__restrict A64_NOESC c) {\n"
+STEP_OLD = ("{uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[1],4);memcpy(&_b,c->vreg[0],4);_z=(_a^_b)&0x80000000ULL;\n"
+            "    (void)_z;\n"
+            "    _v=a64_fpx_div32_div32(c,_a,_b);\n"
+            "    a64_vset64(c->vreg[8],_v);}")
+STEP_NEW = ("{uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[1],4);memcpy(&_b,c->vreg[0],4);_z=(_a^_b)&0x80000000ULL;\n"
+            "    (void)_z;\n"
+            "    hos_unl_step_probe = c->x[21];\n"
+            "    hos_unl_step_probe2 = c->x[19];\n"
+            "    _v = hos_unl_step_bits ? hos_unl_step_bits : a64_fpx_div32_div32(c,_a,_b);\n"
+            "    a64_vset64(c->vreg[8],_v);}")
+STEP_DECL = "extern volatile uint32_t hos_unl_step_bits;\nextern volatile uint64_t hos_unl_step_probe;\nextern volatile uint64_t hos_unl_step_probe2;\n"
+
+
+def patch_unlimited_step(s):
+    """The host float over the step divide of f_80706be0; None when the file has no such function, s unchanged when
+    the function is there but its code differs (another game version)."""
+    head = s.find(STEP_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(STEP_HEAD))
+    body = s[head:end if end >= 0 else len(s)]
+    if STEP_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(STEP_OLD) != 1:
+        return s
+    at = head + body.index(STEP_OLD)
+    s = s[:at] + STEP_NEW + s[at + len(STEP_OLD):]
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + STEP_DECL, 1)
+
+
 def patch_text_speed(s):
     """The scale at the head of the letters' block of f_80b1e140; None when the file has no such function, s unchanged when the
     function is there but its code differs (another game version)."""
@@ -173,7 +211,7 @@ def apply(gen, *, protect_hearts=False, required=False):
     The other patches only warn when their place is not found once."""
     import oot_native_resolution   # (HOS_SCENE_NATIVE=1: the scene's base scale 1.0; off by default since #849's output resolution)
     oot_native_resolution.apply(gen)
-    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0}
+    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "unlimited step": 0}
     if protect_hearts:
         done["player heart protection"] = 0
         done["player flight"] = 0
@@ -197,6 +235,11 @@ def apply(gen, *, protect_hearts=False, required=False):
         if n:
             done["fixed path's scale"] += 1
             print("oot_patches: the fixed path's scale in", os.path.basename(path))
+        u = patch_unlimited_step(out)
+        if u is not None and u != out:
+            out = u
+            done["unlimited step"] += 1
+            print("oot_patches: the unlimited step float in", os.path.basename(path))
         life = patch_life(out) if protect_hearts else None
         if life is not None:
             out = life

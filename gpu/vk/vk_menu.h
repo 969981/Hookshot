@@ -20,6 +20,8 @@ struct Options {
                           // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
+    int fps_lock = 0;     // the game's frames: 0 the emulator's usual pacing, 1 held at 30 per second, 2 at 60, 3 no wait at all
+                          // (host/nn_vi.c; HOS_FPS_LOCK): a steady 30 for an outside frame generator to build on
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
     int show_fps = 0;
