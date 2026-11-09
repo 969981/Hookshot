@@ -8,7 +8,8 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("failure", "launch", "long", "success", "warning", "pipe_fallback", "inherit_fallback", "null_fallback", "empty", "high_exit", "query")
+CASES = ("failure", "launch", "long", "success", "warning", "pipe_fallback", "inherit_fallback", "null_fallback", "empty", "high_exit", "query",
+         "capture_error", "max_paths")
 
 
 def extract(source):

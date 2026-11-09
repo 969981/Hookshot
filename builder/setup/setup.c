@@ -636,15 +636,20 @@ static DWORD WINAPI work(LPVOID unused) {
             GetSystemDirectoryW(sys, MAX_PATH);
             swprintf(tarcmd, 2 * MAX_PATH + 64, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", sys, zip, dest);
             RunResult tar = run_wait(tarcmd, dest);
-            if (tar.start_error) fail(L"Could not start Windows' tar.exe (Windows error %lu).\nDestination: %ls", tar.start_error, dest);
-            if (tar.status_error) fail(L"Could not read Windows' tar.exe exit status (Windows error %lu).\nDestination: %ls", tar.status_error, dest);
+            if (tar.start_error) fail(L"Could not start Windows' tar.exe (Windows error %lu).\nArchive: %ls\nDestination: %ls", tar.start_error, zip, dest);
+            if (tar.status_error) fail(L"Could not read Windows' tar.exe exit status (Windows error %lu).\nArchive: %ls\nDestination: %ls", tar.status_error, zip, dest);
             if (tar.code) {
                 wchar_t detail[512] = L"";
                 if (tar.capture_error) swprintf(detail, 512, L"Could not capture stderr (Windows error %lu).", tar.capture_error);
+                /* Best-effort UTF-8: tar may use an ANSI/OEM code page, or the byte cap may split a sequence. */
                 else MultiByteToWideChar(CP_UTF8, 0, tar.error, -1, detail, 512);
-                /* At most 511 diagnostic characters + MAX_PATH destination fit fail()'s 1024-wide message. */
-                fail(L"Unpacking part %d of %d failed: Windows' tar.exe exited with code %lu.\nDestination: %ls\nTar stderr (first 511 bytes):\n%ls",
-                     i + 1, nparts, tar.code, dest, detail);
+                wchar_t heading[1024] = L"";
+                swprintf(heading, 1024, L"Unpacking part %d of %d failed: Windows' tar.exe exited with code %lu.\nArchive: %ls\nDestination: %ls\n%ls:\n",
+                         i + 1, nparts, tar.code, zip, dest,
+                         tar.capture_error ? L"Stderr unavailable" : L"Tar stderr excerpt (up to 511 bytes captured)");
+                heading[1023] = 0;
+                /* Keep both paths; the displayed excerpt uses only the space left in fail()'s 1024-wide message. */
+                fail(L"%ls%.*ls", heading, (int)(1023 - wcslen(heading)), detail);
             }
             if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
                 wchar_t from[MAX_PATH], to[MAX_PATH], wf[260], wt[260];

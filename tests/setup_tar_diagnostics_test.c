@@ -50,7 +50,8 @@ static struct {
     DWORD code, error, pipe_error, inherit_error, null_error, launch_error, query_error;
     unsigned open, violation;
     int capturing, inherited, launched;
-    size_t offset, length;
+    size_t offset, length, converted_length;
+    wchar_t expected_zip[MAX_PATH], expected_destination[MAX_PATH];
     char data[20000];
 } state;
 #define BAD_IF(c) do { if (c) state.violation++; } while (0)
@@ -79,8 +80,10 @@ HANDLE CreateFileW(const wchar_t *name, DWORD access, DWORD share, SECURITY_ATTR
 BOOL CreateProcessW(const wchar_t *app, wchar_t *cmd, void *a, void *b, BOOL inherit, DWORD flags, void *env, const wchar_t *dir,
                     STARTUPINFOW *si, PROCESS_INFORMATION *pi) {
     BAD_IF(app || a || b || env || flags != CREATE_NO_WINDOW || si->cb != sizeof *si || si->wShowWindow != SW_HIDE);
-    BAD_IF(wcscmp(cmd, L"\"C:\\Windows\\System32\\tar.exe\" -xf \"C:\\authored cache\\part.zip\" -C \"Q:\\authored destination\\version.part\""));
-    BAD_IF(wcscmp(dir, L"Q:\\authored destination\\version.part"));
+    wchar_t expected[2 * MAX_PATH + 64];
+    swprintf(expected, 2 * MAX_PATH + 64, L"\"C:\\Windows\\System32\\tar.exe\" -xf \"%ls\" -C \"%ls\"", state.expected_zip, state.expected_destination);
+    BAD_IF(wcscmp(cmd, expected));
+    BAD_IF(wcscmp(dir, state.expected_destination));
     state.capturing = !!(si->dwFlags & STARTF_USESTDHANDLES);
     if (state.capturing) {
         BAD_IF(!inherit || !state.inherited || si->hStdInput != (HANDLE)(uintptr_t)16 || si->hStdOutput != si->hStdInput || si->hStdError != (HANDLE)(uintptr_t)2);
@@ -108,6 +111,7 @@ BOOL GetExitCodeProcess(HANDLE h, DWORD *code) {
 int MultiByteToWideChar(unsigned cp, DWORD flags, const char *text, int size, wchar_t *out, int cap) {
     BAD_IF(cp != CP_UTF8 || flags || size != -1);
     size_t n = strlen(text); if (n + 1 > (size_t)cap) return 0;
+    state.converted_length = n;
     for (size_t i = 0; i <= n; i++) out[i] = (unsigned char)text[i];
     return (int)n + 1;
 }
@@ -139,11 +143,15 @@ DWORD GetSystemDirectoryW(wchar_t *out, DWORD n) {
 }
 #endif
 
-static void extract_part(const wchar_t *target) {
-    wchar_t dest[MAX_PATH], zip[MAX_PATH] = L"C:\\authored cache\\part.zip";
+static void extract_part(const wchar_t *target, const wchar_t *archive) {
+    wchar_t dest[MAX_PATH], zip[MAX_PATH];
     wchar_t sys[MAX_PATH], tarcmd[2 * MAX_PATH + 64];
     int i = 0, nparts = 8;
     wcscpy(dest, target);
+    wcscpy(zip, archive);
+#ifndef REAL_CHILD
+    wcscpy(state.expected_destination, target), wcscpy(state.expected_zip, archive);
+#endif
     /* ACTUAL_CALL */
 }
 
@@ -168,7 +176,7 @@ int main(int argc, char **argv) {
     CHECK(CopyFileW(self, child, TRUE), "authored fake tar copy");
     HANDLE saved_in = GetStdHandle(STD_INPUT_HANDLE), saved_out = GetStdHandle(STD_OUTPUT_HANDLE);
     SetStdHandle(STD_INPUT_HANDLE, NULL); SetStdHandle(STD_OUTPUT_HANDLE, NULL);
-    if (!setjmp(failed)) extract_part(fake_system);
+    if (!setjmp(failed)) extract_part(fake_system, L"C:\\authored cache\\part.zip");
     SetStdHandle(STD_INPUT_HANDLE, saved_in); SetStdHandle(STD_OUTPUT_HANDLE, saved_out);
     CHECK(failure_seen, "real child exit must fail extraction");
     CHECK(wcsstr(message, L"exited with code 23"), "actual real child exit status");
@@ -183,6 +191,8 @@ int main(int argc, char **argv) {
 int main(int argc, char **argv) {
     CHECK(argc == 2, "case argument");
     const char *test = argv[1];
+    wchar_t target[MAX_PATH] = L"Q:\\authored destination\\version.part";
+    wchar_t archive[MAX_PATH] = L"C:\\authored cache\\part.zip";
     state.code = 23;
     strcpy(state.data, "authored tar diagnostic"); state.length = strlen(state.data);
     if (!strcmp(test, "launch")) state.launch_error = 5;
@@ -195,21 +205,33 @@ int main(int argc, char **argv) {
     else if (!strcmp(test, "empty")) state.length = 0;
     else if (!strcmp(test, "high_exit")) state.code = 0xc0000005UL;
     else if (!strcmp(test, "query")) state.query_error = 6;
+    else if (!strcmp(test, "capture_error")) state.pipe_error = 87;
+    else if (!strcmp(test, "max_paths")) {
+        for (int i = 3; i < MAX_PATH - 1; i++) target[i] = L'd', archive[i] = L'a';
+        target[MAX_PATH - 1] = archive[MAX_PATH - 1] = 0;
+        memset(state.data, 'x', sizeof state.data); memcpy(state.data, "authored tar diagnostic", 23); state.length = sizeof state.data;
+    }
     else CHECK(!strcmp(test, "failure"), "known case");
-    if (!setjmp(failed)) extract_part(L"Q:\\authored destination\\version.part");
+    if (!setjmp(failed)) extract_part(target, archive);
     CHECK(state.violation == 0 && state.open == 0, "command/flags/inheritance/drain order/handle cleanup unchanged");
     CHECK(state.launched == !state.launch_error, "actual child launch");
     if (!strcmp(test, "success") || !strcmp(test, "warning") || strstr(test, "fallback")) {
         CHECK(!failure_seen, "successful extractor stays successful even without capture");
     } else {
         CHECK(failure_seen && wcslen(message) < 1024, "bounded failure message");
-        CHECK(wcsstr(message, L"Q:\\authored destination\\version.part"), "actual destination retained");
+        CHECK(wcsstr(message, target), "actual destination retained");
+        CHECK(wcsstr(message, archive), "actual archive retained");
         CHECK(!wcsstr(message, L"space on C:"), "do not invent a full C drive");
         if (!strcmp(test, "launch")) CHECK(wcsstr(message, L"Could not start") && wcsstr(message, L"Windows error 5"), "launch error is not child exit");
         else if (!strcmp(test, "query")) CHECK(wcsstr(message, L"Could not read") && wcsstr(message, L"Windows error 6"), "unknown exit status is not invented");
         else {
             CHECK(wcsstr(message, !strcmp(test, "high_exit") ? L"exited with code 3221225477" : L"exited with code 23"), "actual unsigned child exit status");
-            if (strcmp(test, "empty")) CHECK(wcsstr(message, L"authored tar diagnostic"), "bounded child stderr retained");
+            if (!strcmp(test, "capture_error")) {
+                CHECK(wcsstr(message, L"Stderr unavailable") && wcsstr(message, L"Windows error 87"), "capture failure label and OS reason");
+                CHECK(!wcsstr(message, L"Tar stderr excerpt"), "capture error is not captured child stderr");
+            } else if (strcmp(test, "empty")) CHECK(wcsstr(message, L"authored tar diagnostic"), "bounded child stderr retained");
+            if (!strcmp(test, "long") || !strcmp(test, "max_paths")) CHECK(state.converted_length == 511, "511-byte capture unchanged");
+            if (!strcmp(test, "max_paths")) CHECK(wcsstr(message, L"excerpt") && wcslen(message) == 1023, "full paths with bounded displayed excerpt");
         }
     }
     printf("PASS %s\n", test); return 0;
