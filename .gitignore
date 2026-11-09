@@ -17,6 +17,7 @@ gamefile/
 *.xcz
 
 # ---- build output and caches ----
+node_modules/
 build/
 __pycache__/
 *.pyc

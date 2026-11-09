@@ -80,19 +80,27 @@ Every push to `main` or `next` runs the [Release workflow](../.github/workflows/
 2. takes the highest bump in the table above;
 3. runs `scripts/changelog.py` to put the new entry at the top of `changelog.txt`;
 4. commits `changelog.txt` as `chore(release): <version> [skip ci] [skip release]`;
-5. tags the release commit. The tag starts the Linux AppImage and Windows builder workflows: the first to finish makes
-   the GitHub release, and each attaches its files (the AppImage; `HookshotBuilder.exe`, the setup, and
-   `hookshot-setup.txt`, with the new parts in the `builder-parts` release). `scripts/release_upload.sh` is shared by both.
+5. tags the release commit and makes the GitHub release, with semantic-release's notes (a prerelease from `next`);
+6. starts the Linux AppImage and Windows builder workflows on the new tag (`workflow_dispatch`), which attach their
+   files: `Hookshot-<tag>-x86_64.AppImage` and `hookshot-linux.txt`; `HookshotBuilder.exe` (the setup) and
+   `hookshot-setup.txt`, with the new parts in the `linux-parts` and `builder-parts` releases.
+   `scripts/release_upload.sh` is shared by both.
 
 A merge with no releasable commit (only docs, chores, and so on) makes no release. A release is never edited by hand,
 never re-tagged and never deleted. Require the *Game-free source regressions* workflow on `main` and `next` (branch
 protection): the release then runs for a commit whose tests have passed.
 
-The workflow pushes back to the repository, so it needs a token with `contents: write` that may bypass `main`'s branch
-protection. Use a `RELEASE_TOKEN` secret (a fine-grained personal access token) rather than the built-in
-`GITHUB_TOKEN`: a tag pushed with `GITHUB_TOKEN` does not start another workflow, and the Linux AppImage and Windows
-builder workflows publish the release from the tag. With only `GITHUB_TOKEN`, build both with `workflow_dispatch` and
-create the release by hand.
+The builds are started by the Release workflow because a tag pushed with `GITHUB_TOKEN`, or one on a `[skip ci]`
+commit like the release commit, starts no workflow by itself. A tag pushed by hand (`v2.0.7-rc.1`) starts both builds
+as before, and the first to finish makes the release with GitHub's generated notes. To attach a release's files again,
+run the two workflows on its tag (the Actions tab, or `gh workflow run linux-appimage.yml --ref <tag>`): files already
+there are replaced. Set the repository variable `CI_RELEASE_WINDOWS` to `false` to upload the Windows files by hand
+instead.
+
+The workflow pushes back to the repository, so it needs a token with `contents: write`. `GITHUB_TOKEN` is enough while
+`main` (and `next`) have no branch protection that stops it. Once they do, add a `RELEASE_TOKEN` secret (a fine-grained
+personal access token with `contents: write` on this repository, allowed to bypass the protection); the workflow
+prefers it when it is set.
 
 ## The first tag: 0.1.0
 

@@ -23,7 +23,8 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "python3 scripts/changelog.py ${nextRelease.version} ${lastRelease.gitTag}"
+        "prepareCmd": "python3 scripts/changelog.py ${nextRelease.version} ${lastRelease.gitTag}",
+        "publishCmd": "echo \"tag=${nextRelease.gitTag}\" >> \"$GITHUB_OUTPUT\""
       }
     ],
     [
@@ -33,6 +34,14 @@
           "changelog.txt"
         ],
         "message": "chore(release): ${nextRelease.version} [skip ci] [skip release]\n\n${nextRelease.notes}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "successComment": false,
+        "failComment": false,
+        "releasedLabels": false
       }
     ]
   ]

@@ -1,6 +1,6 @@
-# The version, tag and changelog entry for a push to main (stable) or next (release candidates). The tag starts the
-# Linux AppImage and Windows builder workflows, which publish the GitHub release with their files. The rules and the one-time v0.1.0 tag are in
-# docs/versioning.md. No game data is involved.
+# The version, tag, changelog entry and GitHub release for a push to main (stable) or next (release candidates), then
+# the Linux AppImage and Windows builder workflows on the new tag, which attach their files to that release. The rules
+# and the one-time v0.1.0 tag are in docs/versioning.md. No game data is involved.
 name: Release
 
 on:
@@ -21,25 +21,27 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # (the release commit and the tag are pushed back)
+    # (the release commit and the tag are pushed back, and the GitHub release is made)
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # the last release tag and the commits since it are part of the analysis
           fetch-depth: 0
-          # the release commit and the tag are pushed with this token; RELEASE_TOKEN lets the tag start the AppImage
-          # and Windows builder workflows, which publish the GitHub release
+          # the release commit and the tag are pushed with this token (RELEASE_TOKEN when main is protected)
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
 
+      # (the versions in package-lock.json: the conventionalcommits preset is a plugin dependency, not a bundled one)
       - name: Release tooling
-        run: npm install --no-audit --no-fund --ignore-scripts
+        run: npm ci --no-audit --no-fund --ignore-scripts
 
       # semantic-release starts at 1.0.0 when it finds no tag. The first version is 0.1.0, tagged by hand on the merge
       # that introduces the scheme, so nothing is released before that tag exists.
@@ -53,11 +55,38 @@ jobs:
             echo "::notice::No version tag yet. Tag the first release by hand (docs/versioning.md)."
           fi
 
-      # RELEASE_TOKEN is a fine-grained personal access token with contents: write. It is preferred over GITHUB_TOKEN
-      # because a tag pushed by GITHUB_TOKEN does not start the workflows that publish the release.
-      # Without the secret, run them by hand and attach their artifacts.
+      # The tag, the release commit and the GitHub release with the notes (a prerelease from next). The new tag is this
+      # step's output (.releaserc.json's publishCmd); nothing is written when the commits make no release.
+      # RELEASE_TOKEN is a fine-grained personal access token with contents: write, needed only if main's protection
+      # stops GITHUB_TOKEN from pushing the release commit.
       - name: semantic-release
+        id: release
         if: steps.first.outputs.released == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: npx semantic-release
+
+  # The tag's builds, which attach their files to the release (scripts/release_upload.sh): the AppImage and
+  # hookshot-linux.txt; HookshotBuilder.exe and hookshot-setup.txt. They are started here because a tag pushed with
+  # GITHUB_TOKEN, or on a [skip ci] commit like the release commit, starts no workflow; a workflow_dispatch does. On the
+  # tag's ref they run exactly as on a pushed tag. To attach the files again, run them again on the tag (Actions tab, or
+  # gh workflow run linux-appimage.yml --ref <tag>): the files are replaced.
+  builds:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - name: Linux AppImage and Windows builder on the tag
+        run: |
+          for workflow in linux-appimage.yml windows-builder.yml; do
+            gh workflow run "$workflow" --ref "$TAG"
+            echo "started $workflow on $TAG"
+          done
+          echo "::notice::$TAG: the Linux AppImage and Windows builder workflows attach the release's files."
