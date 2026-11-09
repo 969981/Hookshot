@@ -43,6 +43,8 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c, option 18)
+    int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c, option 19)
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;

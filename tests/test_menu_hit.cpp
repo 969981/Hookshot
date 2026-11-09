@@ -32,6 +32,14 @@ int main() {
     CHECK("[Q / LB] is the previous tab", at(40, 60, 1).part == kTabPrev);
     CHECK("[E / RB] is the next tab", at(450, 60, 1).part == kTabNext);
     CHECK("the title is no control", at(100, 20, 1).part == kNone);
+    // four tabs (Graphics, Audio, Gameplay, Controls): slots of 77 from 85
+    auto tab4 = [&](int x) { return options(x, 60, 1, w1, h1, 4, 11, value_l, slider); };
+    CHECK("4 tabs: tab 0", tab4(100).part == kTab && tab4(100).index == 0);
+    CHECK("4 tabs: tab 1", tab4(200).part == kTab && tab4(200).index == 1);
+    CHECK("4 tabs: tab 2", tab4(250).part == kTab && tab4(250).index == 2);
+    CHECK("4 tabs: tab 3", tab4(350).part == kTab && tab4(350).index == 3);
+    CHECK("4 tabs: the last slot's slack is tab 3", tab4(394).part == kTab && tab4(394).index == 3);
+    CHECK("4 tabs: [E / RB]", tab4(395).part == kTabNext);
 
     // ---- scale 1: the rows (from 84, 28 high) ----
     h = at(30, 84 + 3 * 28 + 10, 1);
