@@ -159,6 +159,8 @@ with `--update <game folder>`.
 - Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
   earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
   arguments](#running-the-game-from-the-command-line)).
+  To carry on with a save from an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see
+  [using a save from an emulator](docs/saves.md).
 - To uninstall, delete the game folder, the builder's folder and the shortcuts.
 
 ### If something goes wrong
@@ -240,7 +242,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Frame generation | Off, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
 | | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size) | Auto |
-| | Output resolution | 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
 | | Upscaling | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -269,8 +271,10 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
 - **Output resolution** is the size of the game's whole frame, HUD included, before it is scaled to your window.
-  Resolution is a share of it, and its row shows the size for the output you chose. Docked only. At 3840x2160 the game's
-  render targets get a bigger GPU pool, so a full-size 3D fits. `HOS_OUTPUT_RES=0/1/2` sets it for one run.
+  On a 1920x1080 display, the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them
+  pixel for pixel. The separate **Resolution** setting scales the 3D scene as a share of the output size. Docked only.
+  At 3840x2160 the game's render targets get a bigger GPU pool so full-size 3D fits. For one run, set `HOS_OUTPUT_RES`
+  to `3` for 1920x1080, `0` for 2048x1152, `1` for 2560x1440, or `2` for 3840x2160.
 - **Upscaling** and **Sharpness** also work when Frame generation is Off.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
