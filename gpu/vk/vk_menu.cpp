@@ -390,6 +390,7 @@ void apply_preset(int p) {
     }
     // (the Upscaler is the player's: a preset never turns DLSS on or off. With DLSS its resolution is DLSS's nearest mode)
     if (p > 0) opts.resolution = ur::snap(upscaler(), opts.resolution);
+    opts.budget = p;   // (Custom chosen on this row: no budget, as before)
     sync_preset_budgets(p);
 }
 
@@ -861,6 +862,7 @@ void save() {
         for (const Row& r : rows)
             if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
+        if (opts.budget > 0) fprintf(f, "memory_budget=%d\n", opts.budget);   // (not a row: the budgets Custom keeps)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load)
         fprintf(f, "options_version=3\n");
@@ -899,8 +901,9 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
         if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
+            // (Custom, with the memory budgets of the preset it came from: they went with it, and Low (6GB) then a Resolution
+            // step left a 6 GB card without its texture cap, past its VRAM, and Streamline refused DLSS frames)
             opts.preset = 0; // Custom
-            sync_preset_budgets(0);
         }
     }
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
@@ -1644,6 +1647,7 @@ void menu_init() {
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
+            if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5);
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
@@ -1671,7 +1675,8 @@ void menu_init() {
         opts.upscale = 0;
         opts.sharpness = 0;
     }
-    if (opts.preset > 0) sync_preset_budgets(opts.preset);
+    if (opts.preset > 0) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
+    sync_preset_budgets(opts.budget);
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
     if (const char* e = getenv("RX_VK_UPSCALE"))
