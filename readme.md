@@ -203,10 +203,12 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home button (or Select and Start together).
 The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
-a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
-(<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own, what the
-value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the right
-one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
+a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
+change it (<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own,
+what the value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the
+right one closes the menu. The mouse is free while the menu is open: click a tab, click the left or right half of a
+value to lower or raise it, drag a slider, turn the wheel over a value to change it, and right-click to go back. Your
+choices are saved in `hookshot_options.ini` in the game folder.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
 restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
