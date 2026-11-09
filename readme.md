@@ -199,7 +199,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
-| | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
+| | Mouse sensitivity | 0.10 to 15.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |

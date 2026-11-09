@@ -208,7 +208,7 @@ Row rows[] = {
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
      "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
      "the right stick, with its curve and top speed."},
-    {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
+    {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 1500, 10, tx_sens,   // (to 15: issue 832)
      "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
      "degree a count. The - and = keys change it in the game too."},
     {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
@@ -918,7 +918,7 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 
 void menu_option_set(int id, int value) {
     if (id != 7) return;
-    opts.mouse_sens = std::min(std::max(value, 10), 500);   // (the keys work while the menu is closed: it shows it when opened)
+    opts.mouse_sens = std::min(std::max(value, 10), 1500);   // (the keys work while the menu is closed: it shows it when opened)
     save();
 }
 

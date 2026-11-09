@@ -16,7 +16,7 @@ def read(*parts):
 def main():
     menu, replay, api = read("gpu", "vk", "vk_menu.cpp"), read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
     hid, native, backend = read("host", "nn_hid.c"), read("host", "mouse_native.c"), read("host", "rx_backend.c")
-    for row in ('"Mouse sensitivity", &opts.mouse_sens, 10, 500,', '"Invert mouse vertical", &opts.mouse_invert, 0, 1,'):
+    for row in ('"Mouse sensitivity", &opts.mouse_sens, 10, 1500,', '"Invert mouse vertical", &opts.mouse_invert, 0, 1,'):
         if row not in menu:
             raise SystemExit("the menu lost a mouse row: " + row)
     if "id == 7 ? opts.mouse_sens" not in replay or "id == 8 ? opts.mouse_invert" not in replay:
@@ -33,6 +33,9 @@ def main():
         raise SystemExit("HOS_MOUSE_SENS no longer wins over the menu")
     if "rx_option(8, 0)" not in hid or "rx_option(8, 0)" not in native:
         raise SystemExit("the menu's inversion is not read by both mouse paths")
+    # (issue 832) one top, 15, for the row, the - and = keys and the option the keys set
+    if "std::min(std::max(value, 10), 1500)" not in menu or "if (hos_mouse_sens > 15) hos_mouse_sens = 15;" not in keys:
+        raise SystemExit("the menu's row, its option_set and the - and = keys stop the sensitivity at different tops")
     if "r.value != &opts.mouse_sens" not in menu:
         raise SystemExit("a mouse setting turns the quality preset to Custom")
     print("PASS: the mouse's settings are the menu's")

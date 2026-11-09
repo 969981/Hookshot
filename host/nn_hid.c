@@ -87,7 +87,7 @@ static void mouse_sens_keys(void) {
     if ((minus && !prev_minus) || (plus && !prev_plus)) {
         hos_mouse_sens *= minus && !prev_minus ? 0.8 : 1.25;
         if (hos_mouse_sens < 0.1) hos_mouse_sens = 0.1;
-        if (hos_mouse_sens > 5) hos_mouse_sens = 5;
+        if (hos_mouse_sens > 15) hos_mouse_sens = 15;   /* (the menu row's top: issue 832, 5 was too slow for some mice) */
         if (from_env) mouse_sens_save();
         else rx_option_set(7, (int)lround(hos_mouse_sens * 100));
     }
