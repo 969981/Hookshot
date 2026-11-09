@@ -76,6 +76,24 @@ class NgxRuntimeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(oot_jitter.wanted())
 
+    def test_fsr_build_and_its_jitter(self):
+        """--fsr: HOOKSHOT_FSR=1 for nx2/build.py and the camera jitter in the lift; an --update of that folder keeps it (its
+        mark), --no-fsr takes it out"""
+        out = str(self.out)
+        mark = self.out / make_game.FSR_MARK
+        plain = SimpleNamespace(fsr=False, no_fsr=False, update=None)
+        self.assertFalse(make_game.fsr_wanted(plain, out))
+        self.assertTrue(make_game.fsr_wanted(SimpleNamespace(fsr=True, no_fsr=False, update=None), out))
+        update = SimpleNamespace(fsr=False, no_fsr=False, update=out)
+        self.assertFalse(make_game.fsr_wanted(update, out))
+        mark.write_text("")
+        self.assertTrue(make_game.fsr_wanted(update, out))
+        self.assertFalse(make_game.fsr_wanted(SimpleNamespace(fsr=False, no_fsr=True, update=out), out))
+        self.assertFalse(make_game.fsr_wanted(plain, out))   # (a new build without --fsr: the mark is for --update only)
+        source = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        if 'if ngx_built() or os.environ.get("HOOKSHOT_FSR") == "1":' not in source:
+            self.fail("make_game.py: the camera jitter (OOT_DLSS_JITTER) is not in a build with FSR")
+
     def test_linux_runtime(self):
         self.sdk_files("linux")
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")

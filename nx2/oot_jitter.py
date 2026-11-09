@@ -1,6 +1,7 @@
-"""NVIDIA DLSS's camera jitter for Ocarina of Time 1.1.1: C added after a few instructions of the game (a64_lift.py Lifter.after).
+"""The temporal upscalers' camera jitter for Ocarina of Time 1.1.1 (NVIDIA DLSS, AMD FSR 4): C added after a few instructions of
+the game (a64_lift.py Lifter.after).
 
-DLSS (gpu/vk/vk_dlss.cpp) resolves detail finer than a pixel from frames whose camera moved by a different fraction of a
+DLSS and FSR (gpu/vk/vk_temporal.cpp) resolve detail finer than a pixel from frames whose camera moved by a different fraction of a
 pixel each time. The game's cameras do not move so: these sites give the scene's projection a sub-pixel offset each frame,
 in the GPU's copy only. The game fills each view's uniform buffers in one function (main+0x6bc520): for each view it loads
 the view's projection matrix (the view at x28, its projection's rows at +0x1a8) and writes it, the view-projection made from
@@ -15,13 +16,13 @@ moved by a sixth of a shadow texel each frame (up to a third; 0.003 without the 
 the game set it.
 
 host/rx_backend.c hos_dlss_jitter_clip picks the jitter and checks the projection is one of the picture's: perspective, of
-16:9 or the window's ratio (nx2/oot_wide.py). It is none (the game as shipped) unless DLSS runs, and the renderer reads the
+16:9 or the window's ratio (nx2/oot_wide.py). It is none (the game as shipped) unless DLSS or FSR runs, and the renderer reads the
 offset back from the camera's uniform buffer. Which view is the scene's, the renderer learns from its draws, too late for
 this: the other views of the picture's ratio (a reflection, a portrait) are drawn without DLSS and move by under a pixel
 of the scene's size, too little to see.
 
-Installed only in a build with NVIDIA's DLSS SDK (make_game.py sets OOT_DLSS_JITTER=1 for the lift then): other builds have
-none of this code.
+Installed only in a build with NVIDIA's DLSS SDK or with AMD FSR 4 (make_game.py sets OOT_DLSS_JITTER=1 for the lift then):
+other builds have none of this code.
 """
 
 import os
@@ -49,7 +50,8 @@ def _text(xreg, yreg):
 
 
 def wanted():
-    """A build with NVIDIA DLSS (make_game.py: HOOKSHOT_NGX_SDK with its library): OOT_DLSS_JITTER=1, in the lift's key"""
+    """A build with NVIDIA DLSS (make_game.py: HOOKSHOT_NGX_SDK with its library) or AMD FSR 4 (--fsr): OOT_DLSS_JITTER=1, in
+    the lift's key"""
     return os.environ.get("OOT_DLSS_JITTER") == "1"
 
 

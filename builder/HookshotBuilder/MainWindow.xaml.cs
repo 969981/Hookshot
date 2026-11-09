@@ -260,6 +260,7 @@ public partial class MainWindow : Window
         public string? Romfs { get; set; }
         public string? Exefs { get; set; }
         public bool Dlss { get; set; }   // (NVIDIA DLSS ticked: NVIDIA's license was accepted)
+        public bool Fsr { get; set; }    // (AMD FSR 4 ticked)
     }
     static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
@@ -271,6 +272,7 @@ public partial class MainWindow : Window
         if (s == null) return;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
+        FsrTick.IsChecked = s.Fsr;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -293,7 +295,7 @@ public partial class MainWindow : Window
         try
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
-                                          Dlss = DlssTick.IsChecked == true };
+                                          Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -692,6 +694,7 @@ public partial class MainWindow : Window
         else if (chosenNup != null) args.AddRange(new[] { "--nup", chosenNup });
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
+        if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
         Run(tools, args, dlss: DlssTick.IsChecked == true);
     }
 
