@@ -27,3 +27,31 @@ static class BuildWorkers
         if (count is int selected) info.Environment["HOOKSHOT_JOBS"] = selected.ToString(CultureInfo.InvariantCulture);
     }
 }
+
+/// A choice for this window only. Automatic leaves the build tools' free-memory policy alone; a number of GB replaces it.
+static class BuildMemory
+{
+    public const string Automatic = BuildWorkers.Automatic;
+    const int Step = 4;
+
+    public static IEnumerable<object> Choices(int totalGb)
+    {
+        yield return Automatic;
+        for (var gb = Step; gb <= totalGb; gb += Step) yield return gb;
+    }
+
+    public static int TotalGb() => (int)(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes >> 30);
+
+    public static int? Selected(object? value) => value switch
+    {
+        string text when text == Automatic => null,
+        int gb when gb > 0 => gb,
+        _ => throw new ArgumentException("Choose Automatic or a positive amount of build memory."),
+    };
+
+    public static void Apply(ProcessStartInfo info, int? gb)
+    {
+        if (gb is <= 0) throw new ArgumentOutOfRangeException(nameof(gb), "Build memory must be positive.");
+        if (gb is int selected) info.Environment["HOOKSHOT_MEM_LIMIT_GB"] = selected.ToString(CultureInfo.InvariantCulture);
+    }
+}

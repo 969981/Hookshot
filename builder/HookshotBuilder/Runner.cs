@@ -60,6 +60,7 @@ sealed class Runner
     readonly Tools tools;
     readonly List<string> args;
     readonly int? workers;
+    readonly int? memoryGb;
     Process? process;
     string? error;
     bool cancelled;
@@ -67,15 +68,17 @@ sealed class Runner
     public event Action<string>? Line;
     public event Action<string?>? Finished;
 
-    public Runner(Tools tools, List<string> args, int? workers = null)
+    public Runner(Tools tools, List<string> args, int? workers = null, int? memoryGb = null)
     {
         this.tools = tools;
         this.args = args;
         if (workers is <= 0) throw new ArgumentOutOfRangeException(nameof(workers), "Build workers must be positive.");
+        if (memoryGb is <= 0) throw new ArgumentOutOfRangeException(nameof(memoryGb), "Build memory must be positive.");
         this.workers = workers;
+        this.memoryGb = memoryGb;
     }
 
-    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null)
+    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null, int? memoryGb = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -87,6 +90,7 @@ sealed class Runner
         };
         si.Environment["PYTHONIOENCODING"] = "utf-8";
         BuildWorkers.Apply(si, workers);
+        BuildMemory.Apply(si, memoryGb);
         // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
         if (Environment.ProcessPath != null) si.Environment["HOOKSHOT_BUILDER_EXE"] = Environment.ProcessPath;
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
@@ -109,7 +113,7 @@ sealed class Runner
         {
             try
             {
-                using var p = Process.Start(Info(tools, args, workers))!;
+                using var p = Process.Start(Info(tools, args, workers, memoryGb))!;
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
