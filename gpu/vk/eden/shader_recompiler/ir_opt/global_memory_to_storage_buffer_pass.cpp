@@ -64,7 +64,7 @@ bool SplitFallbackOn() {
 }
 /// (hookshot) Switches for the analysis ported from Fritchii (Frizti/Fritchii), read once. EDEN_* variables are part of the
 /// program cache's key (vk_shader.cpp disk_stamp), so a change translates the programs again.
-///   EDEN_NX2_GM_LEGACY=1     the tracking as before the port (NVN-biased, then unbiased search; no pairing, no native rules)
+///   EDEN_NX2_GM_LEGACY=0     the port (default 1 since v2.0.4: the tracking as before the port (NVN-biased, then unbiased search; no pairing, no native rules)
 ///   EDEN_NX2_GM_NATIVE=0     the pairing, but not the native-program rules (mapped pointers, candidates bound together)
 ///   EDEN_NX2_GM_COMPETING=0  a split access's tracked pointer is not bound (Lichii #410's adaptation off)
 bool EnvSwitch(const char* name, bool fallback) {
@@ -72,8 +72,22 @@ bool EnvSwitch(const char* name, bool fallback) {
     return value && *value ? std::atoi(value) != 0 : fallback;
 }
 bool GmLegacy() {
-    static const bool on{EnvSwitch("EDEN_NX2_GM_LEGACY", false)};
+    // (the tracking as before is the default again since v2.0.4: with the port on, v2.0.3 drew Link and the NPCs nearly black
+    // and its lighting wrong (Discord, 11-08; an A/B in Link's house: his face lit with it off, a dark silhouette with it on),
+    // and more draws cost fps. EDEN_NX2_GM_LEGACY=0: the port, for testing)
+    static const bool on{EnvSwitch("EDEN_NX2_GM_LEGACY", true)};
     return on;
+}
+/// (hookshot) The tracking a stage gets. EDEN_NX2_GM_LEGACY=0/1: the port / the tracking as before, for every stage. Unset: the port
+/// for the geometry and compute stages, the tracking as before for the fragment stage. The port placed the trees and terrain right
+/// (v2.0.3: no floating trees, issue #729) and the dark characters were lighting, which the fragment stage reads (light probes).
+/// EDEN_NX2_GM_SPLIT=1: that split; unset or 0: the tracking as before everywhere (v2.0.4/v2.0.5's default). Off by default again
+/// (2026-11-08 test): with it the cold precompile of the 10340 compute programs took 650 s instead of ~130 s.
+bool GmLegacyFor(Stage stage) {
+    static const char* const forced{std::getenv("EDEN_NX2_GM_LEGACY")};
+    if (forced && *forced) return GmLegacy();
+    static const bool split{EnvSwitch("EDEN_NX2_GM_SPLIT", false)};
+    return !split || stage == Stage::Fragment;
 }
 bool GmNative() {
     static const bool on{EnvSwitch("EDEN_NX2_GM_NATIVE", true)};
@@ -426,8 +440,8 @@ std::optional<LowAddrInfo> TrackLowAddress(IR::Inst* inst) {
 }
 
 /// Tries to track the storage buffer address used by a global memory instruction
-std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias) {
-    const auto pred{[bias](const IR::Inst* inst) -> std::optional<StorageBufferAddr> {
+std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias, bool skip_c1 = false) {
+    const auto pred{[bias, skip_c1](const IR::Inst* inst) -> std::optional<StorageBufferAddr> {
         if (inst->GetOpcode() != IR::Opcode::GetCbufU32 &&
             inst->GetOpcode() != IR::Opcode::GetCbufU32x2) {
             return std::nullopt;
@@ -447,6 +461,9 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
             .index = index.U32(),
             .offset = offset.U32(),
         };
+        if (skip_c1 && storage_buffer.index == 1) {
+            return std::nullopt;   // (an offset, not a base: the search goes on to the other addend)
+        }
         const u32 alignment{bias ? bias->alignment : 8U};
         if (!Common::IsAligned(storage_buffer.offset, alignment)) {
             // The SSBO pointer has to be aligned
@@ -1292,6 +1309,7 @@ bool MixesLoadedPointer(const IR::Value& value) {
 }
 
 thread_local bool g_follow_stage = false;   // (hookshot: the program being translated is compute, where the page table is)
+thread_local bool g_graphics_stage = false;   // (sharkiix: the program being translated is a geometry stage: vertex, tessellation, geometry, task, mesh)
 
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
 void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, Environment& env,
@@ -1454,6 +1472,14 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     if (!storage_buffer) {
         // If it fails, track without a bias
         storage_buffer = not_c1(cached_track(nullptr, info.unbiased_tracks));
+        // (hookshot) A float add has no run-time search: its fallback stores nothing, so where the search above found only a c1
+        // word the sum was lost. OoT's 499dbfd0721d2858 adds the sky's spherical harmonics (the outdoor ambient light) at
+        // c0+0x20's buffer plus a c1 offset: the c0 pointer beside that offset is the base. Without it the scene lost its
+        // ambient light and the exposure lifted the dark night until it looked like day. EDEN_F32_ADD_TRACK=0: as before
+        static const bool f32_track{EnvSwitch("EDEN_F32_ADD_TRACK", true)};
+        if (!storage_buffer && f32_track && inst.GetOpcode() == IR::Opcode::GlobalAtomicAddF32) {
+            storage_buffer = Track(low_addr, nullptr, true);
+        }
         if (!storage_buffer) {
             // If that also fails, use NVN fallbacks (and the table it reads the address from, if it does)
             leave_global();
@@ -1462,6 +1488,17 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         }
         LOG_DEBUG(Shader, "Storage buffer tracked without bias, index {} offset {}",
                     storage_buffer->index, storage_buffer->offset);
+    }
+    {   // (sharkiix, from BernabeCR93 in upstream issue 667) A graphics stage's address tracked to another constant buffer than
+        // c0 while part of it comes from memory: the far-foliage and mesh programs (95db514a35353e28, d905f52b7517c681,
+        // 51183fe750d5d0c8...) took float constants for a buffer address ("storage buffer NOT bound (reads zeros)", c5+0x60),
+        // read zeros and drew the plants without colour (white/sky-blue "mirror" ferns, glowing flowers). Left to the run-time
+        // search. RX_VK_NO_CBUF_LOAD_RULE=1: off
+        static const bool cbuf_load_rule{std::getenv("RX_VK_NO_CBUF_LOAD_RULE") == nullptr};
+        if (cbuf_load_rule && storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
+            leave_global();
+            return;
+        }
     }
     if (split_fallback && origins.split) {
         // (Lichii #410, Duck912, adapted) The tracked pointer is one side of a select or phi whose other side is a pointer
@@ -1623,8 +1660,10 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     // (hookshot)
     static const bool no_mesh{std::getenv("RX_VK_FOLLOW_MESH") == nullptr};
     g_follow_stage = program.stage == Stage::Compute || (!no_mesh && (program.stage == Stage::Task || program.stage == Stage::Mesh));
+    // (geometry stages only: with the fragment stage too, the sky drew black rectangles and the lighting went too bright at the castle)
+    g_graphics_stage = program.stage != Stage::Compute && program.stage != Stage::Fragment;
     g_origins.clear();   // (EvilOOT: Origins' walk, kept per program)
-    const bool pairing{!GmLegacy()};
+    const bool pairing{!GmLegacyFor(program.stage)};
     std::optional<TrackingConditions> conditions;
     StorageInfo info;
     info.pairing = pairing;

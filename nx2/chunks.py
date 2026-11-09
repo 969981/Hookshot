@@ -21,6 +21,7 @@ import os
 import re
 
 import a64_lift
+import lifted_c
 
 FILE = "chunks.txt"
 
@@ -97,9 +98,23 @@ def _emit_run(es):
                  for b, c in zip(before, counters)]
 
 
+def _available_gb():
+    """MemAvailable from /proc/meminfo in GB (None where there is none)"""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def emit_jobs():
     """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16; each holds its run's
-    texts and the pages of the lift it touches). 1 where there is no fork"""
+    texts and the pages of the lift it touches), and at most one per 2 GB of available memory: a Steam Deck (16 GB) ran
+    out with 8, and the system's out-of-memory handling stopped the lift ("lift.py stopped (signal 15): BrokenPipeError")
+    or one worker (the update then sat at "jump tables" for good). 1 where there is no fork"""
     if "fork" not in multiprocessing.get_all_start_methods():
         return 1
     if os.environ.get("HOOKSHOT_LIFT_JOBS"):
@@ -108,31 +123,48 @@ def emit_jobs():
         n = len(os.sched_getaffinity(0))
     except AttributeError:
         n = os.cpu_count() or 1
-    return max(1, min(16, n))
+    n = max(1, min(16, n))
+    gb = _available_gb()
+    if gb is not None:
+        n = max(1, min(n, int(gb // 2)))
+    return n
 
 
 def parallel_emit(emit, order, texts, counters, jobs, run=2000):
-    """(e, text, refs) for every function of order, in order, emitted by `jobs` forked processes"""
+    """(e, text, refs) for every function of order, in order, emitted by `jobs` forked processes. A worker that dies
+    (stopped for memory) ends the pool with an error instead of a wait forever (multiprocessing.Pool's imap never
+    returns then); the runs not done yet are emitted here, one process."""
     global _job
     if jobs <= 1 or len(order) < 2 * run:
         for e in order:
             yield (e,) + tuple(emit(e, texts))
         return
     import gc
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    runs = [order[i:i + run] for i in range(0, len(order), run)]
+    done = 0
     _job = (emit, texts, counters)
     gc.collect()
     gc.freeze()   # (the lift's objects out of the collector's sight: its passes would write to every page the children share)
     try:
         ctx = multiprocessing.get_context("fork")
-        with ctx.Pool(jobs) as pool:
-            for out, deltas in pool.imap(_emit_run, [order[i:i + run] for i in range(0, len(order), run)]):
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as pool:
+            for out, deltas in pool.map(_emit_run, runs):
                 for c, d in zip(counters, deltas):
                     for k, v in d.items():
                         c[k] = c.get(k, 0) + v
+                done += 1
                 yield from out
+    except BrokenProcessPool:
+        print("emit: a worker process stopped (out of memory?): the last %d of %d runs are emitted in this process"
+              % (len(runs) - done, len(runs)), flush=True)
     finally:
         _job = None
         gc.unfreeze()
+    for es in runs[done:]:
+        for e in es:
+            yield (e,) + tuple(emit(e, texts))
 
 
 def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
@@ -144,14 +176,15 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
     b = Boundaries(a64_lift.CHUNK_BYTES, starts, L.funcs)
     base_emit = L.emit_function
     jobs = emit_jobs() if jobs is None else jobs
-    made = {"it": None}
+    made = None
 
     def emit_function(e, texts):
+        nonlocal made
         b.current = e
-        if made["it"] is None:   # (the first call: write() has its texts now, and asks for the functions in sorted order)
-            made["it"] = parallel_emit(base_emit, sorted(L.funcs), texts,
+        if made is None:   # (the first call: write() has its texts now, and asks for the functions in sorted order)
+            made = parallel_emit(base_emit, sorted(L.funcs), texts,
                                        [L.stats, L.unhandled, L.ijump] + list(counters), jobs)
-        got = next(made["it"], None)
+        got = next(made, None)
         if got is None or got[0] != e:
             raise SystemExit("chunks: write() asked for f_%08x, the emit made %s" % (e, "f_%08x" % got[0] if got else "nothing"))
         return got[1], got[2]
@@ -160,23 +193,31 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
         files = L.write(gen_dir, chunk_bytes=b)
     finally:
         del L.emit_function
-        if made["it"] is not None:
-            made["it"].close()   # (the processes go now, not when the generator is collected)
+        if made is not None:
+            made.close()   # (the processes go now, not when the generator is collected)
     # (the numbered chunks only: files has code_hot.c too, and counting it skipped the first stale chunk, linked twice)
     n = sum(1 for f in files if re.fullmatch(r"code_\d{3}\.c", os.path.basename(f)))
     while os.path.exists(os.path.join(gen_dir, "code_%03d.c" % n)):   # (fewer chunks than the last lift)
         os.remove(os.path.join(gen_dir, "code_%03d.c" % n))
         n += 1
+    # (a lift with no code_hot.c: no hot list, A64_HOT_CHUNK unset, or none of the listed functions in it. write() removes a
+    # code_hot.c, but split_hot.py has renamed it code_hot.c.whole and left code_hot_*.c, which build.py compiled again: the
+    # earlier lift's hot functions, each defined in a chunk too, linked twice)
+    if not any(os.path.basename(f) == "code_hot.c" for f in files):
+        for f in os.listdir(gen_dir):
+            if f == "code_hot.c.whole" or HOT_PIECE.fullmatch(f):
+                os.remove(os.path.join(gen_dir, f))
     files += split_big(gen_dir, files)
     save(img_dir, starts or b.recorded)
     print("chunks: %d, boundaries %s" % (len(files), "kept" if starts else "from sizes (saved)"))
     return files
 
 
-HEAD = re.compile(r"^(?:/\* .* \*/\n)?void f_[0-9a-f]+\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
+HEAD = lifted_c.HEAD_NOTED
 PART = re.compile(r"code_(\d{3})_(\d+)\.c")
+HOT_PIECE = re.compile(r"code_hot_\d+\.c")   # (nx2/split_hot.py's pieces of code_hot.c)
 # (a function's compile time grows with the square of its size: LLVM's passes over one function of tens of thousands of blocks. Fitted to
-# a cold build of the 48 chunks at -O1 on a Ryzen 9 7900X: seconds ~ 1.5 x MB + 4.4 x MB^2 per function, so a function of QUAD bytes
+# a cold build of the 48 chunks at -O1 on a 24-thread desktop: seconds ~ 1.5 x MB + 4.4 x MB^2 per function, so a function of QUAD bytes
 # costs twice its size. A 24 MB chunk of small functions took ~45 s; one of 20 MB holding a few 2 MB functions, 350 s)
 QUAD = 350000
 COSTS = "chunk_costs.txt"   # (in the gen folder: each file's estimated compile cost, for build.py's order)
