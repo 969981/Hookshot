@@ -334,6 +334,37 @@
       </Setter>
     </Style>
 
+    <!-- a row of a drop-down menu (the launcher's Manage profiles), as a ChoiceItem looks -->
+    <Style x:Key="MenuRow" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="FontFamily" Value="{StaticResource Ui}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Box" Background="Transparent" CornerRadius="6" Padding="10,7">
+              <ContentPresenter HorizontalAlignment="Left"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource RaisedHover}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource RaisedHover}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource InkFaint}"/>
+                <Setter Property="Cursor" Value="Arrow"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="Choice" TargetType="ComboBox">
       <Setter Property="Height" Value="40"/>
       <Setter Property="FontFamily" Value="{StaticResource Ui}"/>

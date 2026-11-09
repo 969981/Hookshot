@@ -198,6 +198,9 @@ public partial class MainWindow : Window
         var game = GameVersion(folder) ?? ReadVersion(folder);
         LaunchVersion.Text = (game != null ? $"Hookshot {game}" : "Hookshot") + " · " + folder;
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
+        profileUser = Profiles.UserDir(folder);
+        ProfileNote.Text = "";   // (what the last action did; empty until then)
+        ShowProfiles(Profiles.Chosen(folder, SavedProfile()));
         ShowPage(LaunchPage);
         latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
         updateTarget = latestTag ?? Tools.Find()?.Version;   // (GitHub's newest, else this builder's own)
@@ -233,11 +236,12 @@ public partial class MainWindow : Window
         return File.Exists(game) ? game : System.IO.Path.Combine(folder, "hookshot.exe");
     }
 
-    /// (the launcher already checked for updates: the game does not ask again)
+    /// (the launcher already checked for updates: the game does not ask again. The profile is the one chosen last: Profiles.cs)
     static void StartGame(string folder)
     {
         var si = new ProcessStartInfo(GameExe(folder)) { UseShellExecute = false, WorkingDirectory = folder };
         si.Environment["HOOKSHOT_NO_UPDATE_CHECK"] = "1";
+        si.Environment["HOOKSHOT_PROFILE"] = Profiles.Chosen(folder, SavedProfile());
         Process.Start(si);
     }
 
@@ -252,6 +256,175 @@ public partial class MainWindow : Window
     void LaunchFolderClick(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
 
+    // ---- the launcher's profiles (Profiles.cs): which saves Play starts the game with ----
+    string profileUser = "";
+    List<Profiles.Profile> profileList = new();
+    string? renaming;   // (the name row renames this profile; null: it adds one)
+    List<string> saveChoices = new();
+    string saveChosenFolder = "";
+    bool fillingProfiles;
+
+    void ShowProfiles(string id)
+    {
+        profileList = Profiles.Load(profileUser);
+        fillingProfiles = true;
+        ProfileBox.ItemsSource = profileList.Select(Profiles.ShownName).ToList();
+        var i = profileList.FindIndex(p => p.Id == id);
+        ProfileBox.SelectedIndex = i < 0 ? 0 : i;
+        fillingProfiles = false;
+        SaveProfile(CurrentProfile.Id);
+        FillProfileMenu();
+    }
+
+    /// The Manage menu, naming the profile its actions change
+    void FillProfileMenu()
+    {
+        var p = CurrentProfile;
+        MenuRename.Content = $"Rename {p.Name}…";
+        MenuImport.Content = $"Import a save into {p.Name}…";
+        MenuFolder.Content = $"Open {p.Name}'s save folder";
+        MenuRemove.Content = p.Id == Profiles.Default ? "The default profile cannot be removed" : $"Remove {p.Name}…";
+        MenuRemove.IsEnabled = p.Id != Profiles.Default;
+    }
+
+    // (opened, not toggled: a click on Manage while the menu is open closes it first, as any click outside does)
+    void ProfileManageClick(object sender, RoutedEventArgs e) => ProfileMenu.IsOpen = true;
+
+    Profiles.Profile CurrentProfile => profileList[Math.Clamp(ProfileBox.SelectedIndex, 0, profileList.Count - 1)];
+
+    void ProfileChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (fillingProfiles || profileList.Count == 0) return;
+        SaveProfile(CurrentProfile.Id);
+        FillProfileMenu();
+    }
+
+    void ProfileError(Exception x) => MessageBox.Show(this, x.Message, "Hookshot");
+
+    void ProfileRowsCancel(object? sender, RoutedEventArgs? e)
+    {
+        ProfileMenu.IsOpen = false;
+        ProfileNameRow.Visibility = Visibility.Collapsed;
+        SaveChoiceRow.Visibility = Visibility.Collapsed;
+    }
+
+    void ShowNameRow(string? id, string name, string button)
+    {
+        ProfileRowsCancel(null, null);
+        renaming = id;
+        ProfileName.Text = name;
+        ProfileNameOk.Content = button;
+        ProfileNameRow.Visibility = Visibility.Visible;
+        ProfileName.Focus();
+        ProfileName.SelectAll();
+    }
+
+    void ProfileNewClick(object sender, RoutedEventArgs e) => ShowNameRow(null, "", "Add");
+
+    void ProfileRenameClick(object sender, RoutedEventArgs e) => ShowNameRow(CurrentProfile.Id, CurrentProfile.Name, "Rename");
+
+    void ProfileNameKey(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter) ProfileNameOkClick(sender, e);
+        else if (e.Key == System.Windows.Input.Key.Escape) ProfileRowsCancel(sender, e);
+    }
+
+    void ProfileNameOkClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (renaming is { } id)
+            {
+                Profiles.Rename(profileUser, id, ProfileName.Text);
+                ShowProfiles(id);
+                ProfileNote.Text = $"Renamed to {Profiles.CleanName(ProfileName.Text)}.";
+            }
+            else
+            {
+                ShowProfiles(Profiles.Add(profileUser, ProfileName.Text));
+                ProfileNote.Text = $"{CurrentProfile.Name} has no saves yet: the game starts at an empty file select. Import save… brings one in.";
+            }
+            ProfileRowsCancel(null, null);
+        }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException) { ProfileError(x); }
+    }
+
+    void ProfileRemoveClick(object sender, RoutedEventArgs e)
+    {
+        ProfileRowsCancel(null, null);
+        var p = CurrentProfile;
+        if (p.Id == Profiles.Default)
+        {
+            MessageBox.Show(this, $"{p.Name} is the default profile and cannot be removed: the game plays it when it is started without the launcher.", "Hookshot");
+            return;
+        }
+        var backups = System.IO.Path.Combine(profileUser, "save-backups");
+        if (MessageBox.Show(this, $"Remove the profile {p.Name}?\n\nIts saves are not deleted: they are moved to {backups}.", "Hookshot",
+                            MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        try
+        {
+            var moved = Profiles.Remove(profileUser, p.Id);
+            ShowProfiles(Profiles.Default);
+            ProfileNote.Text = $"Removed {p.Name}." + (moved != null ? $" Its saves are in {moved}" : "");
+        }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException) { ProfileError(x); }
+    }
+
+    void ProfileFolderClick(object sender, RoutedEventArgs e)
+    {
+        ProfileMenu.IsOpen = false;
+        if (Profiles.FolderToShow(profileUser, CurrentProfile.Id) is { } path)
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+        else MessageBox.Show(this, $"There are no saves yet: the game makes {profileUser} at its first start.", "Hookshot");
+    }
+
+    void ProfileImportClick(object sender, RoutedEventArgs e)
+    {
+        ProfileRowsCancel(null, null);
+        if (PickFolder("The save to import: its folder, or an emulator's save folder") is not { } chosen) return;
+        var found = Profiles.FindSaves(chosen);
+        if (found.Count == 0)
+        {
+            MessageBox.Show(this, $"No save of Ocarina of Time in {chosen}.\n\nChoose the folder with account.sav, option.sav and slot_00 to " +
+                                  "slot_05 in it, or an emulator's save folder.", "Hookshot");
+            return;
+        }
+        if (found.Count == 1)
+        {
+            ImportSave(found[0], chosen);
+            return;
+        }
+        // (an emulator's save folder: one save for each of its users. The row asks which)
+        saveChoices = found;
+        saveChosenFolder = chosen;
+        SaveChoiceText.Text = $"{chosen} has {found.Count} saves of the game. Which one goes into {CurrentProfile.Name}?";
+        SaveChoice.ItemsSource = found.Select(f => Profiles.Describe(f, chosen)).ToList();
+        SaveChoice.SelectedIndex = 0;
+        SaveChoiceRow.Visibility = Visibility.Visible;
+    }
+
+    void SaveChoiceOkClick(object sender, RoutedEventArgs e)
+    {
+        var i = SaveChoice.SelectedIndex;
+        ProfileRowsCancel(null, null);
+        if (i >= 0 && i < saveChoices.Count) ImportSave(saveChoices[i], saveChosenFolder);
+    }
+
+    void ImportSave(string source, string chosen)
+    {
+        var p = CurrentProfile;
+        var backups = System.IO.Path.Combine(profileUser, "save-backups");
+        if (MessageBox.Show(this, $"Import this save into the profile {p.Name}?\n\n{Profiles.Describe(source, chosen)}\n\n" +
+                                  $"The profile's saves now, if it has any, are moved to {backups} first.", "Hookshot",
+                            MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        try
+        {
+            var moved = Profiles.Import(source, profileUser, p.Id);
+            ProfileNote.Text = $"Imported into {p.Name}." + (moved != null ? $" Its saves before are in {moved}" : "");
+        }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException) { ProfileError(x); }
+    }
+
     // ---- what the player chose last time (the install folder, the game files): builder-settings.json beside the versions ----
     sealed class BuilderSettings
     {
@@ -259,6 +432,7 @@ public partial class MainWindow : Window
         public string? Nup { get; set; }
         public string? Romfs { get; set; }
         public string? Exefs { get; set; }
+        public string? Profile { get; set; }   // (the launcher's profile Play starts: Profiles.cs)
         public bool Dlss { get; set; }   // (NVIDIA DLSS ticked: NVIDIA's license was accepted)
     }
     static string SettingsPath => System.IO.Path.Combine(
@@ -266,9 +440,7 @@ public partial class MainWindow : Window
 
     void ApplySettings()
     {
-        BuilderSettings? s = null;
-        try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
-        if (s == null) return;
+        if (ReadSettings() is not { } s) return;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
@@ -288,12 +460,34 @@ public partial class MainWindow : Window
         }
     }
 
+    static BuilderSettings? ReadSettings()
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); }
+        catch (Exception) { return null; }
+    }
+
+    static string? SavedProfile() => ReadSettings()?.Profile;
+
+    /// (only the profile changes: the launcher has none of the build form's choices to write)
+    static void SaveProfile(string id)
+    {
+        try
+        {
+            var s = ReadSettings() ?? new BuilderSettings();
+            if (s.Profile == id) return;
+            s.Profile = id;
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
+            File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
+        }
+        catch (Exception) { }
+    }
+
     void SaveSettings()
     {
         try
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
-                                          Dlss = DlssTick.IsChecked == true };
+                                          Profile = SavedProfile(), Dlss = DlssTick.IsChecked == true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -1037,8 +1231,15 @@ public partial class MainWindow : Window
     void OpenFolder(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{finished}\"") { UseShellExecute = true });
 
+    /// Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile Play
+    /// starts is shown and can be changed (Profiles.cs)
     void Play(object sender, RoutedEventArgs e)
     {
+        if (Profiles.Load(Profiles.UserDir(finished)).Count > 1)
+        {
+            ShowLauncher(finished);
+            return;
+        }
         StartGame(finished);
         WindowState = WindowState.Minimized;
     }

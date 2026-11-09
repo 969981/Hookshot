@@ -148,6 +148,22 @@ with `--update <game folder>`.
 
 </details>
 
+### Profiles and imported saves
+
+The launcher (`hookshot.exe` on Windows, `hookshot` on Linux) has a **Profile** choice above **Play**. Each profile has
+saves of its own; **Play** starts the game with the one chosen. **New profile** makes one, which starts at an empty
+file select. **Manage** renames the chosen profile, imports a save into it, opens its save folder, or removes it.
+Removing a profile does not delete its saves: they are moved to `save-backups` in the saves folder.
+
+**Import a save** copies a save from a console or an emulator into the chosen profile. Choose the save's folder (the
+one with `account.sav`, `option.sav` and `slot_00` to `slot_05` in it) or an emulator's whole save folder; when it
+holds saves of several users, the launcher asks which one. The source is only read. The profile's saves before the
+import are moved to `save-backups` first.
+
+The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
+"Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. Profiles are kept in `profiles.txt` in the saves folder (the `user` folder in the game folder on Windows,
+`~/.local/share/hookshot` on Linux); a profile's saves are `save/<its id>`.
+
 ### Where the files go
 
 - The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:

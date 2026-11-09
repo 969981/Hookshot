@@ -40,6 +40,7 @@ ARGS = {
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
+    "tests/test_account_profile.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
@@ -99,6 +100,7 @@ SKIP = {
     "tests/test_appimage_source_headers.py": ({"windows"}, "the AppImage source-copy block uses POSIX Bash and cp"),
     "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
+    "tests/test_launcher_profiles.py": ({"windows"}, "the Linux launcher's profiles, POSIX paths (Windows: tests/launcher_profiles)"),
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
     "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
 }

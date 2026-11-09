@@ -1,6 +1,6 @@
 /* nn::oe (applet), nn::account, nn::time, nn::pl, nn::err: what a game asks the system about itself.
    The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
-   "Player". */
+   "Player": the launcher's profile (HOOKSHOT_PROFILE). */
 #include "hos.h"
 #include "hos_paths.h"
 #include <stdio.h>
@@ -167,10 +167,36 @@ HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */
-static const uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
-HLE(_ZN2nn7account10InitializeEv) {}
+/* The user is the launcher's profile: HOOKSHOT_PROFILE=<32 hex digits> is its save folder's name, save/<those digits> in the
+   user folder (nn_fs.c names the folder by the uid's second word, then its first). Without it, or with anything else in it, the
+   user every build had before profiles: its saves stay where they were. The launchers keep the profile list:
+   builder/linux/profiles.py and builder/HookshotBuilder/Profiles.cs. */
+static uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
+static void pick_user(void) {
+    static volatile LONG picked;
+    if (picked) return;
+    const char *hex = getenv("HOOKSHOT_PROFILE");
+    uint64_t w[2] = {0, 0};
+    int ok = hex && strlen(hex) == 32;
+    for (int i = 0; ok && i < 32; i++) {
+        const char ch = hex[i];
+        const int d = ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1;
+        if (d < 0) ok = 0;
+        else w[i / 16] = w[i / 16] << 4 | (uint64_t)d;
+    }
+    if (ok && (w[0] | w[1])) {
+        user_uid[1] = w[0];
+        user_uid[0] = w[1];
+        hos_log("account: profile %016llx%016llx", (unsigned long long)user_uid[1], (unsigned long long)user_uid[0]);
+    } else if (hex && *hex) {
+        hos_log("account: HOOKSHOT_PROFILE=%s is not 32 hex digits: the default profile", hex);
+    }
+    InterlockedExchange(&picked, 1);
+}
+HLE(_ZN2nn7account10InitializeEv) { pick_user(); }
 /* TryOpenPreselectedUser(UserHandle*) -> bool. A handle is three words; ours carries the uid. */
 HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
+    pick_user();
     G64(ARG(0)) = user_uid[0];
     G64(ARG(0) + 8) = user_uid[1];
     G64(ARG(0) + 16) = 1;
@@ -179,6 +205,7 @@ HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
 HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {}
 /* GetUserId(Uid*, UserHandle const&) -> Result */
 HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
+    pick_user();
     G64(ARG(0)) = user_uid[0];
     G64(ARG(0) + 8) = user_uid[1];
     RET(0);
@@ -190,6 +217,7 @@ HLE(_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE) {
     RET(0);
 }
 HLE(_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE) {
+    pick_user();
     *(uint8_t *)GP(ARG(0)) = G64(ARG(1)) == user_uid[0] && G64(ARG(1) + 8) == user_uid[1];
     RET(0);
 }
@@ -336,6 +364,7 @@ HLE(_ZN2nn5prepo12AsyncContextD1Ev) {}
 /* ---- (mkw-recomp) MKW's account and oe calls TOTK never made: the one user, offline ------------------------- */
 /* ListAllUsers(int* count, Uid* out, int max) -> Result */
 HLE(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi) {
+    pick_user();
     const int n = (int)ARG(2) > 0 ? 1 : 0;
     if (n && ARG(1)) {
         G64(ARG(1)) = user_uid[0];
