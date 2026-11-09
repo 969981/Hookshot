@@ -855,9 +855,9 @@ def main():
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
-        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution, and DLSS frame generation over the same NGX
-        # session (vk_ngx.cpp, vk_dlssg.cpp)
-        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssg.cpp")
+        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution, and DLSS frame generation and DLSS 5 neural
+        # rendering over the same NGX session (vk_ngx.cpp, vk_dlssg.cpp, vk_dlssnr_ngx.cpp)
+        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssg.cpp", "vk_dlssnr_ngx.cpp")
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not

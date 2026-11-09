@@ -34,6 +34,7 @@
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_dlssnr.h"
+#include "vk_dlssnr_ngx.h"   // (nr::apply: whichever neural rendering backend runs)
 #include "vk_menu.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
@@ -3127,7 +3128,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     // a frame it could not do returns null and goes to the window exactly as it always did.
     if (src) {
         VkImageView nr_view = VK_NULL_HANDLE;
-        if (const VkImage nr = dlssnr::apply(f.cmd, src, sw, sh, &nr_view)) src = nr, view = nr_view;
+        if (const VkImage up = nr::apply(f.cmd, src, sw, sh, &nr_view)) src = up, view = nr_view;   // (Streamline or NGX direct: vk_dlssnr_ngx.h)
     }
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const bool preserve_stretch = host && host->aspect_ratio && host->aspect_ratio() > 1.0f;

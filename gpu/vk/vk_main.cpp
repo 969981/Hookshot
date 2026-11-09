@@ -9,6 +9,7 @@
 
 #include "vk_dlss.h"    // (the device extensions DLSS needs, asked of NGX before the device is made)
 #include "vk_dlssg.h"   // (frame generation asks for its own set, which is not the same one)
+#include "vk_dlssnr_ngx.h"   // (and DLSS 5 neural rendering through NGX for its own)
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -294,6 +295,22 @@ bool create_device() {
             bool already = false;
             for (const char* have : want) already = already || strcmp(have, dlss_want[i]) == 0;
             if (!already) want.push_back(dlss_want[i]), logf("vk: dlssg wants %s: enabled", dlss_want[i]);
+        }
+    }
+
+    // (hookshot) DLSS 5 neural rendering through NGX directly (vk_dlssnr_ngx.h) asks NGX for feature 18's set, for the same
+    // reason and with the same handling as frame generation's above.
+    {
+        const char* nr_want[16] = {};
+        const size_t nr_n = dlssnr_ngx::device_extensions(dev.instance, dev.physical, nr_want, sizeof nr_want / sizeof *nr_want);
+        for (size_t i = 0; i < nr_n; i++) {
+            if (!has_extension(exts, nr_want[i])) {
+                logf("vk: dlss-nr wants %s, which this GPU does not have: NGX direct will be unavailable", nr_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, nr_want[i]) == 0;
+            if (!already) want.push_back(nr_want[i]), logf("vk: dlss-nr wants %s: enabled", nr_want[i]);
         }
     }
 

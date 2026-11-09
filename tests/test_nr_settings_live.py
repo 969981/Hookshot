@@ -29,6 +29,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MENU_H = ROOT / "gpu" / "vk" / "vk_menu.h"
 MENU_CPP = ROOT / "gpu" / "vk" / "vk_menu.cpp"
 NR_CPP = ROOT / "gpu" / "vk" / "vk_dlssnr.cpp"
+NR_NGX_CPP = ROOT / "gpu" / "vk" / "vk_dlssnr_ngx.cpp"   # (the NGX direct backend: the same rule)
 
 failures = []
 
@@ -143,24 +144,31 @@ def check_mapping(cxx):
 # ------------------------------------------------------------- the source facts a compile can't see
 
 def check_nothing_caches():
-    text = NR_CPP.read_text(encoding="utf-8")
-    asked = block(text, "bool asked()", "vk_dlssnr.cpp's asked()")
+    for path in (NR_CPP, NR_NGX_CPP):
+        check_backend_live(path)
+
+
+def check_backend_live(path):
+    text = path.read_text(encoding="utf-8")
+    name = path.name
+    asked = block(text, "bool asked()", name + "'s asked()")
     if "static" in asked:
-        fail("dlssnr::asked() holds a static: the Neural rendering row would stop reaching the "
+        fail(name + ": asked() holds a static: the Neural rendering row would stop reaching the "
              "frame, which is the bug docs/upscaling.md is about.\n" + asked)
     if "nr_settings()" not in asked:
-        fail("dlssnr::asked() no longer reads nr_settings(): it cannot see the menu's row.")
+        fail(name + ": asked() no longer reads nr_settings(): it cannot see the menu's row.")
     # apply() must read the settings every frame too, not once.
-    apply_fn = block(text, "VkImage apply(VkCommandBuffer cmd", "vk_dlssnr.cpp's apply()")
+    apply_fn = block(text, "VkImage apply(VkCommandBuffer cmd", name + "'s apply()")
     if "nr_settings()" not in apply_fn:
-        fail("dlssnr::apply() does not read nr_settings(): the model's own rows would never change.")
+        fail(name + ": apply() does not read nr_settings(): the model's own rows would never change.")
     if re.search(r"static\s+const\s+\w+\s+\w*(want|opt|setting)", apply_fn):
-        fail("dlssnr::apply() caches its settings in a static.")
+        fail(name + ": apply() caches its settings in a static.")
 
 
 ROWS = {
     # row name: (lo, hi)
     "Neural rendering": (0, 1),
+    "Backend": (0, 2),     # Auto, Streamline, NGX direct (vk_dlssnr_ngx.h)
     "Model": (0, 3),
     "Style": (0, 2),       # Default, Natural, Cinematic -- three, not eight
     "Preset": (0, 7),      # Default, then A..G
@@ -174,6 +182,7 @@ ROWS = {
 
 DEFAULTS = {
     "nr": 0,              # every feature is off out of the box
+    "nr_backend": 0,      # Auto: Streamline where attached, else NGX direct
     "nr_model": 2,        # Quality, the model's own default
     "nr_style": 0,
     "nr_preset": 0,       # the plugin picks; 1 would silently pin preset A

@@ -47,6 +47,7 @@ struct Options {
     // feature here. The model's own knobs are percentages because that is what a slider can say; the
     // backend divides by 100 for the float Streamline wants.
     int nr = 0;                 // 0 off, 1 on
+    int nr_backend = 0;         // 0 Auto (Streamline where it is attached, else NGX direct), 1 Streamline, 2 NGX direct (vk_dlssnr_ngx.h)
     int nr_model = 2;           // 0 Performance, 1 Balanced, 2 Quality, 3 DLAA
     int nr_style = 0;           // 0 Default, 1 Natural, 2 Cinematic
     int nr_preset = 0;          // 0 the plugin's default model, 1 to 7 pin presets A to G

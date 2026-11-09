@@ -32,6 +32,7 @@
 
 #include "vk_dlssnr.h"   // (whether this build can offer DLSS 5 neural rendering at all)
 #include "vk_streamline.h"   // (nr_why: why neural rendering is not available here)
+#include "vk_dlssnr_ngx.h"   // (nr::why, nr::built: whichever backend the Backend row runs)
 #include "vk_fsr3.h"     // (the Upscaler row: whether FSR 3.1 runs on this device)
 #include "vk_ffx.h"      // (and FSR 4, AMD's runtime)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -132,6 +133,18 @@ const char* tx_nr_model(int v) {
 const char* tx_nr_style(int v) {
     static const char* t[] = {"Default", "Natural", "Cinematic"};
     return t[std::min(std::max(v, 0), 2)];
+}
+// (hookshot) Which path NVIDIA's model is reached by (vk_dlssnr_ngx.h): the same model and the same rows either way.
+const char* tx_nr_backend(int v) {
+    static const char* t[] = {"Auto", "Streamline", "NGX direct"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+const char* hn_nr_backend(int v, int variant) {
+    static char b[96];
+    if (variant >= 0) return variant == 0 ? "Auto: running through NGX directly." : nullptr;   // (the longest)
+    if (v != nr::AUTO) return nullptr;
+    snprintf(b, sizeof b, "Auto: running through %s.", nr::running_backend() == nr::NGX ? "NGX directly" : "Streamline");
+    return b;
 }
 const char* tx_nr_preset(int v) {
     static char b[16];
@@ -243,7 +256,7 @@ const char* hn_nr(int v, int variant) {
     static const char* const longest =
         "Not available: NVIDIA's model is RTX 50 only. RTX 20-40: a patched nvngx_dlssnr.dll (readme).";
     if (variant < 0) {
-        const char* w = streamline::nr_why();
+        const char* w = nr::why();
         return *w ? w : t[std::clamp(v, 0, 1)];
     }
     return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? longest : nullptr;
@@ -591,13 +604,17 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
 
-    // Neural rendering (10 rows). Every row here takes effect on the next frame: the backend reads
+    // Neural rendering (11 rows). Every row here takes effect on the next frame: the backend reads
     // them live rather than caching them at start-up, which is the bug that made the upscaling rows
     // look dead for a whole release (docs/upscaling.md).
     {TAB_NEURAL, "Neural rendering", &opts.nr, 0, 1, 1, tx_onoff,
      "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
-     "Needs an NVIDIA RTX card and NVIDIA's Streamline files beside the game (readme.md); the rows below are the model's own "
+     "Needs an NVIDIA RTX card and NVIDIA's model file (readme.md; Backend says how it is reached); the rows below are the model's own "
      "settings and do nothing while this is Off.", hn_nr},
+    {TAB_NEURAL, "Backend", &opts.nr_backend, 0, 2, 1, tx_nr_backend,
+     "How the game reaches NVIDIA's model. Auto uses Streamline where its files are beside the game and it accepts this "
+     "GPU, and NGX directly otherwise -- always, on Linux. NGX direct needs nvngx_dlssnr.dll in the game folder's ngx "
+     "folder (readme.md). The rows below apply to whichever runs.", hn_nr_backend},
     {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
      "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
      "own default. Streamline 2.14's plugin ignores this one -- it is sent correctly and a later NVIDIA release is "
@@ -832,6 +849,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.nr_backend) return "nr_backend";   // (hookshot: "backend" alone says nothing in the file)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1694,17 +1712,16 @@ void menu_init() {
     if (done) return;
     done = true;
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
-    // (hookshot) DLSS 5 neural rendering: its ten rows are the model's own and none of them can
-    // do anything in a build with no Streamline headers, or on Linux, where Streamline has no
-    // plugins to load. The switch is left in place and says why, because a missing tab is a bug
-    // report and a tab that explains itself is not.
-    if (!dlssnr::built_with_sdk())
+    // (hookshot) DLSS 5 neural rendering: its rows are the model's own and none of them can do
+    // anything in a build with neither Streamline's headers (Windows) nor an NGX SDK (either
+    // platform: vk_dlssnr_ngx.h). The switch is left in place and says why, because a missing tab
+    // is a bug report and a tab that explains itself is not.
+    if (!nr::built())
         for (Row& r : rows)
             if (r.value == &opts.nr) {
                 r.hi = 0;
-                r.help = "DLSS 5 neural rendering is not offered by this build. It needs NVIDIA Streamline, which is "
-                         "Windows-only: on Linux, run the Windows build under Proton. A Windows build made without "
-                         "Streamline's headers says this too (readme.md says how to build with them).";
+                r.help = "DLSS 5 neural rendering is not offered by this build. It needs NVIDIA's NGX SDK, or on "
+                         "Windows NVIDIA Streamline's headers, at build time (readme.md says how to build with them).";
             }
     bool has_options = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");
