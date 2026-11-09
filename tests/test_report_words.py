@@ -33,14 +33,48 @@ def main():
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <new>
 #include <set>
 #include <vector>
+bool count_allocations = false;
+size_t allocations = 0;
+void* operator new(size_t size) {
+    if (count_allocations) ++allocations;
+    if (void* p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
+    if (count_allocations) ++allocations;
+    return std::malloc(size ? size : 1);
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
 struct Pool { uint64_t lo; };
 struct VkBufferCopy { uint64_t srcOffset, dstOffset, size; };
 std::mutex cpu_words_mu;
 std::vector<uint64_t> cpu_words, cpu_words_new;   // (sorted, and noted since: vk_memory.cpp)
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
 ''' + helper + r'''
+// Repeated frames must leave the known words alone without allocating merge scratch space.
+void known_words_need_no_allocation() {
+    cpu_words.clear();
+    cpu_words_new.clear();
+    for (uint64_t i = 0; i < 60000; ++i) cpu_words.push_back(0x1000 + i * 8);
+    const auto expected = cpu_words;
+    for (uint64_t i = 64; i; --i) {
+        cpu_words_new.push_back(0x1000 + i * 8);
+        cpu_words_new.push_back(0x1000 + i * 8);
+    }
+    allocations = 0;
+    count_allocations = true;
+    cpu_words_merge();
+    count_allocations = false;
+    CHECK(cpu_words == expected);
+    CHECK(cpu_words_new.empty());
+    if (allocations) std::fprintf(stderr, "known-only merge allocated %zu times; expected 0\n", allocations);
+    CHECK(allocations == 0);
+}
 void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned) {
     const Pool pool{0x1000};
     cpu_words.clear();
@@ -92,6 +126,7 @@ void merge_matches_a_set() {
     }
 }
 int main() {
+    known_words_need_no_allocation();
     merge_matches_a_set();
     check(20, 24, {16});        // run starts inside an owned word
     check(20, 32, {16});        // keep the nonowned suffix

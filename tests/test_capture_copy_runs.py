@@ -29,8 +29,22 @@ def main():
     source = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     helper = function(source, "void append_capture_copy(")
     sync = function(source, "void mirror_sync(Pool& p)")
-    if "append_capture_copy(cap_runs[b->second.buffer]," not in sync:
-        raise SystemExit("the captured-page path does not use the helper")
+    call = sync.index("append_capture_copy(cap_runs[")
+    start = sync.rindex("const uint64_t ga =", 0, call)
+    captured_copy = sync[start:sync.index(";", call) + 1]
+    adapter = r'''
+// Execute mirror_sync's real clipping and append expression with controlled capture inputs.
+static void capture_page(std::map<uint64_t, std::vector<VkBufferCopy>>& cap_runs,
+                         uint64_t buffer, uint64_t slot, uint64_t page) {
+    constexpr unsigned kPageShift = 12;
+    const struct { uint64_t lo, hi; } p{0x1004, 0x400a};
+    const struct { uint64_t slot; } e{slot};
+    struct Buffer { uint64_t buffer; };
+    const std::map<uint64_t, Buffer> buffers{{0, {buffer}}};
+    auto b = buffers.begin();
+''' + captured_copy + r'''
+}
+'''
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -40,7 +54,7 @@ def main():
 #include <vector>
 struct VkBufferCopy { uint64_t srcOffset, dstOffset, size; };
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL:%d %s\n",__LINE__,#x); std::exit(1); } } while (0)
-''' + helper + r'''
+''' + helper + adapter + r'''
 static void expect_separate(VkBufferCopy a, VkBufferCopy b) {
     std::vector<VkBufferCopy> v; append_capture_copy(v,a); append_capture_copy(v,b); CHECK(v.size()==2);
 }
@@ -88,6 +102,22 @@ int main() {
     compressed.clear();
     for(uint64_t i=0;i<pages.size();i++) append_capture_copy(compressed,{(i*2)*4096,(i*2)*4096,4096});
     CHECK(compressed.size()==pages.size());
+
+    // Pool [0x1004, 0x400a) clips both edge pages. Interleaved buffers keep separate lists.
+    std::map<uint64_t, std::vector<VkBufferCopy>> captures;
+    capture_page(captures,17,7,1); capture_page(captures,29,3,2);
+    capture_page(captures,17,9,3); capture_page(captures,17,10,4);
+    CHECK(captures.size()==2 && captures.count(17)==1 && captures.count(29)==1);
+    const auto& a=captures.at(17); const auto& b=captures.at(29);
+    CHECK(a.size()==2 && b.size()==1);
+    CHECK(a[0].srcOffset==0x7004 && a[0].dstOffset==0 && a[0].size==0xffc);
+    CHECK(a[1].srcOffset==0x9000 && a[1].dstOffset==0x1ffc && a[1].size==0x100a);
+    CHECK(b[0].srcOffset==0x3000 && b[0].dstOffset==0xffc && b[0].size==0x1000);
+    captures.clear();
+    for(uint64_t page=1;page<=4;page++) capture_page(captures,17,page+6,page);
+    CHECK(captures.size()==1 && captures.count(17)==1 && captures.at(17).size()==1);
+    const auto& joined=captures.at(17)[0];
+    CHECK(joined.srcOffset==0x7004 && joined.dstOffset==0 && joined.size==0x3006);
     std::printf("PASS merged exact bytes, gaps, defensive overlaps, overflow and buffer grouping\n");
 }
 '''
