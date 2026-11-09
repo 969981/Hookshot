@@ -30,7 +30,7 @@ import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
-          "finish": "Putting the game folder together"}
+          "finish": "Putting the game folder together", "shaders": "Preparing shaders"}
 
 
 def left_text(seconds):
@@ -70,8 +70,7 @@ def play(folder):
     exe = linux_update.game_exe(folder)
     if not exe:
         return
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("HOOKSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD"))}
-    env.pop("LD_LIBRARY_PATH", None)
+    env = make_game.game_env()   # (as make_game's shader preparation and hookshot-launch: the game's own SDL, the system's libraries)
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
     subprocess.Popen([exe], cwd=folder, env=env, start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -488,6 +487,7 @@ class Builder(tk.Tk):
         self.eta = None
         self.compile_started = None
         self.times = None
+        self.shaders_later = False
         f = self.page = ttk.Frame(self)
         f.pack(fill="both", expand=True, pady=self.px(8))
         f.columnconfigure(0, weight=1)
@@ -553,8 +553,9 @@ class Builder(tk.Tk):
             stage = line.split(" ", 2)[1]
             self.stage_text.set(STAGES.get(stage, line.split(" ", 2)[-1]))
             self.bar.configure(mode="determinate", value=0)
-            if stage == "compile":
-                self.compile_started = time.time()
+            # (the compile's clock and countdown are the compile's: a later step, the minutes-long shaders one, without them)
+            self.compile_started = time.time() if stage == "compile" else None
+            self.eta = None
         elif line.startswith("@@progress "):
             try:
                 self.bar.configure(value=float(line.split()[1]))
@@ -597,6 +598,8 @@ class Builder(tk.Tk):
             self.built = line[7:]
         elif line.startswith("@@error "):
             self.error = line[8:]
+        elif line.startswith(make_game.NOT_PREPARED):
+            self.shaders_later = True
         if hasattr(self, "log"):
             self.log.insert("end", line + "\n")
             self.log.see("end")
@@ -614,6 +617,8 @@ class Builder(tk.Tk):
                 text += ", compiled in %d:%02d" % (int(compiled) // 60, int(compiled) % 60)
                 if previous > 0:
                     text += " · last time %d:%02d" % (int(previous) // 3600, int(previous) // 60 % 60)
+            if self.shaders_later:
+                text += " · the shaders are prepared at its first start"
             self.stage_text.set(text)
             self.bar.configure(value=1.0)
             try:
