@@ -219,6 +219,10 @@ a screenshot looks like. Use a dedicated game folder or a clean options file whe
   on a cold cache can be a black boot frame; call it again, or `wait` and `screenshot` until the title appears, before
   asserting on the picture. `wait_ready` has its own timeout; call it again if the first call times out.
 - The server is developer tooling in `scripts/`, not a file shipped with the game.
+- **It runs as you and trusts its MCP host.** `launch` starts any executable it is given and passes `extra_env`
+  through (only the server's own control switches are reserved, so `PATH` and `LD_PRELOAD`-style variables included),
+  and `screenshot` unlinks and writes whatever path it is given. Use it with a host and an agent you trust, on your own
+  machine; do not expose it to an untrusted client.
 
 ## Game-free test
 

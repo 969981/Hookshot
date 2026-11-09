@@ -11,7 +11,7 @@ paths it keeps so MKW's fixes apply here.
 **No game files are in this repository.** The dump is read where it lies (`work/dump.txt`); everything made from it
 (modules, image, lifted C, builds, runs) goes to `work/`, which git ignores.
 
-Status: the dump is read and lifted (100 % translated, the instruction test passes); the standalone build is next. Plan, stages and the lessons carried over from MKW: [DESIGN.md](DESIGN.md).
+Status: the dump is read and lifted (100 % translated, the instruction test passes); the standalone build is next. Plan, stages and the lessons carried over from MKW: [design notes](design.md).
 
 ## Use
 
@@ -57,7 +57,7 @@ the script's existing exclusive interval is active; it is not a focus override.
 
 | Path | What |
 |---|---|
-| `DESIGN.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
+| `design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c` |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`), with Eden's shader recompiler and sirit |
