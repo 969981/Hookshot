@@ -30,6 +30,7 @@ struct State {
     VkImageView view = VK_NULL_HANDLE;
     uint32_t width = 0, height = 0;
     Matrix previous{};
+    Matrix current{};   ///< the matrix the last record() was given, for the same-frame guard
     bool have_previous = false;
 };
 
@@ -154,6 +155,13 @@ VkImageView record(VkCommandBuffer cmd, VkImageView depth, VkFormat depth_format
                    uint32_t height, const Matrix& view_projection) {
     if (!depth || width == 0 || height == 0) return VK_NULL_HANDLE;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return VK_NULL_HANDLE;
+    // (hookshot) Asked twice for the same frame -- the upscale seam wants motion, and so does frame
+    // generation at present time -- this answers with what it already wrote. Recording it a second
+    // time would reproject through the matrix the first recording had just stored as "previous",
+    // which is this same frame's: exactly zero motion, silently, for whichever caller came second.
+    if (g.view && g.have_previous && g.width == width && g.height == height &&
+        memcmp(g.current.m, view_projection.m, sizeof g.current.m) == 0)
+        return g.view;
     if (!g.tried) {
         g.tried = true;
         if (!make_pipeline()) return VK_NULL_HANDLE;
@@ -204,6 +212,7 @@ VkImageView record(VkCommandBuffer cmd, VkImageView depth, VkFormat depth_format
     vkCmdPipelineBarrier2(cmd, &di);
 
     g.previous = view_projection;
+    g.current = view_projection;   // (what the guard above compares the next ask against)
     g.have_previous = true;
     return g.view;
 }

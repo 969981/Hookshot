@@ -29,6 +29,7 @@ import ctypes
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -58,6 +59,27 @@ POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
 VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
+
+
+def dlss_sdk_link():
+    """(hookshot) What a build with RX_VK_DLSS_SDK=<path> links the DLSS backend against.
+
+    On Linux the driver's NGX core (libnvidia-ngx.so) exports none of the public NVSDK_NGX_* API:
+    those entry points live in the SDK's own static library, which calls into the core. Resolving
+    them by name from the core was tried first and found them missing, so a build that asked for
+    DLSS links the SDK's static library instead. Nothing of NVIDIA's is in this repository: the
+    library is the builder's own copy, under the path they named, and a build without that path
+    links exactly what it linked before.
+    """
+    sdk = os.environ.get("RX_VK_DLSS_SDK")
+    if not sdk or not LINUX:
+        return []
+    arch = "Linux_aarch64" if platform.machine() in ("aarch64", "arm64") else "Linux_x86_64"
+    lib = os.path.join(sdk, "lib", arch)
+    if not os.path.isdir(lib):
+        print("RX_VK_DLSS_SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
+        return []
+    return ["-L" + lib, "-lnvsdk_ngx"]
 
 
 def target():
@@ -875,7 +897,8 @@ def main():
         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
                 "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"]
+                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"] + \
+                dlss_sdk_link()
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
                 ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])

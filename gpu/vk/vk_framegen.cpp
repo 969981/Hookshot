@@ -17,6 +17,18 @@
 #include <thread>
 
 #include "vk_framegen.h"
+
+#include "vk_camera_motion.h"
+#include "vk_dlssg.h"
+#include "vk_draw.h"   // (scene_frame_inputs: the depth and matrix the draw path kept)
+
+#include <cmath>
+#include <cstring>
+
+/// (hookshot) The camera the lifted game publishes (host/hos_oot_camera.c). Weak because the
+/// renderer is dlopened with RTLD_NOW and a build of it without the game's host half must still
+/// load: a null here is "the game has not published a camera", not a missing symbol.
+extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* far_plane);
 #include "vk_menu.h"
 #include "vk_texture.h"
 
@@ -415,6 +427,74 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     return fg.recorded->frame[0].image;
 }
 
+/// (hookshot) The made frames of one present, by DLSS Frame Generation: how many were made, 0 when
+/// it could not run. Each one is copied into the set the display thread shows, so the rest of this
+/// file does not care which of the two made them.
+///
+/// The inputs it needs that colour interpolation does not -- the scene's depth, and the matrix its
+/// draws were rendered with -- are kept by the draw path and read back here (vk_draw.h), because
+/// this runs at present time where neither is otherwise in reach. The motion is the same
+/// camera-only reprojection the upscalers use; asking for it twice in one frame is answered with
+/// the one already written (gpu/vk/vk_camera_motion.cpp).
+int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)dlssg::frames_wanted());
+    if (want <= 0) return 0;
+
+    dlssg::Inputs in;
+    in.color = fg.frames[cur].view;
+    in.color_image = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_view;
+    in.depth_image = scene.depth_image;
+    in.depth_format = scene.depth_format;
+    in.motion = motion;
+    in.motion_image = camera_motion::motion_image();
+    in.motion_format = camera_motion::motion_format();
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    // The colour here is the window's R8G8B8A8, which is not HDR whatever the scene was resolved in.
+    in.colour_hdr = false;
+    in.aspect = uh ? (float)uw / (float)uh : 16.0f / 9.0f;
+    {   // (the game's own camera where the patch published it; without it the defaults stand)
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    in.frames_made = (uint32_t)want;
+    int made = 0;
+    for (int k = 1; k <= want; k++) {
+        in.frame_index = (uint32_t)k;
+        if (!dlssg::generate(cmd, in)) break;
+        const VkImage from = dlssg::made_image((uint32_t)k);
+        if (!from) break;
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        made++;
+    }
+    if (made != want) {
+        static int told = 0;
+        if (told++ < 4)
+            logf("vk: dlssg made %d of %d frames: the renderer's own interpolation takes this one",
+                 made, want);
+        return 0;   // (a half-made set would show one real frame and one stale image)
+    }
+    return made;
+}
+
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
     int x0 = 0, y0 = 0, w = (int)sw, h = (int)sh;
     if (crop && crop[2] > 0 && crop[3] > 0) x0 = crop[0], y0 = crop[1], w = crop[2], h = crop[3];
@@ -444,7 +524,12 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     pass(cmd, fg.copy, {{src, fg.nearest}, {fg.frames[cur].view, VK_NULL_HANDLE}}, uw, uh, pc, sizeof pc);
     pass(cmd, fg.luma, {{fg.frames[cur].view, fg.nearest}, {fg.lumas[cur].view, VK_NULL_HANDLE}}, qw, qh);
     set->made = 0;
-    if (blend && m > 1) {
+    // (hookshot) DLSS Frame Generation where it is available, which is the same job with the game's
+    // own motion and depth instead of colour alone. It refuses -- no NGX, no runtime, a GPU that
+    // does not report it, or a frame where the scene's depth and matrix are not both in hand -- and
+    // then the interpolation below runs exactly as it did before this existed.
+    if (blend && m > 1 && dlssg::supported()) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
         pass(cmd, fg.median, {{fg.flows[0].view, fg.nearest}, {fg.flows[1].view, VK_NULL_HANDLE}}, cw, ch);

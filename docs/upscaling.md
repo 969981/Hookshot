@@ -367,9 +367,32 @@ the path to 4 rather than a detour away from it.
 
 The existing interpolator shows made frames about one frame behind the game, and skips interpolation
 across hitches over 100 ms. Real motion and depth improve what it makes, but they do not change
-either property. DLSS frame generation is a Streamline feature and so would be Windows-only; FSR's
-frame interpolation is available on both. Neither removes the latency a frame-interpolating renderer
-has by construction, and #755 should be read before any of it is wired to the Insert menu.
+either property. Neither removes the latency a frame-interpolating renderer has by construction, and
+#755 should be read before any of it is wired to the Insert menu.
+
+**Correction: DLSS frame generation is not Windows-only.** This section used to say it was a
+Streamline feature and therefore out of reach on Linux. Streamline has no Linux build, but frame
+generation is an NGX feature in its own right -- `NVSDK_NGX_Feature_FrameGeneration`, with
+`NVSDK_NGX_Parameter_FrameGeneration_Available` to ask about it and a full set of evaluation
+parameters in `nvsdk_ngx_params_dlssg.h` -- and the SDK ships `libnvidia-ngx-dlssg.so` for
+`Linux_x86_64` beside the super-resolution and ray-reconstruction libraries. It is reached exactly
+as super resolution is, through the shared session in `gpu/vk/vk_ngx.h`.
+
+`gpu/vk/vk_dlssg.h` is that backend. It makes the frames the existing interpolator would have made,
+from the scene's own depth and the camera motion reprojected from it, and `MultiFrameCount` lets it
+make more than one between two real frames -- which is the only way past a rate the game's own
+simulation limits. It slots into `framegen_record` ahead of the colour interpolation: where it
+refuses, or makes fewer frames than were asked for, the interpolation runs exactly as before and the
+set is never shown half made. `RX_VK_DLSSG=<1-3>` asks for it and says how many frames to make;
+without it nothing is loaded and nothing is logged.
+
+The inputs it needs that colour interpolation does not -- the scene's depth, and the matrix its
+draws used -- are kept by the draw path and read back through `scene_frame_inputs()`, because frame
+generation is recorded at present time where neither is otherwise in reach. The motion is the same
+camera-only reprojection the upscalers use, and asking for it twice in one frame is answered with
+the one already written: recording it again would reproject through the matrix the first recording
+had just stored as "previous", which is this same frame's, and the second caller would silently get
+exactly zero motion.
 
 ## DLSS Super Resolution: what is in the tree, and what it is not
 
@@ -400,6 +423,7 @@ Two switches, both off by default, both neutral while off:
 
 | | |
 |---|---|
+| `RX_VK_DLSSG=<1-3>` | asks for DLSS frame generation and says how many frames to make between two of the game's. Without it nothing is loaded, nothing is looked at and nothing is logged; the renderer's own interpolation is unaffected either way |
 | `RX_VK_FSR_STAGE=<0-3>` | diagnostics, and wrong output on purpose above 0: how far down the upscale path a run goes. 1 stops before the backend, 2 records every barrier, clear and descriptor but none of the nine dispatches, 3 keeps the dispatches and drops the blit into the game's target. It exists because three hypotheses about a frame-rate cost were each disproved by a measurement that a stage switch would have given in one run |
 | `RX_VK_DLSS=1` | asks for the backend at run time. Without it nothing is loaded, nothing is looked at and nothing is logged |
 | `RX_VK_DLSS_SDK` | a **build-time** gate. Off, the NGX half of the backend is not compiled and `supported()` is false. On, the build needs an NGX SDK's `include/` on the include path |

@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT / "third_party/fidelityfx-sdk"
 GPU = SDK / "include/FidelityFX/gpu"
 PASSES = SDK / "shaders/fsr3upscaler"
+FI_PASSES = SDK / "shaders/frameinterpolation"
+OF_PASSES = SDK / "shaders/opticalflow"
 OUT = ROOT / "gpu/vk/shaders"
 
 # The option set the renderer records these passes under. Each one is a promise about the inputs:
@@ -51,6 +53,61 @@ VARIANTS = [
     ("accumulate_sharpen", "accumulate", ["-DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=1"]),
     ("rcas", "rcas", []),
 ]
+
+
+# (hookshot) Frame interpolation and the optical flow it runs on, the same arrangement: AMD ships
+# each pass as GLSL over the SDK's own GPU headers, and the renderer records them as SPIR-V headers
+# beside the upscaler's. The options are the same promises about the same inputs -- the depth is
+# reversed and the motion is at the render extent -- because the inputs are the ones the upscaler is
+# already given (gpu/vk/vk_fsr3fi.cpp).
+FI_OPTIONS = [
+    "-DFFX_GPU=1",
+    "-DFFX_GLSL=1",
+    "-DFFX_FRAMEINTERPOLATION_OPTION_INVERTED_DEPTH=1",
+    "-DFFX_FRAMEINTERPOLATION_OPTION_LOW_RESOLUTION_MOTION_VECTORS=1",
+    "-DFFX_FRAMEINTERPOLATION_OPTION_JITTERED_MOTION_VECTORS=0",
+]
+OF_OPTIONS = ["-DFFX_GPU=1", "-DFFX_GLSL=1"]
+
+# (name, the pass file, extra defines). The file is named outright rather than composed: AMD's
+# optical-flow v5 passes end "_pass_v5.glsl" and the interpolation pass itself is just
+# "ffx_frameinterpolation_pass.glsl", so a composed name is wrong for four of the eighteen.
+FI_VARIANTS = [
+    ("fi_setup", "ffx_frameinterpolation_setup_pass.glsl", []),
+    ("fi_reconstruct_previous_depth", "ffx_frameinterpolation_reconstruct_previous_depth_pass.glsl", []),
+    ("fi_reconstruct_and_dilate", "ffx_frameinterpolation_reconstruct_and_dilate_pass.glsl", []),
+    ("fi_game_motion_vector_field", "ffx_frameinterpolation_game_motion_vector_field_pass.glsl", []),
+    ("fi_optical_flow_vector_field", "ffx_frameinterpolation_optical_flow_vector_field_pass.glsl", []),
+    ("fi_disocclusion_mask", "ffx_frameinterpolation_disocclusion_mask_pass.glsl", []),
+    ("fi_game_vector_field_inpainting_pyramid",
+     "ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid_pass.glsl", []),
+    ("fi_inpainting_pyramid", "ffx_frameinterpolation_compute_inpainting_pyramid_pass.glsl", []),
+    ("fi_interpolate", "ffx_frameinterpolation_pass.glsl", []),
+    ("fi_inpainting", "ffx_frameinterpolation_inpainting_pass.glsl", []),
+]
+OF_VARIANTS = [
+    ("of_prepare_luma", "ffx_opticalflow_prepare_luma_pass.glsl", []),
+    ("of_luminance_pyramid", "ffx_opticalflow_compute_luminance_pyramid_pass.glsl", []),
+    ("of_generate_scd_histogram", "ffx_opticalflow_generate_scd_histogram_pass.glsl", []),
+    ("of_compute_scd_divergence", "ffx_opticalflow_compute_scd_divergence_pass.glsl", []),
+    ("of_compute_optical_flow_v5", "ffx_opticalflow_compute_optical_flow_advanced_pass_v5.glsl", []),
+    ("of_filter_optical_flow_v5", "ffx_opticalflow_filter_optical_flow_pass_v5.glsl", []),
+    ("of_scale_optical_flow_v5", "ffx_opticalflow_scale_optical_flow_advanced_pass_v5.glsl", []),
+]
+
+
+def compile_family(glslang, name, source, extra, out_path, target_env, options, includes,
+                   variable=True):
+    """One frame-interpolation or optical-flow pass. The upscaler's compile_one is kept as it is:
+    its passes are composed by name and its option set is the upscaler's own."""
+    cmd = [glslang, "-V", "--quiet", "-S", "comp"]
+    for d in includes:
+        cmd.append("-I" + str(d))
+    cmd += [*options, *extra]
+    if variable:
+        cmd += ["--variable-name", f"FSR3_{name.upper()}_COMP_SPV"]
+    cmd += ["-o", str(out_path), str(source), "--target-env", target_env]
+    subprocess.run(cmd, check=True)
 
 
 def compile_one(glslang, name, pass_name, extra, out_path, target_env, variable=True):
@@ -85,13 +142,27 @@ def main():
 
     bad = []
     with tempfile.TemporaryDirectory(prefix="fsr3-shaders-") as tmp:
-        for name, pass_name, extra in VARIANTS:
+        # the upscaler's eleven, then frame interpolation's ten and optical flow's seven
+        families = [(name, None, pass_name, extra, None, None) for name, pass_name, extra in VARIANTS]
+        families += [(name, FI_PASSES / f, None, extra, FI_OPTIONS,
+                      [GPU, GPU / "frameinterpolation", GPU / "opticalflow"])
+                     for name, f, extra in FI_VARIANTS]
+        families += [(name, OF_PASSES / f, None, extra, OF_OPTIONS, [GPU, GPU / "opticalflow"])
+                     for name, f, extra in OF_VARIANTS]
+        for name, source, pass_name, extra, options, includes in families:
             header = OUT / f"fsr3_{name}_comp_spv.h"
             made = Path(tmp) / header.name
-            compile_one(glslang, name, pass_name, extra, made, a.target_env)
+            if source is None:
+                compile_one(glslang, name, pass_name, extra, made, a.target_env)
+            else:
+                compile_family(glslang, name, source, extra, made, a.target_env, options, includes)
             if a.spirv_val:
                 spv = Path(tmp) / f"{name}.spv"
-                compile_one(glslang, name, pass_name, extra, spv, a.target_env, variable=False)
+                if source is None:
+                    compile_one(glslang, name, pass_name, extra, spv, a.target_env, variable=False)
+                else:
+                    compile_family(glslang, name, source, extra, spv, a.target_env, options,
+                                   includes, variable=False)
                 subprocess.run([a.spirv_val, str(spv)], check=True)
             if a.check:
                 have = header.read_text() if header.exists() else ""
@@ -110,7 +181,7 @@ def main():
     if bad:
         print(f"{len(bad)} header(s) do not match their source: {', '.join(bad)}", file=sys.stderr)
         return 1
-    print(f"fsr3 shaders: {len(VARIANTS)} {'match' if a.check else 'written'}")
+    print(f"fsr3 shaders: {len(VARIANTS) + len(FI_VARIANTS) + len(OF_VARIANTS)} {'match' if a.check else 'written'}")
     return 0
 
 

@@ -11,35 +11,26 @@
 namespace mkwvk::ngx {
 namespace {
 
-/// The entry points the backends call, resolved by name from the NGX core the NVIDIA driver ships
-/// (`libnvidia-ngx.so`), through the loader pattern the rest of the renderer uses for vulkan-1.dll.
-///
-/// Resolved rather than linked for two reasons: the SDK's own library is then not a link requirement
-/// of a gated build, and a machine with the SDK-built binary but no NVIDIA driver has every pointer
-/// null here, so every backend reports itself unavailable instead of the process failing to start.
+/// The session's own state. The NGX entry points are not resolved by name here: on Linux the
+/// driver's core (libnvidia-ngx.so) exports none of the public NVSDK_NGX_* API -- it was tried, and
+/// `NVSDK_NGX_VULKAN_Init_with_ProjectID` is simply not in it -- so a build that asks for DLSS links
+/// the SDK's own static library, which holds those entry points and calls into the core itself.
+/// nx2/build.py's `dlss_sdk_link` is the other half of that, and both are inside RX_VK_DLSS_SDK, so
+/// a build without an SDK links and runs exactly as it did before.
 struct Session {
-    HMODULE module = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_Init_with_ProjectID) init = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_Shutdown1) shutdown = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_GetCapabilityParameters) capability = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_AllocateParameters) allocate = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_DestroyParameters) destroy = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_CreateFeature) create = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_EvaluateFeature) evaluate = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_ReleaseFeature) release = nullptr;
-    /// The two discovery calls, which answer before a device exists. Optional: an NGX without them
-    /// is one whose features need nothing beyond the core, and refusing to load over a missing
-    /// discovery call would turn a working configuration into an unavailable one.
-    decltype(&NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements) instance_exts = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements) device_exts = nullptr;
     bool started = false;
-    bool load_failed = false;
+    bool start_failed = false;
 };
 Session s;
 
 /// A project id of our own. NVIDIA's analytics-key form is for licensed titles; the project-id form
 /// exists exactly so a project without one can initialize.
-constexpr const char* kProjectId = "a6b7c0de-7a1f-4f1e-9d2a-hookshot-dlss";
+// A UUID of our own, and it has to be a real one: NGX validates the shape and answers
+// NVSDK_NGX_Result_FAIL_InvalidParameter (0xbad00005) for anything that is not. The first attempt
+// here spelled "hookshot-dlss" into the last two groups, which is not hex, and that is exactly the
+// error it got. NVIDIA's analytics-key form of Init is for licensed titles; the project-id form
+// exists so a project without one can initialize.
+constexpr const char* kProjectId = "e22a11cd-c034-4e6b-bb25-1919b826f7a8";
 constexpr const char* kEngineVersion = "1.0";
 
 /// The game folder, wide, for NGX's application data path: where it writes what it keeps and where
@@ -70,65 +61,29 @@ const wchar_t* data_path() {
 } // namespace
 
 bool load() {
-    if (s.module) return true;
-    if (s.load_failed) return false;
-    // The core ships with the driver and is found on the usual search path; the model libraries sit
-    // beside the binary and are NGX's to find, which is what the application data path is for.
-#ifdef _WIN32
-    static const char* const names[]{"nvngx.dll", "_nvngx.dll"};
-#else
-    static const char* const names[]{"libnvidia-ngx.so.1", "libnvidia-ngx.so"};
-#endif
-    for (const char* name : names) {
-        s.module = LoadLibraryA(name);
-        if (s.module) {
-            logf("vk: ngx loaded from %s", name);
-            break;
-        }
-    }
-    if (!s.module) {
-        logf("vk: ngx: no NGX runtime here (%s), so every DLSS feature is unavailable", names[0]);
-        s.load_failed = true;
-        return false;
-    }
-#define NGX_RESOLVE(field, name)                                                                   \
-    s.field = (decltype(s.field))(void*)GetProcAddress(s.module, name);                            \
-    if (!s.field) {                                                                                \
-        logf("vk: ngx: the NGX runtime has no %s", name);                                          \
-        s.load_failed = true;                                                                      \
-        return false;                                                                              \
-    }
-    NGX_RESOLVE(init, "NVSDK_NGX_VULKAN_Init_with_ProjectID")
-    NGX_RESOLVE(shutdown, "NVSDK_NGX_VULKAN_Shutdown1")
-    NGX_RESOLVE(capability, "NVSDK_NGX_VULKAN_GetCapabilityParameters")
-    NGX_RESOLVE(allocate, "NVSDK_NGX_VULKAN_AllocateParameters")
-    NGX_RESOLVE(destroy, "NVSDK_NGX_VULKAN_DestroyParameters")
-    NGX_RESOLVE(create, "NVSDK_NGX_VULKAN_CreateFeature")
-    NGX_RESOLVE(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature")
-    NGX_RESOLVE(release, "NVSDK_NGX_VULKAN_ReleaseFeature")
-#undef NGX_RESOLVE
-    s.instance_exts = (decltype(s.instance_exts))(void*)GetProcAddress(
-        s.module, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements");
-    s.device_exts = (decltype(s.device_exts))(void*)GetProcAddress(
-        s.module, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
+    // Linked, not loaded: there is nothing to look for. Kept as a call of its own because the
+    // discovery entry points are used before the session is started, and because a future NGX that
+    // does want loading has one place to do it.
     return true;
 }
 
 bool start() {
-    if (!load()) return false;
     if (s.started) return true;
+    if (s.start_failed) return false;
     NVSDK_NGX_FeatureCommonInfo common{};
     const wchar_t* paths[]{data_path()};
     common.PathListInfo.Path = paths;
     common.PathListInfo.Length = 1;
-    const NVSDK_NGX_Result res =
-        s.init(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kEngineVersion, data_path(), dev.instance,
-               dev.physical, dev.device, instance_proc(), vkGetDeviceProcAddr, &common,
-               NVSDK_NGX_Version_API);
+    const NVSDK_NGX_Result res = NVSDK_NGX_VULKAN_Init_with_ProjectID(
+        kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kEngineVersion, data_path(), dev.instance,
+        dev.physical, dev.device, instance_proc(), vkGetDeviceProcAddr, &common,
+        NVSDK_NGX_Version_API);
     if (NVSDK_NGX_FAILED(res)) {
-        logf("vk: ngx did not initialize (0x%08x)", (unsigned)res);
+        logf("vk: ngx did not initialize (0x%08x); DLSS is unavailable", (unsigned)res);
+        s.start_failed = true;
         return false;
     }
+    logf("vk: ngx initialized");
     s.started = true;
     return true;
 }
@@ -137,7 +92,7 @@ bool feature_available(const char* available_key, const char* needs_driver_key,
                        const char* major_key, const char* minor_key, const char* name) {
     if (!start()) return false;
     NVSDK_NGX_Parameter* caps = nullptr;
-    if (NVSDK_NGX_FAILED(s.capability(&caps)) || !caps) {
+    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&caps)) || !caps) {
         logf("vk: ngx gave no capability parameters");
         return false;
     }
@@ -162,7 +117,7 @@ bool feature_available(const char* available_key, const char* needs_driver_key,
 NVSDK_NGX_Parameter* allocate_params() {
     if (!start()) return nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
-    if (NVSDK_NGX_FAILED(s.allocate(&params))) {
+    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&params))) {
         logf("vk: ngx gave no parameters to evaluate with");
         return nullptr;
     }
@@ -170,23 +125,21 @@ NVSDK_NGX_Parameter* allocate_params() {
 }
 
 void destroy_params(NVSDK_NGX_Parameter* params) {
-    if (params && s.destroy) s.destroy(params);
+    if (params) NVSDK_NGX_VULKAN_DestroyParameters(params);
 }
 
 NVSDK_NGX_Result create_feature(VkCommandBuffer cmd, NVSDK_NGX_Feature feature,
                                 NVSDK_NGX_Parameter* params, NVSDK_NGX_Handle** out_handle) {
-    if (!s.create) return NVSDK_NGX_Result_Fail;
-    return s.create(cmd, feature, params, out_handle);
+    return NVSDK_NGX_VULKAN_CreateFeature(cmd, feature, params, out_handle);
 }
 
 NVSDK_NGX_Result evaluate_feature(VkCommandBuffer cmd, NVSDK_NGX_Handle* handle,
                                   NVSDK_NGX_Parameter* params) {
-    if (!s.evaluate) return NVSDK_NGX_Result_Fail;
-    return s.evaluate(cmd, handle, params, nullptr);
+    return NVSDK_NGX_VULKAN_EvaluateFeature(cmd, handle, params, nullptr);
 }
 
 void release_feature(NVSDK_NGX_Handle* handle) {
-    if (handle && s.release) s.release(handle);
+    if (handle) NVSDK_NGX_VULKAN_ReleaseFeature(handle);
 }
 
 NVSDK_NGX_FeatureDiscoveryInfo discovery_info(NVSDK_NGX_Feature feature) {
@@ -202,11 +155,12 @@ NVSDK_NGX_FeatureDiscoveryInfo discovery_info(NVSDK_NGX_Feature feature) {
 }
 
 size_t instance_extensions(NVSDK_NGX_Feature feature, const char** out, size_t max) {
-    if (!load() || !s.instance_exts) return 0;
+    if (!load()) return 0;
     const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info(feature);
     uint32_t n = 0;
     VkExtensionProperties* props = nullptr;
-    if (NVSDK_NGX_FAILED(s.instance_exts(&info, &n, &props)) || !props) return 0;
+    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&info, &n, &props)) || !props)
+        return 0;
     size_t kept = 0;
     for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
     return kept;
@@ -214,11 +168,14 @@ size_t instance_extensions(NVSDK_NGX_Feature feature, const char** out, size_t m
 
 size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, NVSDK_NGX_Feature feature,
                          const char** out, size_t max) {
-    if (!instance || !gpu || !load() || !s.device_exts) return 0;
+    if (!instance || !gpu || !load()) return 0;
     const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info(feature);
     uint32_t n = 0;
     VkExtensionProperties* props = nullptr;
-    if (NVSDK_NGX_FAILED(s.device_exts(instance, gpu, &info, &n, &props)) || !props) return 0;
+    if (NVSDK_NGX_FAILED(
+            NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, gpu, &info, &n, &props)) ||
+        !props)
+        return 0;
     size_t kept = 0;
     for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
     return kept;
@@ -236,7 +193,7 @@ NVSDK_NGX_Resource_VK resource(VkImageView view, VkImage image, VkFormat format,
 }
 
 void shutdown() {
-    if (s.started && s.shutdown) s.shutdown(dev.device);
+    if (s.started) NVSDK_NGX_VULKAN_Shutdown1(dev.device);
     s.started = false;
 }
 

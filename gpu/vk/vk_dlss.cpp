@@ -88,8 +88,7 @@ void drop_image(Image& t) {
 
 /// The image an evaluation resolves into: RGBA16F at the upscale size, GENERAL throughout, a
 /// storage image because DLSS writes it and a transfer source because the caller blits it into the
-/// game's own target. (vk_fsr3.cpp's output asks for TRANSFER_DST and not TRANSFER_SRC although its
-/// call site blits *from* it; that is left as it is rather than changed from here.)
+/// game's own target, exactly as vk_fsr3.cpp's output does.
 bool make_output(Image& t, uint32_t width, uint32_t height) {
     drop_image(t);
     t.format = VK_FORMAT_R16G16B16A16_SFLOAT;

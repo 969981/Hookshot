@@ -5447,6 +5447,23 @@ extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* 
 /// which is what keeps camera motion from reprojecting through a guess)
 extern "C" __attribute__((weak)) int hos_oot_view_projection(float* row_major_4x4);
 
+/// (hookshot) The scene's depth and matrix, for the present path (vk_draw.h).
+bool scene_frame_inputs(SceneFrameInputs* out) {
+    if (!out) return false;
+    if (!scene_depth.view || !scene_depth.image || !scene_depth.width || !scene_depth.height)
+        return false;
+    out->depth_image = scene_depth.image;
+    out->depth_view = scene_depth.view;
+    out->depth_format = scene_depth.format;
+    out->render_width = scene_depth.width;
+    out->render_height = scene_depth.height;
+    out->have_view_projection = scene_vp.have;
+    if (scene_vp.have) memcpy(out->view_projection, scene_vp.m, sizeof out->view_projection);
+    else if (hos_oot_view_projection) out->have_view_projection = hos_oot_view_projection(out->view_projection) != 0;
+    return true;
+}
+
+
 /// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
 /// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
 /// network. taau_key's own default turns itself off where the card can run the real network, which
