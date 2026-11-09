@@ -262,7 +262,9 @@ choices and starts the game again, so progress since your last save is lost.
   edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
-  and **Sharpness** sharpens it.
+  and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
+  profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
+  suit.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
@@ -304,6 +306,17 @@ choices and starts the game again, so progress since your last save is lost.
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
+
+**Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
+both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
+one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
+the game's rumble on their two motors. The menu's Rumble strength scales it too. `HOS_HD_RUMBLE=0` sends the Switch
+controllers the motor rumble too. On Linux, SDL talks to the Switch controller itself through its hidraw device, which
+needs read and write access for your user; Steam's udev rules (the `steam-devices` package on most distributions) give
+it. Without them the kernel's hid-nintendo driver runs the controller, and it gets the motor rumble. HD rumble goes to
+anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes third-party controllers in Switch mode
+(8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
+`HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
 To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
