@@ -4,8 +4,10 @@
 
 namespace mkwvk::upscaler_rows {
 
-/// The Upscaler row (opts.dlss, RX_VK_DLSS): the game's own network, NVIDIA DLSS, NVIDIA DLAA
-enum { GAME = 0, DLSS = 1, DLAA = 2 };
+/// The Upscaler row (opts.dlss, RX_VK_DLSS): the game's own network, NVIDIA DLSS, NVIDIA DLAA, AMD FSR 3.1 (built from AMD's
+/// shader sources: gpu/vk/vk_fsr3.cpp). The saved values keep their meaning: FSR 3.1 came after DLAA, so a saved 1 or 2 is
+/// still DLSS or DLAA
+enum { GAME = 0, DLSS = 1, DLAA = 2, FSR3 = 3 };
 
 /// opts.resolution: 0 Auto (the game's dynamic resolution), else a share of the output in percent. 1 to 4 are the values from
 /// before (100, 75, 67, 50: saved options keep their meaning); 5 and 6 came with DLSS's Balanced and Ultra Performance. Each
