@@ -212,7 +212,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NVIDIA-RTX/Streamline
-          ref: v2.14.16
+          ref: 625db07d4bca5abc67d781c42af7e7fb0761f1b6 # v2.14.16
           path: streamline-sdk
       - name: hookshot_vk.dll
         env:
