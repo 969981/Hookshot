@@ -79,6 +79,23 @@ jobs:
       - name: AppImage
         run: scripts/linux/appimage.sh
 
+      # (the DLSS half, compiled and linked and then thrown away: nothing from this step is uploaded, because
+      #  NVIDIA's SDK may not be committed here and its library may not be redistributed. It runs after the
+      #  AppImage so it reuses the toolchain that step already built, and it exists because this link had no
+      #  coverage at all -- the Windows half of it was simply missing and no job noticed.)
+      - name: Check out NVIDIA's DLSS SDK (not redistributed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NVIDIA/DLSS
+          path: _deps/dlss-sdk
+      - name: hookshot_vk.so links against the NGX SDK
+        run: |
+          D=$PWD/build-linux/deps
+          EMSDK=$D/emsdk RX_CPM=$D/cpm OOT_WORK="$RUNNER_TEMP/vk-dlss" RX_VK_ONLY=1 \
+            RX_VK_DLSS_SDK="$PWD/_deps/dlss-sdk" \
+            "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)"
+          ls -l "$RUNNER_TEMP/vk-dlss/sa/build/hookshot_vk.so"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Hookshot-linux-x86_64

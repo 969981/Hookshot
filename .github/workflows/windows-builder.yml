@@ -183,6 +183,24 @@ jobs:
           name: hookshot_vk-windows
           path: ${{ runner.temp }}/vk-work/sa/build/hookshot_vk.dll
           if-no-files-found: error
+      # (the DLSS half, compiled and linked and then thrown away. It is never part of a release: NVIDIA's SDK may
+      #  not be committed here and its library may not be redistributed, so nothing from this step is uploaded.
+      #  What it buys is that the link is exercised at all -- dlss_sdk_link was Linux-only once, so a Windows build
+      #  with an SDK compiled the NGX half and then failed with every NVSDK_NGX_* symbol undefined, and no job here
+      #  would have noticed. The SDK is fetched, not stored.)
+      - name: Check out NVIDIA's DLSS SDK (not redistributed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NVIDIA/DLSS
+          path: _deps/dlss-sdk
+      - name: hookshot_vk.dll links against the NGX SDK
+        env:
+          RX_VK_ONLY: '1'
+          RX_VK_DLSS_SDK: ${{ github.workspace }}/_deps/dlss-sdk
+        run: |
+          OOT_WORK="$RUNNER_TEMP/vk-dlss" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
+            python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS"
+          ls -l "$RUNNER_TEMP/vk-dlss/sa/build/hookshot_vk.dll"
 
   release:
     name: Release assets
