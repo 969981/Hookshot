@@ -58,6 +58,9 @@ struct Pool {
     uint64_t synced_epoch = 0;   // the submission that last brought it up to date
     uint64_t sync_seg = 0;       // (and the parallel replay's segment whose uploads did)
     uint64_t last_value = 0;     // (the newest submission that bound it: its mirror is in use until that one is done)
+    // (hookshot) its heat: the bytes of the ranges bound from it (every binding, the bind memo's hits too; relaxed, any thread),
+    // and those of the last 64-submission windows, halved each window (mirrors_swap_for_hot). made_epoch: its mirror's making
+    uint64_t bound_bytes = 0, heat_mark = 0, heat = 0, made_epoch = 0;
     uint64_t direct_write_epoch = 0;   // (the part that last wrote it in guest memory, before it had a mirror)
     uint64_t retired_value = 0;  // (retired: the submission that may still use it)
     bool was_mirrored = false;   // (its mirror was given back: its pages stay in the captures, for the next one)
@@ -1954,7 +1957,8 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
 //   write generations) are copied in, in the recording's upload command buffer (submitted right before it).
 // - GPU -> guest: what the submission's shaders and copies may write into a mirror is copied back into the imported
 //   pool at the submission's end, so the CPU (and everything that reads guest memory) sees it.
-// RX_VK_MIRROR=0: no mirrors; RX_VK_MIRROR_MB: their budget (default 3072).
+// RX_VK_MIRROR=0: no mirrors; RX_VK_MIRROR_MB: their budget (default 3072); RX_VK_MIRROR_HEAT=0: no swaps by heat
+// (mirrors_swap_for_hot).
 bool mirror_on() {
     static const int on = [] {
         const char* e = getenv("RX_VK_MIRROR");
@@ -2481,7 +2485,11 @@ bool bind_memo_hit(uint64_t guest, uint64_t size, uint64_t stamp, uint64_t cache
 struct BindMemo {
     uint64_t guest = 0, size = 0, stamp = 0;
     BufferRef ref{};
+    Pool* pool = nullptr;   // (hookshot: whose heat a hit adds to)
 };
+inline void heat_add(Pool* p, uint64_t size) {
+    if (p) std::atomic_ref<uint64_t>(p->bound_bytes).fetch_add(size, std::memory_order_relaxed);
+}
 thread_local BindMemo bind_memo[256];
 
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
@@ -2496,15 +2504,18 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     }
     // (the same read, while that stamp still stands: the buffer and the offset are the ones found before. a miss
     // runs the lookup below, including a mirror sync, and remembers what it returned. a write is not remembered)
-    auto remember = [&](BufferRef ref) {
+    auto remember = [&](Pool* p, BufferRef ref) {
+        heat_add(p, size);
         if (!written && ref.buffer != VK_NULL_HANDLE && size)
-            bind_memo[bind_slot(guest, size)] = BindMemo{guest, size, gpu_bind_stamp(), ref};
+            bind_memo[bind_slot(guest, size)] = BindMemo{guest, size, gpu_bind_stamp(), ref, p};
         return ref;
     };
     if (!written) {
         const BindMemo& m = bind_memo[bind_slot(guest, size)];
-        if (bind_memo_hit(guest, size, gpu_bind_stamp(), m.guest, m.size, m.stamp, m.ref.buffer != VK_NULL_HANDLE))
+        if (bind_memo_hit(guest, size, gpu_bind_stamp(), m.guest, m.size, m.stamp, m.ref.buffer != VK_NULL_HANDLE)) {
+            heat_add(m.pool, size);
             return m.ref;
+        }
     }
     // (a read binding of a pool this thread found before and whose mirror is in use this submission or that has none,
     // without the lock: every thread's, the replay thread's too (each draw binds several uniform buffers: the pool's
@@ -2517,9 +2528,9 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
         if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)
-            return remember({p->buffer, off, size, 0});
+            return remember(p, {p->buffer, off, size, 0});
         if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
-            return remember({p->mirror, off, size, 0});
+            return remember(p, {p->mirror, off, size, 0});
     }
     ParLock plk;   // (before pools_mu, always: a mirror sync records into the shared upload command buffer)
     std::lock_guard lk(pools_mu);
@@ -2530,7 +2541,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
-        return remember({p->buffer, off, size, 0});
+        return remember(p, {p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next
     // submission, the GPU read it there while the game's threads wrote it for their next frames, and a pass that drew
@@ -2559,14 +2570,14 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         if (written) p->direct_write_epoch = mirror_epoch;
         if (written && size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
             wb_pages_note(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo), mem_rec_value);
-        return remember({p->buffer, off, size, 0});
+        return remember(p, {p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
     if (written) {
         writebacks.push_back({p, off, std::min(off + size, p->hi - p->lo)});
         rb_hazard_locked(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo));   // (memory_rb_refresh)
     }
-    return remember({p->mirror, off, size, 0});
+    return remember(p, {p->mirror, off, size, 0});
 }
 
 // ---- mirrors given back ----
@@ -2772,6 +2783,66 @@ void imports_give_back() {   // (pools_mu held)
              (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
 }
 
+// (hookshot) Mirrors by heat. A pool refused for the budget got a mirror only when one went unbound for kIdleEpochs submissions:
+// with the budget full of pools bound now and then but read little, the pool bound every submission stayed in guest memory for
+// good. On an RTX A1000 Laptop (4 GB; 495 MB of mirrors) in play, a 160 MB pool the GPU bound 513 times in 600 submissions,
+// 29 GB of ranges, read over PCIe, while the mirrors held 480 MB of colder pools: the GPU at ~70% and 15 of its 45 W, 17-25 fps.
+// Now a wanted pool that does not fit takes the mirrors of pools with a quarter of its heat or less (all of them together),
+// coldest first: only mirrors the GPU is done with (last_value, as mirrors_give_back), made kSwapHold submissions ago or more,
+// one swap per 16 submissions. RX_VK_MIRROR_HEAT=0: as before
+constexpr uint64_t kSwapHold = 600;
+int64_t st_swaps = 0;
+/// The swap's choice, as data (tests/test_mirror_heat.py): of the candidates' sizes and heats, coldest first, how many make
+/// room for want_bytes under the budget; 0 when they cannot, or when their heat together is more than a quarter of the
+/// wanted pool's (or it reads less than 64 MB of ranges a window: not worth a mirror's copy)
+size_t mirror_swap_pick(const uint64_t* bytes, const uint64_t* heat, size_t count, uint64_t used, uint64_t budget,
+                        uint64_t want_bytes, uint64_t want_heat, uint64_t* freed_out, uint64_t* cold_heat_out) {
+    *freed_out = *cold_heat_out = 0;
+    if (want_bytes > budget || used + want_bytes <= budget || want_heat < (64ull << 20)) return 0;
+    uint64_t freed = 0, cold_heat = 0;
+    size_t k = 0;
+    while (k < count && used - freed + want_bytes > budget) freed += bytes[k], cold_heat += heat[k], k++;
+    if (used - freed + want_bytes > budget || cold_heat > want_heat / 4) return 0;
+    *freed_out = freed, *cold_heat_out = cold_heat;
+    return k;
+}
+void mirrors_swap_for_hot() {   // (pools_mu held)
+    static const bool on = !getenv("RX_VK_MIRROR_HEAT") || atoi(getenv("RX_VK_MIRROR_HEAT")) != 0;
+    if (!on || mirror_wanted.empty()) return;
+    static uint64_t last_swap;
+    if (mirror_epoch - last_swap < 16) return;
+    // (the hottest wanted pool only: trying the others after it let small pools trade 16 MB mirrors back and forth, each swap
+    // making the mirrors young again, and the 160 MB pool never found kSwapHold-old ones to take. And only one read enough to
+    // matter: 64 MB of ranges a window)
+    auto hottest = std::max_element(mirror_wanted.begin(), mirror_wanted.end(),
+                                    [](const Pool* a, const Pool* b) { return a->heat < b->heat; });
+    {
+        Pool* w = *hottest;
+        const uint64_t n = w->hi - w->lo;
+        if (w->mstate != Pool::MIRROR_WANTED) return;
+        std::vector<Pool*> cold;
+        for (auto& [lo, p] : imported)
+            if (p.mstate == Pool::MIRROR_ON && &p != w && !p.inherit_pending && p.last_value <= mem_completed &&
+                mirror_epoch - p.made_epoch >= kSwapHold && p.heat < w->heat / 4)
+                cold.push_back(&p);
+        std::sort(cold.begin(), cold.end(), [](const Pool* a, const Pool* b) { return a->heat < b->heat; });
+        std::vector<uint64_t> bytes(cold.size()), heat(cold.size());
+        for (size_t i = 0; i < cold.size(); i++) bytes[i] = cold[i]->hi - cold[i]->lo, heat[i] = cold[i]->heat;
+        uint64_t freed = 0, cold_heat = 0;
+        const size_t k = mirror_swap_pick(bytes.data(), heat.data(), cold.size(), mirror_bytes, mirror_budget(), n, w->heat,
+                                          &freed, &cold_heat);
+        if (!k) return;
+        for (size_t i = 0; i < k; i++) mirror_free(*cold[i]);
+        std::iter_swap(mirror_wanted.begin(), hottest);   // (made first: the space freed is its, not a colder wanted pool's)
+        last_swap = mirror_epoch;
+        if (st_swaps++ < 32 || st_swaps % 64 == 0)
+            logf("vk: pool %#llx (%llu MB, %llu MB bound a window) takes the mirrors of %zu colder pools (%llu MB, %llu MB bound a window; "
+                 "%lld swaps so; RX_VK_MIRROR_HEAT=0: off)", (unsigned long long)w->lo, (unsigned long long)(n >> 20),
+                 (unsigned long long)(w->heat >> 20), k, (unsigned long long)(freed >> 20), (unsigned long long)(cold_heat >> 20),
+                 (long long)st_swaps);
+    }
+}
+
 void memory_begin_submission() {
     std::lock_guard lk(pools_mu);
     reap_mirrors();
@@ -2788,7 +2859,14 @@ void memory_begin_submission() {
         for (Pool* p : mirror_wanted) want += p->hi - p->lo;
         if (mirror_epoch % 64 == 0 || mirror_bytes + want > mirror_budget()) mirrors_give_back(want);
     }
+    if (mirror_epoch % 64 == 0)   // (hookshot: the heat's windows, mirrors_swap_for_hot)
+        for (auto& [lo, p] : imported) {
+            const uint64_t b = std::atomic_ref<uint64_t>(p.bound_bytes).load(std::memory_order_relaxed);
+            p.heat = p.heat / 2 + (b - p.heat_mark);
+            p.heat_mark = b;
+        }
     if (mirror_wanted.empty()) return;
+    mirrors_swap_for_hot();
     for (Pool* p : mirror_wanted) mirror_make(*p);
     mirror_wanted.clear();
     publish_cap_ranges();
@@ -2913,6 +2991,7 @@ bool mirror_make(Pool& pool) {
             }
         }
         p->mstate = Pool::MIRROR_ON;
+        p->made_epoch = mirror_epoch;
         pools_gen.fetch_add(1, std::memory_order_relaxed);   // (the binding's buffer changes: guest memory, then this mirror)
         p->synced_gen = gen_now;
         p->synced_epoch = mirror_epoch;
