@@ -138,7 +138,23 @@ pointer read a frame later is all zeros; snapshotting its first 48 floats at pub
 That 45 degrees is also the needle for the rest of the matrix: a projection built from it has
 m11 = 1/tan(22.5 deg) = **2.41421**, so the view projection the draws use can be found by looking
 for that value in the uniform buffer a scene draw reads, rather than by guessing at another object's
-offsets.
+offsets. `RX_VK_VP_HUNT=1` does that, and found it at once:
+
+```
+vp hunt: stage 5 slot 0, m11 at +68, matrix from +48:
+    1.358   0       0      0
+    0       2.414   0      0
+    0       0      -1     -0.2
+    0       0      -1      0
+```
+
+m11 is 2.414 as predicted, 2.414 / 1.358 = 1.777 = 16/9, and the last row makes w = -z. So the
+scene draws read their projection from **stage 5, slot 0, byte 48** of a uniform buffer, and it
+agrees with the camera the lifted code publishes.
+
+It is the projection **alone**, though: the upper-left 3x3 is diagonal, with no rotation or
+translation in it. A temporal upscaler reprojects with view times projection, so the view is still
+to be found -- and it should be in the same buffer, since a draw needs both.
 
 That removes the approximation the reference implementation settles for — it documents using "a
 typical near plane and vertical field of view" because DLSS hands it no camera — and it is the same

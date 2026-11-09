@@ -4520,7 +4520,7 @@ static void vp_hunt(const NvnState& s) {
     static const bool on = getenv("RX_VK_VP_HUNT") != nullptr;
     if (!on) return;
     static std::atomic<int> told{0};
-    if (told.load(std::memory_order_relaxed) >= 8) return;
+    if (told.load(std::memory_order_relaxed) >= 1) return;   // (one buffer dump is the point)
     for (int stage = 0; stage < kNvnStages; stage++) {
         for (int slot = 0; slot < 16; slot++) {
             const nvn_p_bind_buf& u = s.ubo[stage][slot];
@@ -4532,18 +4532,25 @@ static void vp_hunt(const NvnState& s) {
                 float v = 0;
                 memcpy(&v, &word, 4);
                 if (!(v > 2.4139f && v < 2.4145f)) continue;
-                char line[420];
-                int n = snprintf(line, sizeof line,
-                                 "vk: vp hunt: stage %d slot %d, m11 at +%llu, matrix from +%llu:",
-                                 stage, slot, (unsigned long long)off, (unsigned long long)(off - 20));
-                for (int i = 0; i < 16 && n < 380; i++) {
-                    uint32_t w2 = 0;
-                    float f2 = 0;
-                    if (ub_read(u.addr + off - 20 + (uint64_t)i * 4, &w2, 4)) memcpy(&f2, &w2, 4);
-                    n += snprintf(line + n, sizeof line - n, " %.4g", (double)f2);
+                // The matrix at the hit is the projection alone -- its upper-left 3x3 came back
+                // diagonal -- so the view, or a combined view projection, is elsewhere in the same
+                // buffer. Dump the whole buffer in rows of four, which is how a 4x4 reads, and look
+                // for a rotated 3x3.
+                logf("vk: vp hunt: stage %d slot %d, m11 at +%llu, buffer %llu bytes", stage, slot,
+                     (unsigned long long)off, (unsigned long long)u.size);
+                for (uint64_t row = 0; row * 16 < bytes; row++) {
+                    char line[160];
+                    int n = snprintf(line, sizeof line, "vk:   +%3llu:", (unsigned long long)(row * 16));
+                    for (int i = 0; i < 4 && n < 130; i++) {
+                        uint32_t w2 = 0;
+                        float f2 = 0;
+                        if (ub_read(u.addr + row * 16 + (uint64_t)i * 4, &w2, 4)) memcpy(&f2, &w2, 4);
+                        n += snprintf(line + n, sizeof line - n, " %11.4g", (double)f2);
+                    }
+                    logf("%s", line);
+                    if (row >= 23) break;   // (24 rows: six 4x4s is more than enough to find it)
                 }
-                logf("%s", line);
-                if (told.fetch_add(1, std::memory_order_relaxed) + 1 >= 8) return;
+                if (told.fetch_add(1, std::memory_order_relaxed) + 1 >= 1) return;
                 break;   // (one hit per buffer is enough to name it)
             }
         }
