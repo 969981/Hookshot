@@ -1486,7 +1486,10 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         static const bool all = [] {
             if (const char* e = getenv("RX_VK_ASTC_BC_ALL")) return e[0] == '1';
             uint64_t used = 0, allowed = 0;
-            const bool small = vram_usage(&used, &allowed) && allowed && allowed < (6ull << 30);
+            // (under 7 GB allowed, not 6: an 8 GB card under Windows is allowed 6.6-6.9 GB with a desktop and a browser open, and
+            // held ~2 GB of decoded ASTC in Kakariko and Hyrule Field, over what the driver allows and paged, 2-9 fps. All large ASTC
+            // as BC3 there: 2071 -> 1475 MB decoded, 6.37 GB used of 6.80 allowed, a median of 32 fps on a Quadro P4000)
+            const bool small = vram_usage(&used, &allowed) && allowed && allowed < (7ull << 30);
             if (small) logf("vk: %llu MB of VRAM allowed: all large ASTC textures kept as BC3", (unsigned long long)(allowed >> 20));
             return small;
         }();
