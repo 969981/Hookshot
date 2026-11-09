@@ -32,6 +32,19 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    // (hookshot) DLSS 5 neural rendering (gpu/vk/vk_dlssnr.h). Off out of the box, like every other
+    // feature here. The model's own knobs are percentages because that is what a slider can say; the
+    // backend divides by 100 for the float Streamline wants.
+    int nr = 0;                 // 0 off, 1 on
+    int nr_model = 2;           // 0 Performance, 1 Balanced, 2 Quality, 3 DLAA
+    int nr_style = 0;           // 0 Default, 1 Natural, 2 Cinematic
+    int nr_preset = 0;          // 0 the plugin's default model, 1 to 7 pin presets A to G
+    int nr_intensity = 100;     // how much of the uplift is mixed in, percent
+    int nr_local_tone = 100;    // local tone strength, percent
+    int nr_local_structure = 100;   // local structure strength, percent
+    int nr_global_tone = 100;   // global tone strength, percent
+    int nr_skin = 100;          // skin structure strength, percent (Auto mask decides where)
+    int nr_auto_mask = 0;       // the model picks what to leave alone
 };
 extern Options opts;
 
@@ -47,6 +60,30 @@ inline int window_filter() {
 inline int scene_upscaler() {
     return opts.upscale >= 3 ? opts.upscale - 2 : 0;
 }
+/// (hookshot) DLSS 5 neural rendering's settings as the backend wants them, read live so that a
+/// change in the menu reaches the next frame. The quality field is an sl::DLSSMode, which is what
+/// DLSS-NR takes: 1 performance, 2 balanced, 3 quality, 6 DLAA.
+struct NrSettings {
+    bool on;
+    unsigned quality;
+    unsigned style;
+    unsigned preset;
+    float intensity, local_tone, local_structure, global_tone, skin;
+    bool auto_mask;
+    bool operator==(const NrSettings&) const = default;
+};
+inline NrSettings nr_settings() {
+    const unsigned quality = opts.nr_model == 0 ? 1u : opts.nr_model == 1 ? 2u
+                           : opts.nr_model == 3 ? 6u : 3u;
+    return NrSettings{
+        opts.nr != 0, quality, (unsigned)(opts.nr_style < 0 ? 0 : opts.nr_style),
+        (unsigned)(opts.nr_preset < 0 ? 0 : opts.nr_preset),
+        (float)opts.nr_intensity / 100.0f, (float)opts.nr_local_tone / 100.0f,
+        (float)opts.nr_local_structure / 100.0f, (float)opts.nr_global_tone / 100.0f,
+        (float)opts.nr_skin / 100.0f, opts.nr_auto_mask != 0,
+    };
+}
+
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
 /// video memory than the preset is for. A 4GB preset on an 8 GB card kept 256 MB of mirrors and 2.2 GB of textures: the
 /// game's memory was read over PCIe and the textures made again every frame, 5 fps with the CPU idle (Discord, 11-08)

@@ -37,3 +37,4 @@ build-linux/
 
 # NVIDIA's DLSS SDK, fetched at build time and never committed (docs/upscaling.md)
 /dlss-sdk/
+/streamline-sdk/

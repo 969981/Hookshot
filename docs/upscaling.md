@@ -600,8 +600,13 @@ The SDK ships three Linux feature libraries and only two of them have a job in t
   invented inputs would be a worse picture dressed up as a feature. It is not wired, and the reason
   is the game, not the plumbing.
 
-So "neural rendering" in this project means the super-resolution network and the frame-generation
-network, and on AMD it will mean FSR 4's upscaling network for the same reason.
+That paragraph is right about ray reconstruction and was wrong about everything it was then used to
+conclude. **"Neural rendering" is also the name of a different NVIDIA feature, and that one does run
+here**: DLSS 5 neural rendering (`kFeatureDLSS_NR`, NVIDIA's *3D-Guided Neural Rendering*) is an
+uplift pass over a finished image -- `kBufferTypeUpliftInputColor` in, `kBufferTypeUpliftOutputColor`
+out -- not a denoiser, and it needs no G-buffer. It is implemented and in the menu's Neural tab;
+[neural-rendering.md](neural-rendering.md) has it, including the three times this project refused it
+on the strength of the paragraph above.
 
 ### How NGX is actually reached on Linux
 

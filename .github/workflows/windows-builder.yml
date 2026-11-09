@@ -178,6 +178,16 @@ jobs:
         with:
           repository: NVIDIA/DLSS
           path: dlss-sdk
+      # (DLSS 5 neural rendering: only NVIDIA Streamline's MIT-licensed headers, fetched here and never
+      #  committed, found at the tree root by nx2/build.py streamline_sdk_path. Nothing is linked from it --
+      #  sl.interposer.dll and the sl.* plugins are the player's own files, loaded at run time. v2.14.1 is the
+      #  first public tag that carries kFeatureDLSS_NR at all, so this tag is a floor, not a preference.)
+      - name: Check out NVIDIA Streamline's headers (DLSS 5 neural rendering)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NVIDIA-RTX/Streamline
+          ref: v2.14.16
+          path: streamline-sdk
       - name: hookshot_vk.dll
         env:
           RX_VK_ONLY: '1'

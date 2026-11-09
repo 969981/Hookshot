@@ -29,6 +29,7 @@
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_framegen.h"
+#include "vk_dlssnr.h"
 #include "vk_menu.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
@@ -3059,6 +3060,14 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     vkBeginCommandBuffer(f.cmd, &bi);
     VkImage dst = dev.swap_images[index];
     full_barrier(f.cmd);   // (after the game's work for the frame: earlier submits on this queue)
+    // (hookshot) DLSS 5 neural rendering, over the frame as the game finished it and before anything
+    // of ours is drawn on top: the model gets the picture, not the menu or the FPS counter, which it
+    // has no reason to rebuild. It gives back an image of its own and the game's is left untouched;
+    // a frame it could not do returns null and goes to the window exactly as it always did.
+    if (src) {
+        VkImageView nr_view = VK_NULL_HANDLE;
+        if (const VkImage nr = dlssnr::apply(f.cmd, src, sw, sh, &nr_view)) src = nr, view = nr_view;
+    }
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const bool preserve_stretch = host && host->aspect_ratio && host->aspect_ratio() > 1.0f;
     const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, preserve_stretch);

@@ -24,7 +24,8 @@
 #include "oot_cheat_items.h"
 #include "vk_startup_paint.h"
 
-#include "vk_dlss.h"   // (built_with_sdk: whether this build can offer DLSS at all)
+#include "vk_dlss.h"     // (built_with_sdk: whether this build can offer DLSS at all)
+#include "vk_dlssnr.h"   // (the same, for DLSS 5 neural rendering)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -41,7 +42,10 @@ enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_GAMEPLAY = 1,
     TAB_CONTROLS = 2,
-    TAB_COUNT = 3
+    // (hookshot) DLSS 5 neural rendering's own tab. Its ten rows are the model's own knobs, which
+    // belong together and would have doubled the Graphics tab on their own.
+    TAB_NEURAL = 3,
+    TAB_COUNT = 4
 };
 
 struct Row {
@@ -71,6 +75,26 @@ const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos", "FSR 3.1", "DLSS"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
+}
+// (hookshot) DLSS 5 neural rendering's rows. The model names are the quality modes DLSS-NR takes
+// (an sl::DLSSMode: performance, balanced, quality, DLAA). The three styles are the plugin's own and
+// these are its names for them; the presets are DLSS presets A to G, where Default lets the plugin
+// pick -- which is 0, not 1: a preset of 1 silently pins A. A style or preset this plugin does not
+// have is refused by Streamline, which turns the row back rather than the feature off
+// (vk_dlssnr.cpp).
+const char* tx_nr_model(int v) {
+    static const char* t[] = {"Performance", "Balanced", "Quality", "DLAA"};
+    return t[std::min(std::max(v, 0), 3)];
+}
+const char* tx_nr_style(int v) {
+    static const char* t[] = {"Default", "Natural", "Cinematic"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+const char* tx_nr_preset(int v) {
+    static char b[16];
+    if (v <= 0) return "Default";
+    snprintf(b, sizeof b, "Preset %c", 'A' + (v - 1));
+    return b;
 }
 const char* tx_percent(int v) {
     static char b[8];
@@ -244,6 +268,40 @@ Row rows[] = {
      "Which gamepad button and which keys press each of the Switch's buttons."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
+
+    // Neural rendering (10 rows). Every row here takes effect on the next frame: the backend reads
+    // them live rather than caching them at start-up, which is the bug that made the upscaling rows
+    // look dead for a whole release (docs/upscaling.md).
+    {TAB_NEURAL, "Neural rendering", &opts.nr, 0, 1, 1, tx_onoff,
+     "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
+     "Needs an NVIDIA RTX card and NVIDIA's Streamline files beside the game (readme.md); the rows below are the model's own "
+     "settings and do nothing while this is Off."},
+    {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
+     "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
+     "own default. Streamline 2.14's plugin ignores this one -- it is sent correctly and a later NVIDIA release is "
+     "expected to act on it."},
+    {TAB_NEURAL, "Style", &opts.nr_style, 0, 2, 1, tx_nr_style,
+     "Which look the model aims for. Natural keeps close to what the game drew; Cinematic is the stronger, graded look. "
+     "A style this version of the plugin does not have is refused and the row goes back."},
+    {TAB_NEURAL, "Preset", &opts.nr_preset, 0, 7, 1, tx_nr_preset,
+     "Which trained network the model uses, as DLSS presets A to G. Default lets the plugin pick, which is usually the "
+     "newest it has."},
+    {TAB_NEURAL, "Intensity", &opts.nr_intensity, 0, 100, 10, tx_percent,
+     "How much of the model's result is mixed into the frame. 0% leaves the picture as the game drew it; 100% is the "
+     "model's full effect."},
+    {TAB_NEURAL, "Local tone", &opts.nr_local_tone, 0, 100, 10, tx_percent,
+     "How far the model may move brightness and colour within a small area. Lower keeps the game's own shading."},
+    {TAB_NEURAL, "Local structure", &opts.nr_local_structure, 0, 100, 10, tx_percent,
+     "How much fine detail the model adds back -- texture, edges, small shapes. Too much looks etched."},
+    {TAB_NEURAL, "Global tone", &opts.nr_global_tone, 0, 100, 10, tx_percent,
+     "How far the model may move the whole frame's brightness and contrast. Like Model, Streamline 2.14's plugin ignores "
+     "this and a later one is expected to use it."},
+    {TAB_NEURAL, "Skin structure", &opts.nr_skin, 0, 100, 10, tx_percent,
+     "How much detail the model adds to faces and skin, separately from everything else. It only does anything with Auto "
+     "mask on, which is how the model knows which pixels are a character."},
+    {TAB_NEURAL, "Auto mask", &opts.nr_auto_mask, 0, 1, 1, tx_onoff,
+     "Lets the model find the characters in the frame by itself, which is what Skin structure needs. Also helps it leave "
+     "the HUD and text alone, which it has no reason to rebuild."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
 bool cheats_enabled = false;
@@ -334,7 +392,7 @@ constexpr int kRows = sizeof rows / sizeof rows[0];
 constexpr int kMenuWidth = menu_hit::kWidth;   // (at a scale of 1: 720 lines)
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_COUNT] = {0, 0, 0};
+int tab_selected[TAB_COUNT] = {0, 0, 0, 0};
 
 int tab_row_count(int t) {
     int c = 0;
@@ -877,9 +935,9 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     TextOutA(dc, (int)w - 16 * s - rbsz.cx, tab_y + 8 * s, rb_hint, (int)strlen(rb_hint));
     HFONT tab_font = font(13 * s, FW_BOLD);
     SelectObject(dc, tab_font);
-    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS"};
+    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS", "NEURAL"};
     const int center_start = menu_hit::kTabSide * s;
-    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w);
+    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w, TAB_COUNT);
     for (int t = 0; t < TAB_COUNT; t++) {
         const bool active = (t == cur_tab);
         int slot_x = center_start + t * tab_slot_w;
@@ -1112,9 +1170,10 @@ void menu_init() {
     done = true;
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
     // (hookshot) A build with no NGX SDK cannot do DLSS at all -- the half that calls it is not
-    // compiled in -- so the row must not offer it. Every released build is such a build: CI has no
-    // NVIDIA SDK and none may be committed (CONTRIBUTING.md), and a setting that silently does
-    // nothing is worse than one that is not there. FSR needs nothing and is always offered.
+    // compiled in -- so the row must not offer it. A setting that silently does nothing is worse
+    // than one that is not there. FSR needs nothing and is always offered. (The released Windows
+    // and Linux builds *are* built against the SDK now: CI fetches it and nothing of NVIDIA's is
+    // committed. A build made by hand without it is what this covers.)
     if (!dlss::built_with_sdk())
         for (Row& r : rows)
             if (r.value == &opts.upscale) {
@@ -1126,6 +1185,18 @@ void menu_init() {
                          "frame. FSR 3.1 resolves the 3D scene itself from the game's render size, which is sharper. "
                          "DLSS is not offered: this build was made without NVIDIA's NGX SDK (readme.md says how to "
                          "build with it). Applies after a restart.";
+            }
+    // The same, for DLSS 5 neural rendering: its ten rows are the model's own and none of them can
+    // do anything in a build with no Streamline headers, or on Linux, where Streamline has no
+    // plugins to load. The switch is left in place and says why, because a missing tab is a bug
+    // report and a tab that explains itself is not.
+    if (!dlssnr::built_with_sdk())
+        for (Row& r : rows)
+            if (r.value == &opts.nr) {
+                r.hi = 0;
+                r.help = "DLSS 5 neural rendering is not offered by this build. It needs NVIDIA Streamline, which is "
+                         "Windows-only: on Linux, run the Windows build under Proton. A Windows build made without "
+                         "Streamline's headers says this too (readme.md says how to build with them).";
             }
     bool has_options = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");

@@ -126,6 +126,32 @@ def dlss_sdk_path():
     return None
 
 
+def streamline_sdk_path():
+    """(hookshot) NVIDIA Streamline's public headers, for DLSS 5 neural rendering, or None.
+
+    DLSS-NR is not an NGX feature a program can create for itself: the only way in is Streamline's
+    sl.dlss_nr plugin, reached through sl.interposer.dll at run time. Only Streamline's headers are
+    compiled in -- they are MIT-licensed, and none of them is in this repository (CONTRIBUTING.md):
+    RX_VK_STREAMLINE_SDK names the builder's own copy, failing that a `streamline-sdk` folder
+    beside the repository or in the work folder, as the NGX SDK is found above.
+
+    Windows only, and that is Streamline's limit rather than ours: the interposer and every sl.*
+    plugin ship as DLLs and the headers pull in <windows.h>. A player on Linux gets DLSS-NR by
+    running the Windows build under Proton, which is where it was measured.
+    """
+    named = os.environ.get("RX_VK_STREAMLINE_SDK")
+    root = os.path.normpath(os.path.join(kit.HERE, ".."))
+    places = [named] if named else [os.path.join(root, "streamline-sdk"),
+                                    os.path.join(os.path.dirname(root), "streamline-sdk"),
+                                    os.path.join(os.environ.get("OOT_WORK", ""), "streamline-sdk")]
+    for d in places:
+        if d and os.path.isfile(os.path.join(d, "include", "sl.h")):
+            return d
+    if named:
+        print("RX_VK_STREAMLINE_SDK=%s has no include/sl.h; DLSS 5 neural rendering is left out" % named)
+    return None
+
+
 def dlss_sdk_link():
     """(hookshot) What a build with RX_VK_DLSS_SDK=<path> links the DLSS backend against.
 
@@ -159,6 +185,19 @@ def dlss_sdk_link():
                 return [os.path.join(root, name)]
     print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link" % os.path.join(sdk, "lib"))
     return []
+
+
+def streamline_link():
+    """(hookshot) What a Windows build with Streamline's headers links for the interposer check.
+
+    Nothing of Streamline's and nothing of NVIDIA's: sl.interposer.dll is loaded at run time. These
+    two are Windows' own, and they are what gpu/vk/vk_streamline.cpp's signed_by_nvidia calls --
+    WinVerifyTrust from wintrust and the certificate walk from crypt32. A build without Streamline's
+    headers does not compile that function and links neither.
+    """
+    if LINUX or not streamline_sdk_path():
+        return []
+    return ["-lwintrust", "-lcrypt32"]
 
 
 def target():
@@ -817,6 +856,11 @@ def main():
             # here, and a build without it leaves DLSS reporting itself unavailable.
             *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(dlss_sdk_path(), "include")]
               if dlss_sdk_path() else []),
+            # (hookshot) RX_VK_STREAMLINE_SDK=<path to Streamline> compiles DLSS 5 neural rendering
+            # against Streamline's MIT-licensed headers. Nothing is linked: sl.interposer.dll is
+            # loaded from the player's own PC at run time. Windows only (streamline_sdk_path).
+            *((["-DRX_VK_STREAMLINE=1", "-I" + os.path.join(streamline_sdk_path(), "include")])
+              if (not LINUX and streamline_sdk_path()) else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
@@ -990,8 +1034,12 @@ def main():
                 "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"] + \
                 dlss_sdk_link()
         else:
+            # (hookshot) dlss_sdk_link() belongs here as much as on the Linux branch: without it a
+            # Windows build that found an NGX SDK compiled every NVSDK_NGX_* call and then had
+            # nothing to resolve them against, which is a link failure at the end of a long build --
+            # or, worse, a release that quietly shipped without the DLSS it was supposed to have.
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])
+                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + dlss_sdk_link() + streamline_link()
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

@@ -184,25 +184,49 @@ Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home 
 
 #### DLSS on an NVIDIA card
 
-The menu offers **FSR 3.1** everywhere, and **DLSS** only in a build made with NVIDIA's NGX SDK.
-Released builds are not: the SDK is NVIDIA's to license and none of it may be committed here, so the
-Upscaling row stops at FSR 3.1 and says why.
+The menu offers **FSR 3.1** everywhere. **DLSS** -- in the Upscaling row, and behind Frame generation
+where the card allows it -- is compiled into the released Windows and Linux builds: CI fetches
+NVIDIA's NGX SDK at build time and nothing of NVIDIA's is committed here. A build you make by hand
+without the SDK says so in the row rather than offering a setting that does nothing.
 
-You build the game yourself, so you can have DLSS:
+One file is still yours to supply, because it is NVIDIA's to ship and not ours: put **the DLSS
+runtime** beside the game -- `nvngx_dlss.dll` on Windows, `libnvidia-ngx-dlss.so.*` on Linux. Both
+come from NVIDIA's SDK (`github.com/NVIDIA/DLSS`, `lib/Windows_x86_64/rel/`) or from the NVIDIA app's
+own downloads.
 
-1. Get NVIDIA's DLSS SDK (`github.com/NVIDIA/DLSS`) and put it where the build will find it -- a
-   folder named `dlss-sdk` beside the Hookshot folder, or name it yourself with
-   `RX_VK_DLSS_SDK=<path>`.
-2. Build the game as usual. The Upscaling row then offers DLSS, and Frame generation will use DLSS
-   where it can and FSR 3 otherwise.
-3. Put NVIDIA's DLSS runtime beside the game: `nvngx_dlss.dll` on Windows (the SDK's
-   `lib/Windows_x86_64/rel/`), `libnvidia-ngx-dlss.so.*` on Linux. It is theirs to ship, not ours,
-   so the build will not copy it for you.
+To build with the SDK yourself: put it in a folder named `dlss-sdk` beside the Hookshot folder, or
+name it with `RX_VK_DLSS_SDK=<path>`, and build as usual.
 
-There is no "neural rendering" row. NVIDIA's ray reconstruction denoises ray-traced lighting from a
-G-buffer, and this game is rasterized with neither -- so it is not a setting that was left out, it
-is one that has nothing to do here.
-The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
+#### DLSS 5 neural rendering
+
+The **Neural** tab is NVIDIA's DLSS 5 neural rendering: a model that goes over the finished frame and
+rebuilds detail, tone and structure in it. It is not an upscaler and not ray reconstruction -- it
+takes the picture, not the scene -- so it works on this game, and it stacks with whatever Upscaling
+and Frame generation are set to. Ten rows: the switch, Model, Style, Preset, Intensity, Local tone,
+Local structure, Global tone, Skin structure and Auto mask. All of them take effect on the next
+frame.
+
+**Windows x64 and an RTX 50-series card.** Streamline ships as DLLs, so on Linux run the Windows
+build under Proton. NVIDIA's shipped model looks to be Blackwell-only: an older RTX card will report
+the feature unavailable, which is the honest answer and not a bug.
+
+These files go beside the game, or in a `streamline` folder beside it, or wherever
+`RX_VK_STREAMLINE_DIR` points. They are NVIDIA's to ship; Hookshot builds against Streamline's
+MIT-licensed headers only and loads nothing it has not checked NVIDIA's signature on:
+
+| file | what it is |
+|---|---|
+| `sl.interposer.dll` | Streamline's loader |
+| `sl.common.dll`, `sl.pcl.dll` | the interposer needs both, whichever feature loads on top |
+| `sl.dlss_nr.dll` | the neural rendering plugin |
+| `nvngx_dlssnr.dll` | the model -- it must sit in the same folder as `sl.dlss_nr.dll` |
+
+Keep the three `sl.*` files from one Streamline release: mixing versions is not a supported
+combination. Streamline **2.14.1 or newer** -- older releases do not have the feature at all.
+[docs/neural-rendering.md](docs/neural-rendering.md) has the whole picture, including what is
+measured and what is not.
+
+The same keys close it, and so does <kbd>Esc</kbd>. The menu has four tabs, Graphics, Gameplay, Controls and Neural:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
 (<kbd>Enter</kbd> changes it too). On a controller the D-pad chooses and changes, the bottom face button changes too,
