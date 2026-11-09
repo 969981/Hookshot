@@ -127,6 +127,19 @@ def compile_one(glslang, name, pass_name, extra, out_path, target_env, variable=
     subprocess.run(cmd, check=True)
 
 
+def strip_generator(text):
+    """The header without glslang's own version comment.
+
+    glslang writes its version into the first line as `// 1116.2.0`, so two glslang builds produce
+    byte-different headers from identical SPIR-V. Comparing the whole text made this check fail on
+    a CI runner whose glslang was one release behind the one that generated the checked-in files --
+    a version bump reported as a source mismatch, which is the kind of red that teaches people to
+    ignore red. The words after it are the module, and those are what this is about.
+    """
+    return [line for line in text.splitlines()
+            if not line.strip().startswith("// ") or not line.strip()[3:].replace(".", "").isdigit()]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -167,7 +180,7 @@ def main():
             if a.check:
                 have = header.read_text() if header.exists() else ""
                 want = made.read_text()
-                if have != want:
+                if strip_generator(have) != strip_generator(want):
                     bad.append(name)
                     if not have:
                         print(f"{header.name}: missing", file=sys.stderr)

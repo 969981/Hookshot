@@ -75,6 +75,10 @@ SKIP = {
 for _name in ("nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
               "nx2/test_spirv_struct_identity.py"):
     SKIP[_name] = ({"windows"}, "needs spirv-val: checked on Linux")
+# (glslang: likewise a Linux runner package. The headers it checks are SPIR-V, which is the same on
+#  every platform, so compiling them twice would only mean a second glslang version to keep in step
+#  with the first -- and a version skew between the two is exactly what broke this check once.)
+SKIP["tests/test_fsr3_shaders.py"] = ({"windows"}, "needs glslang: checked on Linux")
 
 
 def which(*names):
