@@ -21,6 +21,7 @@
 #include "vk_camera_motion.h"
 #include "vk_dlssg.h"
 #include "vk_fsr3fi.h"
+#include "vk_ffx.h"   // (hookshot: AMD FSR 4 frame generation)
 #include "vk_draw.h"   // (scene_frame_inputs: the depth and matrix the draw path kept)
 
 #include <cmath>
@@ -431,7 +432,8 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     static bool reported = false;
     if (report && !reported) {
         reported = true;
-        logf("vk: upscale dispatched: mode %d, sharpness %d, source %ux%u, crop request %d,%d %dx%d, destination %ux%u",
+        logf("vk: upscale dispatched: mode %d, sharpness %d%% (of RCAS's strongest, neighbours one source pixel apart), source %ux%u, "
+             "crop request %d,%d %dx%d, destination %ux%u",
              window_filter(), opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
              crop ? crop[2] : (int)sw, crop ? crop[3] : (int)sh, dw, dh);
     }
@@ -640,6 +642,53 @@ int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     return made;
 }
 
+/// (hookshot) AMD FSR 4's frame generation through AMD's runtime (gpu/vk/vk_ffx.h), between DLSS frame generation and
+/// FSR 3.1's: the same assembled inputs, handed over as images, and every made frame in one dispatch. A refusal returns
+/// 0, which leaves the set to the next backend in the chain.
+int ffx_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection || !scene.depth_image) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)ffx::frames_wanted());
+    if (want <= 0) return 0;
+    ffx::FrameInputs in;
+    in.color = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_image, in.depth_format = scene.depth_format;
+    in.motion = camera_motion::motion_image(), in.motion_format = camera_motion::motion_format();
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    scene_jitter(&in.jitter[0], &in.jitter[1]);
+    {
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    memcpy(in.view, scene.view, sizeof in.view);
+    in.have_view = true;
+    in.frames = (uint32_t)want;
+    if (!ffx::generate(cmd, in)) return 0;
+    for (int k = 1; k <= want; k++) {
+        const VkImage from = ffx::made_image((uint32_t)k);
+        if (!from) return 0;   // (a half-made set would show one real frame and one stale image)
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
+    static std::atomic<int> said{0};
+    if (said++ == 0) logf("vk: amd fsr 4 frame generation: %d made frames a frame at %ux%u", want, uw, uh);
+    return want;
+}
+
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
     int x0 = 0, y0 = 0, w = (int)sw, h = (int)sh;
     if (crop && crop[2] > 0 && crop[3] > 0) x0 = crop[0], y0 = crop[1], w = crop[2], h = crop[3];
@@ -670,6 +719,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     if (gap) {
         camera_motion::reset();
         dlssg::reset();
+        ffx::reset();
         fsr3fi::reset();
     }
     const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
@@ -684,6 +734,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // does not report it, or a frame where the scene's depth and matrix are not both in hand -- and
     // then the interpolation below runs exactly as it did before this existed.
     if (blend && m > 1 && dlssg::supported()) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && ffx::frames_supported()) set->made = ffx_frames(cmd, *set, cur, uw, uh, m);
     if (set->made == 0 && blend && m > 1 && fsr3fi::supported())
         set->made = fsr3fi_frames(cmd, *set, cur, uw, uh, m);
     if (set->made == 0 && blend && m > 1) {

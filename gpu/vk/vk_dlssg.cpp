@@ -7,7 +7,7 @@
 #include <cfloat>
 #include <cstring>
 
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
 // The shared NGX session (gpu/vk/vk_ngx.h), which is where NVIDIA's own headers are reached from.
 // They are not vendored here and must not be: CONTRIBUTING.md's licensing rule.
 #include "vk_ngx.h"
@@ -21,7 +21,7 @@ namespace {
 
 /// Whether this build has an NGX SDK to compile the NGX half against. A constant rather than an
 /// `#ifdef` at each use, so both arms of every decision below are compiled in every build.
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
 constexpr bool kHaveSdk = true;
 #else
 constexpr bool kHaveSdk = false;
@@ -133,7 +133,7 @@ void to_general(VkCommandBuffer cmd, Image& t) {
 
 // ---- the NGX half ----
 
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
 
 NVSDK_NGX_Parameter* params = nullptr;
 NVSDK_NGX_Handle* feature = nullptr;
@@ -288,7 +288,7 @@ void ngx_shutdown() {}
 bool capable() {
     static const bool yes = []() {
         if (!kHaveSdk) {
-            logf("vk: dlssg: this build has no NGX SDK (RX_VK_DLSS_SDK), so frame generation is "
+            logf("vk: dlssg: this build has no NGX SDK (HOOKSHOT_NGX_SDK), so frame generation is "
                  "unavailable; the renderer's own interpolation is unaffected");
             return false;
         }
@@ -305,7 +305,7 @@ bool supported() {
 }
 
 size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
     if (!asked()) return 0;   // (RX_VK_DLSSG: a run that did not ask gets the device it had)
     return ngx::device_extensions(instance, gpu, NVSDK_NGX_Feature_FrameGeneration, out, max);
 #else

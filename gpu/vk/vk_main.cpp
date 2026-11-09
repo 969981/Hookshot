@@ -24,6 +24,8 @@
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_streamline.h"
+#include "vk_dlss.h"
+#include "vk_reflex.h"
 #include "vk_progress.h"
 
 namespace vkx {
@@ -140,6 +142,13 @@ bool create_instance() {
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
+    {   // (hookshot) what NVIDIA DLSS needs (vk_dlss.cpp; nothing in a build without it)
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> all(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+        dlss_instance_extensions(inst_exts, all);
+    }
     ci.enabledExtensionCount = (uint32_t)inst_exts.size();
     ci.ppEnabledExtensionNames = inst_exts.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
@@ -264,33 +273,27 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
+    reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
-    // (hookshot) What DLSS needs on this driver, asked of NGX rather than written out here: the set
-    // is the driver's to state and a list hard-coded in our source would be wrong on the next one.
-    // Only where RX_VK_DLSS=1 and this build has an NGX SDK, so a run that did not ask for DLSS
-    // creates exactly the device it created before. An extension NGX names and this GPU does not
-    // have is named in the log and left out: DLSS will then report itself unavailable, which is the
-    // honest outcome, rather than vkCreateDevice failing and taking the whole renderer with it.
-    // Each feature is asked separately: super resolution's set is not frame generation's, and a
-    // device made for one and not the other is where NGX creates the feature and fails
-    // (FAIL_PlatformError) while still reporting it available.
-    for (int which = 0; which < 2; which++) {
-        const char* const name = which == 0 ? "dlss" : "dlssg";
+    // (hookshot) What DLSS frame generation needs on this driver, asked of NGX rather than written out
+    // here: the set is the driver's to state. Super resolution's own are dlss_device_extensions'
+    // above; frame generation's are asked separately, because a device made for one and not the
+    // other is where NGX creates the feature and fails (FAIL_PlatformError) while still reporting
+    // it available. An extension this GPU does not have is named in the log and left out, so DLSS-G
+    // reports itself unavailable rather than vkCreateDevice failing.
+    {
         const char* dlss_want[16] = {};
-        const size_t dlss_n =
-            which == 0 ? dlss::device_extensions(dev.instance, dev.physical, dlss_want,
-                                                 sizeof dlss_want / sizeof *dlss_want)
-                       : dlssg::device_extensions(dev.instance, dev.physical, dlss_want,
-                                                  sizeof dlss_want / sizeof *dlss_want);
+        const size_t dlss_n = dlssg::device_extensions(dev.instance, dev.physical, dlss_want,
+                                                       sizeof dlss_want / sizeof *dlss_want);
         for (size_t i = 0; i < dlss_n; i++) {
             if (!has_extension(exts, dlss_want[i])) {
-                logf("vk: %s wants %s, which this GPU does not have: it will be unavailable", name,
-                     dlss_want[i]);
+                logf("vk: dlssg wants %s, which this GPU does not have: it will be unavailable", dlss_want[i]);
                 continue;
             }
             bool already = false;
             for (const char* have : want) already = already || strcmp(have, dlss_want[i]) == 0;
-            if (!already) want.push_back(dlss_want[i]), logf("vk: %s wants %s: enabled", name, dlss_want[i]);
+            if (!already) want.push_back(dlss_want[i]), logf("vk: dlssg wants %s: enabled", dlss_want[i]);
         }
     }
 
@@ -402,6 +405,7 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
@@ -509,6 +513,7 @@ bool create_device() {
     streamline::attach_device(dev.instance, dev.physical, dev.device, dev.queue_family, sl_queues);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    reflex_device_created();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -548,7 +553,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
-        if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) fmt = f;
+        // (in sRGB: RADV on Wayland lists every format again with PASS_THROUGH_EXT and the compositor's colour spaces,
+        // and the last UNORM entry left the compositor an untagged surface, a grey picture. Still the last sRGB one, so
+        // a driver that lists only sRGB (NVIDIA, X11, Windows) keeps the format it had.)
+        if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) &&
+            f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            fmt = f;
     // mailbox when the driver has it (latest frame, no tear). The game paces itself (nn_vi.c).
     n = 0;
     result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
@@ -605,6 +615,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
+    reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     if (result != VK_SUCCESS) {
@@ -640,6 +651,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetSwapchainImagesKHR(dev.device, sc, &n, dev.swap_images.data());
     logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
+    reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
     return true;
 }
 

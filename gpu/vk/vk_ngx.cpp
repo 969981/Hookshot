@@ -1,7 +1,8 @@
 // (hookshot) The shared NGX session: gpu/vk/vk_ngx.h says why there is only one.
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
 
 #include "vk_ngx.h"
+#include "vk_dlss.h"   // (dlss_ngx_session: the one NGX session)
 
 #include <cstdlib>
 #include <cstring>
@@ -15,8 +16,8 @@ namespace {
 /// driver's core (libnvidia-ngx.so) exports none of the public NVSDK_NGX_* API -- it was tried, and
 /// `NVSDK_NGX_VULKAN_Init_with_ProjectID` is simply not in it -- so a build that asks for DLSS links
 /// the SDK's own static library, which holds those entry points and calls into the core itself.
-/// nx2/build.py's `dlss_sdk_link` is the other half of that, and both are inside RX_VK_DLSS_SDK, so
-/// a build without an SDK links and runs exactly as it did before.
+/// nx2/build.py's `ngx_link` is the other half of that, and both are inside HOOKSHOT_NGX, so a
+/// build without an SDK links and runs exactly as it did before.
 struct Session {
     bool started = false;
     bool start_failed = false;
@@ -30,7 +31,7 @@ Session s;
 // here spelled "hookshot-dlss" into the last two groups, which is not hex, and that is exactly the
 // error it got. NVIDIA's analytics-key form of Init is for licensed titles; the project-id form
 // exists so a project without one can initialize.
-constexpr const char* kProjectId = "e22a11cd-c034-4e6b-bb25-1919b826f7a8";
+constexpr const char* kProjectId = "7b2f5d0c-6a1e-4c39-9f84-3d5e2a1b0c96";   // (vk_dlss.cpp's: one project, one session)
 constexpr const char* kEngineVersion = "1.0";
 
 /// The game folder, wide, for NGX's application data path: where it writes what it keeps and where
@@ -70,20 +71,15 @@ bool load() {
 bool start() {
     if (s.started) return true;
     if (s.start_failed) return false;
-    NVSDK_NGX_FeatureCommonInfo common{};
-    const wchar_t* paths[]{data_path()};
-    common.PathListInfo.Path = paths;
-    common.PathListInfo.Length = 1;
-    const NVSDK_NGX_Result res = NVSDK_NGX_VULKAN_Init_with_ProjectID(
-        kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kEngineVersion, data_path(), dev.instance,
-        dev.physical, dev.device, instance_proc(), vkGetDeviceProcAddr, &common,
-        NVSDK_NGX_Version_API);
-    if (NVSDK_NGX_FAILED(res)) {
-        logf("vk: ngx did not initialize (0x%08x); DLSS is unavailable", (unsigned)res);
+    // One NGX session per device, and it is super resolution's (vk_dlss.cpp ngx_init): its project
+    // id, its search path for the runtimes, its logging. Frame generation is a feature created over
+    // that session rather than a second NVSDK_NGX_VULKAN_Init of its own, which NGX does not expect
+    // on one device and whose Shutdown1 would take the other's features with it.
+    if (!dlss_ngx_session()) {
+        logf("vk: ngx: no NGX session on this device; DLSS frame generation is unavailable");
         s.start_failed = true;
         return false;
     }
-    logf("vk: ngx initialized");
     s.started = true;
     return true;
 }
@@ -193,10 +189,10 @@ NVSDK_NGX_Resource_VK resource(VkImageView view, VkImage image, VkFormat format,
 }
 
 void shutdown() {
-    if (s.started) NVSDK_NGX_VULKAN_Shutdown1(dev.device);
+    // (the session is vk_dlss.cpp's, and so is its shutdown)
     s.started = false;
 }
 
 } // namespace mkwvk::ngx
 
-#endif // RX_VK_DLSS_SDK
+#endif // HOOKSHOT_NGX

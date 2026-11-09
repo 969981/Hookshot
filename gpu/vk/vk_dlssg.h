@@ -12,7 +12,7 @@
 // interpolation runs exactly as before. Nothing here changes what the game submits.
 //
 // Nothing of NVIDIA's is in this repository and nothing of NVIDIA's is needed to build it: the NGX
-// half is inside `RX_VK_DLSS_SDK` and the session is shared (gpu/vk/vk_ngx.h). docs/upscaling.md has
+// half is inside `HOOKSHOT_NGX` and the session is shared (gpu/vk/vk_ngx.h). docs/upscaling.md has
 // the licensing decision and the input contract.
 #pragma once
 

@@ -8,13 +8,13 @@
 // handle.
 //
 // Nothing of NVIDIA's is in this repository and nothing of NVIDIA's is needed to build it: this
-// whole file is inside the build-time gate `RX_VK_DLSS_SDK`, which names the builder's own copy of
+// whole file is inside the build-time gate `HOOKSHOT_NGX`, which names the builder's own copy of
 // an NGX SDK. A tree without it does not compile this file at all, and the backends' public headers
 // stay free of NGX types so that the renderer can call them either way. docs/upscaling.md has the
 // licensing decision in full.
 #pragma once
 
-#if defined(RX_VK_DLSS_SDK)
+#if defined(HOOKSHOT_NGX)
 
 #include <cstdint>
 
@@ -81,4 +81,4 @@ void shutdown();
 
 } // namespace mkwvk::ngx
 
-#endif // RX_VK_DLSS_SDK
+#endif // HOOKSHOT_NGX

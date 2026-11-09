@@ -29,7 +29,6 @@ import ctypes
 import hashlib
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -103,30 +102,6 @@ def check_vk_symbols(so):
     print("  namespace scope, not inside an anonymous namespace")
     return False
 
-def dlss_sdk_path():
-    """(hookshot) The NGX SDK this build compiles DLSS against, or None.
-
-    RX_VK_DLSS_SDK names it. Failing that, a folder called `dlss-sdk` beside the repository or in
-    the work folder is used, because the player who wants DLSS builds the game on their own PC and
-    telling them to set an environment variable through a double-clicked builder is telling them
-    no. Nothing of NVIDIA's is in this repository and nothing is downloaded on their behalf: the
-    SDK is their own copy, and a build without one is the build everyone gets today.
-    """
-    named = os.environ.get("RX_VK_DLSS_SDK")
-    root = os.path.normpath(os.path.join(kit.HERE, ".."))
-    places = [named] if named else [os.path.join(root, "dlss-sdk"),
-                                    os.path.join(os.path.dirname(root), "dlss-sdk"),
-                                    os.path.join(os.environ.get("OOT_WORK", ""), "dlss-sdk")]
-    for d in places:
-        if d and os.path.isfile(os.path.join(d, "include", "nvsdk_ngx.h")):
-            return d
-        if d and os.path.isfile(os.path.join(d, "DLSS", "include", "nvsdk_ngx.h")):
-            return os.path.join(d, "DLSS")   # (the SDK repository cloned whole)
-    if named:
-        print("RX_VK_DLSS_SDK=%s has no include/nvsdk_ngx.h; DLSS is left out" % named)
-    return None
-
-
 def streamline_sdk_path():
     """(hookshot) NVIDIA Streamline's public headers, for DLSS 5 neural rendering, or None.
 
@@ -134,7 +109,7 @@ def streamline_sdk_path():
     sl.dlss_nr plugin, reached through sl.interposer.dll at run time. Only Streamline's headers are
     compiled in -- they are MIT-licensed, and none of them is in this repository (CONTRIBUTING.md):
     RX_VK_STREAMLINE_SDK names the builder's own copy, failing that a `streamline-sdk` folder
-    beside the repository or in the work folder, as the NGX SDK is found above.
+    beside the repository or in the work folder.
 
     Windows only, and that is Streamline's limit rather than ours: the interposer and every sl.*
     plugin ship as DLLs and the headers pull in <windows.h>. A player on Linux gets DLSS-NR by
@@ -151,64 +126,6 @@ def streamline_sdk_path():
     if named:
         print("RX_VK_STREAMLINE_SDK=%s has no include/sl.h; DLSS 5 neural rendering is left out" % named)
     return None
-
-
-def dlss_sdk_link():
-    """(hookshot) What a build with RX_VK_DLSS_SDK=<path> links the DLSS backend against.
-
-    On Linux the driver's NGX core (libnvidia-ngx.so) exports none of the public NVSDK_NGX_* API:
-    those entry points live in the SDK's own static library, which calls into the core. Resolving
-    them by name from the core was tried first and found them missing, so a build that asked for
-    DLSS links the SDK's static library instead. Nothing of NVIDIA's is in this repository: the
-    library is the builder's own copy, under the path they named, and a build without that path
-    links exactly what it linked before.
-    """
-    sdk = dlss_sdk_path()
-    if not sdk:
-        return []
-    if LINUX:
-        arch = "Linux_aarch64" if platform.machine() in ("aarch64", "arm64") else "Linux_x86_64"
-        lib = os.path.join(sdk, "lib", arch)
-        if not os.path.isdir(lib):
-            print("DLSS SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
-            return []
-        return ["-L" + lib, "-lnvsdk_ngx"]
-    # Windows: the SDK ships a static library per architecture and configuration rather than a .so
-    # to -l, so it is named outright -- a link that silently found nothing would leave every
-    # NVSDK_NGX_* symbol undefined at the end of a long compile.
-    #
-    # The architecture is chosen, not searched for. Walking lib/ for the first Windows folder with
-    # an nvsdk_ngx_s.lib in it is what this did, and on the real SDK that folder is Windows_ARM64 --
-    # so the link got an ARM64 library for an x64 build and said "machine type arm64 conflicts with
-    # x64" five times. The name is the target's, not this PC's: a Windows build may be a cross build
-    # from Linux (RX_TARGET=windows), where platform.machine() describes the wrong machine entirely.
-    arch = "Windows_ARM64" if "arm" in (os.environ.get("RX_ARCH", "") or "").lower() else "Windows_x86_64"
-    # NGX's Windows libraries are built with Microsoft's compiler and ask in their objects for its
-    # runtime: nvsdk_ngx_s.lib wants LIBCMT, libcpmt, OLDNAMES and uuid, nvsdk_ngx_d.lib wants
-    # MSVCRT, msvcprt, OLDNAMES and uuid. toolchain.native_link already stands the MinGW runtime in
-    # for LIBCMT, OLDNAMES, msvcrt and libvcruntime (it has to, for the prebuilt FFmpeg), but not for
-    # Microsoft's *C++* runtime, so a Windows build stopped at
-    #     ld.lld: error: could not open 'liblibcpmt.a'
-    # which is lld MinGW-ifying the name "libcpmt" out of a /DEFAULTLIB directive. These two names
-    # finish that list. uuid is left alone: MinGW has a libuuid.a of its own.
-    suppress = ["-Wl,-Xlink=/nodefaultlib:" + l for l in ("libcpmt", "msvcprt")] \
-        if toolchain.mingw() else []
-    for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
-        # The SDK keeps the import libraries in lib/Windows_x86_64/x64/ and the *runtime* DLLs in
-        # rel/ and dev/ beside it. x64 first, because that is where this actually is.
-        for sub in ("x64", "rel", "dev", ""):
-            lib = os.path.join(sdk, "lib", arch, sub, name) if sub else os.path.join(sdk, "lib", arch, name)
-            if os.path.isfile(lib):
-                return [lib] + suppress
-    # Not there under the name the SDK has used: fall back to a search, but only inside this
-    # architecture's folder, so a wrong-machine library can no longer be picked.
-    for root, _dirs, files in os.walk(os.path.join(sdk, "lib", arch)):
-        for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
-            if name in files:
-                return [os.path.join(root, name)] + suppress
-    print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link"
-          % os.path.join(sdk, "lib", arch))
-    return []
 
 
 def streamline_link():
@@ -299,6 +216,37 @@ def tree_headers(*roots, skip=()):
     return h.hexdigest().encode()
 
 
+def ngx_library(sdk, linux):
+    """NVIDIA's NGX library in a HOOKSHOT_NGX_SDK folder (scripts/ngx_sdk.py's layout), for this build's platform: libnvsdk_ngx.a
+    on Linux, nvsdk_ngx_s.lib on Windows (the static one, built against Microsoft's static runtime: gpu/vk/vk_ngx_msvc_rt.cpp)"""
+    return os.path.join(sdk, "lib", "libnvsdk_ngx.a" if linux else "nvsdk_ngx_s.lib")
+
+
+def ngx_sdk(sdk, linux):
+    """HOOKSHOT_NGX_SDK as the build takes it: the folder when it has this platform's library, else "" (and why, said)"""
+    if sdk and not os.path.isfile(ngx_library(sdk, linux)):
+        print("build: HOOKSHOT_NGX_SDK=%s has no lib/%s (scripts/ngx_sdk.py --platform %s fetches it): built without NVIDIA "
+              "DLSS" % (sdk, os.path.basename(ngx_library(sdk, linux)), "linux" if linux else "windows"), flush=True)
+        return ""
+    return sdk
+
+
+# HOOKSHOT_NGX_SDK=<folder>: the Vulkan back end with NVIDIA DLSS Super Resolution, from NVIDIA's NGX SDK fetched into that
+# folder by scripts/ngx_sdk.py (its include/ and this platform's lib/; never committed, NVIDIA's license). Off without it.
+NGX_SDK = ngx_sdk(os.environ.get("HOOKSHOT_NGX_SDK", ""), LINUX)
+# (llvm-mingw: what NVIDIA's library asks of Microsoft's runtime, linked in with it. Not compiled otherwise)
+NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
+
+
+def ngx_link(sdk, mingw):
+    """What hookshot_vk.dll's link adds for NVIDIA DLSS on Windows: NVIDIA's library and the registry calls it makes; with
+    llvm-mingw, not Microsoft's C++ runtime it names (libcpmt: vk_ngx_msvc_rt.cpp has what it needs of it, and the other
+    libraries of Microsoft's are toolchain.native_link's /nodefaultlib already). Nothing without the SDK"""
+    if not sdk:
+        return []
+    return [ngx_library(sdk, False), "-ladvapi32"] + (["-Wl,-Xlink=/nodefaultlib:libcpmt"] if mingw else [])
+
+
 def vk_sources():
     """The Vulkan back end (hookshot_vk.dll, gpu/vk/vk_api.h): Eden's shader recompiler with its SPIR-V back end
     (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp)"""
@@ -307,7 +255,7 @@ def vk_sources():
     for sub in ("eden", os.path.join("sirit", "src")):
         for d, _, files in os.walk(os.path.join(vk, sub)):
             out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
-    out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp")]
+    out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp") and f != NGX_MSVC_RT]
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
     out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
     return sorted(out)
@@ -822,6 +770,7 @@ def main():
     if LINUX:
         host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
         host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()
+    host_deps += open(os.path.join(GPU, "vk", "dlss_math.h"), "rb").read()   # (host/rx_backend.c's DLSS jitter)
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
@@ -876,8 +825,8 @@ def main():
         # out of the region tests/test_shader_stamp_cache.py execs -- and that made it the head of
         # this if/elif chain, so the whole Vulkan build was skipped and a Windows run reported
         # "compiled in 0s" and produced no DLL. Two printed lines are not worth a branch.
-        print("vk: DLSS (NGX): %s" % (("compiled in, from " + dlss_sdk_path()) if dlss_sdk_path()
-                                      else "left out (no NGX SDK found; see readme.md)"))
+        print("vk: DLSS (NGX): %s" % (("compiled in, from " + NGX_SDK) if NGX_SDK
+                                      else "left out (no HOOKSHOT_NGX_SDK; see readme.md)"))
         print("vk: DLSS 5 neural rendering (Streamline): %s"
               % (("compiled in, from " + streamline_sdk_path())
                  if (not LINUX and streamline_sdk_path())
@@ -889,12 +838,6 @@ def main():
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
-            # (hookshot) RX_VK_DLSS_SDK=<path to an NGX SDK> compiles the DLSS backend's NGX half
-            # against that SDK's headers. Nothing of NVIDIA's is in this repository and nothing of
-            # NVIDIA's may be put in it (CONTRIBUTING.md): the SDK is the builder's own copy, named
-            # here, and a build without it leaves DLSS reporting itself unavailable.
-            *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(dlss_sdk_path(), "include")]
-              if dlss_sdk_path() else []),
             # (hookshot) RX_VK_STREAMLINE_SDK=<path to Streamline> compiles DLSS 5 neural rendering
             # against Streamline's MIT-licensed headers. Nothing is linked: sl.interposer.dll is
             # loaded from the player's own PC at run time. Windows only (streamline_sdk_path).
@@ -909,6 +852,14 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + vk, "-I" + gen_dir] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+        # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
+        # it is the stubs that say DLSS is not there)
+        ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
+        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution, and DLSS frame generation over the same NGX
+        # session (vk_ngx.cpp, vk_dlssg.cpp)
+        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssg.cpp")
+        if NGX_SDK:
+            print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -920,8 +871,15 @@ def main():
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
-                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
+                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
+                            (ngx_flags if os.path.basename(src) in ngx_files else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
+        if NGX_SDK and not LINUX and toolchain.mingw():
+            # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
+            # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)
+            vk_jobs.append((cxx, os.path.join(vk, NGX_MSVC_RT), os.path.join(obj_dir, "vk_ngx_msvc_rt.o"), vflags + ngx_flags, vdeps))
+            vk_jobs.append((cc, os.path.join(HOST, "mingw_msvc_shims.c"), os.path.join(obj_dir, "vk_ngx_mingw_msvc_shims.o"),
+                            target() + ["-O2", "-g0", "-Wno-everything"], b""))
         if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
             cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
                                        "-I" + os.path.join(kit.HERE, "..", "third_party", "stb")]
@@ -1070,15 +1028,11 @@ def main():
         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
                 "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"] + \
-                dlss_sdk_link()
+                "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+                ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
         else:
-            # (hookshot) dlss_sdk_link() belongs here as much as on the Linux branch: without it a
-            # Windows build that found an NGX SDK compiled every NVSDK_NGX_* call and then had
-            # nothing to resolve them against, which is a link failure at the end of a long build --
-            # or, worse, a release that quietly shipped without the DLSS it was supposed to have.
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + dlss_sdk_link() + streamline_link()
+                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw()) + streamline_link()
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

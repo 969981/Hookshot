@@ -118,15 +118,16 @@ static VkImage output_image() { return 0; }
 static int fsr_stage() { return 0; }
 static void note_frame() {}
 }
-namespace dlss {
-struct Inputs { VkImageView color=0, depth=0, motion=0; VkImage color_image=0, depth_image=0, motion_image=0;
-                int color_format=0, depth_format=0, motion_format=0;
-                uint32_t render_width=0, render_height=0, upscale_width=0, upscale_height=0;
-                float motion_scale[2]{}, jitter[2]{}; float near_plane=0.0f, fov_y=0.0f; bool reset=false; };
-static bool supported() { return false; }
-static bool upscale(VkCommandBuffer, const Inputs&) { return false; }
+namespace ffx {
+struct UpscaleInputs { VkImage color=0, depth=0, motion=0; int color_format=0, depth_format=0, motion_format=0;
+                       uint32_t render_width=0, render_height=0, upscale_width=0, upscale_height=0;
+                       float jitter[2]{}, motion_scale[2]{}; float near_plane=0.0f, fov_y=0.0f; bool reset=false; };
+static bool upscale_supported() { return false; }
+static const char* upscale_provider() { return ""; }
+static bool upscale(VkCommandBuffer, const UpscaleInputs&) { return false; }
 static VkImage output_image() { return 0; }
 }
+// (NVIDIA DLSS takes the dispatch before this function does, in dlss_stand_in: nothing of it here)
 }   // (vk_draw.cpp's dw is a TLS_OBJECT: the calling thread's, by a call)
 static unsigned handle_value=5;
 static bool resolve_image=true, upscale_result=true;

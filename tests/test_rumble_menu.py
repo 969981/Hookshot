@@ -63,12 +63,25 @@ void save() { saves++; }
 void apply_pad_layout(int) {}
 void apply_preset(int) { presets++; }
 void sync_preset_budgets(int) {}
+/* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the restart offer) */
+bool row_fixed(const int*) { return false; }
+int upscaler() { return 0; }
+namespace ur {
+int step_upscaler(int, int, bool) { return 0; }
+int step(int, int v, int dir) { return v + dir; }
+int snap(int, int v) { return v; }
+}
+namespace mr { constexpr int kMax = 8; }
+void restart_values(int*) {}
+struct { void note(const int*) {} } restart_state;
 %(is_slider)s
 %(stops)s
 %(snap)s
 %(ini_key)s
 /* (the Microphone row's hook in set_row: no microphones here) */
 bool can_mic() { return false; }
+/* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
+unsigned upscalers_available() { return 1; }
 void mic_chosen() {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
@@ -154,7 +167,7 @@ def menu_fixture():
         "set_row": definition(menu, "void set_row"),
         "wheel": block(tick, loop),
         "arrow": "bool press[5] = {false, false, false, !right, right}; " + arrow.group(1),
-        "exempt": ", true" if exempt else "",
+        "exempt": ", nullptr, false, true" if exempt else "",   # (after the help: no hint, no restart)
         "lo": row.group(1), "hi": row.group(2), "step": row.group(3),
     }
 
@@ -162,7 +175,7 @@ def menu_fixture():
 def option_ids():
     """option 9 is the menu's Rumble strength, and no other option has its id"""
     replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
-    value = {}   # (every HOS_OPT_* enum: the cheats' and the motion rows')
+    value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows' and DLSS's jitter)
     for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+), ([^}]*)\}", api):
         names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
         value.update({n: int(start) + i for i, n in enumerate(names)})
