@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.6.3
+Date: 09. 11. 2026
+  Bugfixes:
+    - Build: The feature announcement swallowed the whole Vulkan build.
+    - Vk: Tag the uplift colour pair as whole resources, as the shipping integration does.
+---------------------------------------------------------------------------------------------------
 Version: 2.6.2
 Date: 09. 11. 2026
   Bugfixes:
