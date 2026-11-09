@@ -1414,6 +1414,18 @@ void forget_gpu(Texture* tex) {
         }
 }
 
+bool low_vram_texture_mips() {
+    static const bool disabled = [] {
+        const char* e = getenv("RX_VK_LOW_VRAM_MIPS");
+        return e && e[0] == '0';
+    }();
+    static const bool small = [] {
+        uint64_t used = 0, allowed = 0;
+        return vram_usage(&used, &allowed) && allowed && allowed <= (4ull << 30) + (512ull << 20);
+    }();
+    return !disabled && small && opts.preset == 1;
+}
+
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb) {
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
@@ -1447,7 +1459,26 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     {   // huge textures leave out their top levels: wider than RX_VK_TEX_MAX_DIM (default 2048) once they would take
         // 64 MB, and down to RX_VK_TEX_MAX_MB (default 512) whatever their size (MKW's terrain material arrays are
         // 8192 x 8192 x 68 ASTC: 24 GB as RGBA8)
-        static const uint32_t max_dim = getenv("RX_VK_TEX_MAX_DIM") ? (uint32_t)atoi(getenv("RX_VK_TEX_MAX_DIM")) : 2048;
+        // Minimum quality on a 4 GB card also trims medium-sized ASTC images:
+        // a 3072-square image is ~48 MB decoded, below the old 64 MB threshold,
+        // and too wide for BC3's 2048-square scratch. Several of these plus the
+        // terrain arrays forced repeated eviction/uploads when turning the camera.
+        // Use the existing mip/view remapping; exact-coordinate render targets and
+        // depth images keep their full size. Explicit dimension overrides still win.
+        const bool small_mips = low_vram_texture_mips();
+        static const char* dim_env = getenv("RX_VK_TEX_MAX_DIM");
+        const uint32_t max_dim = dim_env ? (uint32_t)atoi(dim_env) : small_mips ? 1024 : 2048;
+        // A dimension limit alone still keeps medium images once they fall below
+        // the byte threshold. Allow a smaller working set without shrinking
+        // exact-coordinate render targets through RX_VK_TEX_MAX_MB.
+        static const uint64_t trim_override = []() -> uint64_t {
+            const char* e = getenv("RX_VK_TEX_TRIM_MB");
+            if (!e) return 0;
+            char* end = nullptr;
+            const long mb = strtol(e, &end, 10);
+            return end != e && !*end && mb > 0 && mb <= 1536 ? (uint64_t)mb << 20 : 0;
+        }();
+        const uint64_t trim_at = trim_override ? trim_override : (small_mips ? 8ull : 64ull) << 20;
         static const uint64_t max_bytes = (uint64_t)(getenv("RX_VK_TEX_MAX_MB") ? atoi(getenv("RX_VK_TEX_MAX_MB")) : 1536) << 20;
         const uint32_t texel = astc ? 4 : std::max(1, bpb / std::max(1, bw * bh));
         auto bytes_at = [&](uint32_t skip) {
@@ -1468,7 +1499,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                                                            u, VK_IMAGE_TILING_OPTIMAL, &np, nullptr);
             x.sparse = np > 0;
         }
-        while (!x.sparse && astc && x.skip + 1 < x.levels && bytes_at(x.skip) > (64ull << 20) &&
+        while (!x.sparse && astc && x.skip + 1 < x.levels && bytes_at(x.skip) > trim_at &&
                (std::max(x.width, x.height) >> x.skip) > max_dim)
             x.skip++;
         while (!x.sparse && x.skip + 1 < x.levels && bytes_at(x.skip) > max_bytes) x.skip++;

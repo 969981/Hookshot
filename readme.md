@@ -399,6 +399,15 @@ For a first run on a 4 GB card such as a GTX 1650, `RX_VK_LOW_SPEC=1` starts wit
 frame generation and upscaling off. It applies only when there is no `hookshot_options.ini` yet; after that, change
 the settings in the in-game menu.
 
+The Minimum preset also leaves out the top mip levels of large sampled ASTC textures when the driver reports a
+VRAM budget of at most 4.5 GiB. Its default dimension limit is 1024 and trimming starts above 8 MiB of decoded
+texture data. Other presets and larger or unknown budgets keep the previous 2048 / 64 MiB rule. This trades texture
+detail for a smaller working set; uncompressed render targets and depth images keep their existing handling.
+`RX_VK_LOW_VRAM_MIPS=0` disables this automatic rule. `RX_VK_TEX_MAX_DIM` still overrides the dimension limit;
+`RX_VK_TEX_TRIM_MB=<1..1536>` overrides the decoded-size threshold for the dimension rule (invalid values use the
+default). For a more aggressive low-detail experiment, use `RX_VK_TEX_MAX_DIM=512` with `RX_VK_TEX_TRIM_MB=2`.
+These switches apply after a restart and do not change the separate `RX_VK_TEX_MAX_MB` allocation limit.
+
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movies' neural upscale with the plain linear one. The default, `auto`, keeps
 the networks and falls back only when a movie frame takes the GPU more than 40 ms. It does not change the gameplay
 upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the movie networks.
