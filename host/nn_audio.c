@@ -1017,26 +1017,42 @@ static float audio_apply_gain(int16_t *pcm, int frames, int channels, float from
     return want;
 }
 
-/* The game's window has the focus. An overlay in front (a tool or no-activate window: Steam's, Discord's) still counts
-   as the game's, as host/nn_hid.c's game_in_front has it. */
-static int audio_window_in_front(void) {
+/* Whether the game's window counts as in front, as host/nn_hid.c's game_in_front decides it: the game's own window does,
+   another normal window does not, and an overlay (a tool or no-activate window: Steam's, Discord's, but also a toast or
+   a tray flyout) counts as the game's only while the last normal window in front was the game's. *last_normal_was_us
+   keeps that between calls. tests/test_audio_volume.py */
+static int audio_front_decide(int ours, int overlay, int *last_normal_was_us) {
+    if (ours) return *last_normal_was_us = 1;
+    if (overlay && *last_normal_was_us) return 1;
+    *last_normal_was_us = 0;
+    return 0;
+}
+static int audio_window_in_front(void) {   /* (the mixer thread's only: its own state, not game_in_front's) */
+    static int last_normal_was_us = 1;
     DWORD pid = 0;
     HWND w = GetForegroundWindow();
     if (!w) return 0;
     GetWindowThreadProcessId(w, &pid);
-    if (pid == GetCurrentProcessId()) return 1;
-    return (GetWindowLongPtrA(w, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0;
+    const int ours = pid == GetCurrentProcessId();
+    const int overlay = !ours && (GetWindowLongPtrA(w, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0;
+    return audio_front_decide(ours, overlay, &last_normal_was_us);
 }
 
-/* The gain the menu asks for: Volume (0 to 100 percent) and Mute in background. With no menu
-   (the WebGPU renderer) the game plays at full volume. */
+/* The Volume row's percent (0 to 100) as a gain (0 to 1), on a squared curve so the slider's steps sound about even: 50%
+   is a quarter, -12 dB. A straight line left the bottom half of the slider nearly all very quiet. */
+static float audio_volume_curve(int percent) {
+    const float v = (float)(percent < 0 ? 0 : percent > 100 ? 100 : percent) / 100.0f;
+    return v * v;
+}
+/* The gain the menu asks for: Volume and Mute in background. With no menu (the WebGPU renderer) the game plays at full
+   volume. */
 static float audio_player_gain(void) {
     int rx_option(int id, int otherwise);
     int volume = rx_option(HOS_OPT_VOLUME, 100);
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     if (volume && rx_option(HOS_OPT_MUTE_BACKGROUND, 0) && !audio_window_in_front()) volume = 0;
-    return (float)volume / 100.0f;
+    return audio_volume_curve(volume);
 }
 
 /* ---- the renderer thread --------------------------------------------------------------------------------------- */

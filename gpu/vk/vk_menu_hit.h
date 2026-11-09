@@ -7,7 +7,9 @@ namespace mkwvk::menu_hit {
 // ---- the options page, at a scale of 1 (the window 720 pixels high; 1440 and up: 2, and so on) ----
 constexpr int kWidth = 480;
 constexpr int kTabY = 44, kTabH = 32;     // the tab strip
-constexpr int kTabSide = 85;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+constexpr int kTabSide = 70;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+                                          // (their text ~50 from 16 in; 70 leaves the four tabs slots of 85, room for GAMEPLAY's
+                                          // and CONTROLS' highlight at 13 px bold)
 constexpr int kRowGap = 8, kRowH = 28;    // the rows, from kTabY + kTabH + kRowGap
 constexpr int kRowX = 8;                  // a row's band, kRowX in from either side
 constexpr int kValueRight = 18;           // a value ends kValueRight from the right

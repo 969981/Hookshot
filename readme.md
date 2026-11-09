@@ -279,7 +279,8 @@ choices and starts the game again, so progress since your last save is lost.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
-- **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. **Mute in
+- **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
+  follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in
   background** silences the game while another window has the focus; an overlay such as Steam's or Discord's does not
   count as another window.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed

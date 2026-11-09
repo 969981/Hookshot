@@ -22,7 +22,7 @@ int main() {
     };
     Hit h;
 
-    // ---- scale 1: the tabs (side 85, slots of 103 from 85) ----
+    // ---- scale 1: the tabs (side 70, slots of 113 from 70) ----
     h = at(100, 60, 1);
     CHECK("tab 0", h.part == kTab && h.index == 0);
     h = at(240, 60, 1);
@@ -32,14 +32,15 @@ int main() {
     CHECK("[Q / LB] is the previous tab", at(40, 60, 1).part == kTabPrev);
     CHECK("[E / RB] is the next tab", at(450, 60, 1).part == kTabNext);
     CHECK("the title is no control", at(100, 20, 1).part == kNone);
-    // four tabs (Graphics, Audio, Gameplay, Controls): slots of 77 from 85
+    // four tabs (Graphics, Audio, Gameplay, Controls): slots of 85 from 70
     auto tab4 = [&](int x) { return options(x, 60, 1, w1, h1, 4, 11, value_l, slider); };
+    CHECK("4 tabs: [Q / LB] up to 70", tab4(69).part == kTabPrev && tab4(70).part == kTab && tab4(70).index == 0);
     CHECK("4 tabs: tab 0", tab4(100).part == kTab && tab4(100).index == 0);
     CHECK("4 tabs: tab 1", tab4(200).part == kTab && tab4(200).index == 1);
     CHECK("4 tabs: tab 2", tab4(250).part == kTab && tab4(250).index == 2);
     CHECK("4 tabs: tab 3", tab4(350).part == kTab && tab4(350).index == 3);
-    CHECK("4 tabs: the last slot's slack is tab 3", tab4(394).part == kTab && tab4(394).index == 3);
-    CHECK("4 tabs: [E / RB]", tab4(395).part == kTabNext);
+    CHECK("4 tabs: the last slot ends at 410", tab4(409).part == kTab && tab4(409).index == 3);
+    CHECK("4 tabs: [E / RB]", tab4(410).part == kTabNext);
 
     // ---- scale 1: the rows (from 84, 28 high) ----
     h = at(30, 84 + 3 * 28 + 10, 1);

@@ -2,7 +2,9 @@
 
 host/nn_audio.c's audio_apply_gain is compiled from the source and run: full volume leaves the samples alone, a change
 ramps over one frame (no click), the frame ends at the gain asked for, nothing clips, and every channel gets the same
-gain. The mixer applies it to each frame before the output. The option ids the host reads (HOS_OPT_VOLUME and
+gain. The mixer applies it to each frame before the output. The Volume row's curve is squared (50% is -12 dB), and Mute
+in background's foreground check lets an overlay (a toast, a tray flyout) count as the game's only while the game was
+the last normal window in front, as host/nn_hid.c's game_in_front does. The option ids the host reads (HOS_OPT_VOLUME and
 HOS_OPT_MUTE_BACKGROUND) are checked against the renderer's option table (gpu/vk/vk_replay.cpp) and the menu's rows and
 defaults.
 
@@ -72,6 +74,19 @@ int main(void) {
     fill(six, FRAMES * 6, 1000);
     audio_apply_gain(six, FRAMES, 6, 0.25f, 0.25f);
     for (int i = 0; i < FRAMES * 6; i++) CHECK(abs(six[i]) == 250);
+    /* the Volume row's curve: squared, 50%% a quarter (-12 dB), held to 0..100, rising */
+    CHECK(audio_volume_curve(100) == 1.0f && audio_volume_curve(0) == 0.0f);
+    CHECK(fabsf(audio_volume_curve(50) - 0.25f) < 1e-6f);
+    CHECK(audio_volume_curve(150) == 1.0f && audio_volume_curve(-5) == 0.0f);
+    for (int v = 5; v <= 100; v += 5) CHECK(audio_volume_curve(v) > audio_volume_curve(v - 5));
+    /* in front: the game's window yes, another normal window no; an overlay (a toast, a tray flyout, Steam's) only while
+       the last normal window in front was the game's */
+    int last = 1;
+    CHECK(audio_front_decide(1, 0, &last) == 1 && last == 1);
+    CHECK(audio_front_decide(0, 1, &last) == 1);   /* (Steam's overlay over the game) */
+    CHECK(audio_front_decide(0, 0, &last) == 0 && last == 0);   /* (alt-tab to a browser) */
+    CHECK(audio_front_decide(0, 1, &last) == 0);   /* (a toast while the game is behind: still muted) */
+    CHECK(audio_front_decide(1, 0, &last) == 1 && last == 1);   /* (back to the game) */
     return 0;
 }
 """
@@ -126,13 +141,15 @@ def main():
     args = parser.parse_args()
     source_checks()
     audio = read("host", "nn_audio.c")
-    fn = block(audio, audio.index("static float audio_apply_gain("))
+    fn = "\n".join(block(audio, audio.index(head)) for head in (
+        "static float audio_apply_gain(", "static float audio_volume_curve(", "static int audio_front_decide("))
     with tempfile.TemporaryDirectory(prefix="audio-volume-") as tmp:
         src, exe = Path(tmp) / "audio_volume.c", Path(tmp) / "audio_volume"
         src.write_text(FIXTURE % fn, encoding="utf-8")
         subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe), "-lm"], check=True)
         subprocess.run([str(exe)], check=True)
-    print("PASS: the volume ramps over a frame without clipping, and the Audio tab's options are its own")
+    print("PASS: the volume ramps over a frame without clipping on a squared curve, a toast behind the game does not "
+          "unmute it, and the Audio tab's options are its own")
 
 
 if __name__ == "__main__":
