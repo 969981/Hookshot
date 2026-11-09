@@ -220,9 +220,9 @@ choices and starts the game again, so progress since your last save is lost.
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR, below) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -251,7 +251,7 @@ choices and starts the game again, so progress since your last save is lost.
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
   speed, Handheld profile and the video memory limits for a card with that much memory. It leaves the Upscaler as you
-  chose it: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself sets it
+  chose it: with DLSS or FSR 4, the preset's resolution becomes their nearest mode. Changing most other rows yourself sets it
   back to Custom.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
@@ -260,8 +260,9 @@ choices and starts the game again, so progress since your last save is lost.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
-  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
+  included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
+  edges smoothed), or AMD FSR 4 or its Native AA (the same for AMD cards). DLSS and DLAA look softer than the game's own:
+  set **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
@@ -529,6 +530,29 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 </details>
 
 <details>
+<summary>AMD FSR 4 (optional, AMD's DLLs not included)</summary>
+
+A game built with FSR offers **AMD FSR 4** and **AMD FSR 4 Native AA** in the Graphics tab's **Upscaler** row: AMD's
+temporal upscaler in place of the game's own, on the same inputs as DLSS (the scene's colour and depth, the camera's and
+the characters' motion, and the camera jitter). Native AA draws the 3D at full size and smooths its edges. Choose it in
+the menu (`dlss=3` or `4` in `hookshot_options.ini`, `RX_VK_FSR=1` or `2` for one run, `RX_VK_FSR=0` to leave it out).
+
+- **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. Nothing is downloaded.
+- **The command line:** `make_game.py --fsr` (or `HOOKSHOT_FSR=1` for `nx2/build.py`). Rebuilding a folder built with
+  it (`--update`) keeps it; `--no-fsr` takes it out.
+- **AMD's files:** Hookshot includes only AMD's MIT-licensed API headers (`third_party/fidelityfx`). Put
+  `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
+  [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
+  beside the game's exe (`bin\hookshot.exe`), or in a folder named by `RX_VK_FSR_DIR`. Without them the Upscaler row
+  says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
+  takes their place.
+
+The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
+never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
@@ -603,13 +627,17 @@ Hookshot exists thanks to the work of many people:
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **NVIDIA DLSS**: builds made with NVIDIA's DLSS SDK (optional, downloaded by each build, never bundled) use NVIDIA DLSS
   Super Resolution, NVIDIA's technology. NVIDIA and DLSS are trademarks of NVIDIA Corporation.
+- **AMD FSR 4**: builds made with FSR (optional; AMD's DLLs are never bundled) use AMD FidelityFX Super Resolution 4, AMD's
+  technology, through AMD's MIT-licensed FSR API headers. AMD, Radeon and FidelityFX are trademarks of Advanced Micro
+  Devices, Inc.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
-- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (the
-  exposure flicker and fog fixes, build speed, CI), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
+- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (NVIDIA
+  DLSS, DLAA and Reflex, the exposure flicker and fog fixes, build speed, CI), madebyjordan (AMD FSR 4.1), N3oTraX (FSR 4 on
+  Linux), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
   d3zessete, chrispository, vzeol, leonidasmark, Segmentree, ShyVortex, hiKareeem and i900gaming, among others.
 
 ## License

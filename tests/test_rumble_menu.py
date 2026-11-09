@@ -66,8 +66,10 @@ void sync_preset_budgets(int) {}
 /* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the restart offer) */
 bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
+bool dlss_ok() { return false; }
+bool fsr_ok() { return false; }
 namespace ur {
-int step_upscaler(int, int, bool) { return 0; }
+int step_upscaler(int, int, bool, bool) { return 0; }
 int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }
 }

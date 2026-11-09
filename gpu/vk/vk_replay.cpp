@@ -26,7 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "vk_dlss.h"
+#include "vk_temporal.h"
 #include "status_line.h"
 #include "vk_reflex.h"
 #include "vk_draw.h"
@@ -2619,7 +2619,7 @@ void status_tick() {
     }
     char dlss[320] = "";
     const bool line = frames % sl::kEvery == 0;
-    const int mode = line ? dlss_status(dlss, sizeof dlss) : dlss_mode();   // (dlss_status: since the last line, so only for one)
+    const int mode = line ? temporal_status(dlss, sizeof dlss) : temporal_mode();   // (temporal_status: since the last line, so only for one)
     static bool over = false;
     if (known && sl::crossed(over, used, allowed)) {
         char w[200];
@@ -2637,7 +2637,7 @@ uint64_t present_value = 0;   // (the present job's value, handed out as it came
 void do_present(const nvn_tex* t, const int crop[4]) {
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin
-    dlss_idle();   // (NVIDIA DLSS: its video memory let go once it has not been used for a while)
+    temporal_idle();   // (DLSS, FSR: their video memory let go once not used for a while)
     status_tick();   // (the status line, and the video-memory warning)
     reflex_present_begins();
     struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); } } reflex_sleep_after;
@@ -3798,10 +3798,10 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
-        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
+        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y :
-               id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H ? (int)dlss_jitter_size(id - HOS_OPT_DLSS_JITTER_W) :
-               id == HOS_OPT_DLSS_JITTER_PHASES ? (int)dlss_jitter_size(2) : 0;
+               id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H ? (int)temporal_jitter_size(id - HOS_OPT_DLSS_JITTER_W) :
+               id == HOS_OPT_DLSS_JITTER_PHASES ? (int)temporal_jitter_size(2) : 0;
     };
     t.option_set = menu_option_set;
     t.nvn_register_sampler = register_sampler_queued;

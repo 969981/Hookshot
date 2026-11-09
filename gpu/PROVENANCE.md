@@ -28,3 +28,9 @@ mkw-recomp's changes, for the Switch 2:
 `mkw_gpu.cpp` / `mkw_gpu.h` / `build-gpu.bat` are the earlier Vulkan stand-in (a window and a swapchain; no longer
 loaded). `shadertool.cpp` runs dumped NVN2 programs through Eglantine's recompiler offline (SPIR-V; it prints what
 each program reads from the constant banks).
+
+Hookshot's AMD FSR 4 (`vk/vk_fsr4.cpp`) was first written for Lichii's OoT branch (madebyjordan/Lichii-Hyrule,
+`renderer_vulkan/vk_fsr4_upscaler.cpp`; GPL-3.0-or-later), with its Linux path (a Vulkan FSR 4 library through dlopen) by
+N3oTraX. It draws with the frame chain of hckrman101's NVIDIA DLSS (#841), moved into `vk/vk_temporal.cpp` so both
+upscalers share it. `third_party/fidelityfx/` is AMD's FSR API headers from FidelityFX SDK v2.4.0 (MIT, `LICENSE.md`);
+AMD's signed DLLs are loaded from the user's PC at run time and are not vendored.
