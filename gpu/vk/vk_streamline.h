@@ -38,6 +38,13 @@ namespace mkwvk::streamline {
 /// interposer, where it is not signed by NVIDIA, or where Streamline refused to start; the renderer
 /// then comes up without neural rendering and everything else is unaffected.
 ///
+/// It does *not* ask whether the player has neural rendering switched on, and that is deliberate:
+/// the device has to be created for the feature before the menu's options are even read, so a
+/// session that waited for the switch could never honour it without a restart. The switch is read
+/// per frame instead (dlssnr::asked), and the cost of being wrong here is that a player with
+/// NVIDIA's files present and the row off has loaded a plugin they are not using. RX_VK_DLSS_NR=0
+/// is the way to not load it at all.
+///
 /// Asked more than once is free: the answer is kept.
 bool start();
 

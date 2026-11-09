@@ -196,6 +196,9 @@ bool built_with_sdk() { return true; }
 bool start() {
     State& s = state();
     if (s.started) return true;
+    // RX_VK_DLSS_NR=0 is the only way to keep the interposer from being loaded at all. The menu's
+    // own switch is deliberately not consulted here: the device must be created for the feature
+    // before the options file is read, so waiting for the switch would mean a restart to honour it.
     if (const char* off = getenv("RX_VK_DLSS_NR"); off && atoi(off) == 0) return false;
     if (!s.module) {
         std::wstring found;
