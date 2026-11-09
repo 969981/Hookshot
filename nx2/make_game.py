@@ -855,9 +855,27 @@ def write_lift_key(work, key):
         f.write(key + "\n" + gen_print(gen) + "\n")
 
 
+def undefined_functions(gen):
+    """(issue 890) The functions the lift listed (functions.txt) that no code_*.c in gen defines. Two lifts over one gen folder at
+    once lose some: the second one's split_big reads the chunks the first had already cut, finds them small, and removes their
+    parts as stale. The key then vouched for that C, and every build after it, the objects compiled anew too, stopped at the link
+    on undefined f_ symbols (65 code files where the lift makes 80)"""
+    import lifted_c
+    try:
+        with open(os.path.join(gen, "functions.txt")) as f:
+            want = {"f_" + line.split()[0] for line in f if line.strip()}
+    except OSError:
+        return []
+    for name in os.listdir(gen):
+        if name.startswith("code_") and name.endswith(".c"):
+            with open(os.path.join(gen, name), "rb") as f:
+                want.difference_update(m.group(1).decode() for m in lifted_c.DEF_BYTES.finditer(f.read()))
+    return sorted(want)
+
+
 def lifted_before(work, key):
     """The lift (and split_hot) in <work>/sa finished before with this key, its C is as that lift left it, and what the later
-    steps read of it is there"""
+    steps read of it is there, every function it listed with it"""
     gen, image = os.path.join(work, "sa", "gen"), os.path.join(work, "sa", "image")
     try:
         with open(os.path.join(gen, LIFT_KEY)) as f:
@@ -866,7 +884,31 @@ def lifted_before(work, key):
         return False
     if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
         return False
-    return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
+    return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c")) and \
+        not undefined_functions(gen)
+
+
+_WORK_LOCKS = {}   # (work folder: the open lock file, held while this process lives)
+
+
+def lock_work(work):
+    """(POSIX, issue 890) One build at a time on a work folder: stop_stray_compilers is Windows' answer, and on Linux a second
+    build (another window, the game's update offer, the command line) would lift into the same sa/gen at once (undefined_functions)"""
+    if os.name == "nt" or work in _WORK_LOCKS:
+        return
+    import errno
+    import fcntl
+    f = open(os.path.join(work, ".build_lock"), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        f.close()
+        if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            fail("Another Hookshot build is using the work folder %s. Let it finish, or stop it, then build again." % work)
+        # (a file system without locks, ENOLCK / EOPNOTSUPP: built as before, unguarded, not refused as if another build held it)
+        print("the work folder %s cannot be locked (%s): two builds on it at once are not stopped" % (work, e), flush=True)
+        return
+    _WORK_LOCKS[work] = f
 
 
 def ngx_script():
@@ -971,6 +1013,7 @@ def main(a=None):
     check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
     if not LINUX:
         check_windows_sdk()
+    lock_work(work)
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
@@ -1078,6 +1121,11 @@ def main(a=None):
         run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
         if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
             run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+        missing = undefined_functions(os.path.join(work, "sa", "gen"))
+        if missing:   # (no key: the next build translates again)
+            fail("The translated game is incomplete: %d of its functions are in no C file (%s%s). Was another build using this work "
+                 "folder at the same time? Build again: it translates the game again." % (len(missing), " ".join(missing[:4]),
+                                                                                          " ..." if len(missing) > 4 else ""))
         write_lift_key(work, key)
 
     if LINUX:
