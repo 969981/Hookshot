@@ -212,6 +212,10 @@ gigabytes and are derived from the game.
   them.
 - New switches use the `RX_` prefix in the renderer and `HOS_` in the runtime. They are off, or neutral, unless
   asked for, and they do not cost anything while off. Document them where the surrounding switches are documented.
+- Every action a player can take needs an MCP tool that does it ([design notes, section 8](docs/design.md#8-rules)):
+  a setting, cheat or menu choice only the window can reach cannot be tested or reproduced. Go through the menu's own
+  setter, and cover the tool in the tests. A new player-facing action is not finished until its tool is documented in
+  [docs/mcp.md](docs/mcp.md).
 - The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
   suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture
   and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
