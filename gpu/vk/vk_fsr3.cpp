@@ -636,6 +636,20 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     run(1, {current_luma, tex(g.farthest_depth), tex(g.spd_atomic), tex(g.frame_info), mip(0), mip(1),
             mip(2), mip(3), mip(4), mip(5), tex(g.farthest_depth_mip1), cb_fsr, cb_spd},
         spd_x, spd_y);
+    // (hookshot) The two pyramid passes share one atomic counter, and the single-pass downsampler
+    // uses it to elect the workgroup that finishes the chain: it counts up to num_work_groups and
+    // the last one through does the tail. Clearing it only once a frame leaves the second pass
+    // starting at the total, so no workgroup is elected and the ones waiting on the tail spin. One
+    // FSR evaluation cost about half a second before this, with the frame rate falling to 1.9 fps.
+    {
+        const VkClearColorValue zero_again{};
+        memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdClearColorImage(cmd, g.spd_atomic.image, VK_IMAGE_LAYOUT_GENERAL, &zero_again, 1, &ALL_LEVELS);
+        memory_barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    }
     run(3, {current_luma, tex(g.luma[q]), tex(g.dilated_motion_vectors), exposure, tex(g.spd_atomic),
             mip(0), mip(1), mip(2), mip(3), mip(4), mip(5), cb_fsr, cb_spd},
         spd_x, spd_y);
