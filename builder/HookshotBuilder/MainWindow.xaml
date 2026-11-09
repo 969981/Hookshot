@@ -266,7 +266,51 @@
           <TextBlock x:Name="LaunchVersion" Style="{StaticResource Sub}" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,8,0,0"/>
           <TextBlock x:Name="LaunchStatus" FontSize="13" Foreground="{StaticResource InkSoft}" Text="Checking for updates…"
                      HorizontalAlignment="Center" Margin="0,16,0,0"/>
+          <!-- the profiles (Profiles.cs): the one Play starts, right above Play, with New profile after it. What changes the chosen
+               profile is wanted rarely: it is in the Manage menu, out of Play's way, with Remove last and apart -->
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,28,0,0">
+            <TextBlock Style="{StaticResource Note}" Text="Profile" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <ComboBox x:Name="ProfileBox" Style="{StaticResource Choice}" Width="220" AutomationProperties.Name="Profile"
+                      SelectionChanged="ProfileChanged"/>
+            <Button x:Name="ProfileManage" Style="{StaticResource Quiet}" Margin="10,0,0,0" AutomationProperties.Name="Manage profiles"
+                    Click="ProfileManageClick">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Manage" FontSize="13" FontWeight="SemiBold"/>
+                <Path Data="M0,0 L8,0 L4,5 Z" Fill="{StaticResource InkSoft}" VerticalAlignment="Center" Margin="8,1,0,0"/>
+              </StackPanel>
+            </Button>
+            <Button Style="{StaticResource Quiet}" Margin="10,0,0,0" FontSize="13" Content="New profile…" Click="ProfileNewClick"/>
+          </StackPanel>
+          <Popup x:Name="ProfileMenu" PlacementTarget="{Binding ElementName=ProfileManage}" Placement="Bottom" StaysOpen="False"
+                 AllowsTransparency="True">
+            <Border Background="{StaticResource Raised}" BorderBrush="{StaticResource LineStrong}" BorderThickness="1" CornerRadius="8"
+                    Padding="4" Margin="0,4,0,0" MinWidth="240">
+              <StackPanel>
+                <Button x:Name="MenuRename" Style="{StaticResource MenuRow}" Click="ProfileRenameClick"/>
+                <Button x:Name="MenuImport" Style="{StaticResource MenuRow}" Click="ProfileImportClick"/>
+                <Button x:Name="MenuFolder" Style="{StaticResource MenuRow}" Click="ProfileFolderClick"/>
+                <Border Height="1" Background="{StaticResource Line}" Margin="6,4"/>
+                <Button x:Name="MenuRemove" Style="{StaticResource MenuRow}" Foreground="{StaticResource Bad}" Click="ProfileRemoveClick"/>
+              </StackPanel>
+            </Border>
+          </Popup>
+          <StackPanel x:Name="ProfileNameRow" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed">
+            <TextBox x:Name="ProfileName" Style="{StaticResource Path}" Width="260" MaxLength="32" AutomationProperties.Name="Profile name"
+                     KeyDown="ProfileNameKey"/>
+            <Button x:Name="ProfileNameOk" Style="{StaticResource Quiet}" Content="Add" Margin="10,0,0,0" Click="ProfileNameOkClick"/>
+            <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
+          </StackPanel>
+          <StackPanel x:Name="SaveChoiceRow" HorizontalAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed">
+            <TextBlock x:Name="SaveChoiceText" Style="{StaticResource Note}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+              <ComboBox x:Name="SaveChoice" Style="{StaticResource Choice}" Width="560" AutomationProperties.Name="Save to import"/>
+              <Button Style="{StaticResource Quiet}" Content="Import" Margin="10,0,0,0" Click="SaveChoiceOkClick"/>
+              <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
+            </StackPanel>
+          </StackPanel>
+          <TextBlock x:Name="ProfileNote" Style="{StaticResource Note}" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="700"
+                     Margin="0,10,0,0"/>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,24,0,0">
             <Button x:Name="LaunchUpdate" Style="{StaticResource Primary}" Height="50" Padding="26,0" Margin="0,0,12,0" Content="Update"
                     Visibility="Collapsed" Click="LaunchUpdateClick"/>
             <Button x:Name="LaunchPlay" Style="{StaticResource GoButton}" Click="LaunchPlayClick">

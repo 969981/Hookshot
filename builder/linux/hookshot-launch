@@ -15,16 +15,16 @@ ini_path() {
     fi
 }
 
-# the last out= line, as the builder keeps the last value it wrote
-out_of() {
-    out=
+# the last <name>= line, as the builder keeps the last value it wrote
+value_of() {
+    value=
     while IFS= read -r line || [ -n "$line" ]; do
         case $line in
-            out=*) out=${line#out=} ;;
+            "$2"=*) value=${line#"$2"=} ;;
         esac
     done < "$1"
-    [ -n "$out" ] || return 1
-    printf '%s\n' "$out"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
 }
 
 ready() {
@@ -32,11 +32,14 @@ ready() {
 }
 
 folder=${1:-}
-if [ -z "$folder" ]; then
-    ini=$(ini_path)
-    if [ -f "$ini" ]; then
-        folder=$(out_of "$ini") || folder=
+ini=$(ini_path)
+profile=
+if [ -f "$ini" ]; then
+    if [ -z "$folder" ]; then
+        folder=$(value_of "$ini" out) || folder=
     fi
+    # (the profile the launcher's Play chose last: builder/linux/profiles.py)
+    profile=$(value_of "$ini" profile) || profile=
 fi
 
 if ! ready "$folder"; then
@@ -62,6 +65,9 @@ done
 cd "$folder"
 # (--play already chose Play. The game's own update question stays for a bin/hookshot the player started themselves)
 export HOOKSHOT_NO_UPDATE_CHECK=1
+if [ -n "$profile" ]; then
+    export HOOKSHOT_PROFILE="$profile"
+fi
 if [ -x ./bin/hookshot ]; then
     exec ./bin/hookshot
 fi

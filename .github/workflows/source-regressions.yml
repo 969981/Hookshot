@@ -100,6 +100,12 @@ jobs:
         run: |
           dotnet restore tests/builder_workers/BuilderWorkersTests.csproj --configfile tests/builder_workers/NuGet.Config
           dotnet run --project tests/builder_workers/BuilderWorkersTests.csproj --configuration Release --no-restore -- (Get-Command python).Source
+      - name: Check the launcher's profiles
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          dotnet restore tests/launcher_profiles/LauncherProfilesTests.csproj --configfile tests/launcher_profiles/NuGet.Config
+          dotnet run --project tests/launcher_profiles/LauncherProfilesTests.csproj --configuration Release --no-restore
       - name: Compile Windows Builder
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false

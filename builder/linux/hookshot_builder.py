@@ -4,7 +4,8 @@ with the compiler, sysroot and libraries it brings in the environment.
 
     hookshot_builder.py                     the window. Its button is Build, Update, Play, or Update builder
     hookshot_builder.py --play              the game built last time, if there is one (else the window)
-    hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when a newer release is out
+    hookshot_builder.py --launch <folder>   that folder's launcher: Play with a profile (profiles.py), and Update when a newer
+                                            release is out
     hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
 """
 import os
@@ -25,6 +26,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
+import profiles  # noqa: E402  (the launcher's profiles and save import)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
@@ -65,6 +67,12 @@ def game_ready(folder):
     return linux_update.game_exe(folder) is not None
 
 
+def chosen_profile(folder, cfg=None):
+    """the profile Play starts the game with: the one chosen last, while it is still on the list"""
+    uid = (load_config() if cfg is None else cfg).get("profile", "")
+    return uid if any(uid == p[0] for p in profiles.load(profiles.user_dir(folder))) else profiles.DEFAULT
+
+
 def play(folder):
     """the game, on its own (it outlives this window), from its folder. The launcher already asked about updates."""
     exe = linux_update.game_exe(folder)
@@ -73,6 +81,7 @@ def play(folder):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HOOKSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD"))}
     env.pop("LD_LIBRARY_PATH", None)
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
+    env["HOOKSHOT_PROFILE"] = chosen_profile(folder)
     subprocess.Popen([exe], cwd=folder, env=env, start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -363,12 +372,163 @@ class Builder(tk.Tk):
         ttk.Label(f, text=folder, wraplength=self.px(560)).pack(anchor="w", **self.pad)
         self.launch_status = tk.StringVar(value="Checking for updates...")
         ttk.Label(f, textvariable=self.launch_status, wraplength=self.px(560)).pack(anchor="w", **self.pad)
+        self.show_profile_row(f, folder)
+        # (Play on the right, the default (Enter); Update joins it on its left when there is one. The game folder, rarely
+        # wanted, on the left)
         buttons = ttk.Frame(f)
-        buttons.pack(anchor="e", **self.pad)
+        buttons.pack(fill="x", **self.pad)
+        ttk.Button(buttons, text="Play", default="active", command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
         self.launch_update = ttk.Button(buttons, text="Update", command=lambda: self.begin_update(folder))
-        ttk.Button(buttons, text="Play", command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
-        ttk.Button(buttons, text="Open folder", command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
+        ttk.Button(buttons, text="Open game folder", command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="left", padx=self.px(4))
+        self.bind("<Return>", lambda event: self.play_and_close(folder))
         self.lookup_latest()
+
+    # ---- the launcher's profiles (profiles.py) ----
+    def show_profile_row(self, f, folder):
+        """the profile Play starts the game with, right above Play, with New profile after it. What changes the chosen profile
+        is wanted rarely: it is in the Manage menu, out of Play's way, with Remove last and apart"""
+        self.user = profiles.user_dir(folder)
+        row = ttk.Frame(f)
+        row.pack(fill="x", padx=self.px(12), pady=(self.px(16), self.px(4)))
+        ttk.Label(row, text="Profile").pack(side="left", padx=(self.px(4), self.px(8)))
+        self.profile_box = ttk.Combobox(row, state="readonly", width=24)
+        self.profile_box.pack(side="left")
+        self.profile_box.bind("<<ComboboxSelected>>", lambda event: self.pick_profile())
+        self.profile_menu = tk.Menu(self, tearoff=False)
+        ttk.Menubutton(row, text="Manage", menu=self.profile_menu).pack(side="left", padx=self.px(8))
+        ttk.Button(row, text="New profile...", command=self.new_profile).pack(side="left")
+        self.profile_note = tk.StringVar()   # (what the last action did; empty until then)
+        ttk.Label(f, textvariable=self.profile_note, wraplength=self.px(560)).pack(anchor="w", **self.pad)
+        self.show_profiles(chosen_profile(folder, self.cfg))
+
+    def fill_profile_menu(self):
+        """the Manage menu, naming the profile its actions change"""
+        uid, name = self.current_profile()
+        menu = self.profile_menu
+        menu.delete(0, "end")
+        menu.add_command(label="Rename %s..." % name, command=self.rename_profile)
+        menu.add_command(label="Import a save into %s..." % name, command=self.import_profile_save)
+        menu.add_command(label="Open %s's save folder" % name, command=self.open_profile_folder)
+        menu.add_separator()
+        if uid == profiles.DEFAULT:
+            menu.add_command(label="The default profile cannot be removed", state="disabled")
+        else:
+            menu.add_command(label="Remove %s..." % name, command=self.remove_profile)
+
+    def show_profiles(self, uid):
+        self.profile_list = profiles.load(self.user)
+        ids = [p[0] for p in self.profile_list]
+        self.profile_box.configure(values=[profiles.shown_name(uid, name) for uid, name in self.profile_list])
+        self.profile_box.current(ids.index(uid) if uid in ids else 0)
+        self.pick_profile()
+
+    def pick_profile(self):
+        self.cfg["profile"] = self.current_profile()[0]
+        save_config(self.cfg)
+        self.fill_profile_menu()
+
+    def current_profile(self):
+        index = self.profile_box.current()
+        return self.profile_list[index if 0 <= index < len(self.profile_list) else 0]
+
+    def profile_error(self, error):
+        messagebox.showerror("Hookshot", str(error), parent=self)
+
+    def new_profile(self):
+        from tkinter import simpledialog
+        name = simpledialog.askstring("New profile", "Name of the new profile:", parent=self)
+        if name is None:
+            return
+        try:
+            uid = profiles.add(self.user, name)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(uid)
+        self.profile_note.set("%s has no saves yet: the game starts at an empty file select. Import save... brings one in."
+                              % profiles.clean_name(name))
+
+    def rename_profile(self):
+        from tkinter import simpledialog
+        uid, old = self.current_profile()
+        name = simpledialog.askstring("Rename profile", "New name for %s:" % old, initialvalue=old, parent=self)
+        if name is None:
+            return
+        try:
+            profiles.rename(self.user, uid, name)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(uid)
+
+    def remove_profile(self):
+        uid, name = self.current_profile()
+        if uid == profiles.DEFAULT:
+            return self.profile_error("%s is the default profile and cannot be removed: the game plays it when it is started "
+                                      "without the launcher." % name)
+        if not messagebox.askyesno("Hookshot", "Remove the profile %s?\n\nIts saves are not deleted: they are moved to %s."
+                                   % (name, os.path.join(self.user, "save-backups")), parent=self):
+            return
+        try:
+            moved = profiles.remove(self.user, uid)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(profiles.DEFAULT)
+        self.profile_note.set("Removed %s.%s" % (name, " Its saves are in %s" % moved if moved else ""))
+
+    def open_profile_folder(self):
+        path = profiles.folder_to_show(self.user, self.current_profile()[0])
+        if not path:
+            return self.profile_error("There are no saves yet: the game makes %s at its first start." % self.user)
+        subprocess.Popen(["xdg-open", path])
+
+    def import_profile_save(self):
+        chosen = filedialog.askdirectory(parent=self, initialdir=os.path.expanduser("~"),
+                                         title="The save to import: its folder, or an emulator's save folder")
+        if not chosen:
+            return
+        found = profiles.find_saves(chosen)
+        if not found:
+            return self.profile_error("No save of Ocarina of Time in %s.\n\nChoose the folder with account.sav, option.sav and "
+                                      "slot_00 to slot_05 in it, or an emulator's save folder." % chosen)
+        source = found[0] if len(found) == 1 else self.choose_save(found, chosen)
+        if not source:
+            return
+        uid, name = self.current_profile()
+        if not messagebox.askyesno("Hookshot", "Import this save into the profile %s?\n\n%s\n\nThe profile's saves now, if it "
+                                   "has any, are moved to %s first." % (name, profiles.describe(source, chosen),
+                                                                        os.path.join(self.user, "save-backups")), parent=self):
+            return
+        try:
+            moved = profiles.import_save(source, self.user, uid)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.profile_note.set("Imported into %s.%s" % (name, " Its saves before are in %s" % moved if moved else ""))
+
+    def choose_save(self, found, chosen):
+        """the save to import when the folder has more than one (an emulator's, one for each of its users)"""
+        win = tk.Toplevel(self)
+        win.title("Choose a save")
+        win.transient(self)
+        ttk.Label(win, text="%s has %d saves of the game. Which one?" % (chosen, len(found)), wraplength=self.px(560)).pack(
+            anchor="w", **self.pad)
+        lines = tk.Listbox(win, height=min(len(found), 8), width=90, exportselection=False)
+        for path in found:
+            lines.insert("end", profiles.describe(path, chosen))
+        lines.selection_set(0)
+        lines.pack(fill="both", expand=True, **self.pad)
+        picked = []
+
+        def done(ok):
+            if ok and lines.curselection():
+                picked.append(found[lines.curselection()[0]])
+            win.destroy()
+        buttons = ttk.Frame(win)
+        buttons.pack(anchor="e", **self.pad)
+        ttk.Button(buttons, text="Import", command=lambda: done(True)).pack(side="right", padx=self.px(4))
+        ttk.Button(buttons, text="Cancel", command=lambda: done(False)).pack(side="right", padx=self.px(4))
+        lines.bind("<Double-Button-1>", lambda event: done(True))
+        win.grab_set()
+        self.wait_window(win)
+        return picked[0] if picked else None
 
     def begin_update(self, folder=None):
         if folder is not None:
