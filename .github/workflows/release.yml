@@ -56,8 +56,12 @@ jobs:
       # RELEASE_TOKEN is a fine-grained personal access token with contents: write. It is preferred over GITHUB_TOKEN
       # because a tag pushed by GITHUB_TOKEN does not start the workflows that publish the release.
       # Without the secret, run them by hand and attach their artifacts.
+      # --repository-url is the repository this run belongs to, not the one package.json names. On the upstream
+      # repository the two are the same string and this changes nothing; on a fork they are not, and without it
+      # semantic-release compares the fork's main against *upstream's*, decides it is "behind the remote one", and
+      # publishes nothing while still reporting success. A fork releases its own work.
       - name: semantic-release
         if: steps.first.outputs.released == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: npx semantic-release --repository-url "${{ github.server_url }}/${{ github.repository }}.git"
