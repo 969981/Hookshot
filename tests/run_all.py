@@ -82,6 +82,8 @@ ARGS = {
     "nx2/test_coop_spirv.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_astc_bc_policy.py": ["--cxx", "g++"],
+    "tests/test_opennr_kernels.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
+    "tests/test_opennr_harness.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -114,6 +116,9 @@ for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_type
 #  every platform, so compiling them twice would only mean a second glslang version to keep in step
 #  with the first -- and a version skew between the two is exactly what broke this check once.)
 SKIP["tests/test_fsr3_shaders.py"] = ({"windows"}, "needs glslang: checked on Linux")
+SKIP["tests/test_opennr_kernels.py"] = ({"windows"}, "needs glslang: checked on Linux")
+# (it builds upstream's tool with the system's C++ library and runs it on the GPU, which says SKIP without one)
+SKIP["tests/test_opennr_harness.py"] = ({"windows"}, "builds and runs OpenDLSS-NR's tool: checked on Linux")
 
 
 def which(*names):
