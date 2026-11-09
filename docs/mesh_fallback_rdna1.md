@@ -18,6 +18,7 @@ This page explains how it behaves, why it was broken, and how each problem was f
 | Texture noise after alt-tab on low-VRAM cards | **Working, but further testing needed** |
 | Glowing stems and flowers in Kokiri Forest | **Fixed by upstream PR #759** (a shader translator bug on every GPU, not the fallback; see item 11) |
 | Black hearts, minimap glitch and slow unpause on 4 GB cards | **Working, but further testing needed** (item 12) |
+| Black patch on the Deku Tree's floor, terrain upload stutters on AMD | **Fixed by upstream v2.0.6 commits** (item 13) |
 
 ### The test laptop: low VRAM
 
@@ -317,8 +318,26 @@ space without the driver's count growing. The other rule, which judges pressure 
 still evicts when memory is really short. The VRAM log line says "not squeezed" when this applies.
 `RX_VK_SQUEEZE_ALWAYS=1` restores the old behaviour.
 
-In game: no more black hearts, minimap glitch or slow unpause in the test run. Stutters while walking are unchanged
-(see "Known limits").
+In game: no more black hearts, minimap glitch or slow unpause in the test run. Stutters while walking were unchanged;
+item 13 improved them.
+
+### 13. A black stepped patch on the Deku Tree's floor, and stutters (upstream v2.0.6 fixes)
+
+**Symptom:** inside the Great Deku Tree a large part of the floor turned black, its edge in steps. It came and went
+between runs, and stayed with every fallback draw hidden, so the fallback does not draw it.
+
+**Cause:** two AMD texture paths this branch had from v2.0.5, both fixed upstream in v2.0.6 (tracking issue #1006):
+- **The uneven-BC3 resize (#705)** re-encoded the terrain's 1365x1365x90 material arrays at 1536x1536. Upstream
+  measured 7x the GPU time on an RX 6700 XT with it, and rainbow ground. Here those 57 MB arrays took 80-93 ms to
+  upload, a stutter each time.
+- **BC3 re-encode of ASTC arrays several layers a run** left dark blocks on terrain on AMD.
+
+**Fix:** upstream's two commits, cherry-picked: dc2f4dc (the resize is opt-in again, `RX_VK_UNEVEN_BC=0` turns it
+on) and ec89f92, PR #956 (one layer a run, `RX_VK_BC_LAYERS=<n>` for more).
+
+**In game:** the black patch did not come back, walking is smoother, and the frame rate in the Deku Tree averaged
+about 44 fps (about 26-30 before, though not at the same spot). The trade-off upstream names, thin grid lines at
+terrain seams on AMD, was not seen.
 
 ## Known limits
 
@@ -335,8 +354,8 @@ In game: no more black hearts, minimap glitch or slow unpause in the test run. S
   `RX_VK_MARKERS_V205=1` is not on this branch). None were seen here.
 - **The squeeze fix** (item 12) needs more testing, on other cards too. With less eviction the driver may page VRAM
   to system memory instead. Upstream tracks the wider texture problem on low-VRAM cards as #993.
-- **Stutters while walking** on the 4 GB laptop: some slow texture uploads (60-90 ms) and pipelines made as new
-  things come into view. Not diagnosed yet.
+- **Remaining hitches** on the 4 GB laptop: the 12288x12288 shadow map (288 MB) was once made again and uploaded
+  whole, about 2 s, probably at an area change. Other first-use texture uploads still take up to ~100 ms. Not fixed.
 
 ## Testing and tools
 
