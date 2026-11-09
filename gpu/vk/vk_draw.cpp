@@ -4461,7 +4461,7 @@ struct FallbackBuffers {
     bool ok = false, tried = false;
 };
 thread_local std::unordered_map<const Program*, FallbackBuffers> fallback_buffers;
-thread_local uint32_t fallback_vertex_count = 0;
+thread_local VkBuffer fallback_draw_records = VK_NULL_HANDLE;   // (the last fallback_record's: its header is the draw's command)
 
 uint64_t fallback_buffer_address(VkBuffer buffer) {
     VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -4469,43 +4469,79 @@ uint64_t fallback_buffer_address(VkBuffer buffer) {
     return vkGetBufferDeviceAddress(dev.device, &info);
 }
 
-bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
-    auto& f = fallback_buffers[&p];
-    if (f.ok) {
-        out = &f;
-        return true;
-    }
-    if (f.tried) return false;
-    f.tried = true;
+/// The bytes of a program's record and payload buffers (0: no payload, a mesh program without a task). The records are the
+/// header and a fixed area every program shares, taken a primitive's corners at a time; the payload, a started flag a slot
+/// and a payload a task workgroup
+uint64_t fallback_records_bytes(const Program&) {
+    return (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS + Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4;
+}
+uint64_t fallback_payload_bytes(const Program& p) {
     const uint64_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
-    if (!p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
-    const uint64_t records = capacity * 4 +
-                             capacity * (uint64_t)p.fallback_vertices_per_workgroup * p.fallback_record_words * 4;
-    if (records > (512ull << 20)) return false;
+    const uint64_t threads = std::max(1u, p.fallback_task_threads);
+    return p.fallback_task ? capacity * 4 + (capacity + threads - 1) / threads * (uint64_t)p.fallback_payload_words * 4 : 0;
+}
+
+bool make_fallback_buffers(FallbackBuffers& f, uint64_t records, uint64_t payload) {
+    f.tried = true;
     void* mapped = nullptr;
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (!create_buffer(records, usage, false, f.records, f.records_mem, &mapped)) return false;
+    // (the records' header is the vertex stage's indirect draw)
+    if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
     f.records_address = fallback_buffer_address(f.records);
-    if (p.fallback_task) {
-        const uint64_t payload = capacity * 4 + capacity * (uint64_t)p.fallback_payload_words * 4;
+    if (payload) {
         if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) return false;
         f.payload_address = fallback_buffer_address(f.payload);
     }
     if (!f.records_address) return false;
     f.ok = true;
+    static std::mutex mu;   // (what they hold in all, on every recording thread, at each 64 MB more)
+    std::lock_guard lk(mu);
+    static uint64_t total = 0, told = 0;
+    static int pairs = 0;
+    total += records + payload, pairs++;
+    if (total >> 26 != told) told = total >> 26, logf("vk: fallback: %d buffer pairs, %llu MB", pairs, (unsigned long long)(total >> 20));
+    return true;
+}
+
+// (one pair a recording thread shares between all its programs' draws, which run in its order with a barrier between: a pair
+// per program was 2.2 GB for 95 programs on an RX 5500M's 3.1 GB, the textures were paged out, and the pairs that could no
+// longer be made left their programs out for good (foliage white: its depth pass drawn, its colour pass not). Every
+// program's records fit the shared area; a payload past 8 MB (a task of few threads with a large payload) has its own)
+constexpr uint64_t kFallbackSharedRecords =
+    (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS + Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4;
+constexpr uint64_t kFallbackSharedPayload = 8ull << 20;
+thread_local FallbackBuffers fallback_shared;
+
+bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
+    if (!p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
+    const uint64_t records = fallback_records_bytes(p), payload = fallback_payload_bytes(p);
+    if (records <= kFallbackSharedRecords && payload <= kFallbackSharedPayload) {
+        FallbackBuffers& s = fallback_shared;
+        if (s.ok || (!s.tried && make_fallback_buffers(s, kFallbackSharedRecords, kFallbackSharedPayload))) {
+            out = &s;
+            return true;
+        }
+    }
+    auto& f = fallback_buffers[&p];   // (too big to share, or the shared pair could not be made)
+    if (f.ok) {
+        out = &f;
+        return true;
+    }
+    if (f.tried || records > (512ull << 20)) return false;
+    if (!make_fallback_buffers(f, records, payload)) return false;
     out = &f;
     return true;
 }
 
-bool fallback_compute_pipelines(Program& p) {
-    static std::mutex mu;
-    std::lock_guard lk(mu);
-    if (!p.fallback_compute.empty()) return true;
-    std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
-    bool any = false;
-    for (size_t i = 0; i < p.stages.size(); i++) {
-        const Stage& st = p.stages[i];
+/// The fallback's compute pipelines of a program whose compute_state its caller moved from 0 to 1: made, and the state 2
+/// (its pipelines, or none when the driver refused one). On a worker in play (fallback_compute_pipelines), or in the
+/// precompile before play (precompile_run): AMD took up to 12 s on one, and the door at the start was white until then
+void fallback_build(Program& q) {
+    std::vector<VkPipeline> made(q.stages.size(), VK_NULL_HANDLE);
+    bool any = false, ok = true;
+    for (size_t i = 0; ok && i < q.stages.size(); i++) {
+        const Stage& st = q.stages[i];
         if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT) continue;
         any = true;
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -4515,17 +4551,46 @@ bool fallback_compute_pipelines(Program& p) {
         pin_subgroup(si);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
-        ci.layout = p.layout;
-        if (guarded_compute(pcache, &ci, &made[i]) != VK_SUCCESS) {
-            static std::atomic<int> told{0};
-            if (told++ < 2) logf("vk: fallback: the compute pipeline of %016llx could not be made", (unsigned long long)p.key);
-            return false;
+        ci.layout = q.layout;
+        const auto t0 = std::chrono::steady_clock::now();
+        const VkResult r = guarded_compute(pcache, &ci, &made[i]);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (r != VK_SUCCESS) {
+            logf("vk: fallback: the compute pipeline of %016llx stage %zu could not be made (VkResult %d, %.1f ms; workgroup "
+                 "%ux%ux%u, shared memory %u): python -I scripts/validate_spirv.py <hookshot_programs.bin> --key %016llx",
+                 (unsigned long long)q.key, i, (int)r, ms, q.workgroup[0], q.workgroup[1], q.workgroup[2], q.shared_memory,
+                 (unsigned long long)q.key);
+            ok = false;
+            continue;
         }
+        if (ms >= 200) logf("vk: fallback: the compute pipeline of %016llx stage %zu: SLOW compile, %.0f ms (on a worker)",
+                            (unsigned long long)q.key, i, ms);
         pcache_built_since_save++;
     }
-    if (!any) return false;
-    p.fallback_compute = std::move(made);
-    return true;
+    if (ok && any) q.fallback_compute = std::move(made);
+    else
+        for (VkPipeline pl : made)   // (the stages made before a refused one)
+            if (pl) vkDestroyPipeline(dev.device, pl, nullptr);
+    q.compute_state.store(2, std::memory_order_release);
+}
+
+/// The fallback's compute pipelines, compiled on a worker as compute programs' are (see the dispatch): AMD's compiler took
+/// seconds on each, in the draw, and the screen froze in the first room with foliage. compute_state (unused by a program that
+/// is not compute) is 0 before, 1 while they compile, 2 after; a draw before they are made is left out, and a program the
+/// driver refused stays left out, not asked again each draw.
+bool fallback_compute_pipelines(Program& p) {
+    if (p.compute_state.load(std::memory_order_acquire) == 2) return !p.fallback_compute.empty();
+    int none = 0;
+    if (!p.compute_state.compare_exchange_strong(none, 1)) return false;   // (compiling)
+    { ParLock lk; pcache_init(); }
+    Program* job = &p;
+    auto build = [job] { fallback_build(*job); };
+    // (issue 496: one at a time on Intel, as compute programs are; RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
+    static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
+                                                             : dev.props.vendorID == 0x8086;
+    if (serial) jobs_push_serial(std::move(build));
+    else jobs_push(std::move(build), true);
+    return false;
 }
 
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
@@ -4541,9 +4606,17 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     fallback_records_address = f->records_address;
     const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
     end_pass(cmd);
-    vkCmdFillBuffer(cmd, f->records, 0, (VkDeviceSize)capacity * 4, 0);   // (the slots this draw runs)
-    // (the payloads too: a mesh workgroup the task did not start still runs, and reads its payload's words)
-    if (f->payload) vkCmdFillBuffer(cmd, f->payload, 0, VK_WHOLE_SIZE, 0);
+    full_barrier(cmd);   // (the last fallback draw on these buffers, of any program of this thread, has read them)
+    // (the records' header: the draw's command with no vertices and one instance, the allocator at 0, and the mesh dispatch
+    // with no workgroups, its y and z 1. The records past it need nothing: the draw reaches only those written this time; nor
+    // the payload buffer: the mesh dispatch reads only the map entries and payloads its task wrote)
+    // (fills that do not overlap: two over the same bytes have no order between them without a barrier)
+    static_assert(Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD == 5 && Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS == 8);
+    vkCmdFillBuffer(cmd, f->records, 0, 4, 0);    // (vertexCount)
+    vkCmdFillBuffer(cmd, f->records, 4, 4, 1);    // (instanceCount)
+    vkCmdFillBuffer(cmd, f->records, 8, 16, 0);   // (firstVertex, firstInstance, the allocator, the dispatch's x)
+    vkCmdFillBuffer(cmd, f->records, 24, 8, 1);   // (the dispatch's y and z)
+    fallback_draw_records = f->records;
     full_barrier(cmd);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
     push_constants(cmd, p, nullptr);
@@ -4555,17 +4628,13 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     }
     const bool indirect{d.indirect && mesh_conv_buf != VK_NULL_HANDLE};
     const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
-    // (a task workgroup's slots are wg * threads + thread: those past the buffer are not started)
-    const uint32_t slots{p.fallback_task
-                             ? (uint32_t)std::min<uint64_t>(
-                                   (uint64_t)groups * std::max(1u, p.fallback_task_threads), capacity)
-                             : 0};
     auto send = [&](size_t stage, bool mesh_stage) {
         if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
         if (mesh_stage && p.fallback_task) {
-            if (!slots) return true;
-            vkCmdDispatch(cmd, slots, 1, 1);   // (one workgroup a slot; the task's flags cull those it did not start)
+            // (the mesh workgroups the task workgroups started, as many as they counted into the records' header: direct or
+            // indirect, the CPU need not know the task count. It dispatched groups * threads, 0 for an indirect draw)
+            vkCmdDispatchIndirect(cmd, f->records, (VkDeviceSize)Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD * 4);
         } else if (d.indirect) {
             if (!indirect) {
                 static std::atomic<int> told{0};
@@ -4586,12 +4655,10 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (!send(stages[0], false)) return false;
         full_barrier(cmd);
         if (!send(stages[1], true)) return false;
-        fallback_vertex_count = slots * p.fallback_vertices_per_workgroup;
     } else {
         if (!send(stages[0], true)) return false;
-        fallback_vertex_count = (d.indirect ? capacity : groups) * p.fallback_vertices_per_workgroup;
     }
-    full_barrier(cmd);
+    full_barrier(cmd);   // (the records and the draw's command, which the draw reads as indirect arguments)
     return true;
 }
 } // namespace
@@ -4986,8 +5053,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (stats_query.cmd && gpu_dump_on) stats_query.state = &s, stats_query.prog = p.key;
     }
     if (d.mesh) {
-        if (p.fallback) {   // (hookshot: the generated vertex stage reads the records; one vertex a corner)
-            if (fallback_vertex_count) vkCmdDraw(cmd, fallback_vertex_count, 1, 0, 0);
+        if (p.fallback) {   // (hookshot: the generated vertex stage reads the records; one vertex a corner, as many as taken)
+            vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));
             st_mesh++;
             st_draws++, pass.draws++;
             return;
@@ -5738,30 +5805,32 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     std::unordered_set<uint64_t> wanted;
     for (const auto& n : notes) wanted.insert(n->prog);
-    std::vector<Program*> computes;
+    std::vector<Program*> computes, fallbacks;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
         if (p.compute) computes.push_back(&p);
+        else if (p.fallback) fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute stages too, fallback_build)
     });
-    const size_t total = notes.size() + computes.size();
+    const size_t total = notes.size() + computes.size() + fallbacks.size();
     // (the workers' state on the heap: a start whose last pipelines never finish (two of 4926 on an RX 5700 XT, "stuck at
     // 99%", Discord 11-08) goes on to the game after PRE_STALL_S seconds with no progress, the stragglers left running; it is
     // let go then, never freed. RX_VK_PRECOMPILE_STALL_S=<s>, 0: wait for all, as before)
     struct Pre {
         std::vector<std::unique_ptr<PipeNote>> notes;
-        std::vector<Program*> computes;
+        std::vector<Program*> computes, fallbacks;
         std::atomic<size_t> next{0}, done{0};
         std::mutex mu;
         bool abandoned = false;
     };
-    const size_t graphics_n = notes.size(), computes_n = computes.size();
+    const size_t graphics_n = notes.size(), computes_n = computes.size(), fallbacks_n = fallbacks.size();
     Pre* pre = new Pre;
-    pre->notes = std::move(notes), pre->computes = std::move(computes);
+    pre->notes = std::move(notes), pre->computes = std::move(computes), pre->fallbacks = std::move(fallbacks);
     auto& next = pre->next;
     auto& done = pre->done;
     const auto worker = [pre, total] {
         auto& notes = pre->notes;
         auto& computes = pre->computes;
+        auto& fallbacks = pre->fallbacks;
         for (;;) {
             const size_t i = pre->next++;
             if (i >= total) return;
@@ -5779,8 +5848,13 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 std::lock_guard lk(pre->mu);
                 if (!pre->abandoned) p.compute_pipeline = made;
                 else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (the game went on: it builds its own)
+            } else if (i < computes.size() + fallbacks.size()) {
+                // (a program play has begun to compile meanwhile is left to it: its compute_state is no longer 0)
+                Program& p = *fallbacks[i - computes.size()];
+                int none = 0;
+                if (p.compute_state.compare_exchange_strong(none, 1)) fallback_build(p);
             } else {
-                PipeNote& n = *notes[i - computes.size()];
+                PipeNote& n = *notes[i - computes.size() - fallbacks.size()];
                 const Program* p = program_find(n.prog, n.variant);
                 if (p) {
                     const VkPipeline made = build_graphics(*p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo);
@@ -5825,8 +5899,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         for (std::thread& t : threads) t.join();
         delete pre;
     }
-    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms", programs_n, graphics_n, computes_n,
-         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines, %zu mesh fallback programs in %.0f ms", programs_n,
+         graphics_n, computes_n, fallbacks_n, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built

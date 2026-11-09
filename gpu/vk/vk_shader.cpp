@@ -1836,8 +1836,11 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     std::vector<uint64_t> keys;
     {
         std::lock_guard lk(disk_mu);
+        // (and every mesh program run as compute (kind 4), not only those play has drawn: their compute pipelines, made in play,
+        // took AMD up to 12 s each on first sight, and the foliage and the door drew white until then. The driver's cache makes
+        // them quick from the second start)
         for (const auto& kv : disk_records)
-            if (wanted.count(kv.first) || (!kv.second.empty() && (kv.second[0].kind & 1))) keys.push_back(kv.first);
+            if (wanted.count(kv.first) || (!kv.second.empty() && (kv.second[0].kind & (1 | 4)))) keys.push_back(kv.first);
     }
     std::lock_guard lk(shader_mu);
     size_t n = 0;
