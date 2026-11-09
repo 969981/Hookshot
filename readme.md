@@ -252,19 +252,31 @@ so and the game runs as before. **DLSS preset** picks NVIDIA's model and changes
 
 For one run: `RX_DLSS=0/1`, `RX_DLSS_PRESET=J..M`, `RX_DLSS_DIR=<folder>`, `HOS_OUTPUT_RES=0/1/2`.
 
-### AMD FSR 4.1
+### AMD FSR (FSR 4.1 and FSR 3.1)
 
-FSR 4.1 is optional. It replaces the game's own upscale the same way, from the scene's depth and the camera's motion,
-and moves the 3D by a sub-pixel amount each frame (a jitter) so it can rebuild edges and fine detail over several
-frames. It is for AMD cards: tested on an RX 6700 XT (RDNA 2), which runs FSR 4's INT8 model. On Linux it needs a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`) beside the game.
-**Resolution** sets the size it
-upscales from: 75% is FSR's Quality, 67% Balanced, 50% Performance, 100% anti-aliasing only. Hookshot does not include
-AMD's files: put `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
-[FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
-beside the game's exe (`bin\hookshot.exe` with the launcher). Without them the row says so and the game runs as
-before. The row changes at once; DLSS takes priority while it is on.
+The **FSR upscaler** row replaces the game's own upscale the same way as DLSS, from the scene's depth and the camera's
+motion, and moves the 3D by a sub-pixel amount each frame (a jitter) so it can rebuild edges and fine detail over several
+frames. **Resolution** sets the size it upscales from: 75% is FSR's Quality, 67% Balanced, 50% Performance, 100%
+anti-aliasing only. The row changes at once and DLSS takes priority while it is on.
 
-For one run: `RX_FSR4=0/1`, `RX_FSR4_DIR=<folder>`, `RX_FSR4_JITTER=0` (no jitter, for comparisons).
+- **Auto**: FSR 4.1 when AMD's library is beside the game and has a model for your card (RDNA 2 and 3 use its INT8 model), else
+  the built-in FSR 3.1, else the game's own upscale. The row shows the engine in use, for example `Auto (FSR 3.1)`.
+- **FSR 4.1**: forced. Without the library the row says why and the game's own upscale runs. If FSR 4.1 fails while playing,
+  FSR 3.1 takes over.
+- **FSR 3.1**: forced. Built in from AMD's FidelityFX SDK v1.1.4, it needs no library and needs only Vulkan push
+  descriptors and the storage formats FSR uses, so it can run on RDNA 2 and other cards without FSR 4. It has no machine-learning
+  model: expect less fine detail than FSR 4.1.
+- **Off**: the game's own upscale.
+
+FSR 4.1 needs AMD's files, which Hookshot does not include: `amd_fidelityfx_loader_vk.dll` and
+`amd_fidelityfx_upscaler_vk.dll` from the [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4
+release (`Kits/FidelityFX/signedbin`) beside the game's exe (`bin\hookshot.exe` with the launcher). On Linux it needs a
+Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`) beside the game. FSR 4.1 is for AMD cards: tested on an RX 6700 XT
+(RDNA 2), which runs FSR 4's INT8 model.
+
+For one run: `RX_UPSCALER=off|auto|fsr4|fsr3`, `RX_FSR4_DIR=<folder>`, `RX_FSR4_JITTER=0` (no jitter, for comparisons). Older
+settings keep working: `RX_FSR4=0/1` and `fsr4=` in `hookshot_options.ini` are read as Off/Auto. `RX_UPSCALER` wins over `RX_FSR4`, and
+`upscaler=` in the options file wins over an old `fsr4=`.
 
 ### Controls
 
