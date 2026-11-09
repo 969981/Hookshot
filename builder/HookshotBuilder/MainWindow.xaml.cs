@@ -1207,8 +1207,15 @@ public partial class MainWindow : Window
     void OpenFolder(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{finished}\"") { UseShellExecute = true });
 
+    /// Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile Play
+    /// starts is shown and can be changed (Profiles.cs)
     void Play(object sender, RoutedEventArgs e)
     {
+        if (Profiles.Load(Profiles.UserDir(finished)).Count > 1)
+        {
+            ShowLauncher(finished);
+            return;
+        }
         StartGame(finished);
         WindowState = WindowState.Minimized;
     }

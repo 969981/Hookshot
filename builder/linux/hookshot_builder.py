@@ -231,7 +231,7 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Turns your own copy of Ocarina of Time into a game folder you can start on PC.").grid(
             row=1, column=0, columnspan=3, sticky="w", **self.pad)
         if game_ready(self.cfg.get("out")):
-            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_and_close(self.cfg["out"])).grid(
+            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_or_choose(self.cfg["out"])).grid(
                 row=2, column=0, columnspan=3, sticky="we", **self.pad)
         ttk.Label(f, text="Game files", font=("TkDefaultFont", 10, "bold")).grid(row=3, column=0, sticky="w", **self.pad)
         kinds = ttk.Frame(f)
@@ -589,7 +589,7 @@ class Builder(tk.Tk):
         if mode == "up-to-date":
             folder = os.path.expanduser(self.out.get().strip())
             if game_ready(folder):
-                self.play_and_close(folder)
+                self.play_or_choose(folder)
             return
         if mode == "update-game":
             self.fetched = False
@@ -774,7 +774,7 @@ class Builder(tk.Tk):
                 add_to_menu(folder)
             except OSError:
                 pass
-            ttk.Button(self.buttons, text="Play", command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
+            ttk.Button(self.buttons, text="Play", command=lambda: self.play_or_choose(folder)).pack(side="right", padx=self.px(4))
             ttk.Button(self.buttons, text="Open folder", command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
         else:
             self.stage_text.set("The build stopped: %s" % getattr(self, "error", "see the lines above"))
@@ -784,6 +784,15 @@ class Builder(tk.Tk):
         if self.proc and self.proc.poll() is None:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.error = "Build cancelled. You can start again from the same folder."
+
+    def play_or_choose(self, folder):
+        """Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile
+        Play starts is shown and can be changed"""
+        if len(profiles.load(profiles.user_dir(folder))) > 1:
+            self.launch_folder, self.build_button = folder, None
+            self.show_launch(folder)
+        else:
+            self.play_and_close(folder)
 
     def play_and_close(self, folder):
         play(folder)
