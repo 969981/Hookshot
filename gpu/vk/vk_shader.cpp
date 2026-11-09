@@ -492,6 +492,7 @@ Shader::Profile make_profile() {
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
+    p.support_float32_atomic_add = dev.atomic_float_add;   // (native OpAtomicFAddEXT: eden emit_spirv_atomic.cpp)
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)

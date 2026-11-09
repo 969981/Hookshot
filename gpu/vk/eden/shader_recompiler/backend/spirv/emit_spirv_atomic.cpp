@@ -372,6 +372,17 @@ Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
 
 Id EmitStorageAtomicAddF32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value) {
+    // (hookshot) A native atomic add where the GPU has one (VK_EXT_shader_atomic_float, shaderBufferFloat32AtomicAdd: NVIDIA
+    // since Maxwell, AMD since GCN, Intel Xe). The compare-exchange loop below retries under contention, many invocations adding
+    // to one address, and gives up after its cap: on a Quadro P4000 a 1 ms pass took 20-53 ms in Kakariko and on Death Mountain
+    // Trail, and the fog came out thin because the given-up additions were lost
+    if (ctx.profile.support_float32_atomic_add && ctx.profile.support_descriptor_aliasing) {
+        ctx.AddExtension("SPV_EXT_shader_atomic_float_add");
+        ctx.AddCapability(spv::Capability::AtomicFloat32AddEXT);
+        const Id pointer{StoragePointer(ctx, ctx.storage_types.F32, &StorageDefinitions::F32, binding, offset, sizeof(float))};
+        const auto [scope, semantics]{AtomicArgs(ctx)};
+        return ctx.OpAtomicFAdd(ctx.F32[1], pointer, scope, semantics, value);
+    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     return ctx.OpFunctionCall(ctx.F32[1], ctx.f32_add_cas, base_index, value, ssbo);

@@ -200,6 +200,7 @@ bool create_device() {
         if (flag) want.push_back(name);
     };
     optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, dev.atomic_float);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
@@ -272,6 +273,8 @@ bool create_device() {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     if (dev.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
     if (dev.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afloat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+    if (dev.atomic_float) *tail = &afloat, tail = &afloat.pNext;
     VkPhysicalDeviceFaultFeaturesEXT fault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
@@ -350,6 +353,10 @@ bool create_device() {
     }
     mesh.multiviewMeshShader = mesh.primitiveFragmentShadingRateMeshShader = VK_FALSE;   // (not used)
     dev.mesh_shader = dev.mesh_shader && mesh.meshShader && mesh.taskShader;
+    // (RX_VK_NATIVE_FADD=0: the compare-exchange loops as before; an RX_VK_NATIVE* switch, so the program cache stamp sees it)
+    dev.atomic_float_add = dev.atomic_float && afloat.shaderBufferFloat32AtomicAdd &&
+                           !(getenv("RX_VK_NATIVE_FADD") && atoi(getenv("RX_VK_NATIVE_FADD")) == 0);
+    logf("vk: native float atomic add on buffers: %s", dev.atomic_float_add ? "yes" : "no (compare-exchange loops)");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
     dev.features = f.features;
