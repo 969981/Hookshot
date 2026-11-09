@@ -856,19 +856,6 @@ def main():
     vk_prebuilt = os.environ.get("HOOKSHOT_VK_PREBUILT", "")
     if a.standalone and not a.only and vk_prebuilt:
         print("the Vulkan back end: %s, as built" % vk_prebuilt)
-    # (hookshot) Say what this back end is being built with, because "is DLSS actually in this
-    # release?" has been asked of a build three times and guessed at twice. One line, in the build
-    # log and so in CI's, naming each half. Deliberately outside the branch below:
-    # tests/test_shader_stamp_cache.py execs that branch to check the object keys, and a print
-    # inside it would run six times inside a test that is not about printing.
-    if a.standalone and not a.only:
-        print("vk: DLSS (NGX): %s" % (("compiled in, from " + dlss_sdk_path()) if dlss_sdk_path()
-                                      else "left out (no NGX SDK found; see readme.md)"))
-        print("vk: DLSS 5 neural rendering (Streamline): %s"
-              % (("compiled in, from " + streamline_sdk_path())
-                 if (not LINUX and streamline_sdk_path())
-                 else ("left out: Windows only" if LINUX else
-                       "left out (no Streamline headers found; see readme.md)")))
     elif a.standalone and not a.only and vk_headers and spirv_headers:
         cxx = toolchain.need(toolchain.find("clang++"))
         vk = os.path.join(GPU, "vk")
@@ -880,6 +867,21 @@ def main():
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
         shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
+        # (hookshot) Say what this back end is being built with: "is DLSS actually in this release?"
+        # has been asked of a build three times and guessed at twice, and the answer belongs in the
+        # build log and so in CI's.
+        #
+        # Inside this branch, deliberately. It was put just above it, as its own `if`, to keep it
+        # out of the region tests/test_shader_stamp_cache.py execs -- and that made it the head of
+        # this if/elif chain, so the whole Vulkan build was skipped and a Windows run reported
+        # "compiled in 0s" and produced no DLL. Two printed lines are not worth a branch.
+        print("vk: DLSS (NGX): %s" % (("compiled in, from " + dlss_sdk_path()) if dlss_sdk_path()
+                                      else "left out (no NGX SDK found; see readme.md)"))
+        print("vk: DLSS 5 neural rendering (Streamline): %s"
+              % (("compiled in, from " + streamline_sdk_path())
+                 if (not LINUX and streamline_sdk_path())
+                 else ("left out: Windows only" if LINUX else
+                       "left out (no Streamline headers found; see readme.md)")))
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",

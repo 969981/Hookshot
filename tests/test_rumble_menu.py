@@ -51,8 +51,10 @@ def one_line(text, head):
 FIXTURE = r"""
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
@@ -67,6 +69,9 @@ void sync_preset_budgets(int) {}
 %(stops)s
 %(snap)s
 %(ini_key)s
+/* (the Output resolution row's own stepping, which set_row calls: extracted, not retyped, so a
+    change to the order of the outputs changes this test too) */
+%(outputs)s
 %(set_row)s
 /* (menu_tick's wheel over a value, as in the source) */
 void wheel(Row& d, int amount) {
@@ -122,6 +127,28 @@ int main() {
 """
 
 
+def outputs(menu):
+    """struct Out through step_output_choice: what set_row needs for the Output resolution row.
+
+    set_row calls step_output_choice, which walks kOutputOrder. Without it the fixture did not
+    compile at all ("step_output_choice was not declared in this scope") and this whole test failed
+    for a reason that had nothing to do with rumble.
+    """
+    start = menu.find("struct Out {")
+    if start < 0:
+        raise SystemExit("the menu lost struct Out: this test no longer checks what it says it does")
+    marker = "int step_output_choice(int id, int dir) {"
+    at = menu.find(marker, start)
+    if at < 0:
+        raise SystemExit("the menu lost step_output_choice: set_row's stepping moved")
+    end = menu.index("{", at) + 1
+    depth = 1
+    while depth:
+        depth += (menu[end] == "{") - (menu[end] == "}")
+        end += 1
+    return menu[start:end]
+
+
 def menu_fixture():
     menu = MENU.read_text(encoding="utf-8")
     header = read("gpu", "vk", "vk_menu.h")
@@ -145,6 +172,7 @@ def menu_fixture():
         "stops": one_line(menu, "bool stops_at_ends"),
         "snap": one_line(menu, "int rumble_step"),
         "ini_key": definition(menu, "const char* ini_key"),
+        "outputs": outputs(menu),
         "set_row": definition(menu, "void set_row"),
         "wheel": block(tick, loop),
         "arrow": "bool press[5] = {false, false, false, !right, right}; " + arrow.group(1),
