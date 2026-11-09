@@ -1,4 +1,37 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.7.0
+Date: 09. 11. 2026
+  Features:
+    - Vk: Say why DLSS 5 neural rendering is refused, and the RTX 20-40 route.
+    - Vk: AMD FSR 4 upscaling and frame generation through AMD's runtime.
+    - Microphone input on SDL2 too (the Linux AppImage's).
+    - Microphone input for the ocarina's input streams.
+  Bugfixes:
+    - Release: The Windows release installs the renderer CI built, with DLSS, NR and FSR 4.
+    - Lift: Edit_c in chunks.py, so its tests import without the lift's tools.
+    - Lift: Clear an earlier lift's hot pieces before the patches; count every made and raw output-size place.
+    - Lift: Group page marks after the patches; a missing output-size edit stops the lift.
+    - Builder: Stop when generated source cleanup fails.
+    - Microphone names past 60 bytes, unplugs that keep sending (#937, third review).
+    - Audio: A finished wave buffer reaches the game at the renderer update, not mid-pass.
+    - Audio: 5.1 surround when the default output has it (#1124).
+    - Widescreen: The save picture shows the middle 16:9 on ultrawide (#952).
+    - Preserve NUP member names during implicit reads.
+    - Vk: No mirror is made inside a parallel replay's segment (an earlier segment read it unfilled).
+    - Vk: A draw that waits for its pipeline runs the build at once if it is still queued.
+    - Vk: Keep the last sRGB UNORM surface format, so drivers that list only sRGB keep theirs.
+    - Vk: Linux/Wayland: take an sRGB surface format for the swapchain.
+    - Vulkan: Release modules from rejected cache records.
+    - Vulkan: Preserve guest mip levels in partial clears.
+    - The microphone retry path (#937, second review).
+    - Of two microphones with one name, the one chosen opens.
+    - Contain pipeline cache save allocation failures.
+    - The microphone review's points (#937).
+  Optimizations:
+    - Stream sampled profiles instead of loading every line.
+    - Lift: One page mark per straight-line group of stores through a base register.
+    - Fpx: Keep the hardware result for FMUL/FMLA S when the flags are already set.
+---------------------------------------------------------------------------------------------------
 Version: 2.6.4
 Date: 09. 11. 2026
   Bugfixes:
