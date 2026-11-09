@@ -199,7 +199,15 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
-    optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    // (hookshot) the Mesh shader fallback row's On: the fallback on a GPU with mesh shaders too, which are then not turned on
+    // (Lichii #814: native task and mesh draws hang AMD's RX 6000 and newer, on Windows and Linux)
+    const bool has_mesh = has_extension(exts, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    if (opts.mesh_fallback == 2) {
+        dev.mesh_shader = false;
+        if (has_mesh) logf("vk: mesh shaders present, not used: Mesh shader fallback is On in the Insert menu");
+    } else {
+        optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    }
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
@@ -357,7 +365,8 @@ bool create_device() {
     dev.mesh_shader = dev.mesh_shader && mesh.meshShader && mesh.taskShader;
     // (hookshot, issue 640) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
-    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    // (the Insert menu's Mesh shader fallback: Auto (0) only here, Off (1) never, On (2) also with mesh shaders, left off above)
+    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && opts.mesh_fallback != 1 && !getenv("RX_VK_NO_MESH_FALLBACK");
     if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
@@ -685,16 +694,28 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
     if (!dev.mesh_shader && !dev.mesh_fallback && !getenv("RX_VK_NO_MESH_WARNING")) {
-        // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
-        // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
-        // (a GPU with no buffer device addresses has no fallback to run either)
-        logf("vk: this GPU has no mesh shaders: the game's foliage, grass and many effects cannot be drawn");
+        // (the game draws its foliage, grass and many effects with mesh shaders. A GPU without them runs those as compute shaders
+        // (dev.mesh_fallback, issue 640), which needs buffer device addresses: said only when that cannot run either (a GPU or
+        // driver without them), or it was turned off. Without either, those draws are left out and the picture is broken (an
+        // RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on)
+        const bool by_menu = opts.mesh_fallback == 1, turned_off = by_menu || getenv("RX_VK_NO_MESH_FALLBACK") != nullptr;
+        logf("vk: this GPU has no mesh shaders and %s: the game's foliage, grass and many effects cannot be drawn",
+             by_menu      ? "Mesh shader fallback is Off in the Insert menu"
+             : turned_off ? "the compute fallback is turned off (RX_VK_NO_MESH_FALLBACK)"
+                          : "no buffer device addresses for the compute fallback");
 #ifdef _WIN32
-        std::thread([name = std::string(dev.props.deviceName)] {
-            const std::string text = "Your graphics card (" + name + ") or its driver has no mesh shader support, which Ocarina of Time "
-                "uses for foliage, grass and many effects, so parts of the picture will be missing or broken.\n\nHookshot needs a GPU "
-                "with mesh shaders: NVIDIA GeForce RTX 20 series or newer, AMD Radeon RX 6000 series or newer, or Intel Arc. If your "
-                "card is one of those, update its driver.";
+        std::thread([name = std::string(dev.props.deviceName), turned_off, by_menu] {
+            const std::string how = by_menu ? "Set Mesh shader fallback (Insert menu, Graphics) to Auto and restart the game"
+                                            : "Remove the RX_VK_NO_MESH_FALLBACK environment variable and start the game again";
+            const std::string text =
+                turned_off
+                    ? "Your graphics card (" + name + ") has no mesh shader support, and Hookshot's workaround for that is turned "
+                      "off, so Ocarina of Time's foliage, grass and many effects will be missing or broken.\n\n" + how +
+                      " to draw them."
+                    : "Your graphics card (" + name + ") or its driver supports neither mesh shaders, which Ocarina of Time uses for "
+                      "foliage, grass and many effects, nor the Vulkan feature Hookshot's workaround for them needs (buffer device "
+                      "addresses, Vulkan 1.2). Parts of the picture will be missing or broken.\n\nUpdate the graphics driver: most "
+                      "cards that run Vulkan 1.2 get the feature with a current driver, and then the workaround draws them.";
             MessageBoxA(nullptr, text.c_str(), "Hookshot: graphics card", MB_OK | MB_ICONWARNING | MB_TOPMOST);
         }).detach();
 #endif

@@ -91,6 +91,10 @@ const char* tx_robust(int v) {
     static const char* t[] = {"Auto (restart)", "Off (restart)", "On (restart)"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
+const char* tx_mesh_fallback(int v) {
+    static const char* t[] = {"Auto (restart)", "Off (restart)", "On (restart)"};
+    return (unsigned)v < 3 ? t[v] : t[0];
+}
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -134,7 +138,7 @@ void apply_preset(int p) {
 }
 
 Row rows[] = {
-    // Graphics (11 rows)
+    // Graphics (12 rows)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
@@ -160,6 +164,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
      "Off can be faster on some NVIDIA cards. Applies after restart."},
+    {TAB_GRAPHICS, "Mesh shader fallback", &opts.mesh_fallback, 0, 2, 1, tx_mesh_fallback,
+     "Draws the foliage and effects made with mesh shaders through compute shaders instead. Auto: only on cards without mesh "
+     "shaders. On: on every card (try it if an AMD RX 6000 or newer hangs). Off: never. Applies after restart."},
 
     // Gameplay (3 rows)
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
@@ -997,6 +1004,7 @@ void menu_tick() {
             } else {
                 *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
                 if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
+                    r.value != &opts.mesh_fallback &&   // (hookshot: not the preset's; it kept the Minimum preset's VRAM caps)
                     r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
                     r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
                     opts.preset = 0; // Custom
