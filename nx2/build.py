@@ -29,6 +29,7 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -41,6 +42,7 @@ import rtgen
 import logo_rgba
 import toolchain
 import version
+import win_manifest
 
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
@@ -60,6 +62,45 @@ SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
 VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
 
+
+def check_vk_symbols(so):
+    """The back end is dlopened with RTLD_NOW, so one unresolved symbol stops the whole thing
+    loading -- and the only sign of that at run time is "the renderer did not start: the window
+    stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
+    leave symbols for its loader to supply, which is exactly what the host executable does for the
+    weak hos_* ones.
+
+    So: anything still undefined here that is not weak and not the C or C++ runtime's is a mistake,
+    and this says which. It has caught two, each of which had cost a run apiece to find by hand: a
+    host function referenced without __attribute__((weak)), and an `extern` of one of our own
+    globals written inside an anonymous namespace, which makes a different symbol that nothing
+    defines.
+    """
+    nm = shutil.which("nm") or shutil.which("llvm-nm")
+    if not nm:
+        return True   # (not a reason to fail a build; the check is a guard, not a dependency)
+    try:
+        out = subprocess.run([nm, "-D", "--undefined-only", so], capture_output=True, text=True,
+                             check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return True
+    bad = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "U":   # ("w" is weak: the host supplies those, or does not)
+            continue
+        name = parts[1]
+        if "@GLIBC" in name or "@CXXABI" in name or "@GLIBCXX" in name or "@GCC" in name:
+            continue
+        bad.append(name)
+    if not bad:
+        return True
+    print("%s has %d unresolved symbol(s); it would not load:" % (os.path.basename(so), len(bad)))
+    for name in bad[:20]:
+        print("    " + name)
+    print("  a host function wants __attribute__((weak)); one of our own globals wants an extern at")
+    print("  namespace scope, not inside an anonymous namespace")
+    return False
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
@@ -833,6 +874,7 @@ def main():
                            ["-o", exe, toolchain.link_opt("/map:" + exe[:-4] + ".map"), toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
                            ([toolchain.link_opt("/nodefaultlib:clang_rt.profile.lib")] if PGO == "gen" else []) +
                            ([os.path.join(kit.WORK, "hookshot.res")] if os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +   # (nx2/make_icon.py)
+                           [win_manifest.write(os.path.join(out, "hookshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)
                            ([toolchain.link_opt("/subsystem:windows"), toolchain.link_opt("/entry:mainCRTStartup")] if os.environ.get("RX_RELEASE") == "1" else []) +   # (no console window)
                            ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if wgpu else []) +
                            ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
@@ -889,6 +931,8 @@ def main():
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
             print("%s link FAILED, %d undefined symbols" % (VK_LIB, len(undefined)))
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
+            return 1
+        if LINUX and not check_vk_symbols(vdll):
             return 1
         print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
     if a.dll and not a.only:
