@@ -155,6 +155,36 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
+## The options file
+
+`hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
+case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
+`gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=3`,
+`microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
+the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
+number is not the obvious one:
+
+| Key | Values |
+|---|---|
+| `quality_preset` | 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+) |
+| `gpu_device` | 0 Auto, n the n-th card with Vulkan 1.3 as the row lists them |
+| `frame_generation` | 0 Off, 2 to 8 the multiplier |
+| `resolution` | 0 Auto, 1 100%, 2 75%, 3 67%, 4 50% |
+| `output_res` | 0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080 |
+| `upscaling` | 0 Off, 1 Catmull-Rom, 2 Lanczos |
+| `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y` | percent |
+| `mouse_sensitivity` | hundredths: 100 is 1.00 |
+| `robust_buffers` | 0 Auto (on), 1 Off, 2 On |
+| `game_speed` | 0 Per frame, 1 Real time |
+| `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
+| `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
+| `mouse_camera` | 0 As the stick, 1 Native |
+| `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |
+
+The other rows are 0 Off and 1 On. Some are read at the start, before the menu exists, by the code that needs them:
+`handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`
+(`gpu/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
+
 ## Layout
 
 | Path | What |
