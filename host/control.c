@@ -339,7 +339,7 @@ static struct {
     const HosControlGame *game;
     int mem_level;   /* 0 off, 1 ro, 2 rw (HOS_CONTROL_MEM) */
     MemReq mems[CTL_MEM];
-    char path[1024], shots_dir[1040];
+    char path[1024], base_dir[1040], shots_dir[1060];   /* base_dir: relative shot paths and shots/ (with its separator) */
     ctl_mutex mu;     /* inputs, shot results: the controller's read and the shot writer take it */
     Input inputs[CTL_INPUTS];
     int next_group, next_token, shot_count;
@@ -570,8 +570,8 @@ static int64_t deadline_arg(const JDoc *d, int req, double fallback, int *bad) {
 
 /* ---- inputs: buttons by the names HOS_INPUT_SCRIPT uses (nn_hid.c), the Switch's bit order (vk_api.h HOS_SW_*) ---- */
 static const struct { const char *name; int bit, axis, dir; } NAMES[] = {
-    {"A", 0}, {"B", 1}, {"X", 2}, {"Y", 3}, {"LS", 4}, {"RS", 5}, {"L", 6}, {"R", 7}, {"ZL", 8}, {"ZR", 9},
-    {"PLUS", 10}, {"MINUS", 11}, {"LEFT", 12}, {"UP", 13}, {"RIGHT", 14}, {"DOWN", 15},
+    {"A", 0, 0, 0}, {"B", 1, 0, 0}, {"X", 2, 0, 0}, {"Y", 3, 0, 0}, {"LS", 4, 0, 0}, {"RS", 5, 0, 0}, {"L", 6, 0, 0}, {"R", 7, 0, 0}, {"ZL", 8, 0, 0}, {"ZR", 9, 0, 0},
+    {"PLUS", 10, 0, 0}, {"MINUS", 11, 0, 0}, {"LEFT", 12, 0, 0}, {"UP", 13, 0, 0}, {"RIGHT", 14, 0, 0}, {"DOWN", 15, 0, 0},
     {"LUP", -1, 1, 1}, {"LDOWN", -1, 1, -1}, {"LLEFT", -1, 0, -1}, {"LRIGHT", -1, 0, 1},
     {"RUP", -1, 3, 1}, {"RDOWN", -1, 3, -1}, {"RLEFT", -1, 2, -1}, {"RRIGHT", -1, 2, 1}};
 
@@ -946,13 +946,10 @@ static void cmd_shot(int ci, const JDoc *d, int req, const char *id) {
     char full[1100], err[300] = "";
     int bad = 0;
     if (path && *path) {
-        /* (a relative path is the socket's folder's, not the game's: the game runs in its own folder) */
+        /* (a relative path is the run folder's (the socket's), not the game's: the game runs in its own folder) */
         if (path_absolute(path)) snprintf(full, sizeof full, "%s", path);
         else {
-            snprintf(full, sizeof full, "%s", G.path);
-            char *slash = strrchr(full, CTL_SEP);
-            if (slash) slash[1] = 0;
-            else full[0] = 0;
+            snprintf(full, sizeof full, "%s", G.base_dir);
             if (strlen(full) + strlen(path) + 1 > sizeof full) return reply_error(c, id, "bad_request", "path: too long");
             strcat(full, path);
         }
@@ -1594,7 +1591,19 @@ static char pipe_name[1100];
 static HANDLE listen_pipe = INVALID_HANDLE_VALUE;
 static OVERLAPPED listen_ov;
 static SECURITY_ATTRIBUTES pipe_sa;
-static int first_instance = 1;
+static int first_instance = 1, listen_connected;   /* listen_connected: the client came before ConnectNamedPipe was asked */
+/* (a refused client's instance, its "busy" reply written: closed a little later, so the reply is read before the instance
+   goes. The same for quit's reply below) */
+static HANDLE lingering[CTL_CONNS];
+static int64_t linger_until[CTL_CONNS];
+static void linger(HANDLE h) {
+    for (int i = 0; i < CTL_CONNS; i++)
+        if (!lingering[i]) {
+            lingering[i] = h, linger_until[i] = ctl_now_ns() + 2000000000;
+            return;
+        }
+    CloseHandle(h);
+}
 
 static int pipe_security(void) {   /* a DACL with the current user alone */
     HANDLE token;
@@ -1622,9 +1631,12 @@ static int pipe_listen(void) {
     first_instance = 0;
     if (!listen_ov.hEvent) listen_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     ResetEvent(listen_ov.hEvent);
-    if (ConnectNamedPipe(listen_pipe, &listen_ov)) SetEvent(listen_ov.hEvent);
-    else if (GetLastError() == ERROR_PIPE_CONNECTED) SetEvent(listen_ov.hEvent);
-    else if (GetLastError() != ERROR_IO_PENDING) return CloseHandle(listen_pipe), listen_pipe = INVALID_HANDLE_VALUE, 0;
+    listen_connected = 0;
+    if (!ConnectNamedPipe(listen_pipe, &listen_ov)) {
+        const DWORD e = GetLastError();
+        if (e == ERROR_PIPE_CONNECTED) listen_connected = 1, SetEvent(listen_ov.hEvent);
+        else if (e != ERROR_IO_PENDING) return CloseHandle(listen_pipe), listen_pipe = INVALID_HANDLE_VALUE, 0;
+    }
     return 1;
 }
 static int transport_open(const char *path) {
@@ -1646,7 +1658,11 @@ static void conn_read_start(int ci) {
 static void conn_close(int ci) {
     Conn *c = &G.conns[ci];
     conn_gone(ci);
-    if (c->reading) CancelIoEx(c->pipe, &c->rov);
+    if (c->reading) {   /* (the read's OVERLAPPED and buffer are this Conn's: the cancel finishes before they go) */
+        DWORD n;
+        CancelIoEx(c->pipe, &c->rov);
+        GetOverlappedResult(c->pipe, &c->rov, &n, TRUE);
+    }
     DisconnectNamedPipe(c->pipe);
     CloseHandle(c->pipe);
     CloseHandle(c->rov.hEvent);
@@ -1669,7 +1685,12 @@ static void conn_write(Conn *c) {   /* (blocking, two seconds at most: the bridg
     c->out.n -= wrote;
     if (c->out.n > CTL_OUT_MAX || c->out.failed) c->closing = 1;
 }
-static void conn_flush_now(Conn *c) { conn_write(c); }
+static DWORD WINAPI flush_main(void *h) { FlushFileBuffers((HANDLE)h); return 0; }
+static void conn_flush_now(Conn *c) {   /* (quit: written, then read by the client before the process ends, a second at most) */
+    conn_write(c);
+    HANDLE t = c->closing ? NULL : CreateThread(NULL, 0, flush_main, c->pipe, 0, NULL);
+    if (t) WaitForSingleObject(t, 1000), CloseHandle(t);
+}
 static void transport_wait(int ms) {
     HANDLE events[CTL_CONNS + 1];
     int idx[CTL_CONNS + 1], n = 0;
@@ -1682,11 +1703,23 @@ static void transport_wait(int ms) {
     const int k = (int)(w - WAIT_OBJECT_0);
     if (idx[k] < 0) {   /* a client: its own instance, and a new one to wait for the next */
         DWORD unused;
-        const BOOL connected = GetOverlappedResult(listen_pipe, &listen_ov, &unused, FALSE) || GetLastError() == ERROR_PIPE_CONNECTED;
+        const BOOL connected = listen_connected || GetOverlappedResult(listen_pipe, &listen_ov, &unused, FALSE);
         int slot = -1;
         for (int i = 0; i < CTL_CONNS && slot < 0; i++)
             if (!G.conns[i].used) slot = i;
-        if (!connected || slot < 0) {
+        if (connected && slot < 0) {   /* (said, then closed: a closed server end keeps what it wrote readable) */
+            static const char full[] = "{\"id\":null,\"ok\":false,\"error\":\"busy\",\"message\":\"too many clients\"}\n";
+            OVERLAPPED ov;
+            memset(&ov, 0, sizeof ov);
+            ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+            DWORD wrote = 0;
+            if (!WriteFile(listen_pipe, full, sizeof full - 1, NULL, &ov) && GetLastError() == ERROR_IO_PENDING &&
+                WaitForSingleObject(ov.hEvent, 200) != WAIT_OBJECT_0)
+                CancelIoEx(listen_pipe, &ov);
+            GetOverlappedResult(listen_pipe, &ov, &wrote, TRUE);
+            CloseHandle(ov.hEvent);
+            linger(listen_pipe);
+        } else if (!connected) {
             DisconnectNamedPipe(listen_pipe);
             CloseHandle(listen_pipe);
         } else {
@@ -1716,6 +1749,9 @@ static void transport_flush(void) {
         if (c->used && c->out.n && !c->closing) conn_write(c);
         if (c->used && c->closing) conn_close(i);
     }
+    const int64_t now = ctl_now_ns();
+    for (int i = 0; i < CTL_CONNS; i++)
+        if (lingering[i] && now >= linger_until[i]) CloseHandle(lingering[i]), lingering[i] = NULL;
     if (listen_pipe == INVALID_HANDLE_VALUE) pipe_listen();
 }
 #endif
@@ -1745,18 +1781,25 @@ int hos_control_serve(const char *path, const HosControlGame *game) {
     G.game = game;
     G.started_ns = ctl_now_ns();
     snprintf(G.path, sizeof G.path, "%s", path);
-    snprintf(G.shots_dir, sizeof G.shots_dir, "%s", path);
-    {   /* shots/ in the socket's folder */
-        char *slash = strrchr(G.shots_dir, CTL_SEP);
+    {   /* the run folder: the socket's own (Linux); a pipe has none, so a folder of this user's in the temporary folder,
+           named after the pipe (Windows) */
 #ifdef _WIN32
-        snprintf(slash ? slash + 1 : G.shots_dir, sizeof G.shots_dir - (slash ? (size_t)(slash + 1 - G.shots_dir) : 0), "shots");
-        if (!strncmp(path, "\\\\.\\pipe\\", 9) || !strchr(path, '\\')) {   /* (a pipe has no folder: the game's) */
-            snprintf(G.shots_dir, sizeof G.shots_dir, "control_shots");
-            G.path[0] = 0;
-        }
+        const char *name = !strncmp(path, "\\\\.\\pipe\\", 9) ? path + 9 : path;
+        char tmp[MAX_PATH + 1];
+        const DWORD n = GetTempPathA(sizeof tmp, tmp);
+        snprintf(G.base_dir, sizeof G.base_dir, "%.*shookshot-control-", (int)(n && n < sizeof tmp ? n : 0), tmp);
+        size_t k = strlen(G.base_dir);
+        for (const char *q = name; *q && k + 2 < sizeof G.base_dir; q++)   /* (a pipe name may hold characters a folder cannot) */
+            G.base_dir[k++] = isalnum((unsigned char)*q) || *q == '-' || *q == '_' || *q == '.' ? *q : '_';
+        G.base_dir[k++] = '\\', G.base_dir[k] = 0;
+        CreateDirectoryA(G.base_dir, NULL);
 #else
-        snprintf(slash ? slash + 1 : G.shots_dir, sizeof G.shots_dir - (slash ? (size_t)(slash + 1 - G.shots_dir) : 0), "shots");
+        snprintf(G.base_dir, sizeof G.base_dir, "%s", path);
+        char *slash = strrchr(G.base_dir, '/');
+        if (slash) slash[1] = 0;
+        else G.base_dir[0] = 0;
 #endif
+        snprintf(G.shots_dir, sizeof G.shots_dir, "%sshots", G.base_dir);
     }
     G.state = S_BOOT;
     G.mem_level = hos_control_mem_level(getenv("HOS_CONTROL_MEM"));

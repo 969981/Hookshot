@@ -151,7 +151,7 @@ step's end.
 
 **shot**: a PNG of the first present after the request, or after frame `after`. It is 1280x720, as `RX_VK_SHOTS`
 writes them. `path` defaults to `shots/shot_<n>_f<frame>.png` in the socket's folder (made 0700). A relative path is
-taken from the socket's folder, not the game's. A shot is the game's own picture: the Insert menu and the FPS counter, drawn over it on the way to the window, are not in it. The file is written whole under another name, then renamed, so the
+taken from the socket's folder, not the game's (on Windows, where a pipe has no folder, from `%TEMP%\hookshot-control-<pipe name>\`, which also holds `shots\`). A shot is the game's own picture: the Insert menu and the FPS counter, drawn over it on the way to the window, are not in it. The file is written whole under another name, then renamed, so the
 path in the reply is complete. The `timeout` default is 30 s. Shots need the Vulkan renderer.
 
 ```
@@ -297,7 +297,13 @@ Each command prints plain lines; `--json` prints the replies. `--sock` overrides
 when done, 1 for an error reply, 2 when there is no game or the usage is bad, and 3 for a timeout. `launch --data`
 sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME=VALUE` adds switches.
 
-## Not tested
+## Tests and what is not tested
 
-The Windows named pipe (`host/control.c`'s `_WIN32` half) is written to the same protocol, but no Windows build or run
-has tested it yet. The tests here run the Unix socket.
+`tests/test_control.py` builds the bridge with a fake game and drives it over its real transport: the Unix socket on
+Linux, the named pipe on Windows (the CI's windows-2022 runner). On Windows it also checks the pipe's access control:
+another first instance of the name and a second bridge on it are refused, and the DACL, read back through a client's
+handle, is protected with a single ACE for the current user. `tests/test_hookshot_ctl.py` drives the client against a
+fake bridge on the same transports.
+
+Not tested: refusing remote clients (`PIPE_REJECT_REMOTE_CLIENTS`; that needs a second machine), `hookshot_ctl.py
+launch` on Windows, and the bridge inside a Windows game build (only the Linux game was run).

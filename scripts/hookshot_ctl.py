@@ -48,8 +48,16 @@ class Bridge:
         try:
             if WINDOWS:
                 name = path if path.startswith("\\\\.\\pipe\\") else "\\\\.\\pipe\\" + path
-                self.pipe = open(name, "r+b", buffering=0)
                 self.sock = None
+                deadline = time.monotonic() + timeout
+                while True:   # (the bridge keeps one instance waiting: a busy pipe is waited for)
+                    try:
+                        self.pipe = open(name, "r+b", buffering=0)
+                        break
+                    except OSError as e:
+                        if getattr(e, "winerror", 0) != 231 or time.monotonic() > deadline:   # ERROR_PIPE_BUSY
+                            raise
+                        time.sleep(0.02)
             else:
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 self.sock.settimeout(timeout)
@@ -79,7 +87,9 @@ class Bridge:
                     self.sock.settimeout(left)
                     chunk = self.sock.recv(65536)
                 else:
-                    chunk = self.pipe.read(1)   # (a pipe opened as a file: no timeout on Windows)
+                    chunk = self._pipe_read(left)
+                    if chunk is None:
+                        continue
             except socket.timeout:
                 raise Failed("no answer from the game in %.0f s" % timeout, 3)
             except OSError:
@@ -89,6 +99,24 @@ class Bridge:
             self.pending += chunk
         text, self.pending = self.pending.split(b"\n", 1)
         return json.loads(text.decode("utf-8", "replace"))
+
+    def _pipe_read(self, left):
+        """(Windows) what the pipe holds, after waiting up to `left` seconds for some: None for nothing yet, b"" when the
+        bridge's end closed. PeekNamedPipe and then a read of only what is there: a read that blocks would hold the
+        handle's writes too (one synchronous handle)"""
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(self.pipe.fileno())
+        avail = ctypes.c_ulong(0)
+        end = time.monotonic() + min(left, 0.05)
+        while True:
+            if not ctypes.windll.kernel32.PeekNamedPipe(ctypes.c_void_p(handle), None, 0, None, ctypes.byref(avail), None):
+                return b""
+            if avail.value:
+                return self.pipe.read(avail.value)
+            if time.monotonic() >= end:
+                return None
+            time.sleep(0.002)
 
     def request(self, cmd, timeout=None, **args):
         """The reply to one request (events that come meanwhile are dropped)"""

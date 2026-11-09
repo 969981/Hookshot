@@ -20,18 +20,64 @@ CTL = ROOT / "scripts" / "hookshot_ctl.py"
 FAKE = r'''
 import json, os, socket, sys, threading, time
 path = os.environ["HOS_CONTROL"]
-log = open(os.path.join(os.path.dirname(path), "requests.jsonl"), "a", buffering=1)
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
-srv.listen(4)
+log = open(os.environ["FAKE_LOG"], "a", buffering=1)
 frame = [100]
+if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a connection, read then write, never both at once
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateNamedPipeW.restype = wintypes.HANDLE
+    k.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID]
+    for f in (k.ConnectNamedPipe, k.ReadFile, k.WriteFile, k.FlushFileBuffers, k.CloseHandle):
+        f.restype = wintypes.BOOL
+    name = path if path.startswith("\\\\.\\pipe\\") else "\\\\.\\pipe\\" + path
+    class Conn:
+        def __init__(self, h):
+            self.h, self.buf = h, b""
+        def __iter__(self):
+            while True:
+                while b"\n" not in self.buf:
+                    chunk, n = ctypes.create_string_buffer(65536), wintypes.DWORD(0)
+                    if not k.ReadFile(self.h, chunk, 65536, ctypes.byref(n), None) or not n.value:
+                        return
+                    self.buf += chunk.raw[:n.value]
+                line, self.buf = self.buf.split(b"\n", 1)
+                yield line
+        def write(self, data):
+            n = wintypes.DWORD(0)
+            k.WriteFile(self.h, data, len(data), ctypes.byref(n), None)
+        def flush_and_exit(self):
+            k.FlushFileBuffers(self.h)   # (the reply read before the process and its pipe go)
+            os._exit(0)
+    def accept():
+        h = k.CreateNamedPipeW(name, 3, 0, 255, 65536, 65536, 0, None)   # (duplex, byte mode, waiting)
+        if not k.ConnectNamedPipe(h, None) and ctypes.get_last_error() != 535:   # ERROR_PIPE_CONNECTED
+            k.CloseHandle(h)
+            return None
+        return Conn(h)
+else:
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(4)
+    class Conn:
+        def __init__(self, c):
+            self.f = c.makefile("rwb", buffering=0)
+        def __iter__(self):
+            return iter(self.f)
+        def write(self, data):
+            self.f.write(data)
+        def flush_and_exit(self):
+            os.unlink(path)
+            os._exit(0)
+    def accept():
+        return Conn(srv.accept()[0])
 def ticker():
     while True:
         time.sleep(0.01)
         frame[0] += 1
 threading.Thread(target=ticker, daemon=True).start()
-def serve(c):
-    f = c.makefile("rwb", buffering=0)
+def serve(f):
     for raw in f:
         req = json.loads(raw)
         log.write(json.dumps(req) + "\n")
@@ -67,8 +113,7 @@ def serve(c):
             continue
         elif cmd == "quit":
             f.write((json.dumps(dict(r, quitting=True)) + "\n").encode())
-            os.unlink(path)
-            os._exit(0)
+            f.flush_and_exit()
         elif cmd == "release":
             r.update(released=2)
         else:
@@ -77,8 +122,9 @@ def serve(c):
         f.write(b'{"event":"present","sub":0,"frame":1,"fps":60,"state":"play"}\n')
         f.write((json.dumps(r) + "\n").encode())
 while True:
-    c, _ = srv.accept()
-    threading.Thread(target=serve, args=(c,), daemon=True).start()
+    c = accept()
+    if c:
+        threading.Thread(target=serve, args=(c,), daemon=True).start()
 '''
 
 
@@ -89,38 +135,61 @@ def ctl(*args, env=None, check=None):
     return r
 
 
-@unittest.skipIf(os.name == "nt", "a Unix socket")
+WINDOWS = os.name == "nt"
+
+
 class HookshotCtl(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory(prefix="ctl-", dir="/tmp" if os.path.isdir("/tmp") else None)
+        cls.tmp = tempfile.TemporaryDirectory(prefix="ctl-", dir=None if WINDOWS or not os.path.isdir("/tmp") else "/tmp")
         cls.dir = cls.tmp.name
-        cls.game = os.path.join(cls.dir, "game")
-        os.mkdir(cls.game)
-        exe = os.path.join(cls.game, "hookshot")
-        with open(exe, "w") as f:
-            f.write("#!%s -I\n%s" % (sys.executable, FAKE))
-        os.chmod(exe, 0o755)
-        # (launch: the stand-in started as the game folder's executable, its socket in the run folder)
-        cls.run_dir = os.path.join(cls.dir, "run")
-        r = ctl("--json", "launch", cls.game, "--run", cls.run_dir, "--headless", "--timeout", "20", check=0)
-        cls.info = json.loads(r.stdout)
-        cls.sock = cls.info["socket"]
+        cls.log = os.path.join(cls.dir, "requests.jsonl")
+        os.environ["FAKE_LOG"] = cls.log   # (the stand-in's environment, through launch or directly)
+        if WINDOWS:
+            # (launch starts a game folder's hookshot.exe, which a script cannot stand in for: the stand-in is started
+            # here, on a pipe of its own; launch is tested on Linux)
+            fake = os.path.join(cls.dir, "fake.py")
+            with open(fake, "w") as f:
+                f.write(FAKE)
+            cls.sock = "hookshot-control-test-%d" % os.getpid()
+            cls.proc = subprocess.Popen([sys.executable, "-I", fake], env=dict(os.environ, HOS_CONTROL=cls.sock))
+            cls.info = {"pid": cls.proc.pid}
+            for _ in range(200):   # (until it answers)
+                if ctl("--sock", cls.sock, "status").returncode == 0:
+                    break
+                time.sleep(0.05)
+        else:
+            cls.game = os.path.join(cls.dir, "game")
+            os.mkdir(cls.game)
+            exe = os.path.join(cls.game, "hookshot")
+            with open(exe, "w") as f:
+                f.write("#!%s -I\n%s" % (sys.executable, FAKE))
+            os.chmod(exe, 0o755)
+            # (launch: the stand-in started as the game folder's executable, its socket in the run folder)
+            cls.run_dir = os.path.join(cls.dir, "run")
+            r = ctl("--json", "launch", cls.game, "--run", cls.run_dir, "--headless", "--timeout", "20", check=0)
+            cls.info = json.loads(r.stdout)
+            cls.sock = cls.info["socket"]
         cls.env = dict(os.environ, HOS_CONTROL=cls.sock)
 
     @classmethod
     def tearDownClass(cls):
         try:
-            os.kill(cls.info["pid"], 9)
+            if WINDOWS:
+                cls.proc.kill()
+                cls.proc.wait()
+            else:
+                os.kill(cls.info["pid"], 9)
         except OSError:
             pass
         cls.tmp.cleanup()
 
     def last(self, cmd):
-        with open(os.path.join(self.run_dir, "requests.jsonl")) as f:
+        with open(self.log) as f:
             reqs = [json.loads(line) for line in f]
         return [r for r in reqs if r["cmd"] == cmd][-1]
 
+    @unittest.skipIf(WINDOWS, "launch starts a game folder's hookshot.exe")
     def test_launch(self):
         self.assertEqual(self.sock, os.path.join(self.run_dir, "control.sock"))
         self.assertEqual(os.stat(self.run_dir).st_mode & 0o777, 0o700)
@@ -199,6 +268,10 @@ class HookshotCtl(unittest.TestCase):
     def test_zz_quit(self):   # (last: the stand-in ends)
         r = ctl("quit", env=self.env, check=0)
         self.assertEqual(r.stdout.strip(), "quitting")
+        if WINDOWS:
+            self.assertEqual(self.proc.wait(timeout=10), 0)
+            self.assertIn("no game listens", ctl("status", env=self.env, check=2).stderr)   # (the pipe gone)
+            return
         for _ in range(100):
             if not os.path.exists(self.sock):
                 break
