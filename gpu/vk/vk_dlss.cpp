@@ -22,6 +22,7 @@
 #include <cstring>
 
 #include "vk_dlss.h"
+#include "vk_menu.h"   // (the Insert menu's "Scene upscaler" row)
 #include "vk_paths.h"   // (game_module_path: where the model library sits, which NGX is told)
 
 #if defined(RX_VK_DLSS_SDK)
@@ -45,7 +46,13 @@ constexpr bool kHaveSdk = false;
 /// `RX_VK_DLSS=1` asks for this backend. Off is the default and costs nothing: with it off nothing
 /// is loaded, nothing is made and `supported()` is false before it looks at anything else.
 bool wanted() {
-    static const bool yes = getenv("RX_VK_DLSS") && atoi(getenv("RX_VK_DLSS")) != 0;
+    // RX_VK_DLSS wins where it is set; otherwise the Insert menu's "Scene upscaler" row. Read once,
+    // and read early -- the device extensions are asked for before the device exists -- so a change
+    // applies after a restart, which the row says.
+    static const bool yes = []() {
+        if (const char* e = getenv("RX_VK_DLSS")) return atoi(e) != 0;
+        return opts.scene_upscaler == 2;
+    }();
     return yes;
 }
 

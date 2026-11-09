@@ -44,6 +44,7 @@
 #include "upscale_seam.h"
 #include "vk_camera_motion.h"
 #include "vk_dlss.h"
+#include "vk_menu.h"   // (the Insert menu's "Scene upscaler" row)
 #include "vk_fsr3.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -5672,7 +5673,12 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // hardware f16 matrix multiply taau_key defaults to "-", so the network runs as itself and the
     // stand-in never does; gating everything on it would have made FSR unreachable on exactly the
     // hardware that can run it. RX_VK_FSR=1 therefore brings us in here on its own.
-    static const bool fsr_wanted = getenv("RX_VK_FSR") && atoi(getenv("RX_VK_FSR")) != 0;
+    // RX_VK_FSR wins where it is set, so a test run is not at the mercy of a saved ini; otherwise
+    // the Insert menu's "Scene upscaler" row decides. Read once: the backends cache what they are.
+    static const bool fsr_wanted = []() {
+        if (const char* e = getenv("RX_VK_FSR")) return atoi(e) != 0;
+        return opts.scene_upscaler == 1;
+    }();
     // (hookshot) Both vendor backends ask their own question: FSR whether this device can run its
     // passes, DLSS whether this is an NVIDIA driver reporting Super Resolution with an NGX runtime
     // loaded. Each answers once and caches, so this costs nothing per dispatch. upscale::choose

@@ -46,6 +46,14 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_scene_upscaler(int v) {
+    static const char* t[] = {"The game's own", "FSR 3.1", "DLSS"};
+    return t[v];
+}
+const char* tx_framegen_by(int v) {
+    static const char* t[] = {"Renderer", "DLSS"};
+    return t[v];
+}
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
@@ -141,6 +149,12 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11."},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
+    {TAB_GRAPHICS, "Scene upscaler", &opts.scene_upscaler, 0, 2, 1, tx_scene_upscaler,
+     "Which network resolves the 3D scene to its full size. The game's own is what it shipped with. FSR 3.1 runs anywhere; "
+     "DLSS needs an NVIDIA card, its runtime beside the game, and a build made with the NGX SDK. Applies after a restart."},
+    {TAB_GRAPHICS, "Made frames by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+     "What makes the frames between the game's own. Renderer blends the last two. DLSS uses the scene's depth and motion and "
+     "the same requirements as DLSS upscaling; where it cannot run, the renderer's own takes over. Applies after a restart."},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts."},

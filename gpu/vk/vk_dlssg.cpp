@@ -1,5 +1,6 @@
 // (hookshot) DLSS Frame Generation: gpu/vk/vk_dlssg.h says what it is for and where it slots in.
 #include "vk_dlssg.h"
+#include "vk_menu.h"   // (the Insert menu's "Made frames by" row)
 
 #include <algorithm>
 #include <cstdlib>
@@ -32,11 +33,16 @@ constexpr uint32_t kMaxMade = 3;   ///< (DLSS 4's multi-frame generation: up to 
 /// game's. Off is the default and costs nothing.
 uint32_t asked() {
     static const uint32_t n = []() -> uint32_t {
-        const char* e = getenv("RX_VK_DLSSG");
-        if (!e || !*e) return 0;
-        const int v = atoi(e);
-        if (v <= 0) return 0;
-        return (uint32_t)std::min(v, (int)kMaxMade);
+        if (const char* e = getenv("RX_VK_DLSSG"); e && *e) {
+            const int v = atoi(e);
+            return v <= 0 ? 0u : (uint32_t)std::min(v, (int)kMaxMade);
+        }
+        // Otherwise the Insert menu: "Made frames by" picks DLSS, and "Frame generation" says how
+        // many frames there are to make -- one fewer than the multiplier, since the last of each
+        // set is the game's own frame.
+        if (opts.framegen_by != 1) return 0;
+        const int made = std::clamp(opts.framegen - 1, 0, (int)kMaxMade);
+        return (uint32_t)made;
     }();
     return n;
 }
