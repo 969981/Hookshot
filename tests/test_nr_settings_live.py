@@ -168,7 +168,7 @@ def check_backend_live(path):
 ROWS = {
     # row name: (lo, hi)
     "Neural rendering": (0, 1),
-    "Backend": (0, 2),     # Auto, Streamline, NGX direct (vk_dlssnr_ngx.h)
+    "Backend": (0, 3),     # Auto, Streamline, NGX direct, Open (OpenDLSS-NR) (vk_dlssnr_ngx.h)
     "Model": (0, 3),
     "Style": (0, 2),       # Default, Natural, Cinematic -- three, not eight
     "Preset": (0, 7),      # Default, then A..G

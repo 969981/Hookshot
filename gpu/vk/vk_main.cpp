@@ -25,6 +25,7 @@
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_streamline.h"
+#include "vk_opennr.h"   // (hookshot: open neural rendering's extensions, only when it is the selected backend)
 #include "vk_dlss.h"
 #include "vk_reflex.h"
 #include "vk_progress.h"
@@ -274,6 +275,7 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    opennr::device_extensions(want, exts);   // (hookshot: open neural rendering's, vk_opennr.cpp; nothing unless selected)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
@@ -423,6 +425,7 @@ bool create_device() {
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
+    opennr::device_features(tail);   // (hookshot: the network's matrix, float8 and CUDA launch features, when selected)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
@@ -530,6 +533,7 @@ bool create_device() {
     streamline::attach_device(dev.instance, dev.physical, dev.device, dev.queue_family, sl_queues);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    opennr::device_created();   // (hookshot: whether open neural rendering can run here, said in the log)
     reflex_device_created();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};

@@ -54,7 +54,7 @@ void shutdown();
 
 namespace mkwvk::nr {
 
-enum Backend : int { AUTO = 0, STREAMLINE = 1, NGX = 2 };
+enum Backend : int { AUTO = 0, STREAMLINE = 1, NGX = 2, OPEN = 3 };   // (OPEN: OpenDLSS-NR, gpu/vk/vk_opennr.h)
 
 /// Whether this build can offer neural rendering at all: Streamline's headers (Windows) or an NGX SDK.
 [[nodiscard]] bool built();

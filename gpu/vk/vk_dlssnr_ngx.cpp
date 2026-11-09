@@ -2,6 +2,7 @@
 // the parameter names come from (openNR, MIT). Everything that touches NGX is inside HOOKSHOT_NGX; the stubs at the bottom
 // of the first namespace are what a build without an NGX SDK compiles, and `nr::` dispatches either way.
 #include "vk_dlssnr_ngx.h"
+#include "vk_opennr.h"   // (the Backend row's fourth value)
 
 #include <atomic>
 #include <cstdio>
@@ -597,22 +598,29 @@ void shutdown() {}
 
 namespace mkwvk::nr {
 
-bool built() { return dlssnr::built_with_sdk() || dlssnr_ngx::built_with_sdk(); }
+// (the open backend, OpenDLSS-NR, is in every build: so is the Neural tab)
+bool built() { return true; }
 
 int asked_backend() {
     // Live, every call, like the switch: the row changes the next frame.
     if (const char* e = getenv("RX_VK_DLSS_NR_BACKEND"); e && *e) {
         if (!strcmp(e, "streamline") || !strcmp(e, "1")) return STREAMLINE;
         if (!strcmp(e, "ngx") || !strcmp(e, "2")) return NGX;
+        if (!strcmp(e, "open") || !strcmp(e, "3")) return OPEN;
         return AUTO;
     }
-    return opts.nr_backend == STREAMLINE || opts.nr_backend == NGX ? opts.nr_backend : AUTO;
+    if (const char* e = getenv("RX_VK_NR_BACKEND"); e && !strcmp(e, "open")) return OPEN;
+    return opts.nr_backend >= STREAMLINE && opts.nr_backend <= OPEN ? opts.nr_backend : AUTO;
 }
 
 int running_backend() {
     const int b = asked_backend();
     if (b != AUTO) return b;
     if (streamline::nr_available()) return STREAMLINE;
+    // (NGX direct where it can run; the open network where the device was made for it, which it is when a model folder
+    // was there at the start; else NGX direct, whose refusal says why)
+    if (dlssnr_ngx::built_with_sdk() && !*dlssnr_ngx::why()) return NGX;
+    if (opennr::ready()) return OPEN;
     return dlssnr_ngx::built_with_sdk() ? NGX : STREAMLINE;
 }
 
@@ -621,13 +629,16 @@ VkImage apply(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, VkImag
     const int b = running_backend();
     if (b != told && nr_settings().on) {
         told = b;
-        logf("vk: DLSS 5 neural rendering through %s (Backend: %s)", b == NGX ? "NGX directly" : "Streamline",
-             asked_backend() == AUTO ? "Auto" : b == NGX ? "NGX direct" : "Streamline");
+        logf("vk: DLSS 5 neural rendering through %s (Backend: %s)",
+             b == NGX ? "NGX directly" : b == OPEN ? "OpenDLSS-NR" : "Streamline",
+             asked_backend() == AUTO ? "Auto" : b == NGX ? "NGX direct" : b == OPEN ? "Open" : "Streamline");
     }
+    if (b == OPEN) return opennr::apply(cmd, src, sw, sh, out_view);
     return b == NGX ? dlssnr_ngx::apply(cmd, src, sw, sh, out_view) : dlssnr::apply(cmd, src, sw, sh, out_view);
 }
 
 const char* why() {
+    if (running_backend() == OPEN) return opennr::why();
     if (running_backend() == NGX) {
         if (!dlssnr_ngx::built_with_sdk()) return "Not available: this build has no NGX SDK, so no NGX direct (readme).";
         return dlssnr_ngx::why();

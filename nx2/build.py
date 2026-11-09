@@ -261,6 +261,35 @@ def vk_sources():
     return sorted(out)
 
 
+def opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps):
+    """(hookshot) Open neural rendering (gpu/vk/vk_opennr.h): OpenDLSS-NR's host sources and the adapter around them,
+    as deliberate jobs rather than through vk_sources(). Upstream's files are compiled from a copy in gen_dir with the
+    portability patches of scripts/opennr_kernels.py (third_party stays upstream's, byte for byte); its PTX kernels are
+    generated there from its Python generators and embedded as gen_dir/opennr_ptx.h. Returns the jobs, the bytes
+    vk_opennr.cpp depends on (the PTX header) and the PTX kernel count; ([], b"", 0) without the vendored folder."""
+    root = os.path.join(kit.HERE, "..")
+    adapter = os.path.join(vk, "opennr")
+    if not os.path.isdir(os.path.join(root, "third_party", "opendlss-nr", "src")) or not os.path.isdir(adapter):
+        return [], b"", 0
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("opennr_kernels", os.path.join(root, "scripts", "opennr_kernels.py"))
+    kernels = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kernels)
+    src = str(kernels.prepare_sources(os.path.join(gen_dir, "opendlss-nr", "src")))
+    ptx = os.path.join(gen_dir, "opennr-ptx")
+    kernels.generate_ptx(ptx)
+    header = os.path.join(gen_dir, "opennr_ptx.h")
+    count = kernels.write_ptx_header(ptx, header)
+    # (upstream's <volk.h> is the shim in gpu/vk/opennr, so it goes first; VK_NV_cuda_kernel_launch is a beta extension)
+    flags = vflags + ["-DVK_ENABLE_BETA_EXTENSIONS", "-I" + adapter, "-I" + src]
+    deps = vdeps + tree_headers(src)
+    jobs = [(cxx, os.path.join(src, f), os.path.join(obj_dir, "vk_opennr_upstream_" + f[:-4] + ".o"), flags, deps)
+            for f in kernels.RENDERER_SOURCES]
+    jobs += [(cxx, os.path.join(adapter, f), os.path.join(obj_dir, "vk_opennr_" + f[:-4] + ".o"), flags, deps)
+             for f in sorted(os.listdir(adapter)) if f.endswith(".cpp")]
+    return jobs, open(header, "rb").read(), count
+
+
 def cpm_dirs():
     """CPM packages: RX_CPM, packaged tools/cpm, then legacy project caches.
     The packages provide Vulkan and SPIR-V headers, VMA and FFmpeg."""
@@ -868,6 +897,9 @@ def main():
                                    os.path.join(GPU, "compat"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
                              os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+        opennr, opennr_ptx, opennr_count = opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps)
+        print("vk: open neural rendering (OpenDLSS-NR): %s" % (("compiled in, %d PTX kernels" % opennr_count) if opennr
+                                                               else "left out (no third_party/opendlss-nr)"))
         for src in vk_sources():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
@@ -875,7 +907,9 @@ def main():
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) in ngx_files else []),
-                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
+                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"") +
+                            (opennr_ptx if os.path.basename(src) == "vk_opennr.cpp" else b"")))
+        vk_jobs += opennr
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)

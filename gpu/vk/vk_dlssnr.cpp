@@ -5,6 +5,7 @@
 #include "vk_dlssnr.h"
 
 #include "vk_menu.h"
+#include "vk_opennr.h"   // (hookshot: the open backend, which every build has)
 #include "vk_streamline.h"
 
 #if defined(RX_VK_STREAMLINE) && defined(_WIN32)

@@ -139,14 +139,16 @@ const char* tx_nr_style(int v) {
 }
 // (hookshot) Which path NVIDIA's model is reached by (vk_dlssnr_ngx.h): the same model and the same rows either way.
 const char* tx_nr_backend(int v) {
-    static const char* t[] = {"Auto", "Streamline", "NGX direct"};
-    return t[std::min(std::max(v, 0), 2)];
+    static const char* t[] = {"Auto", "Streamline", "NGX direct", "Open (OpenDLSS-NR)"};
+    return t[std::min(std::max(v, 0), 3)];
 }
 const char* hn_nr_backend(int v, int variant) {
     static char b[96];
-    if (variant >= 0) return variant == 0 ? "Auto: running through NGX directly." : nullptr;   // (the longest)
+    if (variant >= 0) return variant == 0 ? "Auto: running through OpenDLSS-NR, the open network." : nullptr;   // (the longest)
     if (v != nr::AUTO) return nullptr;
-    snprintf(b, sizeof b, "Auto: running through %s.", nr::running_backend() == nr::NGX ? "NGX directly" : "Streamline");
+    const int r = nr::running_backend();
+    snprintf(b, sizeof b, "Auto: running through %s.", r == nr::NGX ? "NGX directly" : r == nr::OPEN ? "OpenDLSS-NR, the open network"
+                                                                                       : "Streamline");
     return b;
 }
 const char* tx_nr_preset(int v) {
@@ -659,10 +661,10 @@ Row rows[] = {
      "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
      "Needs an NVIDIA RTX card and NVIDIA's model file (readme.md; Backend says how it is reached); the rows below are the model's own "
      "settings and do nothing while this is Off.", hn_nr},
-    {TAB_NEURAL, "Backend", &opts.nr_backend, 0, 2, 1, tx_nr_backend,
-     "How the game reaches NVIDIA's model. Auto uses Streamline where its files are beside the game and it accepts this "
-     "GPU, and NGX directly otherwise -- always, on Linux. NGX direct needs nvngx_dlssnr.dll in the game folder's ngx "
-     "folder (readme.md). The rows below apply to whichever runs.", hn_nr_backend},
+    {TAB_NEURAL, "Backend", &opts.nr_backend, 0, 3, 1, tx_nr_backend,
+     "What runs the model. Streamline and NGX direct are NVIDIA's runtime; Open is OpenDLSS-NR, an open Vulkan network "
+     "that reads a model folder you supply (nr-model in the game folder). Auto takes Streamline, then NGX direct, then "
+     "Open where a model folder is there. The rows below apply to whichever runs (readme.md).", hn_nr_backend},
     {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
      "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
      "own default. Streamline 2.14's plugin ignores this one -- it is sent correctly and a later NVIDIA release is "

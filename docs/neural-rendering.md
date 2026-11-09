@@ -203,6 +203,147 @@ Not measured here: the patched DLLs through *Streamline* on *Vulkan*. Every repo
 say `AdapterUnsupported` with a signed-off DLL and the override on, and the answer is the NGX-direct path for feature 18
 (above, the Backend row's NGX direct) -- which is also the one that would bring NR to Linux.
 
+## The open backend (OpenDLSS-NR)
+
+A third way to run the same network, beside Streamline and NGX direct: **[OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR)**
+(MIT, Copyright 2026 maan), a Vulkan reimplementation of the DLSS-NR 310.8.0 network that its author proves bit-exact
+against NVIDIA's at all 75 block boundaries. It is vendored unmodified in `third_party/opendlss-nr` (its
+`PROVENANCE.md` says what and from which commit) and runs on the renderer's own device: no NVIDIA runtime, no DLL, no
+Streamline, and so **natively on Linux**. `gpu/vk/vk_opennr.cpp` is the backend; `gpu/vk/opennr/` is the layer around
+upstream's code (its Vulkan shim, the network behind a small interface); `scripts/opennr_kernels.py` makes its kernels.
+
+Selected with `RX_VK_NR_BACKEND=open` for now, and switched on like the others by the Neural rendering row or
+`RX_VK_DLSS_NR=1`. When the Backend row lands it becomes that row's fourth value (the one `MERGE:` line in
+`vk_opennr.cpp`). Other switches: `RX_VK_OPENNR_MODEL=<dir>`, `RX_VK_OPENNR_ROUTE=fast|glsl|reference`,
+`RX_VK_OPENNR_TEMPORAL=0`, and upstream's own `DLSS5VK_*` switches, which its kernels read as they always do.
+
+### What the player must supply, and what Hookshot does not do
+
+**The weights.** The network reads a model directory -- `manifest.json` and its eleven stage files under `model/`, in
+the layout of upstream's `docs/weights.md` -- and nothing public produces one. **Hookshot includes no weights and
+provides no way to get them**: nothing here extracts, converts or downloads model data, and nothing reads any NVIDIA
+binary. The player puts their own directory in `nr-model` beside the game, or names it with `RX_VK_OPENNR_MODEL`. It is
+checked the way upstream's loader checks it -- every stage file's length and SHA-256 against the manifest, every
+tensor inside its stage, the 71-block network and no other -- on a thread of its own, since hashing 141 MiB takes
+a while; until it is done, and without one, frames go to the window untouched. Without a model the log says
+`open NR: no usable model: ...` with the path it looked in, and the row's hint says the player has to supply one.
+Whatever licence covers the data a player uses is theirs to respect; upstream says the same.
+
+**The GPU**, today: an NVIDIA card whose driver has `VK_KHR_cooperative_matrix`, `VK_NV_cooperative_matrix2` (all
+seven of its features) and `VK_EXT_shader_float8`. With `VK_NV_cuda_kernel_launch` as well the fast route runs
+(upstream's PTX kernels, counter-chained); without it the GLSL kernels run alone, which give the same bytes. The
+extensions are asked for only when this backend is selected (`vk_main.cpp`, three hooks), and what is missing is named
+in the log.
+
+### The frame
+
+Same place and contract as the Streamline backend: over the finished frame at display size, before the menu, into the
+frame's own command buffer (`present_image`, through `dlssnr::apply`; and, with no window, in the headless present
+path, so a headless run exercises it). The window's frame is blitted into an RGBA8 copy, and two passes of ours
+surround the network (`gpu/vk/shaders/opennr_pre.comp`, `opennr_post.comp`, following upstream's `docs/frame.md`):
+
+- **in**: the sixteen lanes -- Gaussian noise hashed from the padded pixel, the frame centred
+  (`f16((f16(c) - 0.5) * 0.125)`), the previous output reprojected (or the frame again without a history), the five
+  conditioning scalars. The frame is already a display image, so it is its own proxy: no paper white, no shoulder.
+  Outside the frame the field is a mirrored copy, as upstream pads it;
+- **the network**: recorded once per frame size into a secondary command buffer and executed every frame. Nothing is
+  allocated per frame; a new size rebuilds the graph with the device idle;
+- **out**: `clamp(proxy + rgb / 4)`, the temporal blend by the head's own logit times the model's
+  `blend_scale`, the next history truncated to half, then the style operator and the intensity blend.
+
+**Temporal or single-frame: temporal**, with the scene's camera-only motion (`vk_camera_motion.h`) where there is a
+scene; `RX_VK_OPENNR_TEMPORAL=0` is single-frame (lanes 7-9 a copy of the frame, a fixed noise seed, no blend). The
+motion is the 3D scene's at its render size, so the HUD gets the scene's motion under it -- wrong for the HUD, and left
+to the network's per-pixel blend logit to reject, which is what upstream's demo leaves disocclusion to as well. A camera
+that did not move gets zero motion rather than a motion pass, because `camera_motion::record` answers a repeated matrix
+with the target it last wrote (a moving frame's). Made frames of frame generation go through it like any other. How
+well any of this looks is unmeasured (below).
+
+**The Neural tab's rows**, against what the network actually takes:
+
+| row | what it becomes here |
+| --- | --- |
+| Neural rendering | on / off, live |
+| Style | lane 10 (`style / 128`) **and** upstream's post-blend style operator (Natural, Cinematic), as its demo does |
+| Local tone | lane 11, and the style operator's strength |
+| Local structure | lane 12 (or lanes 12-14 with Auto mask) |
+| Skin structure | lane 13, with Auto mask only (as in NVIDIA's runtime: without it the lane is -1) |
+| Auto mask | which form the structure / skin / mask triple of lanes 12-14 takes |
+| Intensity | the blend back toward the frame after the network; not a network input |
+| Global tone | **no counterpart**: the network has five conditioning scalars and this is not one (Streamline 2.14 ignores it too) |
+| Preset | **no counterpart**: there is one network, the model directory's; NVIDIA's presets pick among networks |
+| Model (Performance ... DLAA) | **no counterpart**: the network has no quality modes and always runs at the frame's size |
+
+### What was measured, and what was not
+
+There are no real weights on any machine this was built on, so **image quality and real-frame timing are not
+measured**. What was measured is that the integration computes exactly what OpenDLSS-NR computes, with
+`scripts/opennr_harness.py` (and `tests/test_opennr_harness.py`, its quick form; it says SKIP without the GPU). It
+builds upstream's own `dlss5vk` tool from the vendored sources with Hookshot's clang, the same shim and portability
+patch, and the kernels the renderer ships, then runs it on a **synthetic model directory** (deterministic E4M3
+values in exactly the manifest layout, scaled so the activations stay alive through all 71 blocks, which the harness
+checks) and a synthetic frame. Measured on an RTX 5060 Ti (Blackwell), driver 615.71.09, Linux:
+
+- **Every route bit-exact with every other**, by upstream's own `parity` checker, on all 75 block boundaries and the
+  head, at 384x256, 1280x720 and 2048x1152 (the last the game's default output size): the GLSL reference route
+  (unfused, with every PTX family off and the PTX folder empty, so it provably launched none) as the references;
+  upstream's `DLSS5VK_UNFUSED=1` alone; the default fast route (PTX + counter chaining); the PTX route with barriers;
+  the fused GLSL route. Each also repeatable over three submissions, and the barrier and chained schedules identical.
+- **Except when the activations get large.** With the synthetic decoder's weights 6-12% stronger (the harness's
+  `OPENNR_SYNTH_GAIN_DECODER` at 0.85 or 0.9 instead of 0.8, decoder activations at an rms of 60-190 rather than
+  under 10) the fused routes stopped agreeing with the unfused reference at 1280x720 and 2048x1152 -- from block 58
+  for the fused GLSL kernels alone at 0.85, from blocks 40-45 for every fused route at 0.9 -- while they still agreed
+  with each other at 384x256. Not root-caused. An f16 overflow inside a fused kernel, handled differently from the
+  unfused kernels' publications, fits (the fused GLSL head carried NaNs at 0.9), but that is a guess. Whether real
+  weights ever drive the network there is unknown; it is the first thing to look at if a real model's routes disagree.
+- **Block 0 against upstream's CPU reference (`src/reference.cpp`) does NOT match as shipped**: every tensor-core
+  kernel differs by an ulp in a quarter to a half of its values (the window normalize, which uses no tensor cores,
+  matches). Upstream's reference models Ada's tensor cores -- an FP8 m16n8k32 step as two fixed-point groups of 16
+  products with 13 fractional bits, an FP16 m16n8k16 step as two groups of 8 with 24. **This Blackwell card does each
+  step as one group**: with the reference changed to one group of 32 FP8 products and one of 16 FP16 products (the
+  harness builds both; the group width and the fraction bits are the only change), every kernel of block 0 matches
+  exactly -- all 122,880 rows at 384x256 and 262,144 rows at 1280x720. The FP16 group needed at least 25 fractional
+  bits; the FP8 group 19 passed 20,000 rows and failed 3 values in 8.4 million at 720p, 20 and 24 passed, so the
+  harness uses 24. More bits could not be told apart on this data. Upstream's CPU reference covers block 0 only; at
+  2048x1152 the CPU check was not run here (upstream's `verify` ran out of VRAM beside another game on the GPU).
+- What that means: on Blackwell, OpenDLSS-NR is not bit-exact with upstream's captures, which were made on Ada; the
+  same `mma.sync` instruction rounds differently on the two. Whether it is bit-exact with NVIDIA's own runtime on
+  Blackwell (whose kernels run that instruction too) cannot be checked without captures from it.
+- **In the game** (headless, the synthetic model, 2560x1440 frames, field 2560x1472): after the model check (a couple
+  of seconds, off the display thread) it loads in about a second, then runs end to end -- 4,000-5,400 presents a run into
+  gameplay, no device loss, no chained-wait timeout. The log's GPU time for the whole pass (copy, input, network,
+  output) was 24-43 ms a frame on average and 20-35 ms at the least per 300 frames, over two runs; those stamps bracket the pass in a
+  command buffer that overlaps the game's own work, and another game was running on the same GPU at the time, so
+  they are an upper bound, not a cost. The harness measured the network alone at 2.5-5.6 ms at 384x256, 6-13 ms at
+  1280x720 and 23-31 ms at 2048x1152 (minimum of three, across runs) (fast route; also with that other game running). Upstream measured 12.6 ms at
+  2560x1440 on an RTX 4070 SUPER. With the synthetic weights the picture is saturated noise, as it should be; with
+  Intensity at 0 the same pipeline gives back the game's frame unchanged, which checks the copy and the passes.
+- Not measured: image quality, the temporal path's behaviour on real content, real-weight timing, Windows, and
+  robust buffer access's cost (the renderer turns it on by default, device-wide; upstream measured ~15% for it).
+
+VRAM: the model's raw tensors and their re-laid-out matrices, the activations of the field, and a 256 MiB host-visible
+staging buffer that upstream's context keeps.
+
+### An AMD route
+
+The kernel layer is separate (`gpu/vk/opennr/opennr_net.h` is the seam: a device in, a features buffer and a head
+buffer out), so an AMD port replaces what is behind it and keeps the frame passes, the model check and the menu
+wiring. What it needs:
+
+- **`VK_KHR_cooperative_matrix` instead of `VK_NV_cooperative_matrix2`**: upstream's GLSL GEMMs use coopmat2's
+  workgroup scope, flexible dimensions, reductions and tensor addressing; they have to be rewritten for subgroup-scope
+  KHR matrices of the sizes the driver lists. **No PTX** and no `VK_NV_cuda_kernel_launch`: the GLSL route is the
+  whole of it, so counter chaining (PTX-only, and relying on NVIDIA's launch order) goes too.
+- **FP8 on RDNA 4** (`VK_EXT_shader_float8` with E4M3 cooperative matrices), and **an FP16 path on RDNA 3**, which has
+  no FP8: E4M3 weights and activations widened to half, with the E4M3 publications kept as explicit roundings so the
+  network's arithmetic is the same.
+- **Subgroup size 32**: upstream's fragment layouts assume it and AMD defaults to 64 (the renderer already pins 32
+  where it can, `vk_main.cpp`).
+- **Its own numerics model**: as Blackwell already differs from Ada, AMD's matrix units will round their own way.
+  The harness's references come from the GLSL reference route and its CPU check takes an MMA model, so the port is
+  checked the same way -- against the GLSL route on NVIDIA for the boundaries, and against a CPU model of its own
+  arithmetic for block 0 -- and will at best be close to NVIDIA's bytes, not equal to them.
+
 ## On AMD
 
 What exists for neural rendering on an AMD card, as of November 2026, and what of it can be used here:
@@ -213,9 +354,8 @@ What exists for neural rendering on an AMD card, as of November 2026, and what o
 - **[OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR)** (MIT) is a Vulkan reimplementation of the 310.8.0
   network, bit-exact block by block. Its kernels need `VK_NV_cooperative_matrix2` and `VK_NV_cuda_kernel_launch` (the
   fast path is PTX), so it is NVIDIA-only as it stands, and it reads the weights from a model directory that "nothing in
-  this repository produces". An AMD port means rewriting its GEMMs for `VK_KHR_cooperative_matrix` with
-  `VK_EXT_shader_float8` (RDNA 4) or an FP16 fallback (RDNA 3), and a way for the player to get the weights out of their
-  own `nvngx_dlssnr.dll`. That is a project of its own, and it is the most promising one.
+  this repository produces". It is now Hookshot's third backend (below, "The open backend"); what an AMD port of it
+  needs is in that section. The model directory stays the player's to supply on AMD as on NVIDIA.
 - **AMD's own machine-learning upscaler is now here**: FSR 4, on the Upscaler row (`docs/upscaling.md`).
 
 ## What is still unproven

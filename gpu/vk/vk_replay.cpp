@@ -2663,6 +2663,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         dump_present(presents);
         if (src && (dev.offscreen || shots) && offscreen_init()) {
             if (dev.offscreen) {
+                // (hookshot) Neural rendering here too, as present_image does it: with no window (HOS_HEADLESS) present_image
+                // is never reached, and a headless run is how a backend is driven into a scene and measured
+                VkImageView nr_view = VK_NULL_HANDLE;
+                if (const VkImage nr = dlssnr::apply(r.cmd, src, sw, sh, &nr_view)) src = nr;
                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           dev.swap_extent.width, dev.swap_extent.height);
