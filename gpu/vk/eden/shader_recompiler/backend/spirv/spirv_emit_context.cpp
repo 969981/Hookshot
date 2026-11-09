@@ -1508,7 +1508,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const auto native_add{[&](Id pointer) {
             OpReturnValue(OpAtomicFAdd(F32[1], pointer, Const(static_cast<u32>(spv::Scope::Device)), u32_zero_value, value));
         }};
-        if (native) {
+        // (the bound buffers' f32 views exist only where the program itself adds floats (collect_shader_info marks F32 for
+        // GlobalAtomicAddF32); this helper is made for every program that stores to global memory, and an access chain
+        // on a view that is not there is invalid SPIR-V the driver aborted on. Without the views: the loop on the U32 view,
+        // the page table's pointer still adds natively)
+        if (native && Sirit::ValidId(storage_types.F32.element)) {
             define_body(&StorageDefinitions::F32, addr, storage_types.F32.element, 2,
                         [&](Id ssbo_pointer) { native_add(ssbo_pointer); }, false);
         } else {
