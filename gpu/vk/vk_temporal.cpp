@@ -74,8 +74,8 @@ int env_switch(const char* name) {   // (-1: unset)
 int temporal_mode() {
     static const int env_dlss = env_switch("RX_VK_DLSS"), env_fsr = env_switch("RX_VK_FSR");
     int v = opts.upscaler;
-    if (env_dlss > 0) v = env_dlss == 2 ? ur::DLAA : ur::DLSS;
-    else if (env_fsr > 0) v = env_fsr == 2 ? ur::FSR_AA : ur::FSR;
+    if (env_dlss > 0) v = env_dlss >= 2 ? ur::DLAA : ur::DLSS;   // (2 and up: DLAA, as RX_VK_DLSS was clamped before)
+    else if (env_fsr > 0) v = env_fsr >= 2 ? ur::FSR_AA : ur::FSR;
     if (v < 0 || v >= ur::kUpscalers) return ur::GAME;
     if (ur::is_dlss(v) && dlss_why() != DLSS_OK) return ur::GAME;
     if (ur::is_fsr(v) && fsr4_why() != FSR_OK) return ur::GAME;
@@ -180,7 +180,9 @@ struct State {
     std::atomic<bool> holding{false};   // (an engine's state, images or frees still to do: temporal_idle has something to let go)
 };
 State& st() {
-    static State s;
+    // (never destroyed: Hookshot leaves through ExitProcess / exit() with the device alive, and `dead` may still hold an
+    // engine's state then (an FSR context), whose destructor would call into a library already gone)
+    static State& s = *new State;
     return s;
 }
 

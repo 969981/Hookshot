@@ -83,8 +83,10 @@ struct Library {
     uint64_t version_id = 0;
     VkDeviceContext device_context{};
 };
+// (lib() and st() are never destroyed: Hookshot leaves through ExitProcess / exit() with the device alive, and a destructor
+// then would call into AMD's library after its DLL_PROCESS_DETACH, or under a render thread still recording with it)
 Library& lib() {
-    static Library l;
+    static Library& l = *new Library;
     return l;
 }
 
@@ -108,12 +110,13 @@ struct Context {
 /// The engine's state: used with the temporal upscaler's lock held
 struct State {
     std::shared_ptr<Context> context;
+    uint32_t in_w = 0, in_h = 0;   // (the inputs' size under this context: the largest render size it has had)
     std::chrono::steady_clock::time_point last{};
     uint64_t evals = 0;
     int told_resets = 0;
 };
 State& st() {
-    static State s;
+    static State& s = *new State;   // (never destroyed: lib()'s note)
     return s;
 }
 
@@ -168,6 +171,9 @@ bool load() {
         if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         // (the upscaler DLL the loader picks lies beside it: the loader's folder first in the search)
         l.lib = LoadLibraryExA(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        // (there but not loaded: a DLL it needs missing, a bad signature, or a relative RX_VK_FSR_DIR, which the search
+        // flags refuse)
+        if (!l.lib) logf("vk: AMD FSR 4: %s not loaded (Windows error %lu)", path.c_str(), (unsigned long)GetLastError());
 #else
         const std::string path = dir + "/" + kLoader;
         if (access(path.c_str(), R_OK) != 0) continue;
@@ -348,17 +354,20 @@ void release() {
     s.context.reset();
 }
 
-int prepare(VkCommandBuffer, uint32_t, uint32_t, uint32_t ow, uint32_t oh, uint32_t* in_w, uint32_t* in_h, const char** why) {
+int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, uint32_t* in_w, uint32_t* in_h, const char** why) {
     State& s = st();
     int made = 1;
     if (!s.context || s.context->width != ow || s.context->height != oh) {
         release();
         s.context = make_context(ow, oh);
         if (!s.context) return *why = "its upscaler was not made", -1;
+        s.in_w = s.in_h = 0;
         made = 2;
     }
-    // (the inputs at the context's largest render size: the render size moves under it without new images)
-    *in_w = ow, *in_h = oh;
+    // (the inputs as large as the largest render size this context has had, never past the output: a fixed share keeps
+    // images of its own size, and the game's dynamic resolution only makes them again when it goes past them)
+    s.in_w = std::min(std::max(s.in_w, rw), ow), s.in_h = std::min(std::max(s.in_h, rh), oh);
+    *in_w = s.in_w, *in_h = s.in_h;
     return made;
 }
 

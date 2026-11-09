@@ -1019,6 +1019,9 @@ def main(a=None):
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
         open(os.path.join(out, FSR_MARK), "w").close()
+        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR: the jitter alone is put in)
+            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
+                  "Upscaler row will not offer it", flush=True)
     else:
         os.environ.pop("HOOKSHOT_FSR", None)
         if os.path.isfile(os.path.join(out, FSR_MARK)):
