@@ -17,6 +17,7 @@ This page explains how it behaves, why it was broken, and how each problem was f
 | GPUs **with** mesh shaders (the #640 device loss) | Fixed in the code, **not tested** on such a GPU |
 | Texture noise after alt-tab on low-VRAM cards | **Working, but further testing needed** |
 | Glowing stems and flowers in Kokiri Forest | **Fixed by upstream PR #759** (a shader translator bug on every GPU, not the fallback; see item 11) |
+| Black hearts, minimap glitch and slow unpause on 4 GB cards | **Working, but further testing needed** (item 12) |
 
 ### The test laptop: low VRAM
 
@@ -293,6 +294,32 @@ preparation.
 The flower programs' first draws went to a 128x128 target, which looks like a light-probe capture. Hiding those draws
 did not change the glow; #759 fixed the flowers too.
 
+### 12. Black glyphs for the hearts, a broken minimap cone, a slow unpause (working, further testing needed)
+
+**Symptoms**, on the 4 GB laptop:
+- The hearts showed as black glyphs until the next area change.
+- The minimap's view cone was boxy for a moment.
+- Unpausing, especially after switching to another window, took a long time.
+
+**Cause: a texture budget that ratcheted down.** Every 10 frames, when the driver said Hookshot used more than 97% of
+its allowance, the budget was set below the textures held, and textures unused for 60 frames were evicted. Evicting
+frees space inside the allocator's memory blocks, but the driver still counts those blocks. So the count stayed at the
+limit (3337 of 3337 MB, with 1224 MB free in the blocks), and 10 frames later the budget shrank again.
+
+- **While paused** the scene draws nothing, so its textures drained: 2851 MB to 1137 MB in a few seconds. Unpausing
+  made about 1000 of them again, decoding and re-encoding the ASTC ones.
+- **The HUD's pieces** are small textures the GPU draws once and the game samples again about 60 frames later. Their
+  pixels exist only in the GPU image. Evicted, one comes back over memory that never got them, and shows whatever was
+  left in that VRAM.
+
+**Fix:** the 97% squeeze no longer runs while the blocks hold an eighth of the allowance free. New textures take that
+space without the driver's count growing. The other rule, which judges pressure after taking that free space off,
+still evicts when memory is really short. The VRAM log line says "not squeezed" when this applies.
+`RX_VK_SQUEEZE_ALWAYS=1` restores the old behaviour.
+
+In game: no more black hearts, minimap glitch or slow unpause in the test run. Stutters while walking are unchanged
+(see "Known limits").
+
 ## Known limits
 
 - **Draw order.** Records land in the order the GPU claims them, so semi-transparent mesh
@@ -303,11 +330,13 @@ did not change the glow; #759 fixed the flowers too.
   GTX 10 series) should behave the same, but have not been tried.
 - **No GPU with mesh shaders tested** since the fix in item 9.
 - **The texture fix** (item 10) needs more testing.
-- **Glowing stems and flowers** (item 11): fixed by #759 on the `fallback_readback_debug` branch, not yet on
-  `working_fallback_mesh_shaders_RDNA1`. That branch is 170 commits behind upstream `main`.
-- **Garbled HUD textures on 4 GB cards.** After the shaders were prepared again, the hearts were black glyphs until
-  the next area change. That is upstream's open issue #993 (GPU-drawn textures evicted when VRAM is over budget), not
-  the fallback.
+- **Upstream's #759 is cherry-picked, not merged.** This branch is 170 commits behind upstream `main`. Upstream has
+  an open report of green diagonal stripes on an AMD RX 7600 that may come from #759 (its A/B switch
+  `RX_VK_MARKERS_V205=1` is not on this branch). None were seen here.
+- **The squeeze fix** (item 12) needs more testing, on other cards too. With less eviction the driver may page VRAM
+  to system memory instead. Upstream tracks the wider texture problem on low-VRAM cards as #993.
+- **Stutters while walking** on the 4 GB laptop: some slow texture uploads (60-90 ms) and pipelines made as new
+  things come into view. Not diagnosed yet.
 
 ## Testing and tools
 
