@@ -22,7 +22,9 @@
 #include "vk_menu_hit.h"
 #include "oot_cheat_items.h"
 #include "vk_dlss.h"
+#include "vk_fsr3.h"
 #include "vk_fsr4.h"
+#include "upscale_engine.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -232,7 +234,7 @@ Row rows[] = {
      "NVIDIA's DLSS model, changed at once. M: NVIDIA's pick for Performance, close to L's picture but nearer K's speed. L: its "
      "pick for Ultra Performance, sharper and steadier, less ghosting, slower. K: its pick for Quality, Balanced and DLAA. J: "
      "like K, slightly less ghosting, more flicker."},
-    {TAB_GRAPHICS, "AMD FSR 4.1", &opts.fsr4, 0, 1, 1, tx_fsr4,
+    {TAB_GRAPHICS, "AMD FSR 4.1", &opts.upscaler, 0, 1, 1, tx_fsr4,
      "AMD FSR 4.1 in place of the game's own upscale, with the scene's depth, the camera's motion and a sub-pixel jitter: steadier "
      "edges, less shimmer. Resolution sets what it upscales from: 75% is FSR's Quality, 50% Performance, 100% anti-aliasing only. "
      "Needs AMD's two FidelityFX DLLs beside the game. DLSS takes priority when on."},
@@ -431,7 +433,7 @@ std::string ini_path() {
 }
 const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";
-    if (r.value == &opts.fsr4) return "fsr4";   // (host/nn_applet.c reads it at the start)
+    if (r.value == &opts.upscaler) return "upscaler";
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1134,7 +1136,8 @@ void menu_init() {
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         has_options = true;
         char line[80];
-        bool has_resolution = false;
+        bool has_resolution = false, has_upscaler = false;
+        int old_fsr4 = -1;   // (the row before the FSR upscaler row: fsr4=0/1, 1 meaning what Auto does now)
         bool v2 = false;
         int old_dynres = -1;   // (the row before Resolution: 0, the full scale, is its 100%; 1 is Auto)
         while (fgets(line, sizeof line, f)) {
@@ -1144,11 +1147,14 @@ void menu_init() {
             for (Row& r : rows)
                 if (r.value && !strcmp(line, ini_key(r))) *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
             has_resolution |= !strcmp(line, "resolution");
+            has_upscaler |= !strcmp(line, "upscaler");
+            if (!strcmp(line, "fsr4")) old_fsr4 = atoi(eq + 1);
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
         }
         fclose(f);
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        if (!has_upscaler && old_fsr4 >= 0) opts.upscaler = old_fsr4 ? (int)upscale::Choice::Auto : (int)upscale::Choice::Off;
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;
@@ -1171,7 +1177,15 @@ void menu_init() {
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("RX_DLSS")) opts.dlss = atoi(e) != 0;
-    if (const char* e = getenv("RX_FSR4")) opts.fsr4 = atoi(e) != 0;
+    // (the older RX_FSR4: 1 is the upscaler row's Auto, as an old ini's fsr4=1 is)
+    if (const char* e = getenv("RX_FSR4")) opts.upscaler = atoi(e) != 0 ? (int)upscale::Choice::Auto : (int)upscale::Choice::Off;
+    if (const char* e = getenv("RX_UPSCALER")) {
+        const std::string v(e);
+        for (const auto& [name, choice] : std::initializer_list<std::pair<const char*, upscale::Choice>>{
+                 {"off", upscale::Choice::Off}, {"0", upscale::Choice::Off}, {"auto", upscale::Choice::Auto}, {"1", upscale::Choice::Auto},
+                 {"fsr4", upscale::Choice::Fsr4}, {"2", upscale::Choice::Fsr4}, {"fsr3", upscale::Choice::Fsr3}, {"3", upscale::Choice::Fsr3}})
+            if (v == name) opts.upscaler = (int)choice;
+    }
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = std::min(std::max(atoi(e), 0), 2);
     if (const char* e = getenv("RX_DLSS_PRESET"); e && e[0] >= 'J' && e[0] <= 'M') opts.dlss_preset = e[0] - 'J';
 }

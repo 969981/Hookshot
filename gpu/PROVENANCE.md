@@ -40,3 +40,7 @@ Hookshot's AMD FSR 4.1 (`vk/vk_fsr4.cpp`, the FSR and jitter parts of `vk/vk_dra
 `vk_rasterizer.cpp`'s Ocarina jitter, `host_shaders/ocarina_*.comp`; GPL-3.0-or-later). `third_party/fidelityfx/` is AMD's
 FSR API headers from FidelityFX SDK v2.4.0 (MIT, `LICENSE.md`); AMD's signed DLLs are loaded from the user's PC at run time
 and are not vendored.
+
+Hookshot's AMD FSR 3.1 (`vk/vk_fsr3.cpp`, `vk/shaders/fsr3_*`) comes from notquiteog's FSR 3.1
+pull request on NotRexed/Hookshot (#822, GPL-3.0-or-later); the shaders are compiled from `third_party/fidelityfx-sdk/` (AMD FidelityFX SDK
+v1.1.4, MIT).
