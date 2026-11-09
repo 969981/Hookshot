@@ -8,7 +8,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("headless", "headless_zero", "load_failure", "init_failure", "window_failure",
-         "visible_success", "thread_failure")
+         "visible_success", "thread_failure", "prepare_success", "prepare_no_vulkan",
+         "flag_as_romfs", "flag_as_user")
 
 
 def function(source, signature):
@@ -63,7 +64,13 @@ def main():
             result = subprocess.run([str(exe), case], cwd=tmp, env=env, capture_output=True, text=True,
                                     timeout=10, creationflags=flags)
             print((result.stdout + result.stderr).strip())
-            failed += result.returncode != 0
+            expected = ("display: no SDL: no window" if case == "load_failure" else
+                        "display: SDL_Init: authored missing Vulkan loader: no window" if case == "init_failure" else
+                        "display: SDL_CreateWindow: authored missing Vulkan loader: no window" if case == "window_failure" else None)
+            diagnostic_missing = expected is not None and expected not in result.stderr
+            if diagnostic_missing:
+                print("FAIL %s: missing stderr startup diagnostic" % case)
+            failed += result.returncode != 0 or diagnostic_missing
         print("display startup: %d cases, %d failed" % (len(args.case or CASES), failed))
         return int(failed != 0)
 

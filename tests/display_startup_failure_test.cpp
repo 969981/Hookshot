@@ -25,7 +25,7 @@ static int hos_posix_window[4];
 static void* window;
 float hos_aspect_ratio = 16.0f / 9;
 static std::string mode;
-static unsigned loads, inits, windows, threads, offscreen, signals, sleeps, flushes, waited;
+static unsigned loads, inits, windows, threads, offscreen, signals, sleeps, flushes, waited, prepares;
 static std::vector<std::string> logs;
 
 static void require(bool condition, const char* message) {
@@ -41,7 +41,7 @@ static void hos_log(const char* format, ...) {
 }
 [[maybe_unused]] static void hos_log_flush() { ++flushes; }
 static const char* hos_sdl_error() { return "authored missing Vulkan loader"; }
-static int hos_sdl_load() { ++loads; return mode == "load_failure" ? 0 : 3; }
+static int hos_sdl_load() { ++loads; return mode == "load_failure" || mode.starts_with("prepare_") ? 0 : 3; }
 static void hos_sdl_identity(const char*, const char*) {}
 static void hos_sdl_hint(const char*, const char*) {}
 static int hos_sdl_init(unsigned flags) {
@@ -74,7 +74,18 @@ static int rx_start(void* hwnd) {
     return 1;
 }
 void hos_display_start(void);
-static unsigned game_thread(void*) { hos_display_start(); return 0; }
+static unsigned game_thread(void*) {
+    if (mode.starts_with("prepare_")) {
+        // Authored builder worker: verify actual POSIX main forwards the flag,
+        // and let its ordinary completion or no-Vulkan exit reach the caller.
+        require(game_argc == 3 && !std::strcmp(game_argv[2], "--prepare-shaders"), "lost preparation flag");
+        ++prepares;
+        if (mode == "prepare_no_vulkan") throw ProcessExit{3};
+        return 0;
+    }
+    hos_display_start();
+    return 0;
+}
 static HANDLE CreateThread(void*, unsigned, unsigned (*entry)(void*), void* arg, unsigned, void*) {
     if (mode == "thread_failure") return nullptr;
     ++threads;
@@ -105,10 +116,18 @@ int main(int argc, char** argv) {
     mode = argc == 2 ? argv[1] : "";
     try {
         headless_setting(mode == "headless" ? "1" : mode == "headless_zero" ? "0" : nullptr);
+        char prepare_flag[] = "--prepare-shaders";
+        char* prepare_argv[] = {argv[0], argv[1], prepare_flag, nullptr};
+        char romfs_flag[] = "--romfs", user_flag[] = "--user";
+        char* path_argv[] = {argv[0], mode == "flag_as_romfs" ? romfs_flag : user_flag, prepare_flag, nullptr};
+        const bool preparing = mode.starts_with("prepare_");
+        const bool path_value = mode == "flag_as_romfs" || mode == "flag_as_user";
+        const int app_argc = preparing || path_value ? 3 : argc;
+        char** app_argv = preparing ? prepare_argv : path_value ? path_argv : argv;
         int status;
-        try { status = app_main(argc, argv); }
+        try { status = app_main(app_argc, app_argv); }
         catch (const ProcessExit& exit) { status = exit.code; }
-        require(game_argc == argc && game_argv == argv, "changed argument handoff");
+        require(game_argc == app_argc && game_argv == app_argv, "changed argument handoff");
         if (mode == "load_failure" || mode == "init_failure" || mode == "window_failure") {
             require(status == 1, "unexpected display failure did not exit nonzero");
             require(flushes == 1 && logs.size() == 1, "startup error not logged and flushed once");
@@ -123,13 +142,18 @@ int main(int argc, char** argv) {
                     "changed explicit headless/offscreen behavior");
             require(!loads && !inits && !windows && !visible_window_started && !flushes,
                     "explicit headless used the display");
-        } else if (mode == "visible_success") {
+        } else if (mode == "visible_success" || path_value) {
             require(status == 0 && threads == 1 && waited == 1 && loads && inits == 1 && windows == 1 &&
                     visible_window_started == 1 && !offscreen && !flushes && !sleeps,
                     "changed successful visible startup handshake");
         } else if (mode == "thread_failure") {
             require(status == 1 && !threads && !windows && !offscreen && !waited,
                     "changed game-thread creation failure behavior");
+        } else if (preparing) {
+            require(status == (mode == "prepare_no_vulkan" ? 3 : 0) && threads == 1 && prepares == 1,
+                    "display startup intercepted the preparation worker's exit");
+            require(!loads && !inits && !windows && !visible_window_started && !offscreen && !flushes,
+                    "shader preparation tried to use the display");
         } else throw std::runtime_error("unknown fixture case");
         std::printf("PASS %s\n", mode.c_str());
         return 0;
