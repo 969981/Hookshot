@@ -405,6 +405,40 @@ and the offset is handed to both backends so they can undo it. `RX_VK_JITTER=0` 
 upscaler still on, which is the comparison worth having; the sign convention is the thing to check
 first if the image looks wrong, because a wrong sign there is soft or shimmering rather than broken.
 
+## Neural rendering on AMD: the answer is the game's own network, not FSR 4
+
+The obvious reading of "neural rendering on AMD" is FSR 4, and FSR 4 is the wrong place to start.
+Its network does not ship as source: it lives in AMD's own runtime, so a backend for it would be the
+same shape as the DLSS one -- a build-time gate pointing at a vendor SDK, off by default, untestable
+on a machine without the hardware. Worth having eventually; not the thing that makes neural
+upscaling work on AMD.
+
+The thing that does is already in this tree. **Ocarina ships its own neural upscaler**, and
+`gpu/vk/vk_coopmat.cpp` already runs it natively: the game's TAAU and movie networks are
+`HMMA.16816.F16` programs, and that module lowers them to `OpCooperativeMatrixMulAddKHR` through
+**`VK_KHR_cooperative_matrix`** -- the vendor-neutral Khronos extension, not NVIDIA's `NV` one. AMD
+exposes it on RDNA 3 and newer. So the neural upscaler is not an NVIDIA feature here; it is a
+feature of whatever GPU can multiply matrices.
+
+What is not neutral is how the fragments get into the matrix. The module probes the device at start,
+measuring which matrix positions each lane's elements are, and accepts the device only when a lane
+holds **the same positions** the console's fragments do (PTX `mma.m16n8k16`'s layout), with at most a
+different order inside the lane. Anything else falls back to the shuffle expansion in
+`lower_to_maxwell.h`, which is correct but a fraction of the speed. AMD's WMMA distributes elements
+differently, so the expected outcome on an AMD card today is: **the network runs, and runs slowly**.
+
+The fix is not to teach the emitter AMD's layout. It is to stop depending on any layout. A
+cooperative matrix's element distribution is deliberately opaque -- that is what
+`OpCooperativeMatrixLoadKHR` is for -- so the general lowering is to round-trip the lane fragments
+through shared memory in matrix order, load the matrix, multiply, store it back, and read each
+lane's fragments out. That costs shared-memory traffic and works on every implementation, including
+ones nobody has tested, instead of only on the one whose layout happens to match.
+
+That is the recommendation, and it is deliberately not implemented here: there is no AMD GPU on this
+machine, and the lesson of this document is what happens when something unverifiable gets written
+anyway. The probe already reports what it measured, so the first real step is one log line from an
+AMD card.
+
 ## FSR 3 and FSR 4 are two backends, not two versions
 
 FSR 4 is not source-available: it ships as prebuilt signed libraries inside AMD's SDK releases, so it cannot come out
