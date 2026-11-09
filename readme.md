@@ -191,10 +191,17 @@ where the card allows it -- is compiled into the released Windows and Linux buil
 NVIDIA's NGX SDK at build time and nothing of NVIDIA's is committed here. A build you make by hand
 without the SDK says so in the row rather than offering a setting that does nothing.
 
-One file is still yours to supply, because it is NVIDIA's to ship and not ours: put **the DLSS
-runtime** beside the game -- `nvngx_dlss.dll` on Windows, `libnvidia-ngx-dlss.so.*` on Linux. Both
-come from NVIDIA's SDK (`github.com/NVIDIA/DLSS`, `lib/Windows_x86_64/rel/`) or from the NVIDIA app's
-own downloads.
+The runtimes are still yours to supply, because they are NVIDIA's to ship and not ours. Put them
+beside the game -- they come from NVIDIA's SDK (`github.com/NVIDIA/DLSS`, out of
+`lib/Windows_x86_64/rel/` or `lib/Linux_x86_64/rel/`) or from the NVIDIA app's own downloads:
+
+| for | Windows | Linux |
+|---|---|---|
+| Upscaling: DLSS | `nvngx_dlss.dll` | `libnvidia-ngx-dlss.so.*` |
+| Frame generation with DLSS | `nvngx_dlssg.dll` | `libnvidia-ngx-dlssg.so.*` |
+
+Without the frame-generation runtime, Frame generation still works -- it uses FSR 3 where it can and
+the renderer's own blend otherwise. You do not pick; the row says what it is using in the log.
 
 To build with the SDK yourself: put it in a folder named `dlss-sdk` beside the Hookshot folder, or
 name it with `RX_VK_DLSS_SDK=<path>`, and build as usual.

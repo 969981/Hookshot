@@ -846,6 +846,19 @@ def main():
     vk_prebuilt = os.environ.get("HOOKSHOT_VK_PREBUILT", "")
     if a.standalone and not a.only and vk_prebuilt:
         print("the Vulkan back end: %s, as built" % vk_prebuilt)
+    # (hookshot) Say what this back end is being built with, because "is DLSS actually in this
+    # release?" has been asked of a build three times and guessed at twice. One line, in the build
+    # log and so in CI's, naming each half. Deliberately outside the branch below:
+    # tests/test_shader_stamp_cache.py execs that branch to check the object keys, and a print
+    # inside it would run six times inside a test that is not about printing.
+    if a.standalone and not a.only:
+        print("vk: DLSS (NGX): %s" % (("compiled in, from " + dlss_sdk_path()) if dlss_sdk_path()
+                                      else "left out (no NGX SDK found; see readme.md)"))
+        print("vk: DLSS 5 neural rendering (Streamline): %s"
+              % (("compiled in, from " + streamline_sdk_path())
+                 if (not LINUX and streamline_sdk_path())
+                 else ("left out: Windows only" if LINUX else
+                       "left out (no Streamline headers found; see readme.md)")))
     elif a.standalone and not a.only and vk_headers and spirv_headers:
         cxx = toolchain.need(toolchain.find("clang++"))
         vk = os.path.join(GPU, "vk")
