@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.3.1
+Date: 09. 11. 2026
+  Bugfixes:
+    - Launcher: The folder launcher looks for the installed builder under HOOKSHOT_BUILDER_HOME/hookshot/builder.
+    - Escape $, backtick and backslash in the menu entry's Exec path as the Desktop Entry spec says.
+    - Retry the exact failed compile job.
+    - Build: Keep compile memory reservations per invocation.
+    - An rc AppImage launch keeps the tools it shipped with.
+    - Linux: Include the shared inventory header in AppImage sources.
+---------------------------------------------------------------------------------------------------
 Version: 2.3.0
 Date: 09. 11. 2026
   Features:
