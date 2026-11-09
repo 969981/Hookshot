@@ -20,12 +20,16 @@ and SPIR-V backend. R2UR stores must depend on a shuffle of the authored source
 value, while LOP3 stores must equal the authored XOR result after real IR
 constant propagation. All emitted modules are validated without executing a GPU.
 
-The original-operand marker survey in
-[PR759](https://github.com/NotRexed/Hookshot/pull/759) solves a different allocator
-collision. This patch does not import or replace that unmerged implementation;
-the marker candidate rules and conflict guard stay intact. Original232 and the
-published PR759 header are useful negative controls for the two authored cases
-selected by `--expect-original-rejections`.
+This branch includes the original-operand marker survey from
+[PR #759](https://github.com/NotRexed/Hookshot/pull/759) by pelicanux through a
+normal merge of exact published `add0937`, retaining its author/history. The
+register-role corrections remain separate, and the conflict guard stays intact.
+Two additional LOP3 cases strictly check the stored XOR value when an early
+destination marker could collide with a later Ra or Rc. The original sixteen
+pipeline cases remain. Original 232 and the standalone published PR759 header
+are useful negative controls for the two role counterexamples selected by
+`--expect-original-rejections`. An authored pre-dependency collision probe
+produced wrong stored values even though its SPIR-V modules were valid.
 
 Primary encoding reference:
 [Mesa NAK](https://chromium.googlesource.com/external/gitlab.freedesktop.org/mesa/mesa/+/b1fe47e94409d81924c8663f58fac97e66ab4527/src/nouveau/compiler/nak/sm70_encode.rs),

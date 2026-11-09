@@ -178,9 +178,11 @@ static void r2ur_check(const std::filesystem::path& dir,u32 uniform,u32 source) 
                     "r2ur-ur"+std::to_string(uniform)+"-r"+std::to_string(source),8,source==255?0:value,true);
 }
 static void lop_check(const std::filesystem::path& dir,u32 d,u32 a,u32 b,u32 c,bool immediate,
-                      const std::string& name) {
+                      const std::string& name,bool initialize_destination=false) {
     constexpr u32 av=0x12345678,cv=0x76543210,bv=0xabcdef01;
-    std::vector<Instruction> source{move(5,42,true),move(a,av)};
+    std::vector<Instruction> source{move(5,42,true)};
+    if (initialize_destination) source.push_back(move(d,0x55667788));
+    source.push_back(move(a,av));
     if (!immediate) source.push_back(move(b,bv));
     if (c!=255) source.push_back(move(c,cv));
     source.push_back(lop(d,a,b,c,immediate));
@@ -209,5 +211,7 @@ int main(int argc,char** argv) {
     lop_check(directory,224,220,0xdeadbeff,255,true,"lop-rz-looking-immediate");
     lop_check(directory,224,220,0x12345611,255,true,"lop-ordinary-immediate");
     lop_check(directory,224,220,250,255,false,"lop-real-register-rb-control");
+    lop_check(directory,250,216,0x2a3b4cfa,255,true,"lop-marker-later-ra",true);
+    lop_check(directory,250,19,0x2a3b4cfa,216,true,"lop-marker-later-rc",true);
 #endif
 }
