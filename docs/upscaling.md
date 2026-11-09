@@ -365,9 +365,15 @@ reference.
 validation layers, no eye on the output -- so this list is the honest part, in the order worth
 looking at:
 
-1. **`opticalFlowScale = 1 / displaySize`.** No vendored source assigns it: the FSR3 wrapper that
-   would is not in the SDK subset here. It is derived from `GetOpticalFlowSize()` in the GLSL having
-   to come out as the flow image's size. If the flow is scaled wrongly, start here.
+1. ~~**`opticalFlowScale = 1 / displaySize`.**~~ **Checked.** No vendored source assigns it -- the
+   FSR3 wrapper that would is not in the SDK subset here -- so it was derived rather than read. It
+   holds: `GetOpticalFlowSize()` in `ffx_frameinterpolation_callbacks_glsl.h` is
+   `(1.0 / opticalFlowScale) / opticalFlowBlockSize`, and with the staged `1 / displaySize` and a
+   block size of 8 that is `displaySize / 8` -- exactly the extent `prepare()` allocates the flow
+   images at, which a run confirms (`2048x1152 ... flow 256x144`). It is the only value that makes
+   the shader's idea of the flow extent equal the image it is given. Where the display size is not
+   a multiple of 8 the shader's integer divide floors while we allocate the ceiling, so it addresses
+   inside the image rather than past it, which is the safe direction.
 2. **A count above one repeats a frame.** FSR 3.1 interpolates the midpoint and only the midpoint --
    no phase in its constants, and its own header writes `t = 0.5` outright -- so `RX_VK_FSR_FG=2`
    copies the one made frame rather than making two. DLSS's `MultiFrameCount` is the only route to
