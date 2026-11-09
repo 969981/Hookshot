@@ -35,8 +35,9 @@ answers, then prints the socket's path.
   `FILE_FLAG_FIRST_PIPE_INSTANCE` keeps another process from owning the name first.
 - **Nothing in the way is replaced.** A file at the path that is not a socket is left alone and the bridge stays off. A
   socket that a live game answers on is left alone too. A stale one, left by a game that ended, is removed.
-- **No guest memory.** The bridge does not read or write the game's memory: `mem_*` and `symbols` reply
-  `unavailable`. Memory access would need a second opt-in of its own, apart from `HOS_CONTROL`.
+- **Guest memory is a second opt-in.** It is off unless `HOS_CONTROL_MEM` is set, apart from `HOS_CONTROL`:
+  `HOS_CONTROL_MEM=ro` allows reads, `rw` allows reads and writes (aliases: `r`/`read` for `ro`, `readwrite` for `rw`;
+  case does not matter; any other value logs once and leaves it off). See [Guest memory](#guest-memory).
 - **What a client can do.** Anything the player can do with a controller and the Insert menu. It can also write a PNG to
   any path the game's user can write, and it can end the game.
 - **The game never waits for a client.** The bridge's own thread does all the socket I/O. The controller's read takes
@@ -74,7 +75,9 @@ Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscri
 | `unknown_cmd` | no such command |
 | `timeout` | a `wait`, `shot` or input did not finish before its `timeout` (seconds) |
 | `busy` | too many requests waiting (64), inputs queued (256) or clients (8) |
-| `unavailable` | the renderer is not up yet, or is not the Vulkan one (shots, settings); guest memory |
+| `unavailable` | the renderer is not up yet, or is not the Vulkan one (shots, settings); or a memory command that is not served |
+| `forbidden` | a memory command while `HOS_CONTROL_MEM` does not allow it |
+| `out_of_range` | a memory address or range outside mapped guest memory |
 | `not_found` | no such setting |
 | `failed` | a shot could not be written |
 | `cancelled` | a press that was waited on was let go by `release` |
@@ -148,7 +151,7 @@ step's end.
 
 **shot**: a PNG of the first present after the request, or after frame `after`. It is 1280x720, as `RX_VK_SHOTS`
 writes them. `path` defaults to `shots/shot_<n>_f<frame>.png` in the socket's folder (made 0700). A relative path is
-taken from the socket's folder, not the game's. The file is written whole under another name, then renamed, so the
+taken from the socket's folder, not the game's. A shot is the game's own picture: the Insert menu and the FPS counter, drawn over it on the way to the window, are not in it. The file is written whole under another name, then renamed, so the
 path in the reply is complete. The `timeout` default is 30 s. Shots need the Vulkan renderer.
 
 ```
@@ -207,12 +210,73 @@ The events carry `sub`, the subscribe request's `id`:
 **quit**: the reply, then the game exits as when its window is closed (the log flushed, exit code 0). The socket is
 removed.
 
+## Guest memory
+
+Off unless `HOS_CONTROL_MEM` is set (apart from `HOS_CONTROL`):
+
+| `HOS_CONTROL_MEM` | commands | aliases |
+|---|---|---|
+| unset / empty | none (`mem_*` reply `forbidden` with how to turn it on) | |
+| `ro` | `mem_read`, `mem_read_many` | `r`, `read` |
+| `rw` | the reads, and `mem_write` | `readwrite` |
+
+Case does not matter. Any other value logs a line once and leaves memory off (it never falls back to a more permissive
+level).
+
+**This is a debugging tool, not a safe sandbox.**
+
+- `ro` exposes all of the game's memory to a client. That includes values the runtime keeps for itself, not only the
+  game's own.
+- `rw` lets a client change that memory. A write can corrupt or crash the game and the runtime, not only move the game
+  along, and a corrupted state can be saved to disk. **Use a throwaway save.**
+- The socket is already this user's only (0600, `SO_PEERCRED`), so a client of the bridge can reach no memory that any
+  other process of the same user could not already reach. The opt-in is about what the bridge itself will do, not about
+  who can connect.
+
+Addresses are guest addresses (the image is at `0x80000000`, the heap at `0x1000000000`). An address or range outside
+the memory the runtime has mapped — the image, the system region in use, the heap, or an address region — is an error
+(`out_of_range`), never a fault. Each request reads or writes at most 1 MB.
+
+Reads and writes are done on the game thread, at a controller read, so a read is one frame's memory and a write lands
+between frames. `mem_read_many` reads all its ranges in that one pass, so they are consistent with each other. Every
+write is logged in `hookshot_log.txt` (`control: wrote N bytes to guest 0x...`).
+
+A write to memory the GPU reads goes through the same soft write-watch the game's own CPU writes use (the page is marked
+and synced into the renderer's VRAM mirror on the next frame's memory sync), so it reaches the GPU like any other CPU
+write; this has not been checked against the GPU's output in a scene.
+
+**mem_read**: `addr` and `size` (a number, or a `"0x..."` string for a large address). `format` is `hex` (default) or
+`base64`.
+
+```
+> {"id":30,"cmd":"mem_read","addr":2147483648,"size":8}
+< {"id":30,"ok":true,"frame":5000,"format":"hex","addr":2147483648,"size":8,"data":"030000141c300000"}
+```
+
+**mem_read_many**: `ranges`, a list of `{addr, size}`, read in one pass. The reply has a `ranges` array, each with its
+`addr`, `size` and `data`.
+
+**mem_write** (`rw` only): `addr`, and the bytes as `hex` or `base64`.
+
+```
+> {"id":31,"cmd":"mem_write","addr":4300000000,"hex":"2a000000"}
+< {"id":31,"ok":true,"frame":5001,"wrote":4,"addr":4300000000}
+```
+
+TODO: named game values (scene and room id, Link's position, health, rupees, ...) through `mem get NAME` and a
+`symbols` command: planned, once addresses are located and verified for this build. `symbols` replies `unavailable` for
+now.
+
 ## The client
 
 ```
-python -I scripts/hookshot_ctl.py launch ~/Games/Hookshot --data /tmp/oot-data --headless   # prints the socket
-export HOS_CONTROL=<that path>
-python -I scripts/hookshot_ctl.py wait in_play --timeout 180
+export HOS_CONTROL=$(python -I scripts/hookshot_ctl.py launch ~/Games/Hookshot --data /tmp/oot-data --headless)
+# (a first start prepares the shaders before the first frame: the game reads no controller until then)
+python -I scripts/hookshot_ctl.py wait frame --frame 1 --timeout 900
+# (the title and the file select need A: press it until the save is loaded)
+until [ "$(python -I scripts/hookshot_ctl.py --json status | jq -r .state)" = play ]; do
+    python -I scripts/hookshot_ctl.py press A --frames 8; python -I scripts/hookshot_ctl.py wait present --frames 60
+done
 python -I scripts/hookshot_ctl.py status
 python -I scripts/hookshot_ctl.py stick L 0 1 --frames 90 --exclusive
 python -I scripts/hookshot_ctl.py press A --frames 8
@@ -223,6 +287,9 @@ python -I scripts/hookshot_ctl.py option get
 python -I scripts/hookshot_ctl.py option set text_speed 3
 python -I scripts/hookshot_ctl.py watch --events present,state --log "hid:"
 python -I scripts/hookshot_ctl.py raw '{"cmd": "wait", "event": "frame", "frame": 9000}'
+python -I scripts/hookshot_ctl.py mem read 0x80000000 8               # needs HOS_CONTROL_MEM=ro or rw
+python -I scripts/hookshot_ctl.py mem read 0x1000000000 16 --format u32
+python -I scripts/hookshot_ctl.py mem write 0x1000000000 2a000000      # needs HOS_CONTROL_MEM=rw
 python -I scripts/hookshot_ctl.py quit
 ```
 

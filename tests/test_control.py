@@ -29,13 +29,22 @@ def main():
                         "-Wno-format-truncation", "-D_GNU_SOURCE", "-DHOS_CONTROL_NO_GAME",
                         str(ROOT / "tests" / "control_test.c"), str(ROOT / "host" / "control.c"), "-o", exe,
                         "-lpthread", "-lm"], check=True)
-        for case in ([], ["quit"]):
+        # (the general cases, quit, the level unit, and the memory cases at each HOS_CONTROL_MEM level)
+        runs = [([], None), (["quit"], None), (["level"], None),
+                (["mem"], None), (["mem"], "ro"), (["mem"], "rw"), (["mem"], "bogus")]
+        for case, mem in runs:
             folder = tempfile.mkdtemp(dir=tmp)
-            r = subprocess.run([exe, folder] + case, capture_output=True, text=True, timeout=180)
+            env = dict(os.environ)
+            env.pop("HOS_CONTROL_MEM", None)
+            if mem is not None:
+                env["HOS_CONTROL_MEM"] = mem
+            r = subprocess.run([exe, folder] + case, capture_output=True, text=True, timeout=180, env=env)
             print(r.stdout, end="")
             print(r.stderr, end="", file=sys.stderr)
             if r.returncode:
-                print("FAIL: control_test %s exited %d" % (" ".join(case) or "(the cases)", r.returncode), file=sys.stderr)
+                label = " ".join(case) or "(the cases)"
+                print("FAIL: control_test %s%s exited %d" % (label, " HOS_CONTROL_MEM=%s" % mem if mem else "", r.returncode),
+                      file=sys.stderr)
                 return 1
     return 0
 

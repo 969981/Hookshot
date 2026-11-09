@@ -1,7 +1,7 @@
 """scripts/hookshot_ctl.py, the control bridge's client, against a tiny fake game: a Python stand-in for the executable
 that serves the bridge's protocol on $HOS_CONTROL (docs/control.md) and writes down each request. The commands' requests
-and plain output, --json, exit codes (an error reply, a timeout, no game), watch, and launch (which starts the stand-in
-as a game folder's hookshot and waits for its socket). Linux only: a Unix socket.
+and plain output, --json, exit codes (an error reply, a timeout, no game), watch, launch (which starts the stand-in as a
+game folder's hookshot and waits for its socket), and the mem commands. Linux only: a Unix socket.
 
 python -I -B tests/test_hookshot_ctl.py
 """
@@ -55,6 +55,11 @@ def serve(c):
                 r.update(was=0, option={"key": req["name"], "value": req["value"], "text": "On"})
         elif cmd == "option_get":
             r.update(options=[{"key": "text_speed", "value": 3, "text": "Instant"}, {"key": "fps_counter", "value": 0, "text": "Off"}])
+        elif cmd == "mem_read":
+            data = bytes(range(req["size"]))
+            r.update(format=req.get("format", "hex"), addr=req["addr"], size=req["size"], data=data.hex())
+        elif cmd == "mem_write":
+            r.update(wrote=len(bytes.fromhex(req["hex"])), addr=req["addr"])
         elif cmd == "subscribe":
             f.write((json.dumps({"id": rid, "ok": True, "frame": frame[0], "events": req.get("events")}) + "\n").encode())
             for i in range(5):
@@ -145,7 +150,7 @@ class HookshotCtl(unittest.TestCase):
     def test_shot(self):
         r = ctl("shot", "out.png", env=self.env, check=0)
         self.assertEqual(r.stdout.strip(), os.path.abspath("out.png"))   # (the client's folder, made absolute)
-        r = ctl("shot", "--after", "500", env=self.env, check=0)
+        ctl("shot", "--after", "500", env=self.env, check=0)
         self.assertNotIn("path", self.last("shot"))
         self.assertEqual(self.last("shot")["after"], 500)
 
@@ -171,11 +176,25 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual(self.last("option_set")["value"], 1)
         self.assertIn("fps_counter 0 -> 1 (On)", r.stdout)
 
+    def test_mem(self):
+        r = ctl("mem", "read", "0x80000000", "4", env=self.env, check=0)
+        self.assertEqual(r.stdout.strip(), "00010203")
+        self.assertEqual(self.last("mem_read")["addr"], 0x80000000)
+        r = ctl("mem", "read", "16", "4", "--format", "u32", env=self.env, check=0)
+        self.assertEqual(r.stdout.strip(), "50462976")   # 0x03020100, little-endian
+        r = ctl("mem", "write", "0x1000000000", "deadbeef", env=self.env, check=0)
+        self.assertEqual(self.last("mem_write")["hex"], "deadbeef")
+        self.assertIn("wrote 4 bytes", r.stdout)
+        r = ctl("mem", "write", "0x10", "zz", env=self.env, check=2)   # bad hex, caught client-side
+        self.assertIn("hex digits", r.stderr)
+
     def test_watch(self):
         r = ctl("watch", "--count", "3", "--every", "30", "--log", "vk:", env=self.env, check=0)
         self.assertEqual(len(r.stdout.splitlines()), 3)
         req = self.last("subscribe")
-        self.assertEqual((req["events"], req["every"], req["log"]), (["present", "state", "log"], 30, "vk:"))
+        self.assertEqual((req["events"], req["every"], req["log"]), (["log"], 30, "vk:"))
+        ctl("watch", "--count", "1", "--events", "present", "--log", "x", env=self.env, check=0)
+        self.assertEqual(self.last("subscribe")["events"], ["present", "log"])
 
     def test_zz_quit(self):   # (last: the stand-in ends)
         r = ctl("quit", env=self.env, check=0)

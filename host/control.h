@@ -32,6 +32,13 @@ typedef struct HosControlGame {
     int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
     int (*setting)(int index, HosControlSetting *out);   /* 0 past the last */
     int (*setting_set)(int index, int value);
+    /* guest memory, when a level is on (host/control.c reads HOS_CONTROL_MEM). region: 0 when [addr, addr + size) is not
+       wholly in mapped guest memory (hos_mem_region's class otherwise). read/write copy between guest memory and a host
+       buffer; write also marks the pages so the GPU mirror picks them up. Both are called on the game thread, at a
+       controller read */
+    int (*mem_region)(uint64_t addr, uint64_t size);
+    void (*mem_read)(uint64_t addr, void *dst, uint64_t size);
+    void (*mem_write)(uint64_t addr, const void *src, uint64_t size);
     void (*log)(const char *line);
     void (*quit)(void);   /* does not return */
     const char *(*renderer)(void);   /* the renderer's description, or NULL */

@@ -54,6 +54,9 @@
 #define CTL_INPUTS 256
 #define CTL_LOG_RING 256
 #define CTL_NODES 1024
+#define CTL_MEM 8
+#define CTL_MEM_RANGES 64
+#define CTL_MEM_CAP (1u << 20)   /* 1 MB a request */
 #define CTL_TICK_MS 4
 
 volatile int hos_control_on;
@@ -303,7 +306,7 @@ typedef struct Conn {
     unsigned log_seen;   /* (the log ring's count it has seen) */
 } Conn;
 
-enum { P_INPUT = 1, P_WAIT, P_SHOT };
+enum { P_INPUT = 1, P_WAIT, P_SHOT, P_MEM };
 enum { W_FRAME = 1, W_STATE, W_LOADING_START, W_LOADING_END, W_CHANGE };
 typedef struct {
     int used, conn, gen, kind;
@@ -312,6 +315,7 @@ typedef struct {
     int group;       /* P_INPUT: its inputs */
     int wait, from_changes; int64_t target; char state[16];
     int token, done, ok; int64_t present; char path[1100];   /* P_SHOT */
+    int mem_slot;   /* P_MEM */
 } Pending;
 
 typedef struct {
@@ -324,8 +328,17 @@ typedef struct {
 static const char *const STATES[] = {"boot", "intro", "menu", "loading", "play", "unknown"};
 enum { S_BOOT, S_INTRO, S_MENU, S_LOADING, S_PLAY, S_UNKNOWN };
 
+typedef struct {
+    int used, token, write, base64, nranges, done, ok;
+    uint64_t addr[CTL_MEM_RANGES], size[CTL_MEM_RANGES], total;
+    uint8_t *buf;   /* read: filled on the game thread; write: the bytes to write */
+    char err[160];
+} MemReq;
+
 static struct {
     const HosControlGame *game;
+    int mem_level;   /* 0 off, 1 ro, 2 rw (HOS_CONTROL_MEM) */
+    MemReq mems[CTL_MEM];
     char path[1024], shots_dir[1040];
     ctl_mutex mu;     /* inputs, shot results: the controller's read and the shot writer take it */
     Input inputs[CTL_INPUTS];
@@ -357,9 +370,57 @@ static void ctl_log(const char *fmt, ...) {
     if (G.game && G.game->log) G.game->log(line);
 }
 
+/* HOS_CONTROL_MEM: -1 a value that is not one, 0 none/empty, 1 ro (reads), 2 rw (reads and writes). ro: r, read; rw:
+   readwrite; the canonical names and the aliases, case does not matter */
+int hos_control_mem_level(const char *v) {
+    if (!v || !*v) return 0;
+    char w[16];
+    size_t n = 0;
+    for (; v[n] && n + 1 < sizeof w; n++) w[n] = (char)tolower((unsigned char)v[n]);
+    if (v[n]) return -1;   /* longer than any name */
+    w[n] = 0;
+    if (!strcmp(w, "ro") || !strcmp(w, "r") || !strcmp(w, "read")) return 1;
+    if (!strcmp(w, "rw") || !strcmp(w, "readwrite")) return 2;
+    return -1;
+}
+
+/* (the game thread, each controller read) the queued memory reads and writes, done where the game runs so a read is one
+   frame's memory and a write lands between frames. Each is bounded first (hos_mem_region through the game): out of range
+   is an error, never a fault */
+static void mem_service(void) {
+    ctl_lock(&G.mu);
+    for (int i = 0; i < CTL_MEM; i++) {
+        MemReq *m = &G.mems[i];
+        if (!m->used || m->done) continue;
+        m->ok = 1;
+        for (int r = 0; r < m->nranges && m->ok; r++)
+            if (!G.game->mem_region(m->addr[r], m->size[r])) {
+                m->ok = 0;
+                snprintf(m->err, sizeof m->err, "%#llx..%#llx is not mapped guest memory",
+                         (unsigned long long)m->addr[r], (unsigned long long)(m->addr[r] + m->size[r]));
+            }
+        if (m->ok) {
+            if (m->write) {
+                G.game->mem_write(m->addr[0], m->buf, m->size[0]);
+                ctl_log("control: wrote %llu bytes to guest %#llx", (unsigned long long)m->size[0],
+                        (unsigned long long)m->addr[0]);
+            } else {
+                uint64_t off = 0;
+                for (int r = 0; r < m->nranges; r++) {
+                    G.game->mem_read(m->addr[r], m->buf + off, m->size[r]);
+                    off += m->size[r];
+                }
+            }
+        }
+        m->done = 1;
+    }
+    ctl_unlock(&G.mu);
+}
+
 /* ---- the controller's read (nn_hid.c read_input, the game's thread) ---- */
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) {
     if (!hos_control_on) return 0;
+    if (G.mem_level) mem_service();
     const int64_t frame = G.game->frame();
     int exclusive = 0;
     ctl_lock(&G.mu);
@@ -1087,10 +1148,208 @@ static void cmd_quit(int ci, const char *id) {
     G.game->quit();
 }
 
-/* ---- guest memory: not served. Reading or writing the game's memory would be an opt-in of its own, apart from
-   HOS_CONTROL (docs/control.md); the commands are named here so that a client hears why ---- */
-static void cmd_mem(int ci, const char *id) {
-    reply_error(&G.conns[ci], id, "unavailable", "the control bridge does not read or write the game's memory");
+/* ---- guest memory (host/control.c's HOS_CONTROL_MEM, docs/control.md): mem_read, mem_read_many, mem_write ---- */
+static void buf_hex(Buf *b, const uint8_t *p, uint64_t n) {
+    static const char hex[] = "0123456789abcdef";
+    buf_put(b, "\"", 1);
+    for (uint64_t i = 0; i < n; i++) {
+        char two[2] = {hex[p[i] >> 4], hex[p[i] & 15]};
+        buf_put(b, two, 2);
+    }
+    buf_put(b, "\"", 1);
+}
+static void buf_base64(Buf *b, const uint8_t *p, uint64_t n) {
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    buf_put(b, "\"", 1);
+    for (uint64_t i = 0; i < n; i += 3) {
+        const uint32_t a = p[i], c0 = i + 1 < n ? p[i + 1] : 0, c1 = i + 2 < n ? p[i + 2] : 0;
+        const uint32_t v = a << 16 | c0 << 8 | c1;
+        char q[4] = {t[v >> 18 & 63], t[v >> 12 & 63], i + 1 < n ? t[v >> 6 & 63] : '=', i + 2 < n ? t[v & 63] : '='};
+        buf_put(b, q, 4);
+    }
+    buf_put(b, "\"", 1);
+}
+/* a byte value from two hex digits, or -1 */
+static int hexval(char c) {
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+static int64_t decode_hex(const char *s, uint8_t *out, uint64_t cap) {
+    uint64_t n = 0;
+    for (; s[0] && s[1]; s += 2) {
+        const int hi = hexval(s[0]), lo = hexval(s[1]);
+        if (hi < 0 || lo < 0 || n >= cap) return -1;
+        out[n++] = (uint8_t)(hi << 4 | lo);
+    }
+    return s[0] ? -1 : (int64_t)n;   /* an odd digit left over is bad */
+}
+static int64_t decode_base64(const char *s, uint8_t *out, uint64_t cap) {
+    static signed char inv[256];
+    if (!inv[(unsigned char)'A']) {
+        memset(inv, -1, sizeof inv);
+        const char *t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; i++) inv[(unsigned char)t[i]] = (signed char)i;
+    }
+    uint32_t acc = 0;
+    int bits = 0;
+    uint64_t n = 0;
+    for (; *s && *s != '='; s++) {
+        const signed char v = inv[(unsigned char)*s];
+        if (v < 0) return -1;
+        acc = acc << 6 | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (n >= cap) return -1;
+            out[n++] = (uint8_t)(acc >> bits);
+        }
+    }
+    return (int64_t)n;
+}
+
+static MemReq *mem_new(const char *id, int ci, int write, int base64) {
+    for (int i = 0; i < CTL_MEM; i++) {
+        MemReq *m = &G.mems[i];
+        if (m->used) continue;
+        memset(m, 0, sizeof *m);
+        m->used = 1, m->write = write, m->base64 = base64;
+        (void)id, (void)ci;
+        return m;
+    }
+    return NULL;
+}
+static uint64_t mem_u64(const JDoc *d, int obj, const char *key, int *bad) {
+    const JNode *n = j_get(d, obj, key);
+    if (!n) return *bad = 1, 0;
+    if (n->type == J_NUM) {
+        if (n->num < 0 || n->num > 9.2e18) return *bad = 1, 0;
+        return (uint64_t)n->num;
+    }
+    if (n->type == J_STR) {   /* a hex address as a string: 0x... (numbers past 2^53 lose bits as doubles) */
+        char *e;
+        const uint64_t v = strtoull(n->s, &e, 0);
+        if (e == n->s || *e) *bad = 1;
+        return v;
+    }
+    return *bad = 1, 0;
+}
+
+static int mem_off(const char *cmd) { return !strcmp(cmd, "mem_read") || !strcmp(cmd, "mem_read_many") || !strcmp(cmd, "mem_write"); }
+
+static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *cmd) {
+    Conn *c = &G.conns[ci];
+    if (!mem_off(cmd))   /* symbols, or any other mem_* */
+        return reply_error(c, id, "unavailable", "no such memory command (named values are not served; docs/control.md)");
+    if (!G.mem_level)
+        return reply_error(c, id, "forbidden",
+                           "guest memory is off: set HOS_CONTROL_MEM=ro for reads or rw for reads and writes");
+    if (!G.game->mem_region)
+        return reply_error(c, id, "unavailable", "this build does not serve guest memory");
+    const int write = !strcmp(cmd, "mem_write");
+    if (write && G.mem_level < 2)
+        return reply_error(c, id, "forbidden", "writes are off (HOS_CONTROL_MEM=ro): set HOS_CONTROL_MEM=rw for writes");
+    const char *fmt = str_arg(d, req, "format");
+    const int base64 = fmt && !strcmp(fmt, "base64");
+    if (fmt && strcmp(fmt, "hex") && strcmp(fmt, "base64"))
+        return reply_error(c, id, "bad_request", "format: hex or base64");
+    int bad = 0;
+    const int64_t deadline = deadline_arg(d, req, 10, &bad);
+    if (bad) return reply_error(c, id, "bad_request", "timeout: seconds");
+
+    if (write) {
+        const uint64_t addr = mem_u64(d, req, "addr", &bad);
+        const char *hex = str_arg(d, req, "hex"), *b64 = str_arg(d, req, "base64");
+        if (bad || (!hex && !b64)) return reply_error(c, id, "bad_request", "mem_write: addr, and hex or base64");
+        static uint8_t bytes[CTL_MEM_CAP];
+        const int64_t n = hex ? decode_hex(hex, bytes, sizeof bytes) : decode_base64(b64, bytes, sizeof bytes);
+        if (n < 0) return reply_error(c, id, "bad_request", "the bytes are not %s, or over %u", hex ? "hex" : "base64", CTL_MEM_CAP);
+        if (n == 0) return reply_error(c, id, "bad_request", "no bytes to write");
+        MemReq *m = mem_new(id, ci, 1, 0);
+        if (!m) return reply_error(c, id, "busy", "too many memory requests");
+        m->nranges = 1, m->addr[0] = addr, m->size[0] = (uint64_t)n, m->total = (uint64_t)n;
+        m->buf = (uint8_t *)malloc((size_t)n);
+        if (!m->buf) return m->used = 0, reply_error(c, id, "failed", "out of memory");
+        memcpy(m->buf, bytes, (size_t)n);
+        Pending *p = pending_new(ci, id, P_MEM);
+        if (!p) return free(m->buf), m->used = 0, reply_error(c, id, "busy", "too many requests waiting");
+        p->mem_slot = (int)(m - G.mems), p->token = ++G.next_token, m->token = p->token, p->deadline = deadline;
+        return;
+    }
+
+    /* a read: one range (mem_read), or a list (mem_read_many, one snapshot) */
+    uint64_t addrs[CTL_MEM_RANGES], sizes[CTL_MEM_RANGES], total = 0;
+    int nr = 0;
+    if (!strcmp(cmd, "mem_read_many")) {
+        const JNode *list = j_get(d, req, "ranges");
+        if (!list || list->type != J_ARR) return reply_error(c, id, "bad_request", "mem_read_many: ranges, a list of {addr, size}");
+        for (int k = list->first; k >= 0; k = d->n[k].next) {
+            if (nr >= CTL_MEM_RANGES) return reply_error(c, id, "bad_request", "more than %d ranges", CTL_MEM_RANGES);
+            if (d->n[k].type != J_OBJ) return reply_error(c, id, "bad_request", "ranges: objects");
+            addrs[nr] = mem_u64(d, k, "addr", &bad);
+            sizes[nr] = mem_u64(d, k, "size", &bad);
+            if (bad) return reply_error(c, id, "bad_request", "each range: addr and size");
+            total += sizes[nr];
+            nr++;
+        }
+        if (!nr) return reply_error(c, id, "bad_request", "no ranges");
+    } else {
+        addrs[0] = mem_u64(d, req, "addr", &bad);
+        sizes[0] = mem_u64(d, req, "size", &bad);
+        if (bad) return reply_error(c, id, "bad_request", "mem_read: addr and size");
+        nr = 1, total = sizes[0];
+    }
+    if (total == 0) return reply_error(c, id, "bad_request", "size: at least one byte");
+    if (total > CTL_MEM_CAP) return reply_error(c, id, "bad_request", "at most %u bytes a request", CTL_MEM_CAP);
+    MemReq *m = mem_new(id, ci, 0, base64);
+    if (!m) return reply_error(c, id, "busy", "too many memory requests");
+    m->nranges = nr, m->total = total;
+    memcpy(m->addr, addrs, sizeof addrs[0] * nr);
+    memcpy(m->size, sizes, sizeof sizes[0] * nr);
+    m->buf = (uint8_t *)malloc((size_t)total);
+    if (!m->buf) return m->used = 0, reply_error(c, id, "failed", "out of memory");
+    Pending *p = pending_new(ci, id, P_MEM);
+    if (!p) return free(m->buf), m->used = 0, reply_error(c, id, "busy", "too many requests waiting");
+    p->mem_slot = (int)(m - G.mems), p->token = ++G.next_token, m->token = p->token, p->deadline = deadline;
+}
+/* (pending_tick) the memory op is done on the game thread, or its time ran out */
+static int mem_finished(Pending *p, Conn *c, int64_t now) {
+    MemReq *m = &G.mems[p->mem_slot];
+    ctl_lock(&G.mu);
+    const int done = m->done, ok = m->ok, used = m->used && m->token == p->token;
+    ctl_unlock(&G.mu);
+    if (!used) return reply_error(c, p->id, "failed", "the memory request was dropped"), 1;
+    if (!done && now < p->deadline) return 0;
+    Buf b = {0};
+    if (!done) reply_error(c, p->id, "timeout", "the game did not read the controller in time");
+    else if (!ok) reply_error(c, p->id, "out_of_range", "%s", m->err);
+    else if (m->write) {
+        reply_start(&b, p->id, 1);
+        buf_printf(&b, ",\"wrote\":%llu,\"addr\":%llu", (unsigned long long)m->size[0], (unsigned long long)m->addr[0]);
+        reply_end(c, &b);
+    } else {
+        reply_start(&b, p->id, 1);
+        buf_printf(&b, ",\"format\":\"%s\"", m->base64 ? "base64" : "hex");
+        if (m->nranges == 1) {
+            buf_printf(&b, ",\"addr\":%llu,\"size\":%llu,\"data\":", (unsigned long long)m->addr[0], (unsigned long long)m->size[0]);
+            (m->base64 ? buf_base64 : buf_hex)(&b, m->buf, m->size[0]);
+        } else {
+            buf_puts(&b, ",\"ranges\":[");
+            uint64_t off = 0;
+            for (int r = 0; r < m->nranges; r++) {
+                if (r) buf_puts(&b, ",");
+                buf_printf(&b, "{\"addr\":%llu,\"size\":%llu,\"data\":", (unsigned long long)m->addr[r], (unsigned long long)m->size[r]);
+                (m->base64 ? buf_base64 : buf_hex)(&b, m->buf + off, m->size[r]);
+                buf_puts(&b, "}");
+                off += m->size[r];
+            }
+            buf_puts(&b, "]");
+        }
+        reply_end(c, &b);
+    }
+    ctl_lock(&G.mu);
+    free(m->buf);
+    m->used = 0;
+    ctl_unlock(&G.mu);
+    return 1;
 }
 
 /* ---- one request line ---- */
@@ -1130,7 +1389,7 @@ static void request(int ci, const char *line, size_t len) {
         c->sub_on = 0;
         reply_ok(c, id);
     } else if (!strcmp(cmd, "quit")) cmd_quit(ci, id);
-    else if (!strncmp(cmd, "mem_", 4) || !strcmp(cmd, "symbols")) cmd_mem(ci, id);
+    else if (!strncmp(cmd, "mem_", 4) || !strcmp(cmd, "symbols")) cmd_mem(ci, &d, req, id, cmd);
     else reply_error(c, id, "unknown_cmd", "no command %.60s", cmd);
 }
 
@@ -1178,6 +1437,11 @@ static void conn_gone(int ci) {
             ctl_lock(&G.mu);
             inputs_drop(p->group);
             ctl_unlock(&G.mu);
+        } else if (p->kind == P_MEM) {
+            ctl_lock(&G.mu);
+            MemReq *m = &G.mems[p->mem_slot];
+            if (m->used && m->token == p->token) free(m->buf), m->used = 0;
+            ctl_unlock(&G.mu);
         }
         p->used = 0;
     }
@@ -1191,16 +1455,22 @@ static void pending_tick(int64_t now) {
         Pending *p = &G.pending[i];
         if (!p->used) continue;
         Conn *c = conn_of(p->conn, p->gen);
-        if (!c) {   /* (its client is going: what it pressed is let go) */
+        if (!c) {   /* (its client is going: what it pressed is let go, its memory buffer freed) */
             if (p->kind == P_INPUT) {
                 ctl_lock(&G.mu);
                 inputs_drop(p->group);
+                ctl_unlock(&G.mu);
+            } else if (p->kind == P_MEM) {
+                ctl_lock(&G.mu);
+                MemReq *m = &G.mems[p->mem_slot];
+                if (m->used && m->token == p->token) free(m->buf), m->used = 0;
                 ctl_unlock(&G.mu);
             }
             p->used = 0;
             continue;
         }
-        const int done = p->kind == P_INPUT ? input_done(p, c, now) : p->kind == P_WAIT ? wait_done(p, c, now) : shot_finished(p, c, now);
+        const int done = p->kind == P_INPUT ? input_done(p, c, now) : p->kind == P_WAIT ? wait_done(p, c, now)
+                       : p->kind == P_MEM ? mem_finished(p, c, now) : shot_finished(p, c, now);
         if (done) p->used = 0;
     }
 }
@@ -1489,6 +1759,14 @@ int hos_control_serve(const char *path, const HosControlGame *game) {
 #endif
     }
     G.state = S_BOOT;
+    G.mem_level = hos_control_mem_level(getenv("HOS_CONTROL_MEM"));
+    if (G.mem_level < 0) {
+        ctl_log("control: HOS_CONTROL_MEM=%s is not ro or rw: guest memory stays off", getenv("HOS_CONTROL_MEM"));
+        G.mem_level = 0;
+    } else if (G.mem_level) {
+        ctl_log("control: guest memory %s (HOS_CONTROL_MEM): reads expose all game memory%s", G.mem_level == 2 ? "read and write" : "read only",
+                G.mem_level == 2 ? "; writes can corrupt the game and the runtime (use a throwaway save)" : "");
+    }
     if (!transport_open(path)) {
         G.game = NULL;
         return 0;
@@ -1519,7 +1797,16 @@ int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *he
 int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
 int rx_control_setting(int index, HosControlSetting *out);   /* (MkwVkSetting: the same fields) */
 int rx_control_setting_set(int index, int value);
+int hos_mem_region(uint64_t addr, uint64_t size);           /* (hos_mem.c) */
+uint8_t *hos_guest_base(void);                              /* (rx_backend.c) */
+void hos_mark_written(const void *p, uint64_t n);          /* (hos_mem.c: the GPU mirror picks the pages up) */
 
+static int game_mem_region(uint64_t addr, uint64_t size) { return hos_mem_region(addr, size); }
+static void game_mem_read(uint64_t addr, void *dst, uint64_t size) { memcpy(dst, hos_guest_base() + addr, (size_t)size); }
+static void game_mem_write(uint64_t addr, const void *src, uint64_t size) {
+    memcpy(hos_guest_base() + addr, src, (size_t)size);
+    hos_mark_written(hos_guest_base() + addr, size);   /* (the soft write watch: synced into the GPU mirror next frame) */
+}
 static int64_t game_frame(void) { return __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED); }
 static void game_log(const char *line) { hos_log("%s", line); }
 static void game_quit(void) {
@@ -1529,14 +1816,15 @@ static void game_quit(void) {
 }
 static const char *game_renderer(void) { return rx_describe(); }
 static HosControlGame game = {game_frame, rx_control_frame_info, rx_control_shot, rx_control_setting, rx_control_setting_set,
-                              game_log, game_quit, game_renderer, NULL};
+                              game_mem_region, game_mem_read, game_mem_write, game_log, game_quit, game_renderer, NULL};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");
     if (!path || !*path) return;
     game.version = version;
     if (hos_control_serve(path, &game))
-        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP, no memory access; docs/control.md)", path);
+        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/control.md)", path,
+                G.mem_level == 2 ? "read and write" : G.mem_level == 1 ? "read only" : "off");
     else hos_log("control: off (HOS_CONTROL=%s could not be served)", path);
 }
 #endif

@@ -81,10 +81,22 @@ static void fake_log(const char *line) {
     pthread_mutex_unlock(&log_mu);
     hos_control_log(line);   /* (as hos_log does) */
 }
+/* a fake mapped region [MEM_BASE, MEM_BASE + MEM_N): the only memory the fake game has */
+#define MEM_BASE 0x10000ull
+#define MEM_N 4096u
+static unsigned char guest[MEM_N];
+static int fake_mem_region(uint64_t addr, uint64_t size) {
+    uint64_t end;
+    if (!size || __builtin_add_overflow(addr, size, &end)) return 0;
+    return addr >= MEM_BASE && end <= MEM_BASE + MEM_N;
+}
+static void fake_mem_read(uint64_t addr, void *dst, uint64_t size) { memcpy(dst, guest + (addr - MEM_BASE), size); }
+static void fake_mem_write(uint64_t addr, const void *src, uint64_t size) { memcpy(guest + (addr - MEM_BASE), src, size); }
+int hos_control_mem_level(const char *v);   /* (host/control.c) */
 static void fake_quit(void) { _exit(0); }
 static const char *fake_renderer(void) { return "fake"; }
-static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set, fake_log, fake_quit,
-                              fake_renderer, "test"};
+static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set,
+                              fake_mem_region, fake_mem_read, fake_mem_write, fake_log, fake_quit, fake_renderer, "test"};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -178,9 +190,77 @@ static void quit_case(const char *folder) {
     puts("PASS: quit: the reply, then a clean exit, the socket removed");
 }
 
+static void level_unit(void) {
+    struct { const char *v; int lvl; } cases[] = {
+        {NULL, 0}, {"", 0}, {"ro", 1}, {"RO", 1}, {"r", 1}, {"read", 1}, {"Read", 1},
+        {"rw", 2}, {"RW", 2}, {"readwrite", 2}, {"ReadWrite", 2},
+        {"w", -1}, {"rwx", -1}, {"yes", -1}, {"1", -1}, {"readwritex", -1}};
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++)
+        CHECK(hos_control_mem_level(cases[i].v) == cases[i].lvl);
+    puts("PASS: HOS_CONTROL_MEM levels (ro/r/read, rw/readwrite, bad values)");
+}
+
+static void mem_case(const char *folder) {
+    const int level = hos_control_mem_level(getenv("HOS_CONTROL_MEM"));   /* what this run was started with */
+    for (unsigned i = 0; i < MEM_N; i++) guest[i] = (unsigned char)(i * 7 + 3);
+    snprintf(sock_path, sizeof sock_path, "%s/mem.sock", folder);
+    CHECK(hos_control_serve(sock_path, &game));
+    pthread_t t;
+    pthread_create(&t, NULL, game_thread, NULL);
+    const int fd = dial();
+    char line[70000];
+    if (level <= 0) {   /* unset, empty, or a bad value: every mem command is forbidden, with the hint */
+        ask(fd, "{\"id\":1,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":4}\n", "1", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"forbidden\"") && strstr(line, "HOS_CONTROL_MEM"));
+        puts("PASS: memory off: mem_read is forbidden with the hint");
+        paused = 1;
+        return;
+    }
+    /* a read in range (ro and rw) */
+    ask(fd, "{\"id\":2,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":8}\n", "2", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"format\":\"hex\"") && strstr(line, "\"data\":\"030a11181f262d34\""));
+    ask(fd, "{\"id\":3,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":4,\"format\":\"base64\"}\n", "3", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"data\":\"AwoRGA==\""));
+    /* out of range: below, above, and crossing the end */
+    ask(fd, "{\"id\":4,\"cmd\":\"mem_read\",\"addr\":0,\"size\":4}\n", "4", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"out_of_range\""));
+    ask(fd, "{\"id\":5,\"cmd\":\"mem_read\",\"addr\":69632,\"size\":1}\n", "5", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"out_of_range\""));
+    ask(fd, "{\"id\":6,\"cmd\":\"mem_read\",\"addr\":69630,\"size\":4}\n", "6", line, sizeof line, 2000);   /* crosses MEM_BASE+MEM_N */
+    CHECK(strstr(line, "\"error\":\"out_of_range\""));
+    ask(fd, "{\"id\":7,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":2000000}\n", "7", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));   /* over 1 MB */
+    /* many ranges in one snapshot */
+    ask(fd, "{\"id\":8,\"cmd\":\"mem_read_many\",\"ranges\":[{\"addr\":65536,\"size\":2},{\"addr\":65792,\"size\":2}]}\n",
+        "8", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"ranges\":[") && strstr(line, "\"addr\":65536") && strstr(line, "\"addr\":65792"));
+    if (level < 2) {   /* ro: writes refused */
+        ask(fd, "{\"id\":9,\"cmd\":\"mem_write\",\"addr\":65536,\"hex\":\"ff\"}\n", "9", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"forbidden\"") && strstr(line, "rw"));
+        CHECK(guest[0] == 3);   /* unchanged */
+        puts("PASS: HOS_CONTROL_MEM=ro: reads work, bounds enforced, writes forbidden");
+        paused = 1;
+        return;
+    }
+    /* rw: a write, then read it back */
+    ask(fd, "{\"id\":10,\"cmd\":\"mem_write\",\"addr\":65536,\"hex\":\"deadbeef\"}\n", "10", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"wrote\":4"));
+    ask(fd, "{\"id\":11,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":4}\n", "11", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"data\":\"deadbeef\""));
+    CHECK(guest[0] == 0xde && guest[3] == 0xef);
+    ask(fd, "{\"id\":12,\"cmd\":\"mem_write\",\"addr\":0,\"hex\":\"00\"}\n", "12", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"out_of_range\""));
+    ask(fd, "{\"id\":13,\"cmd\":\"mem_write\",\"addr\":65536,\"hex\":\"zz\"}\n", "13", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    puts("PASS: HOS_CONTROL_MEM=rw: a write lands and reads back; bounds and bad bytes refused");
+    paused = 1;
+}
+
 int main(int argc, char **argv) {
     CHECK(argc >= 2);
     if (argc > 2 && !strcmp(argv[2], "quit")) return quit_case(argv[1]), 0;
+    if (argc > 2 && !strcmp(argv[2], "level")) return level_unit(), 0;
+    if (argc > 2 && !strcmp(argv[2], "mem")) return mem_case(argv[1]), 0;
     char line[70000];
 
     /* a file that is not a socket is never replaced */
@@ -340,8 +420,10 @@ int main(int argc, char **argv) {
     puts("PASS: option_get and option_set by key or name");
 
     ask(fd, "{\"id\":26,\"cmd\":\"mem_read\",\"addr\":0,\"size\":4}\n", "26", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"forbidden\""));   /* (this run has no HOS_CONTROL_MEM) */
+    ask(fd, "{\"id\":261,\"cmd\":\"symbols\"}\n", "261", line, sizeof line, 2000);
     CHECK(strstr(line, "\"error\":\"unavailable\""));
-    puts("PASS: guest memory is not served");
+    puts("PASS: memory off without HOS_CONTROL_MEM; symbols not served");
 
     /* subscribe: presents, state changes, log lines with a filter */
     {

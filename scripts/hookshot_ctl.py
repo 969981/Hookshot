@@ -14,6 +14,8 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
                                                 loading_start, loading_end, change
     option get [NAME]  /  option set NAME VALUE the Insert menu's settings
     watch [--events present,state,log] [--every 60] [--log TEXT] [--count N]
+    mem read ADDR SIZE [--format hex|u8|u16|u32|u64|f32]   read guest memory (HOS_CONTROL_MEM=ro or rw)
+    mem write ADDR HEX                          write guest memory (HOS_CONTROL_MEM=rw); aliases: ro->r/read, rw->readwrite
     quit                                        the game exits
     raw '{"cmd": "status"}'                     any request
 
@@ -108,6 +110,28 @@ class Bridge:
                 return msg
 
 
+def addr_of(text):
+    try:
+        return int(text, 0)
+    except ValueError:
+        raise Failed("ADDR: a number, or 0x...", 2)
+
+
+def format_bytes(data, fmt):
+    import struct
+    if fmt in (None, "hex"):
+        return data.hex()
+    if fmt == "base64":
+        import base64
+        return base64.b64encode(data).decode()
+    sizes = {"u8": ("B", 1), "u16": ("<H", 2), "u32": ("<I", 4), "u64": ("<Q", 8), "f32": ("<f", 4)}
+    code, n = sizes[fmt]
+    out = []
+    for i in range(0, len(data) - n + 1, n):
+        out.append(struct.unpack(code, data[i:i + n])[0])
+    return " ".join(("%g" if fmt == "f32" else "%d") % v for v in out)
+
+
 def connect(a, timeout=10.0):
     path = a.sock or os.environ.get("HOS_CONTROL")
     if not path:
@@ -132,6 +156,16 @@ def show(a, reply, plain):
 def run(a):
     if a.command == "launch":
         return launch(a)
+    if a.command == "mem":
+        a.addr = addr_of(a.addr)
+        if a.action == "read":
+            if a.size is None:
+                raise Failed("mem read ADDR SIZE", 2)
+            a.size = addr_of(str(a.size))
+        else:
+            a.hex = a.hex if a.hex is not None else a.size   # write ADDR HEX
+            if not a.hex:
+                raise Failed("mem write ADDR HEX", 2)
     b = connect(a)
     try:
         if a.command == "status":
@@ -176,6 +210,20 @@ def run(a):
                         raise Failed("VALUE: a number, on or off", 2)
                 r = check(b.request("option_set", name=a.name, value=v))
                 show(a, r, lambda r: "%s %d -> %d (%s)" % (r["option"]["key"], r["was"], r["option"]["value"], r["option"]["text"]))
+        elif a.command == "mem":
+            if a.action == "read":
+                fmt = a.format if a.format in ("hex", "base64") else "hex"
+                r = check(b.request("mem_read", addr=a.addr, size=a.size, format=fmt))
+                data = bytes.fromhex(r["data"]) if r["format"] == "hex" else __import__("base64").b64decode(r["data"])
+                show(a, r, lambda r: format_bytes(data, a.format))
+            else:
+                raw = a.hex.lower().replace("0x", "")
+                try:
+                    bytes.fromhex(raw)
+                except ValueError:
+                    raise Failed("HEX: an even number of hex digits", 2)
+                r = check(b.request("mem_write", addr=a.addr, hex=raw))
+                show(a, r, lambda r: "wrote %d bytes at %d" % (r["wrote"], r["addr"]))
         elif a.command == "quit":
             show(a, check(b.request("quit")), lambda r: "quitting")
         elif a.command == "raw":
@@ -191,7 +239,8 @@ def run(a):
                     print(json.dumps(msg))
                     return 0 if msg["ok"] else 1
         elif a.command == "watch":
-            events = [e for e in a.events.split(",") if e]
+            # (--log alone: the log lines only; with --events, those and the log lines)
+            events = [e for e in (a.events or ("" if a.log else "present,state")).split(",") if e]
             if a.log and "log" not in events:
                 events.append("log")
             check(b.request("subscribe", events=events, every=a.every, log=a.log))
@@ -313,10 +362,17 @@ def main(argv=None):
     q.add_argument("name", nargs="?")
     q.add_argument("value", nargs="?")
     q = sub.add_parser("watch")
-    q.add_argument("--events", default="present,state")
+    q.add_argument("--events", help="present,state,log (default present,state; with --log alone, log)")
     q.add_argument("--every", type=int, default=60)
     q.add_argument("--log", help="log lines that contain this text (adds log to the events)")
     q.add_argument("--count", type=int, help="stop after this many events")
+    q = sub.add_parser("mem")
+    q.add_argument("action", choices=["read", "write"])
+    q.add_argument("addr", help="a guest address, decimal or 0x...")
+    q.add_argument("size", nargs="?", help="read: how many bytes")
+    q.add_argument("hex", nargs="?", help="write: the bytes as hex")
+    q.add_argument("--format", default="hex", choices=["hex", "base64", "u8", "u16", "u32", "u64", "f32"],
+                   help="read: how to print the bytes")
     sub.add_parser("quit")
     q = sub.add_parser("raw")
     q.add_argument("request", help="a JSON request object")
