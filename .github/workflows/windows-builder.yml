@@ -45,6 +45,11 @@ jobs:
     if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly'
     runs-on: windows-2022
     timeout-minutes: 30
+    # (id-token and attestations: a release's build provenance)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,6 +137,14 @@ jobs:
           cat dist/hookshot-setup.txt
           ls -l dist
 
+      # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
+      - if: env.RELEASE_TAG != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/HookshotBuilder.exe
+            dist/hookshot-setup.txt
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: HookshotBuilder-windows
@@ -209,11 +222,15 @@ jobs:
     needs: [package, vulkan]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # (id-token and attestations: SHA256SUMS, when it is made here)
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      RELEASE_SUMS_OUT: dist/SHA256SUMS
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,6 +259,11 @@ jobs:
                 gh release view builder-parts --json assets --jq '.assets[].name' | grep -qxF "$(basename "$f")"
             fi
           done
+      # (a tag pushed by hand also gets its SHA256SUMS here; a draft gets it from the Release workflow's publish job)
       - name: Setup and its list to the release
         # (a push to main that is not a release: the nightly)
         run: scripts/release_upload.sh "${RELEASE_TAG:-nightly}" dist/HookshotBuilder.exe dist/hookshot-setup.txt
+      - if: hashFiles('dist/SHA256SUMS') != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
