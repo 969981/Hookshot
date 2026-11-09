@@ -74,8 +74,9 @@ LINKS = r"""
 typedef long LONG;
 typedef struct { int x; } SRWLOCK;
 static SRWLOCK mw_lock;
-static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; }
-static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; }
+static int lock_depth, checkpoints_locked;   /* (obj is a virtual-core scheduling point: never under mw_lock) */
+static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; lock_depth++; }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; lock_depth--; }
 static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
 static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
 typedef struct Obj {
@@ -84,7 +85,8 @@ typedef struct Obj {
 enum { K_EVENT = 1, K_TIMER, K_SEMA, K_QUEUE, K_MULTIWAIT, K_HOLDER };
 HOLDER_ENUM
 static Obj objs[64];
-static Obj *obj(uint64_t key, int kind) { objs[key].kind = kind; return &objs[key]; }
+static Obj *obj_lookup(uint64_t key, int kind) { objs[key].kind = kind; return &objs[key]; }
+static Obj *obj(uint64_t key, int kind) { if (lock_depth) checkpoints_locked++; return obj_lookup(key, kind); }
 typedef struct { uint64_t x[8]; } Ctx;
 #define ARG(i) (c->x[i])
 #define HLE(name) static void name(Ctx *c)
@@ -119,6 +121,7 @@ int main(void) {
     expect("link again, unlink all of the other", 1, 0);
     call(UNLINK, h1, 0);
     expect("unlink the last", 0, 0);
+    if (checkpoints_locked) { printf("FAIL: %d scheduling points (obj) under mw_lock\n", checkpoints_locked); bad = 1; }
     puts(bad ? "FAILED" : "ok");
     return bad;
 }

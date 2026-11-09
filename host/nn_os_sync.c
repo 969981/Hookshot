@@ -1043,13 +1043,14 @@ static int holder_ready(Obj *h) {
     default: return 0;         /* native handles: never, without a kernel behind them */
     }
 }
-/* The object a holder watches, whose changes poke WaitAny (poke_multiwait); NULL: threads and native handles, never ready */
+/* The object a holder watches, whose changes poke WaitAny (poke_multiwait); NULL: threads and native handles, never ready.
+   obj_lookup, not obj: its callers hold mw_lock, and obj is a virtual-core scheduling point (hos_vcore_checkpoint) */
 static Obj *holder_target(Obj *h) {
     switch (h->sem_max) {
-    case H_EVENT: return obj(h->event, K_EVENT);
-    case H_TIMER: return obj(h->event, K_TIMER);
-    case H_SEMA: return obj(h->event, K_SEMA);
-    case H_QUEUE_NOT_EMPTY: case H_QUEUE_NOT_FULL: return obj(h->event, K_QUEUE);
+    case H_EVENT: return obj_lookup(h->event, K_EVENT);
+    case H_TIMER: return obj_lookup(h->event, K_TIMER);
+    case H_SEMA: return obj_lookup(h->event, K_SEMA);
+    case H_QUEUE_NOT_EMPTY: case H_QUEUE_NOT_FULL: return obj_lookup(h->event, K_QUEUE);
     default: return NULL;
     }
 }
