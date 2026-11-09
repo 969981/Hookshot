@@ -113,8 +113,9 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
 
 # (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
-# (the parts are served from this repository's linux-parts release, where scripts/linux/publish_parts.sh puts them: a fork's
-# list named upstream's release, which holds none of the fork's parts, so its updates could not find them)
+# (the parts are served from the linux-parts release of the repository this is built in, where
+# scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
+# CI does not upload to, so a fork's update list named parts that were not there)
 python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
     --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
 

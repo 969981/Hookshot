@@ -2048,6 +2048,7 @@ struct DescWriter {
         uint32_t width = 0, height = 0;
     };
     std::vector<Source> srcs;
+    const Program* prog = nullptr;   // (the program they were built for: a dispatch builds its own over a draw's)
     void reset() {
         writes.clear(), bufs.clear(), imgs.clear(), views.clear(), srcs.clear();
     }
@@ -2183,6 +2184,7 @@ bool table_track_open(int logged, int seen, int unlimited) {
 
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
+    dw().prog = &p;
     draw_sampled().clear();
     dump_written().clear();
     dump_inputs().clear();
@@ -4926,15 +4928,25 @@ bool mesh_args_ready() {
         void* mapped = nullptr;
         if (!create_buffer((uint64_t)kMeshArgs * 16,
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
-                           mesh_args_buffer, mesh_args_alloc, &mapped) || !mapped)
+                           mesh_args_buffer, mesh_args_alloc, &mapped))
             return false;
+        const auto discard = [] {
+            destroy_buffer(mesh_args_buffer, mesh_args_alloc);
+            mesh_args_buffer = VK_NULL_HANDLE;
+            mesh_args_alloc = nullptr;
+            mesh_args_words = nullptr;
+            mesh_args_address = 0;
+            return false;
+        };
+        if (!mapped) return discard();
         uint32_t* w = (uint32_t*)mapped;
         mesh_args_words = w;
         for (uint32_t i = 0; i < kMeshArgs; i++) w[i * 4] = 0, w[i * 4 + 1] = 1, w[i * 4 + 2] = 1, w[i * 4 + 3] = 0;
         VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
         da.buffer = mesh_args_buffer;
         mesh_args_address = vkGetBufferDeviceAddress(dev.device, &da);
-        return mesh_args_address != 0;
+        if (!mesh_args_address) return discard();
+        return true;
     }();
     return ok;
 }
@@ -5039,6 +5051,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     if (d.count_addr) {   // (more than one draw in the records: each its own dispatch, not one)
         static std::atomic<int> told{0};
         if (told++ < 2) logf("vk: fallback: a mesh draw with a count buffer is left out (issue 640)");
+        return false;
+    }
+    if (dw().prog != &p) {   // (the descriptors built are another program's: draw() rebuilds them for a fallback draw)
+        static std::atomic<int> told{0};
+        if (told++ < 2) logf("vk: fallback: the descriptors built are not %016llx's: its draw is left out", (unsigned long long)p.key);
         return false;
     }
     FallbackBuffers* f = nullptr;
@@ -5513,8 +5530,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // when none changed since the last draw, the set it pushed or bound stands)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
     static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
+    // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
+    // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
+    // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
+    // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_reg == reg_gen && last_desc_ub == ub_gen;
+                           last_desc_reg == reg_gen && last_desc_ub == ub_gen && (!p.fallback || dw().prog == &p);
+    if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
+        static std::atomic<int> told{0};
+        if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
+    }
     if (!same_desc) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);

@@ -7,8 +7,8 @@ namespace mkwvk {
 
 // (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
 struct Options {
-    int framegen = 0;     // made frames: 0 off, or 2, 3, 4 times the game's frames
-    int framegen_method = 0;   // (hookshot) which makes them: gpu/vk/framegen_methods.h (0 Auto, 1 DLSS, 2 FSR 4, 3 FSR 3.1, 4 built-in)
+    int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
+    int framegen_method = 0;   // (hookshot) which makes them at 2x-8x: gpu/vk/framegen_methods.h (0 Auto, 1 DLSS, 2 FSR 4, 3 FSR 3.1, 4 built-in)
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
@@ -58,6 +58,7 @@ struct Options {
     int nr_global_tone = 100;   // global tone strength, percent
     int nr_skin = 100;          // skin structure strength, percent (Auto mask decides where)
     int nr_auto_mask = 0;       // the model picks what to leave alone
+    int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;
@@ -115,7 +116,7 @@ int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();
 int menu_take_cheat_action();
-void menu_note_frame(bool game_frame);   // (the frame rates the FPS counter shows)
+void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h);

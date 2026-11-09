@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
     "tests/test_parallel_rb_refresh.py": ["--cxx", "{cxx}"],
@@ -34,6 +35,8 @@ ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_vulkan_copy_span.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_vulkan_copy_span_gpu_compile.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
@@ -52,9 +55,11 @@ ARGS = {
     "tests/test_menu_hit.py": ["--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],
+    "tests/test_widescreen_shapes.py": ["--cc", "gcc"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
     "tests/test_startup_progress.py": ["--cxx", "g++"],
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
+    "tests/test_audio_output_menu.py": ["--cxx", "g++"],
     "tests/test_motion.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
