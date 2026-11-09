@@ -46,7 +46,7 @@ def main():
         tmp = Path(folder)
         (tmp / "frame_wait_actual.inc").write_text(actual + "\n", encoding="utf-8")
         exe = tmp / ("frame_wait.exe" if os.name == "nt" else "frame_wait")
-        command = [cxx, "-std=c++20", "-O0", "-Wall", "-Wextra", "-Werror", "-I" + str(tmp),
+        command = [cxx, "-std=c++20", "-O0", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(tmp),
                    str(ROOT / "tests/frame_wait_bounds_test.cpp"), "-o", str(exe)]
         result = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True, timeout=60,
                                 creationflags=flags)
