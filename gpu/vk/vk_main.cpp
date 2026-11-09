@@ -17,6 +17,7 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_dlss.h"   // (hookshot DLSS: the extensions NGX asks for)
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -87,8 +88,17 @@ bool create_instance() {
         return false;
     }
 #ifdef _WIN32
-    const char* exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
-    const uint32_t n_exts = 2;
+    // (hookshot DLSS) the surface's, and what NGX asks for where hookshot_ngx.dll is beside the game (vk_dlss.cpp)
+    std::vector<const char*> exts_v = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    {
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> all(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+        dlss_instance_extensions(all, exts_v);
+    }
+    const char* const* exts = exts_v.data();
+    const uint32_t n_exts = (uint32_t)exts_v.size();
 #else
     // (linux: every window system's surface the loader has, for whichever one SDL's window is on: X11 or Wayland)
     const char* exts[4] = {VK_KHR_SURFACE_EXTENSION_NAME};
@@ -360,13 +370,25 @@ bool create_device() {
     dev.sparse_images = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding &&
                         f.features.sparseResidencyImage2D && !(getenv("RX_VK_SPARSE") && !atoi(getenv("RX_VK_SPARSE")));
     dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
+    // (hookshot DLSS) NGX's extensions, after all of the renderer's own (none twice), where hookshot_ngx.dll is there and the
+    // GPU is NVIDIA's; a device that will not take them is made again without them, DLSS off
+    const size_t own_exts = want.size();
+    dlss_device_extensions(exts, want);
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
     ci.queueCreateInfoCount = 1;
     ci.pQueueCreateInfos = &q;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
-    if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
+    VkResult made = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
+    if (made != VK_SUCCESS && want.size() > own_exts) {
+        logf("vk: vkCreateDevice failed (%d) with NGX's extensions: made again without them, DLSS off", (int)made);
+        want.resize(own_exts);
+        dlss_device_extensions_refused();
+        ci.enabledExtensionCount = (uint32_t)want.size();
+        made = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
+    }
+    if (made != VK_SUCCESS) {
         logf("vk: vkCreateDevice failed");
         return false;
     }

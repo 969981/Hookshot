@@ -196,6 +196,9 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size) | Auto |
 | | Output resolution | 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
 | | Upscaling | Off, Catmull-Rom, Lanczos | Off |
+| | DLSS | Off, CNN (DLSS 3), Transformer (DLSS 4), Transformer 2 (DLSS 4.5), NVIDIA default | Off |
+| | DLSS motion | Camera, Y not flipped; Camera, Y flipped; None (still image only) | Camera, Y flipped |
+| | DLSS quality | Auto (from Resolution), Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%), DLAA (native, 100%) | Auto |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
 | | Ultrawide | 16:9, Monitor's shape (after a restart) | 16:9 |
@@ -214,7 +217,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 
 - **Quality preset** sets Resolution, Upscaling, Sharpness, Frame generation, Frame pacing, Game speed, Handheld
   profile and the video memory limits for a card with that much memory. Changing most other rows yourself sets it back
-  to Custom.
+  to Custom. DLSS and DLSS motion do not: a preset does not set them. DLSS quality does, because it changes the 3D's size.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
@@ -224,7 +227,22 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **Output resolution** is the size of the game's whole frame, HUD included, before it is scaled to your window.
   Resolution is a share of it, and its row shows the size for the output you chose. Docked only. At 3840x2160 the game's
   render targets get a bigger GPU pool, so a full-size 3D fits. `HOS_OUTPUT_RES=0/1/2` sets it for one run.
-- **Upscaling** and **Sharpness** also work when Frame generation is Off.
+- **Upscaling** and **Sharpness** also work when Frame generation is Off. Sharpness is a contrast-adaptive sharpen
+  (in the manner of AMD FSR's RCAS) on the picture itself, one source pixel apart, so it still does something when the
+  window is larger than the picture. 0 is off, 100 is the strongest. It does not push a pixel past its neighbours.
+  `RX_VK_UPSCALE_LOG=1` in `hookshot_env.txt` logs that pass once, including the sharpness.
+- **DLSS** (Windows, NVIDIA RTX) replaces the game's own temporal upscaler with NVIDIA DLSS Super Resolution or DLAA.
+  It is off unless you turn it on, and it stays off when `hookshot_ngx.dll` is not beside the renderer, when
+  `nvngx_dlss.dll` is not where NGX looks, or when the GPU is not NVIDIA's: the game's own upscaler runs, and the row
+  says why. You bring both DLLs yourself. Hookshot does not ship NVIDIA's runtime or SDK.
+  [docs/dlss.md](docs/dlss.md) says where the SDK is and how the bridge is built.
+  DLSS quality sets the 3D size as a share of the output (Quality 8/12, Balanced 7/12, Performance 6/12, Ultra
+  Performance 4/12, DLAA 12/12). Auto keeps the Resolution row. The row shows the size. On an 8 GB card, DLAA draws
+  the 3D at full size and can push video memory over what the driver allows in a busy town, which is when the frame
+  rate falls. Quality or Balanced is the better choice there. DLAA suits a card with more memory.
+  DLSS motion is made from the scene depth and the game's camera. What moves on its own (Link, an enemy) only gets
+  the camera's motion, so it can leave a faint trail. None runs DLSS with no motion: sharp while still, smearing
+  while the camera moves. `RX_DLSS`, `RX_DLSS_MOTION` and `RX_DLSS_OFF` in `hookshot_env.txt` set the rows for one run.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.

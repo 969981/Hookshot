@@ -138,6 +138,9 @@ Designed after totk-pc-recomp's runtime/vk_*.c (MIT) and Eden's renderer_vulkan,
   buffer are the task / mesh stages (marked in their headers as Eden's GraphicsEnvironment does). Unverified.
 - **Frame interpolation** (`vk_framegen.cpp`, `RX_VK_FRAMEGEN=1`): the WebGPU renderer's, ported to GLSL
   (`shaders/`, compiled with glslang): made frames between the game's, shown evenly by a display thread.
+- **DLSS** (`vk_dlss.cpp`, off unless the Insert menu asks): on Windows, NVIDIA DLSS Super Resolution or DLAA in place
+  of the game's TAAU network, through `hookshot_ngx.dll` (`gpu/vk/ngx`, built against NVIDIA's SDK, which is not in
+  this tree). No DLL, or a GPU that is not NVIDIA's: the network runs as before. [docs/dlss.md](../../docs/dlss.md).
 - **Headless**: without a window presents render offscreen; `RX_VK_SHOTS=<dir>` writes every `RX_VK_SHOT_EVERY`-th
   as a PNG. `work/run-vk.ps1` runs it (refuses while Siege runs, stops past `-MaxGB` of working set);
   `work/vksum.py <run>` summarises the log.

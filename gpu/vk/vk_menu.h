@@ -31,6 +31,9 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    int dlss = 0;         // (hookshot DLSS) NVIDIA DLSS in the game's TAAU network's place: 0 off, 1 CNN, 2 transformer, 3 second transformer, 4 NVIDIA's default (vk_dlss.cpp)
+    int dlss_motion = 1;  // (hookshot DLSS) DLSS's motion: 0 the camera's, from the scene depth; 1 the same with NDC Y flipped (OoT's); 2 none
+    int dlss_quality = 0; // (hookshot DLSS) 0 the Resolution row's; 1 Quality, 2 Balanced, 3 Performance, 4 Ultra Performance, 5 DLAA: the 3D scale set for DLSS
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
@@ -42,6 +45,10 @@ void menu_init();             // (the options from the file, once)
 void menu_set_gpu_count(int count);
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
+/// (hookshot DLSS) the DLSS row in effect: RX_DLSS_OFF forces 0, else the menu (RX_DLSS sets it at start)
+int dlss_choice();
+/// (hookshot DLSS) the 3D scale the DLSS quality row sets, in twelfths of the output (0: the Resolution row's)
+int dlss_quality_twelfths();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)

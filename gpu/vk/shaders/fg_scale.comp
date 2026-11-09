@@ -1,6 +1,6 @@
 #version 450
 // the frame to the window's size (the Insert menu's Upscaling, Sharpness): Catmull-Rom or Lanczos 2, or the linear filter, then
-// a contrast-limited sharpen that cannot go past the light around the pixel, so it adds no halos and no flashes
+// a contrast-adaptive sharpen (RCAS-style, build 6) that cannot go past the light around the pixel, so it adds no halos
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, rgba8) uniform writeonly image2D dst;
@@ -43,11 +43,19 @@ void main() {
     const vec2 uv = (vec2(g) + 0.5) / vec2(d);
     vec3 c = filtered(uv);
     if (pc.sharp > 0.0) {
-        const vec2 e = 1.0 / vec2(d);
+        // (hookshot DLSS build 6) A contrast-adaptive sharpen in the manner of AMD FidelityFX RCAS: its four neighbours one
+        // source pixel away (the old sharpen took them one window pixel away, under a source pixel when the window is
+        // larger, and clamped to their range: next to no change at any setting). The lobe is limited per pixel so that
+        // nothing goes past the light around it (no halos, no clipping); pc.sharp 1 is RCAS's strongest.
+        const vec2 e = 1.0 / vec2(textureSize(src, 0));
         const vec3 n = textureLod(src, uv + vec2(0.0, -e.y), 0.0).rgb, s = textureLod(src, uv + vec2(0.0, e.y), 0.0).rgb;
         const vec3 w = textureLod(src, uv + vec2(-e.x, 0.0), 0.0).rgb, r = textureLod(src, uv + vec2(e.x, 0.0), 0.0).rgb;
-        const vec3 lo = min(min(min(n, s), min(w, r)), c), hi = max(max(max(n, s), max(w, r)), c);
-        c = clamp(c + pc.sharp * (c - (n + s + w + r) * 0.25), lo, hi);
+        const vec3 mn4 = min(min(n, s), min(w, r)), mx4 = max(max(n, s), max(w, r));
+        const vec3 hit_min = min(mn4, c) / max(4.0 * max(mx4, c), vec3(1e-5));
+        const vec3 hit_max = (1.0 - max(mx4, c)) / min(4.0 * mn4 - 4.0, vec3(-1e-5));
+        const vec3 lobe3 = max(-hit_min, hit_max);
+        const float lobe = max(-0.1875, min(max(max(lobe3.r, lobe3.g), lobe3.b), 0.0)) * clamp(pc.sharp, 0.0, 1.0);
+        c = clamp((lobe * (n + s + w + r) + c) / (4.0 * lobe + 1.0), 0.0, 1.0);
     }
     imageStore(dst, g, vec4(c, 1.0));
 }

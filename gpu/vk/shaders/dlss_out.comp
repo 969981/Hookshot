@@ -1,0 +1,15 @@
+#version 450
+// (hookshot DLSS) DLSS's output (RGBA16F, vk_dlss.cpp) into the game's TAAU output image, B10G11R11, as the network
+// would have written it: linear colour, no NaN, nothing below zero.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, r11f_g11f_b10f) uniform writeonly image2D dst;
+layout(push_constant) uniform P { ivec2 size; } pc;
+bool bad(float v) { return isnan(v) || isinf(v); }
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(g, pc.size))) return;
+    vec3 c = textureLod(src, (vec2(g) + 0.5) / vec2(pc.size), 0.0).rgb;
+    c = mix(c, vec3(0.0), bvec3(bad(c.r), bad(c.g), bad(c.b)));
+    imageStore(dst, g, vec4(max(c, vec3(0.0)), 1.0));
+}

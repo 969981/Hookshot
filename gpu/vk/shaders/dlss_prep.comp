@@ -1,0 +1,51 @@
+#version 450
+// (hookshot DLSS) The inputs DLSS Super Resolution is given (vk_dlss.cpp), from the game's TAAU network's own: its scene
+// colour (the square root of the linear colour, as shaders/taau_upscale.comp reads it) made linear again, NaN and
+// infinite pixels zeroed; its motion as render pixels in NVIDIA's convention (current to previous), the network's
+// own scaled by pc.mv_scale; its depth. Into images of formats NGX takes everywhere: RGBA16F, RG16F and R32F.
+// pc.flags: 1 colour is square-root encoded, 2 motion bound, 4 depth bound (else zero motion and far depth), 8 the
+// motion is unsigned normalized (0.5: none), 16 camera motion: the depth reprojected by pc.reproj (current NDC, GL z
+// -1..1, to the last frame's), 32 with NDC y = 1 - 2v (else 2v - 1), 64 the depth is reversed (1 near).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src_color;
+layout(binding = 1) uniform sampler2D src_mv;
+layout(binding = 2) uniform sampler2D src_depth;
+layout(binding = 3, rgba16f) uniform writeonly image2D dst_color;
+layout(binding = 4, rg16f) uniform writeonly image2D dst_mv;
+layout(binding = 5, r32f) uniform writeonly image2D dst_depth;
+layout(push_constant) uniform P { ivec2 size; vec2 mv_scale; int flags; float far_depth; vec2 pad; mat4 reproj; } pc;
+bool bad(float v) { return isnan(v) || isinf(v); }
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(g, pc.size))) return;
+    const vec2 uv = (vec2(g) + 0.5) / vec2(pc.size);
+    vec3 c = textureLod(src_color, uv, 0.0).rgb;
+    if ((pc.flags & 1) != 0) c = c * c;
+    c = mix(c, vec3(0.0), bvec3(bad(c.r), bad(c.g), bad(c.b)));
+    imageStore(dst_color, g, vec4(max(c, vec3(0.0)), 1.0));
+    vec2 mv = vec2(0.0);
+    if ((pc.flags & 2) != 0) {
+        mv = textureLod(src_mv, uv, 0.0).rg;
+        if ((pc.flags & 8) != 0) mv = mv * 2.0 - 1.0;
+        mv *= pc.mv_scale;
+        if (bad(mv.x) || bad(mv.y)) mv = vec2(0.0);
+    }
+    float d = pc.far_depth;
+    if ((pc.flags & 4) != 0) {
+        d = textureLod(src_depth, uv, 0.0).r;
+        if (bad(d)) d = pc.far_depth;
+    }
+    if ((pc.flags & 16) != 0) {
+        const bool flip = (pc.flags & 32) != 0;
+        const float z = (pc.flags & 64) != 0 ? 1.0 - d : d;
+        const vec4 p = pc.reproj * vec4(uv.x * 2.0 - 1.0, flip ? 1.0 - uv.y * 2.0 : uv.y * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+        if (p.w > 1e-6) {
+            const vec2 n = p.xy / p.w;
+            const vec2 puv = vec2(n.x * 0.5 + 0.5, flip ? 0.5 - n.y * 0.5 : n.y * 0.5 + 0.5);
+            mv = (puv - uv) * vec2(pc.size);
+            if (bad(mv.x) || bad(mv.y)) mv = vec2(0.0);
+        }
+    }
+    imageStore(dst_mv, g, vec4(mv, 0.0, 0.0));
+    imageStore(dst_depth, g, vec4(d, 0.0, 0.0, 0.0));
+}

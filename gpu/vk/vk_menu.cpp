@@ -21,11 +21,13 @@
 #include "vk_menu.h"
 #include "vk_menu_hit.h"
 #include "oot_cheat_items.h"
+#include "vk_dlss.h"   // (hookshot DLSS: the DLSS row's note)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
 
+namespace mkwvk { const char* hookshot_build_version() { return HOOKSHOT_VERSION; } }
 namespace mkwvk {
 HWND app_window();
 
@@ -64,6 +66,18 @@ const char* tx_upscale(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
+const char* tx_dlss(int v) {   // (hookshot DLSS)
+    static const char* t[] = {"Off", "CNN (DLSS 3)", "Transformer (DLSS 4)", "Transformer 2 (DLSS 4.5)", "NVIDIA default"};
+    static char b[96];
+    if ((unsigned)v >= sizeof t / sizeof t[0]) v = 0;
+    snprintf(b, sizeof b, "%s%s", t[v], v ? dlss_state() : "");
+    return b;
+}
+const char* tx_dlss_motion(int v) {   // (hookshot DLSS)
+    static const char* t[] = {"Camera, Y not flipped", "Camera, Y flipped (default)", "None (still image only)"};
+    if ((unsigned)v >= sizeof t / sizeof t[0]) v = 0;
+    return t[v];
+}
 const char* tx_percent(int v) {
     static char b[8];
     snprintf(b, sizeof b, "%d%%", v);
@@ -90,10 +104,30 @@ void game_size(float scale, uint32_t& w, uint32_t& h) {
 }
 const char* tx_resolution(int v) {
     static char b[48];
+    if (dlss_quality_twelfths()) return "Set by DLSS quality";   // (hookshot DLSS)
     if (v <= 0 || v > 4) return "Auto (dynamic)";
     uint32_t w, h;
     game_size(kResPercent[v] / 100.0f, w, h);
     snprintf(b, sizeof b, "%d%% (%ux%u)", kResPercent[v], w, h);
+    return b;
+}
+const char* tx_dlss_quality(int v) {   // (hookshot DLSS)
+    static const char* t[] = {"Auto (from Resolution)", "Quality", "Balanced", "Performance", "Ultra Performance", "DLAA (native)"};
+    static char b[128];
+    if ((unsigned)v >= sizeof t / sizeof t[0]) v = 0;
+    uint32_t iw = 0, ih = 0;   // (what DLSS is taking now, when it is running)
+    const bool running = opts.dlss && dlss_input_size(iw, ih);
+    if (!v) {
+        if (running) snprintf(b, sizeof b, "%s - DLSS gets %ux%u", t[0], iw, ih);
+        return running ? b : t[0];
+    }
+    uint32_t w, h;
+    static const int k[] = {0, 8, 7, 6, 4, 12};
+    game_size(k[v] / 12.0f, w, h);
+    char note[48] = "";
+    if (!opts.dlss) snprintf(note, sizeof note, " - DLSS is off");
+    else if (running && (iw != w || ih != h)) snprintf(note, sizeof note, " - DLSS gets %ux%u", iw, ih);
+    snprintf(b, sizeof b, "%s (%ux%u)%s", t[v], w, h, note);
     return b;
 }
 const char* tx_output_res(int v) {
@@ -168,7 +202,7 @@ void apply_preset(int p) {
 }
 
 Row rows[] = {
-    // Graphics (11 rows)
+    // Graphics (15 rows)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
@@ -188,8 +222,19 @@ Row rows[] = {
      "Resolution percentage of it. Docked only. Applies after a restart."},
     {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
      "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
+    {TAB_GRAPHICS, "DLSS", &opts.dlss, 0, 4, 1, tx_dlss,
+     "NVIDIA DLSS in place of the game's own upscaler (RTX cards, hookshot_ngx.dll and nvngx_dlss.dll beside the game). CNN is the "
+     "older model, Transformer DLSS 4's, Transformer 2 DLSS 4.5's. DLSS quality (or the Resolution row) sets how much it upscales."},
+    {TAB_GRAPHICS, "DLSS motion", &opts.dlss_motion, 0, 2, 1, tx_dlss_motion,
+     "The motion DLSS is given, made from the scene's depth and the game's camera. If the world smears or doubles while you turn "
+     "the camera, try the other Camera setting. None runs DLSS without motion (sharp when still, smears when moving)."},
+    {TAB_GRAPHICS, "DLSS quality", &opts.dlss_quality, 0, 5, 1, tx_dlss_quality,
+     "The size the 3D is drawn at for DLSS. Auto keeps the Resolution row. Quality 67%, Balanced 58%, Performance 50%, Ultra "
+     "Performance 33% of the output; DLAA draws it at the full output size and DLSS only anti-aliases (sharpest, slowest). "
+     "Changes at once, no restart: for a moment the game's own upscaler shows while the game remakes its 3D at the new size."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
-     "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
+     "Sharpens the picture as it goes to the window (a contrast-adaptive sharpen, with or without DLSS and an upscaling filter). "
+     "0 is off, 100 the strongest; it does not push edges past their neighbours, so no halos."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
      "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
@@ -458,7 +503,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
             r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
+            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.dlss &&
+            r.value != &opts.dlss_motion) {   // (not part of a quality preset: DLSS quality is, it changes the 3D's size)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }
@@ -1102,6 +1148,11 @@ void menu_init() {
         opts.sharpness = 0;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
+    if (const char* e = getenv("RX_DLSS")) opts.dlss = std::min(std::max(atoi(e), 0), 4);
+    if (const char* e = getenv("RX_DLSS_MOTION")) opts.dlss_motion = atoi(e);
+    if (const char* e = getenv("RX_DLSS_OFF")) if (atoi(e)) opts.dlss = 0;
+    if (opts.dlss_motion == 6) opts.dlss_motion = 2;   // (an old options file: 6 was None)
+    else if (opts.dlss_motion < 0 || opts.dlss_motion > 2) opts.dlss_motion = 1;
     if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
@@ -1113,8 +1164,18 @@ void menu_init() {
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = std::min(std::max(atoi(e), 0), 2);
 }
 
-bool resolution_auto() { return opts.resolution == 0; }
+int dlss_choice() {
+    static const int off = getenv("RX_DLSS_OFF") && atoi(getenv("RX_DLSS_OFF")) ? 1 : 0;
+    if (off) return 0;
+    return opts.dlss;
+}
+int dlss_quality_twelfths() {   // (hookshot DLSS: Quality 8/12, Balanced 7/12, Performance 6/12, Ultra Performance 4/12, DLAA 12/12)
+    static const int k[] = {0, 8, 7, 6, 4, 12};
+    return dlss_choice() > 0 && opts.dlss_quality > 0 && opts.dlss_quality <= 5 ? k[opts.dlss_quality] : 0;
+}
+bool resolution_auto() { return opts.resolution == 0 && !dlss_quality_twelfths(); }
 int resolution_scale() {
+    if (const int k = dlss_quality_twelfths()) return (int)(k * 10000.0f / 12.0f + 0.5f);   // (hookshot DLSS: its quality row's)
     const float s = opts.resolution > 0 && opts.resolution <= 4 ? kResPercent[opts.resolution] / 100.0f : 0;
     return s > 0 ? (int)(twelfths(s) * 10000.0f / 12.0f + 0.5f) : 0;   // (the twelfth game_size labels)
 }

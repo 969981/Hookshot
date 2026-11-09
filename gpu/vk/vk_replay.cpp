@@ -38,6 +38,7 @@
 #include "vk_present_rect.h"
 
 #include "vk_internal.h"
+#include "vk_dlss.h"   // (hookshot DLSS build 5: dlss_frame_status)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -3394,6 +3395,7 @@ void submit(const uint64_t* handles, int n) {
     submit_q(handles, n, 0);
 }
 void present(const nvn_tex* t, const int crop[4]) {
+    dlss_frame_status();   // (hookshot DLSS build 5: the rows in the log, and why DLSS is not running)
     if (!async_on()) {
         std::lock_guard order(sync_order_mu);
         if (sync_waits_on()) {

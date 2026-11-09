@@ -7,6 +7,7 @@
 //
 // Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,7 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "vk_dlss.h"   // (hookshot DLSS: in the TAAU network's place)
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -3860,6 +3862,7 @@ void end_pass(VkCommandBuffer cmd) {
     if (!pass.open) return;
     vkCmdEndRendering(cmd);
     pass.open = false;
+    dlss_note_pass(pass.depth ? pass.depth_tex : nullptr, pass.width, pass.height, pass.draws, pass.n, pass.format0, pass.prog);
     if (dump_on() && !dump_mesh_indirect.empty()) {
         for (const auto& [key, addr] : dump_mesh_indirect) {
             const BufferRef r = gpu_buffer_bind(addr, 16, false);
@@ -5868,6 +5871,214 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     if (temporal) probe_image(cmd, out, level, 0, key, 't');
     return true;
 }
+/// (hookshot DLSS) What a sampled format can be to DLSS: 1 motion (two channels, float or normalized), 2 colour, 0 neither
+static int dlss_kind(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16G16_SNORM: case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R32G32_SFLOAT:
+    case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UNORM:
+        return 1;
+    default:
+        return 0;
+    }
+}
+/// (hookshot DLSS) OoT's gameplay TAAU network recorded as NVIDIA DLSS Super Resolution (vk_dlss.cpp), when DLSS is
+/// chosen: its inputs read from its own descriptors, in descriptor order as build_descriptors resolved them (so slot i
+/// is dw.imgs[i]): the colour the stand-in reads (slot 0), the first two-channel float/normalized texture as motion,
+/// the first depth texture as depth, and its output as the stand-in finds it. Every binding is logged once, so a run
+/// says which is which. RX_DLSS_COLOR / RX_DLSS_MV / RX_DLSS_DEPTH=<slot> choose a slot instead (-1: none);
+/// RX_DLSS_KEYS=<program key prefixes> the networks it takes (default fd029a317a9a4b94). False: nothing recorded, the
+/// network (or the stand-in) runs as before
+// (build 5) The game has one TAAU network per ratio of the 3D to the output, and build 1-4 took only fd029a317a9a4b94, the
+// 3/4 one: at any other Resolution / DLSS quality the game ran another network and DLSS never ran. 2560x1440 (and
+// 2048x1152): 9dc98871eb7fc101 12/12 (DLAA), 6676619641320ba7 8/12, f10782f9e58b6a7c 7/12, 72ba090c70fe2614 6/12,
+// 0775215f8da720e6 4/12. Any other network of the same shape (one colour texture in, one B10G11R11 image out at most its
+// size, the same aspect) is taken too (dlss_like_taau): the 4K output's ones are not known by key.
+static bool dlss_key(uint64_t key) {
+    static const char* keys = getenv("RX_DLSS_KEYS") ? getenv("RX_DLSS_KEYS")
+                                                     : "fd029a317a9a4b94,9dc98871eb7fc101,6676619641320ba7,f10782f9e58b6a7c,"
+                                                       "72ba090c70fe2614,0775215f8da720e6";
+    char hex[24];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    for (const char* q = keys; *q;) {
+        const char* e = q;
+        while (*e && *e != ',') e++;
+        if (e > q && !strncmp(hex, q, (size_t)(e - q))) return true;
+        q = *e ? e + 1 : e;
+    }
+    return false;
+}
+bool taau_dlss(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
+    if (!dlss_wanted() || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    const Stage& st = p.stages[0];
+    const bool known = dlss_key(p.key);
+    static const bool by_shape = !getenv("RX_DLSS_KEYS");
+    // (a network of a TAAU's shape: matrix code, one texture and one image binding; the sizes are checked below)
+    const bool shaped = by_shape && st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+                        st.info.texture_descriptors[0].count == 1 && st.info.image_descriptors.size() == 1;
+    if (!known && !shaped) return false;
+    if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
+    struct Bound { Texture* tex; VkImageView view; VkImageViewType vt; };
+    std::vector<Bound> b;
+    for (const auto& d : st.info.texture_descriptors) {
+        const VkImageViewType vt = view_type(d.type);
+        for (uint32_t k = 0; k < d.count; k++) {
+            const uint32_t handle = handle_is_storage_pointer(st.info, d, k) ? 0u : handle_of(s, st, d, k);
+            Texture* tex = nullptr;
+            const VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex) : VK_NULL_HANDLE;
+            b.push_back({view ? tex : nullptr, view, vt});
+        }
+    }
+    if (dw.imgs.size() <= b.size()) return false;
+    const auto& od = st.info.image_descriptors[0];
+    Texture* out = nullptr;
+    uint32_t level = 0;
+    const uint32_t handle = handle_of(s, st, od, 0);
+    if (!handle) return false;
+    texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
+    if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !dw.imgs[b.size()].imageView) return false;   // (the last pass only)
+    const auto slot = [&](const char* env, int def) { return getenv(env) ? atoi(getenv(env)) : def; };
+    const auto usable = [&](int i) { return i >= 0 && i < (int)b.size() && b[i].tex && b[i].view && b[i].vt == VK_IMAGE_VIEW_TYPE_2D; };
+    const int color = slot("RX_DLSS_COLOR", 0);
+    // (a motion texture only when named by hand: OoT's TAAU network has none, its motion is made from the depth and the camera)
+    int mv = slot("RX_DLSS_MV", -1), depth = slot("RX_DLSS_DEPTH", -2);
+    if (!usable(color)) return false;
+    const Texture* ct = b[color].tex;
+    if (!known) {   // (build 5: a network by its shape alone: the scene colour in, at most the output's size, the same aspect)
+        const uint32_t ow0 = std::max(1u, out->width >> level), oh0 = std::max(1u, out->height >> level);
+        if (ct->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || ct->width > ow0 || ct->height > oh0 || ow0 < 1024 ||
+            std::fabs((double)ct->width * oh0 - (double)ct->height * ow0) > 0.01 * (double)ct->height * ow0)
+            return false;
+    }
+    {   // (build 5: every network DLSS takes, once each)
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> told;
+        std::lock_guard lk(mu);
+        if (told.insert(p.key).second)
+            logf("dlss: TAAU network %016llx taken (%s): %ux%u -> %ux%u", (unsigned long long)p.key,
+                 known ? "known" : "by its shape", ct->width, ct->height, std::max(1u, out->width >> level),
+                 std::max(1u, out->height >> level));
+    }
+    dlss_taau_seen(p.key, ct->width, ct->height);
+    if (mv == -2) {   // (the first two-channel texture, at the colour's size first, then any size)
+        for (int pass = 0; pass < 2 && mv == -2; pass++)
+            for (int i = 0; i < (int)b.size() && mv == -2; i++)
+                if (i != color && usable(i) && !(b[i].tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && dlss_kind(b[i].tex->format) == 1 &&
+                    (pass || (b[i].tex->width == ct->width && b[i].tex->height == ct->height)))
+                    mv = i;
+    }
+    if (depth == -2)
+        for (int pass = 0; pass < 2 && depth == -2; pass++)
+            for (int i = 0; i < (int)b.size() && depth == -2; i++)
+                if (i != color && usable(i) && (b[i].tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+                    (pass || (b[i].tex->width == ct->width && b[i].tex->height == ct->height)))
+                    depth = i;
+    if (!usable(mv)) mv = -1;
+    if (!usable(depth)) depth = -1;
+    {   // (once per change of what was found: every binding, and which DLSS takes for what)
+        static std::mutex mu;
+        static std::string said;
+        char line[1000];
+        int n = snprintf(line, sizeof line, "dlss: TAAU %016llx inputs:", (unsigned long long)p.key);
+        for (int i = 0; i < (int)b.size() && n < 900; i++) {
+            const Texture* t = b[i].tex;
+            n += snprintf(line + n, sizeof line - n, " %d:%ux%u/%d%s%s", i, t ? t->width : 0, t ? t->height : 0,
+                          t ? (int)t->format : -1, t && (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? "d" : "",
+                          i == color ? "=colour" : i == mv ? "=motion" : i == depth ? "=depth" : "");
+        }
+        if (n < 960) snprintf(line + n, sizeof line - n, "; output %ux%u level %u", out->width, out->height, level);
+        std::lock_guard lk(mu);
+        if (said != line) said = line, logf("%s", line);
+    }
+    {   // (the network's constant buffers, when asked: where its jitter and camera are.
+        // RX_DLSS_LOG_CB=<n>: n frames, off when unset)
+        static std::atomic<int> cb_frames{0};
+        static const int cb_want = getenv("RX_DLSS_LOG_CB") ? atoi(getenv("RX_DLSS_LOG_CB")) : 0;
+        if (cb_frames.fetch_add(1) < cb_want)
+            for (int i = 0; i < 16; i++) {
+                const nvn_p_bind_buf& u = s.ubo[5][i];
+                if (!u.addr || !u.size) continue;
+                float f[48]{};
+                const uint64_t n = std::min<uint64_t>(u.size, sizeof f) & ~3ull;
+                if (!n || !memory_read_as_submitted(u.addr, f, n)) continue;
+                char line[900];
+                int k = snprintf(line, sizeof line, "dlss: TAAU frame %llu ub%d (%llu bytes):", (unsigned long long)texture_frame_no(), i,
+                                 (unsigned long long)u.size);
+                for (uint64_t j = 0; j < n / 4 && k < 860; j++) k += snprintf(line + k, sizeof line - k, " %.5g", f[j]);
+                logf("%s", line);
+            }
+    }
+    DlssInputs in;
+    in.color_view = b[color].view;
+    in.render_w = ct->width, in.render_h = ct->height;
+    in.out_w = std::max(1u, out->width >> level), in.out_h = std::max(1u, out->height >> level);
+    if (mv >= 0) {
+        in.mv_view = b[mv].view, in.mv_found = true;
+        const VkFormat f = b[mv].tex->format;
+        in.mv_unorm = f == VK_FORMAT_R16G16_UNORM || f == VK_FORMAT_R8G8_UNORM;
+    }
+    if (depth >= 0) in.depth_view = b[depth].view;
+    uint32_t dw_found = 0, dh_found = 0;
+    if (!in.depth_view)   // (not among the network's inputs: the scene's depth target of the render size, vk_dlss.cpp)
+        in.depth_view = dlss_find_depth(in.render_w, in.render_h, &dw_found, &dh_found);
+    in.depth_found = in.depth_view != VK_NULL_HANDLE;
+    {   // the camera: a view-projection followed by its projection (row 3 0 0 -1 0, GL) in the network's constant buffers
+        static std::atomic<int> where{-1};   // (ubo * 4096 + float offset of the projection, once found)
+        static std::atomic<bool> told{false};
+        const auto take = [&](int i, int k0, bool search) -> bool {
+            const nvn_p_bind_buf& u = s.ubo[5][i];
+            if (!u.addr || u.size < 128) return false;
+            static thread_local float f[1024];
+            const uint64_t n = std::min<uint64_t>(u.size, sizeof f) & ~3ull;
+            if (!memory_read_as_submitted(u.addr, f, n)) return false;
+            const int nf = (int)(n / 4);
+            const auto z = [](float v) { return std::fabs(v) < 1e-4f; };
+            for (int k = search ? 16 : k0; k + 16 <= nf && (search || k == k0); k += 4) {
+                const float* P = f + k;
+                if (!(P[0] > 0.05f && z(P[1]) && z(P[3]) && z(P[4]) && P[5] > 0.05f && z(P[7]) && z(P[8]) && z(P[9]) &&
+                      z(P[12]) && z(P[13]) && std::fabs(P[14] + 1.0f) < 1e-3f && z(P[15])))
+                    continue;
+                const float* VP = P - 16;
+                const float l = std::sqrt(VP[12] * VP[12] + VP[13] * VP[13] + VP[14] * VP[14]);
+                if (!(l > 0.98f && l < 1.02f)) continue;   // (its w row: minus the view's z axis, unit length)
+                for (int j = 0; j < 16; j++) in.view_proj[j] = VP[j];
+                in.camera = true;
+                if (!told.exchange(true))
+                    logf("dlss: camera found in the TAAU's constants: ub%d floats %d..%d (projection after it: x %.4g y %.4g, "
+                         "jitter %.3g,%.3g)", i, k - 16, k - 1, P[0], P[5], P[2], P[6]);
+                where = i * 4096 + k;
+                return true;
+            }
+            return false;
+        };
+        const int w0 = where.load();
+        if (!(w0 >= 0 && take(w0 / 4096, w0 % 4096, false)) && !take(9, 28, false))
+            for (int i = 0; i < 16 && !in.camera; i++) take(i, 0, true);
+    }
+    {   // (what was found, once per change)
+        static std::mutex mu2;
+        static std::string said2;
+        char line[300];
+        snprintf(line, sizeof line, "dlss: scene depth %s%s, camera %s", in.depth_found ? "found" : "not found",
+                 dw_found ? (" (" + std::to_string(dw_found) + "x" + std::to_string(dh_found) + " depth target)").c_str() : "",
+                 in.camera ? "found" : "not found");
+        std::lock_guard lk(mu2);
+        if (said2 != line) said2 = line, logf("%s", line);
+    }
+    {
+        static std::atomic<int> cand_frames{0};   // (RX_DLSS_LOG_CANDIDATES: the passes of the frames after the first TAAU, vk_dlss.cpp)
+        if (cand_frames.fetch_add(1) == 0) dlss_log_candidates_from(texture_frame_no());
+    }
+    in.out_view = dw.imgs[b.size()].imageView;
+    in.out_w = std::max(1u, out->width >> level), in.out_h = std::max(1u, out->height >> level);
+    if (!dlss_run(cmd, in)) return false;
+    // (NGX binds its own pipelines, descriptors and push constants: everything the next draw or dispatch takes for granted
+    // is set again)
+    last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    vertex_set.on = false, last_ib.on = false;
+    descriptors_disturbed();
+    probe_image(cmd, out, level, 0, p.key, 't');
+    return true;
+}
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
@@ -6464,6 +6675,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             logf("%s", line);
         }
     }
+    if (taau_dlss(cmd, s, p)) return void(st_dispatches++);   // (hookshot DLSS: vk_dlss.cpp)
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (!p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
