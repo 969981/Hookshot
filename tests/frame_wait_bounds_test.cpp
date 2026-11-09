@@ -1,6 +1,7 @@
 // Actual replay parsing and ring block, with only a pre-index range/setting observer
 // inserted by the Python driver. No Vulkan, GPU, timing waits or game data.
 #include <algorithm>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,15 @@
 static int expected_ahead;
 static unsigned observations;
 static std::vector<uint64_t> waited;
+static std::vector<std::string> logs;
+[[maybe_unused]] static void logf(const char* format, ...) {
+    char text[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof text, format, args);
+    va_end(args);
+    logs.emplace_back(text);
+}
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -68,6 +78,11 @@ int main(int argc, char** argv) {
                 require(waited.back() == 101 + frame - expected_ahead, "changed ring wait ordering");
         }
         require(observations == 40, "pre-index observer did not see every frame");
+        const bool clamped = mode == "nine" || mode == "int_max" || mode == "positive_overflow";
+        require(logs.size() == (clamped ? 1u : 0u), "clamped setting diagnostic must appear once, valid settings stay quiet");
+        if (clamped)
+            require(logs[0].find("RX_VK_WAIT_GPU=") != std::string::npos && logs[0].find("using 8") != std::string::npos,
+                    "clamped setting diagnostic omits the option or effective ring capacity");
         std::printf("PASS %s\n", mode.c_str());
         return 0;
     } catch (const std::exception& e) {
