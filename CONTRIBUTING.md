@@ -235,8 +235,11 @@ gigabytes and are derived from the game.
    (GPU, driver, game area, fps before and after), and links the issue it fixes. Before/after screenshots help for
    graphics.
 4. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-5. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-6. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+5. If the repository's automatic checks (Actions) run on the pull request, wait for them to finish and push fixes for
+   anything that failed. A red run is not left for a maintainer to explain: read the failed job's log, fix it, or say
+   which environment failure it is (and that it fails the same way on `main`), then push again.
+6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
 `BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
