@@ -1771,7 +1771,9 @@ static void *serve_main(void *unused) {
         subs_tick();
         transport_flush();
     }
-#ifndef _WIN32
+#ifdef _WIN32
+    return 0;   /* (never reached: MinGW gcc wants it all the same, -Werror=return-type) */
+#else
     return NULL;
 #endif
 }
