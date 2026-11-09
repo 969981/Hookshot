@@ -472,18 +472,41 @@ AMD card.
 
 ## FSR 3 and FSR 4 are two backends, not two versions
 
-FSR 4 is not source-available: it ships as prebuilt signed libraries inside AMD's SDK releases, so it cannot come out
-of `third_party/fidelityfx-sdk/`. It is reached by loading AMD's runtime (`amd_fidelityfx_loader_vk.dll` and
-`amd_fidelityfx_upscaler_vk.dll`, which the user supplies) and asking it for a provider. That makes FSR 4 a *second
-backend* behind the same seam, not an upgrade of the first:
+FSR 4 is not source-available: it ships as prebuilt libraries signed by AMD (`amd_fidelityfx_loader_vk.dll`,
+`amd_fidelityfx_upscaler_vk.dll`, `amd_fidelityfx_framegeneration_vk.dll`, MIT-licensed in FSR SDK 2.4), so it cannot
+come out of `third_party/fidelityfx-sdk/`. `gpu/vk/vk_ffx.h` is the second backend, behind the same seam:
 
-- **FSR 3.1, from the SDK sources here.** No runtime, no downloads, every vendor and both platforms. This is the one
-  that can be a default.
-- **FSR 4, through AMD's runtime.** AMD hardware, where the installed runtime exposes a provider; it must not
-  silently become FSR 3 or FSR 2, because then nobody can tell which ran.
+- **FSR 3.1, from the SDK sources here** (`vk_fsr3.cpp`). No runtime, every vendor and both platforms.
+- **FSR 4, through AMD's runtime** (`vk_ffx.cpp`). Windows only, because the runtime is Windows DLLs. It is compiled
+  against AMD's FSR API headers (`third_party/ffx-api/`, MIT) and loads the loader from beside the game at run time:
+  nothing is linked, and a PC without the DLLs runs exactly as before. The Windows release puts the DLLs there
+  (`windows-builder.yml` packages them as the `amd-fsr` part, `nx2/make_game.py place_prebuilt_runtime`).
 
-The API that reaches FSR 4 is the FSR 3.1 API, which AMD kept stable for exactly this, so integrating 3.1 properly is
-the path to 4 rather than a detour away from it.
+The runtime chooses the provider (`ffxQuery` `GET_VERSIONS` lists them, newest first, and the log prints the list): FSR 4
+on an RX 9000 and the cards SDK 2.4 added, its own FSR 3.1 elsewhere. That is AMD's choice and the log says which was
+made, so "FSR 4" in the menu on an NVIDIA card is honestly "what AMD's runtime runs on this card".
+
+Three things the integration depends on, each from AMD's own sources rather than guessed:
+
+- **Resource states.** Every image here lives in `VK_IMAGE_LAYOUT_GENERAL`, and AMD's Vulkan backend maps API states to
+  layouts (`backend/vk/ffx_vk.cpp getVKImageLayoutFromResourceState`): only `COMMON`, `GENERIC_READ` and
+  `UNORDERED_ACCESS` are `GENERAL` there. `COMPUTE_READ` -- the obvious choice for an input -- is
+  `SHADER_READ_ONLY_OPTIMAL`, and would have the runtime transition from a layout the image is not in. So inputs are
+  `GENERIC_READ` and outputs `UNORDERED_ACCESS`.
+- **The inputs are FSR 3.1's.** Jitter and motion in render pixels with a scale of 1, reversed depth with an infinite far
+  plane (`DEPTH_INVERTED | DEPTH_INFINITE`), an HDR scene with automatic exposure. They are exactly what `vk_fsr3.cpp`
+  hands the same upscaler's sources, so the two backends are given the same picture.
+- **Frame generation is dispatched by hand.** AMD's frame generation is built around replacing the application's
+  swapchain with AMD's own, which paces the presents. Hookshot presents and paces its own made frames
+  (`vk_framegen.cpp`), so it configures the context with no swapchain and dispatches `PrepareV2` and the generation
+  itself, into its own images on its own command buffer -- the manual path AMD's documentation describes and
+  discourages. It sits after DLSS frame generation and before FSR 3.1's in the chain, so a refusal costs nothing.
+
+**Not measured.** There is no AMD GPU and no Windows on the machine this was written on. Both paths compile for Windows
+and their refusals are logged with the API's result code; the first run on an RX 9000 is the first real test.
+`RX_VK_FFX_LOG=1` routes AMD's own messages to the log, `RX_VK_FFX_DEBUG=1` turns on its debug checking (2 also draws
+frame generation's debug view), `RX_VK_FFX_FG=0` turns its frame generation off and `RX_VK_FFX_FG_MAX` caps the frames it
+is asked for.
 
 ## Frame generation, honestly
 
