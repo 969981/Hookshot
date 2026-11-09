@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "vk_dlss.h"
+#include "vk_menu.h"   // (Options: vk_dlss.cpp reads the menu where RX_VK_DLSS is not set)
 
 // ---- the seven symbols gpu/vk/vk_dlss.cpp needs, and nothing else ----
 
@@ -53,6 +54,11 @@ PFN_vkCmdPipelineBarrier2 vkCmdPipelineBarrier2 = stub_barrier2;
 
 namespace mkwvk {
 Device dev;
+/// (hookshot) The Insert menu's options. vk_dlss.cpp's `wanted()` reads `opts.scene_upscaler` where
+/// RX_VK_DLSS is not set, so the backend does not link without one. Default-constructed, which is
+/// every feature off: the checks below are about what the backend does when it is *not* asked for,
+/// and a stub that asked for it would be testing the opposite.
+Options opts;
 
 void logf(const char* fmt, ...) {
     char b[1024];
