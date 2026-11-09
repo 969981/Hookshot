@@ -36,18 +36,19 @@ For a game folder made by HookshotBuilder or `nx2/make_game.py`, pass `--game-di
 
 ## MCP host configuration
 
-OpenCode (`opencode.json`):
+OpenCode (`opencode.json`, V2): servers live under `mcp.servers`, and a server is connected unless it is `disabled`.
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "hookshot": {
-      "type": "local",
-      "command": ["python", "-I", "C:/path/to/Hookshot/scripts/hookshot_mcp.py"],
-      "enabled": true,
-      "environment": {
-        "HOOKSHOT_MCP_GAME_DIR": "C:/Games/Hookshot"
+    "servers": {
+      "hookshot": {
+        "type": "local",
+        "command": ["python", "-I", "C:/path/to/Hookshot/scripts/hookshot_mcp.py"],
+        "environment": {
+          "HOOKSHOT_MCP_GAME_DIR": "C:/Games/Hookshot"
+        }
       }
     }
   }
@@ -157,8 +158,9 @@ a screenshot looks like. Use a dedicated game folder or a clean options file whe
   counter) are not in it.
 - Input is controller input. The keyboard and mouse mappings are not simulated.
 - Live input is applied when the game next reads the controller; a loading screen can delay a queued press.
-- A cold launch can take a minute or two while shaders are prepared. `wait_ready` has its own timeout; call it again
-  if the first call times out.
+- A cold launch can take a minute or two while shaders are prepared. `wait_ready` returns on the first presented frame, which
+  on a cold cache can be a black boot frame; call it again, or `wait` and `screenshot` until the title appears, before
+  asserting on the picture. `wait_ready` has its own timeout; call it again if the first call times out.
 - The server is developer tooling in `scripts/`, not a file shipped with the game.
 
 ## Game-free test

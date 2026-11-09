@@ -204,6 +204,30 @@ def env_checks():
             raise SystemExit("screenshot request paths are not configured")
 
 
+def game_dir_checks():
+    """A folder made by the builder or make_game.py keeps the game in bin\\, with the launcher at the top: --game-dir must
+    choose the game, not the launcher that would open the builder instead (builder/setup/setup.c)."""
+    with tempfile.TemporaryDirectory(prefix="hookshot-mcp-paths-") as tmp:
+        folder = Path(tmp) / "game"
+        (folder / "bin").mkdir(parents=True)
+        game = folder / "bin" / hookshot.exe_name()
+        game.write_bytes(b"")
+        (folder / hookshot.exe_name()).write_bytes(b"")   # (the launcher)
+        (folder / "image.bin").write_bytes(b"")
+        (folder / "romfs").mkdir()
+        paths = hookshot.resolve_paths(hookshot.Config(work_dir=Path(tmp) / "mcp", game_dir=folder),
+                                       hookshot.LaunchOptions())
+        if paths["exe"] != game.resolve():
+            raise SystemExit(f"game_dir chose {paths['exe']}, not the game in bin")
+        # (a development build, which has no bin\ folder, keeps the game at the top)
+        (folder / "bin" / hookshot.exe_name()).unlink()
+        (folder / "bin").rmdir()
+        paths = hookshot.resolve_paths(hookshot.Config(work_dir=Path(tmp) / "mcp", game_dir=folder),
+                                       hookshot.LaunchOptions())
+        if paths["exe"] != (folder / hookshot.exe_name()).resolve():
+            raise SystemExit(f"a development build: game_dir chose {paths['exe']}")
+
+
 def fake_game_checks():
     with tempfile.TemporaryDirectory(prefix="hookshot-mcp-run-") as tmp:
         folder = Path(tmp)
@@ -253,8 +277,9 @@ def main():
     native_checks()
     line_checks()
     env_checks()
+    game_dir_checks()
     fake_game_checks()
-    print("PASS: MCP protocol (in memory and stdio), native seams, input lines, environment and fake-game screenshot")
+    print("PASS: MCP protocol (in memory and stdio), native seams, input lines, environment, game_dir and fake-game screenshot")
 
 
 if __name__ == "__main__":

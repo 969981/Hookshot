@@ -117,9 +117,19 @@ def exe_name() -> str:
     return "hookshot.exe" if os.name == "nt" else "hookshot"
 
 
+def game_exe(game_dir: Path | None) -> Path | None:
+    """The game in a folder made by HookshotBuilder or make_game.py: in bin\\, because that folder's own hookshot.exe is the
+    launcher that opens the installed builder (builder/setup/setup.c), and starting it would not start the game. A
+    development build has the game at the top of the folder."""
+    if game_dir is None:
+        return None
+    nested = game_dir / "bin" / exe_name()
+    return nested if nested.is_file() else game_dir / exe_name()
+
+
 def resolve_paths(cfg: "Config", opts: "LaunchOptions") -> dict[str, Path]:
     game_dir = _path(opts.game_dir) or cfg.game_dir
-    exe = _path(opts.exe) or cfg.exe or (game_dir / exe_name() if game_dir else None) or ROOT / "work" / "sa" / "build" / exe_name()
+    exe = _path(opts.exe) or cfg.exe or game_exe(game_dir) or ROOT / "work" / "sa" / "build" / exe_name()
     image = (_path(opts.image) or cfg.image or (game_dir / "image.bin" if game_dir else None)
              or ROOT / "work" / "sa" / "image" / "image.bin")
     romfs = _path(opts.romfs) or cfg.romfs or (game_dir / "romfs" if game_dir else None) or dump_romfs()
