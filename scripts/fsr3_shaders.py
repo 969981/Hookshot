@@ -22,18 +22,20 @@ GPU = SDK / "include/FidelityFX/gpu"
 PASSES = SDK / "shaders/fsr3upscaler"
 OUT = ROOT / "gpu/vk/shaders"
 
-# The option set the renderer records these passes under. Each one is a promise about the inputs:
-# the colour is HDR, the motion is low-resolution and not jittered, and the depth is reversed. They
-# have to match what gpu/vk/vk_fsr3.cpp hands the passes, which is why they live in one place.
+# The option set the renderer records these passes under. Each one is a promise about the inputs,
+# which are the ones vk_draw.cpp builds for FSR 4.1: the colour is tonemapped and square-root encoded
+# (LDR, values in [0, 1]), the motion is low-resolution and not jittered, and the depth is standard
+# (0 near, 1 far, not inverted). They have to match what gpu/vk/vk_fsr3.cpp hands the passes, which is
+# why they live in one place, and tests/test_fsr3_shaders.py pins them.
 OPTIONS = [
     "-DFFX_GPU=1",
     "-DFFX_GLSL=1",
     "-DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2",
     "-DFFX_FSR3UPSCALER_OPTION_REPROJECT_USE_LANCZOS_TYPE=0",
-    "-DFFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=1",
+    "-DFFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=0",
     "-DFFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS=1",
     "-DFFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS=0",
-    "-DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=1",
+    "-DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=0",
 ]
 
 # name, the pass GLSL it compiles, extra defines. The _nowave variants are for devices without the
@@ -70,6 +72,15 @@ def compile_one(glslang, name, pass_name, extra, out_path, target_env, variable=
     subprocess.run(cmd, check=True)
 
 
+def comparable(header_text):
+    """The header without glslang's own version comment on its first line, which changes with every
+    glslang release while the SPIR-V below it does not."""
+    lines = header_text.splitlines()
+    if lines and lines[0].lstrip().startswith("//"):
+        lines = lines[1:]
+    return "\n".join(lines) + "\n"
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -94,8 +105,8 @@ def main():
                 compile_one(glslang, name, pass_name, extra, spv, a.target_env, variable=False)
                 subprocess.run([a.spirv_val, str(spv)], check=True)
             if a.check:
-                have = header.read_text() if header.exists() else ""
-                want = made.read_text()
+                have = comparable(header.read_text()) if header.exists() else ""
+                want = comparable(made.read_text())
                 if have != want:
                     bad.append(name)
                     if not have:
