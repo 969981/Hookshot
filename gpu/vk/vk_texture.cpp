@@ -814,7 +814,10 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         for (size_t r0 = 0; r0 < layers.size();) {
             const size_t r1 = bc_parts::run_end(layers.data(), layers.size(), r0, run);
             const uint64_t run_texels = layer_texels * (r1 - r0);
-            if (!bc_parts::run_fits(bc_part_texels, run_texels, bc_part_budget(), r0 == 0)) {   // (the rest: the next recordings)
+            // (never on a parallel replay's segment worker: bc_pending is the replay thread's, and a later recording of
+            // another segment can come before this image's first layout change in queue order: see seg_init above)
+            const uint64_t budget = tl_seg_index >= 0 ? 0 : bc_part_budget();
+            if (!bc_parts::run_fits(bc_part_texels, run_texels, budget, r0 == 0)) {   // (the rest: the next recordings)
                 bc_pending.push_back({&tex, total, std::vector<uint32_t>(layers.begin() + (long)r0, layers.end())});
                 static int64_t deferred;
                 if (deferred++ < 20 || deferred % 200 == 0)
