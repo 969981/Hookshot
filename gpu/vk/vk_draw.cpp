@@ -1611,6 +1611,43 @@ uint32_t aniso_override() {
     static const uint32_t n = getenv("RX_VK_ANISO") ? (uint32_t)std::clamp(atoi(getenv("RX_VK_ANISO")), 0, 16) : 0u;
     return n;
 }
+// (hookshot, #1117) A few samplers filter as nearest where the picture has smooth light: a low-resolution
+// bloom or light buffer read through them shows its texels as square blocks, around Navi, the Kokiri lamps and
+// the graveyard's light shafts, and as a checkerboard in the fog. Which samplers are wrong is not known yet, so
+// this is a diagnostic switch, not a fix: RX_VK_FORCE_LINEAR=1 filters every non-comparison nearest sampler
+// linearly, =2 only its magnification, =3 only its minification, =4 only the ids in RX_VK_FORCE_LINEAR_IDS,
+// =5 every nearest sampler except those ids. Off unless set, no cost while off, and not in disk_stamp(), so
+// changing it does not rebuild the program cache. Each changed sampler is logged once with the filters it had.
+static void force_linear(int id, bool compare, nvn_samp_par& p) {
+    static const int mode = getenv("RX_VK_FORCE_LINEAR") ? atoi(getenv("RX_VK_FORCE_LINEAR")) : 0;
+    static const char* ids = getenv("RX_VK_FORCE_LINEAR_IDS") ? getenv("RX_VK_FORCE_LINEAR_IDS") : "";
+    if (!mode || compare) return;
+    bool listed = false;
+    if (*ids) {
+        char buf[24];
+        snprintf(buf, sizeof buf, "%d", id);
+        const size_t len = strlen(buf);
+        for (const char* q = ids; *q && !listed;) {
+            const char* e = q;
+            while (*e && *e != ',') e++;
+            listed = (size_t)(e - q) == len && !strncmp(q, buf, len);
+            q = *e ? e + 1 : e;
+        }
+    }
+    const bool apply = mode < 4 || (mode == 4 ? listed : !listed);
+    if (!apply) return;
+    // (the minification filter's mip mode is kept: only the texel filter changes, as in #1117's own patch.
+    // Changing p before the key is mixed also keeps the sampler cache's entries distinct)
+    const int was_mag = p.magf, was_min = p.minf;
+    if (mode != 3 && p.magf == NVN_MAG_FILTER_NEAREST) p.magf = NVN_MAG_FILTER_LINEAR;
+    if (mode != 2) {
+        if (p.minf == NVN_MIN_FILTER_NEAREST) p.minf = NVN_MIN_FILTER_LINEAR;
+        else if (p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST) p.minf = NVN_MIN_FILTER_LINEAR_MIPMAP_NEAREST;
+        else if (p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR) p.minf = NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR;
+    }
+    if (p.magf != was_mag || p.minf != was_min)
+        logf("vk: RX_VK_FORCE_LINEAR: mode %d sampler %d was mag %d min %d", mode, id, was_mag, was_min);
+}
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
 VkSampler sampler_make(int id, bool compare);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
@@ -1631,6 +1668,7 @@ VkSampler sampler_for(int id, bool compare) {
 VkSampler sampler_make(int id, bool compare) {
     nvn_samp_par p{};
     if (!sampler_of(id, &p)) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
+    force_linear(id, compare, p);
     uint64_t key = mix(compare ? 0xC0 : 0xAB, aniso_override());
     const uint8_t* b = reinterpret_cast<const uint8_t*>(&p);
     for (size_t i = 0; i < sizeof p; i += 8) {

@@ -550,6 +550,19 @@ task shader (a culling pass) until the kernel resets it ([#817](https://github.c
 It is a workaround, not a fix: those are task + mesh programs, so the geometry they draw goes with them, and key models
 are missing while it is set. Off unless set.
 
+`RX_VK_FORCE_LINEAR=<mode>` filters a few `NEAREST` samplers as `LINEAR`, to look into the square, blocky
+light halos and checkerboard fog of [#1117](https://github.com/NotRexed/Hookshot/issues/1117): a low-resolution
+bloom or light buffer read through a nearest sampler shows its texels as square blocks around Navi, the Kokiri
+lamps and the graveyard's light shafts. `1` changes every non-comparison nearest sampler, `2` only its
+magnification, `3` only its minification, `4` only the ids in `RX_VK_FORCE_LINEAR_IDS=<id,id,...>`, `5` every
+nearest sampler except those ids. Each changed sampler is named once in the log with the filters it had. The
+minification filter's mipmap mode is kept, comparison samplers are left alone, and neither switch is in the
+program cache's stamp, so trying a mode does not rebuild the shaders.
+
+This is a diagnostic switch, not a fix: which samplers should be linear is still unknown. Forcing *all* of them
+also smooths the low-resolution volumetric buffers into a continuous haze on some drivers, so mode `4` with a
+short id list is the way to narrow it down without changing the whole picture. Off unless set.
+
 `RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
 the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:
 that task shader walks a coarse depth grid cell by cell for every meshlet and ends with
