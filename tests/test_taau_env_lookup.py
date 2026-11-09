@@ -27,11 +27,11 @@ PREFIX = r'''
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <mutex>
-#include <unordered_map>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 static const char *configured_keys, *no_f16;
 static int key_reads;
@@ -66,37 +66,40 @@ struct PushDescriptorSpy {
 static PushDescriptorSpy vkCmdPushDescriptorSetKHR;
 struct ImageInfo { VkImageView imageView; };
 struct SrcInfo { int image = 0; int format = 0; uint32_t width = 0, height = 0; };
-static struct { std::vector<ImageInfo> imgs; std::vector<SrcInfo> srcs; } dw;
-constexpr int VK_NULL_HANDLE = 0;
+static struct DrawWork { std::vector<ImageInfo> imgs; std::vector<SrcInfo> srcs; } draw_work;
+static DrawWork& dw() { return draw_work; }
 
 // (hookshot) This fork's taau_stand_in is the backend seam, not upstream's four-line gate: it
 // resolves the dispatch into an upscale::Request, asks which backend takes it, and runs that one.
 // The seam's own headers are plain data and Vulkan-free, so they are included rather than faked --
-// a hand-written copy of Verdict or Request would be a second definition to keep in step, and the
-// test would pass while the real contract moved. Everything below this is a boundary the fixture
-// owns: each backend reports itself unavailable, so the stand-in path is what runs, which is the
-// path this test is about.
+// a hand-written Verdict or Request would be a second definition to keep in step, and the test
+// would pass while the real contract moved. Each backend reports itself unavailable here, so the
+// stand-in path runs, which is the path this test is about.
 #include "upscale_contract.h"
 #include "upscale_seam.h"
 using namespace mkwvk;
-namespace mkwvk {
-namespace fsr3 { static bool supported() { return false; } }
-namespace dlss { static bool supported() { return false; } }
-}
+constexpr int VK_NULL_HANDLE = 0;
+using VkImage = int;
+constexpr int VK_IMAGE_ASPECT_COLOR_BIT = 1, VK_FILTER_NEAREST = 0, VK_FORMAT_UNDEFINED = 0;
+constexpr int VK_IMAGE_LAYOUT_GENERAL = 1;
+struct VkImageSubLayers { uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount; };
+struct VkOffset3D { int32_t x, y, z; };
+struct VkImageBlit { VkImageSubLayers srcSubresource; VkOffset3D srcOffsets[2];
+                     VkImageSubLayers dstSubresource; VkOffset3D dstOffsets[2]; };
+static void vkCmdBlitImage(VkCommandBuffer, VkImage, int, VkImage, int, uint32_t, const VkImageBlit*, int) {}
+static struct { int image = 0, view = 0, format = 0; uint32_t width = 0, height = 0; } scene_depth;
+static struct { float m[16]; bool have = false; } scene_vp;
+static void logf(const char*, ...) {}
 static int scene_upscaler() { return 0; }
 static bool upscale_trace_key(uint64_t) { return false; }
 static void upscale_bindings(const NvnState&, const Stage&, std::vector<upscale::Binding>&) {}
-static struct { int image = 0, view = 0, format = 0; uint32_t width = 0, height = 0; } scene_depth;
-static void logf(const char*, ...) {}
 static bool scene_history_stale(uint32_t, uint32_t) { return false; }
 static void scene_jitter_display_width(uint32_t) {}
 static bool scene_jitter(float* x, float* y) { if (x) *x = 0.0f; if (y) *y = 0.0f; return false; }
-// In the renderer these are weak symbols the host may or may not define, and the seam tests the
-// address before calling. A plain function here would make that test always true (and -Waddress
-// would say so), so the spy is a pointer -- which is also what lets a case set it to null.
+// In the renderer these two are weak symbols the host may or may not define, and the seam tests the
+// address before calling; a plain function here would make that test always true.
 static float (*hos_oot_camera)(float*, float*) = nullptr;
 static int (*hos_oot_view_projection)(float*) = nullptr;
-using VkImage = int;
 struct FakeMatrix { float m[16]; };
 namespace mkwvk {
 namespace camera_motion {
@@ -109,6 +112,7 @@ namespace fsr3 {
 struct Inputs { VkImageView color=0, depth=0, motion=0; uint32_t render_width=0, render_height=0,
                 upscale_width=0, upscale_height=0; float motion_scale[2]{}, jitter[2]{};
                 float near_plane=0.0f, fov_y=0.0f; bool reset=false; };
+static bool supported() { return false; }
 static bool upscale(VkCommandBuffer, const Inputs&) { return false; }
 static VkImage output_image() { return 0; }
 static int fsr_stage() { return 0; }
@@ -119,19 +123,11 @@ struct Inputs { VkImageView color=0, depth=0, motion=0; VkImage color_image=0, d
                 int color_format=0, depth_format=0, motion_format=0;
                 uint32_t render_width=0, render_height=0, upscale_width=0, upscale_height=0;
                 float motion_scale[2]{}, jitter[2]{}; float near_plane=0.0f, fov_y=0.0f; bool reset=false; };
+static bool supported() { return false; }
 static bool upscale(VkCommandBuffer, const Inputs&) { return false; }
 static VkImage output_image() { return 0; }
 }
-}
-struct VkImageSubLayers { uint32_t aspectMask, mipLevel, baseArrayLayer, layerCount; };
-struct VkOffset3D { int32_t x, y, z; };
-struct VkImageBlit { VkImageSubLayers srcSubresource; VkOffset3D srcOffsets[2];
-                     VkImageSubLayers dstSubresource; VkOffset3D dstOffsets[2]; };
-constexpr int VK_IMAGE_ASPECT_COLOR_BIT = 1, VK_FILTER_NEAREST = 0, VK_FORMAT_UNDEFINED = 0;
-constexpr int VK_IMAGE_LAYOUT_GENERAL = 1;
-static void vkCmdBlitImage(VkCommandBuffer, VkImage, int, VkImage, int, uint32_t, const VkImageBlit*, int) {}
-static struct { float m[16]; bool have = false; } scene_vp;
-
+}   // (vk_draw.cpp's dw is a TLS_OBJECT: the calling thread's, by a call)
 static unsigned handle_value=5;
 static bool resolve_image=true, upscale_result=true;
 static int upscale_calls, view_calls, handle_calls;
@@ -181,15 +177,15 @@ int main(int argc,char** argv){
     check(key_reads==0,"1000 warm rejected invocations perform no key lookup");
     check(handle_calls==0 && view_calls==0 && upscale_calls==0,"capability rejection avoids resource boundary calls");
     if(expected){
-        dev.push_descriptor=true;dw.imgs={{11},{22},{33},{44}};
+        dev.push_descriptor=true;dw().imgs={{11},{22},{33},{44}};
         auto rejected=[&](const char* what){key_reads=0;int prior=upscale_calls;check(!taau_stand_in(19,state,program),what);check(key_reads==0 && upscale_calls==prior,"rejected resource guard never reads/forwards keys");};
         vkCmdPushDescriptorSetKHR=false;rejected("missing push entry");vkCmdPushDescriptorSetKHR=true;
         auto stages=program.stages;program.stages.clear();rejected("empty stages");program.stages=stages;
         program.stages[0].info.texture_descriptors.clear();rejected("no textures");program.stages=stages;
         program.stages[0].info.image_descriptors.clear();rejected("no images");program.stages=stages;
-        dw.imgs.pop_back();rejected("descriptor span too short");dw.imgs.push_back({44});
-        dw.imgs[0].imageView=0;rejected("no input view");dw.imgs[0].imageView=11;
-        dw.imgs[3].imageView=0;rejected("no output view");dw.imgs[3].imageView=44;
+        dw().imgs.pop_back();rejected("descriptor span too short");dw().imgs.push_back({44});
+        dw().imgs[0].imageView=0;rejected("no input view");dw().imgs[0].imageView=11;
+        dw().imgs[3].imageView=0;rejected("no output view");dw().imgs[3].imageView=44;
         handle_value=0;rejected("no handle");handle_value=5;
         resolve_image=false;rejected("no resolved image");resolve_image=true;
         texture.format=0;rejected("wrong output format");texture.format=VK_FORMAT_B10G11R11_UFLOAT_PACK32;
