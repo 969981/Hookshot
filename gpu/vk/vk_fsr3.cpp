@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <utility>
 #include <cstdlib>
+#include <functional>
 #include <vector>
 
 #include "vk_fsr3.h"
@@ -177,6 +178,8 @@ constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_RE
 struct State {
     bool tried = false;
     bool ok = false;
+    bool failed = false;   // (a pipeline or an image could not be made: not tried again)
+    bool wave = true;      // (the subgroup operations the single-pass downsampler prefers: else the _nowave pyramids)
     Pipeline passes[kPassCount];
     VkSampler point = VK_NULL_HANDLE;
     VkSampler linear = VK_NULL_HANDLE;
@@ -207,6 +210,15 @@ struct State {
 constexpr uint32_t kUniformFrames = 4;   // (more than the swapchain's images in flight)
 
 State g;
+const char* g_reason = "";   // (why not supported(), short: the menu's and the log's)
+
+/// Images a new size replaced: work in flight may still use them, so they go a while later.
+struct RetiredImage {
+    Image image;
+    uint64_t frame = 0;
+};
+constexpr uint64_t kRetireFrames = 120;   // (frames in flight are far fewer than this)
+std::vector<RetiredImage> g_retired;
 
 void drop_image(Image& t) {
     for (VkImageView v : t.levels) vkDestroyImageView(dev.device, v, nullptr);
@@ -214,6 +226,35 @@ void drop_image(Image& t) {
     if (t.view) vkDestroyImageView(dev.device, t.view, nullptr);
     if (t.image) mkwvk::destroy_image(t.image, t.memory);
     t = Image{};
+}
+
+/// Every image of the set, a new size's replacing the old one's: retired, not freed.
+void for_each_image(const std::function<void(Image&)>& fn) {
+    for (Image* t : {&g.farthest_depth, &g.shading_change, &g.new_locks, &g.spd_mips,
+                     &g.farthest_depth_mip1, &g.dilated_motion_vectors, &g.dilated_depth,
+                     &g.previous_nearest_depth, &g.dilated_reactive_masks, &g.frame_info,
+                     &g.spd_atomic, &g.lanczos_lut, &g.default_reactive, &g.output}) {
+        fn(*t);
+    }
+    for (size_t i = 0; i < 2; i++) {
+        fn(g.accumulation[i]);
+        fn(g.luma[i]);
+        fn(g.luma_history[i]);
+        fn(g.internal_upscaled[i]);
+    }
+}
+
+/// The images of a size no work recorded for any more can use.
+void free_retired(bool all) {
+    const uint64_t now = texture_frame_no();
+    for (size_t i = 0; i < g_retired.size();) {
+        if (!all && now - g_retired[i].frame < kRetireFrames) {
+            i++;
+            continue;
+        }
+        drop_image(g_retired[i].image);
+        g_retired.erase(g_retired.begin() + (ptrdiff_t)i);
+    }
 }
 
 /// One of the SDK's internal images: storage and sampled, GENERAL throughout, with a view per level
@@ -391,27 +432,61 @@ bool supported() {
     static const bool answer = [] {
         if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) {
             logf("vk: fsr3: no push descriptors");
+            g_reason = "no push descriptors";
             return false;
         }
-        return formats_supported();
+        if (!formats_supported()) {
+            g_reason = "a storage format is missing";
+            return false;
+        }
+        VkPhysicalDeviceSubgroupProperties sg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &sg;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        g.wave = (sg.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                 (sg.supportedOperations & (VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_QUAD_BIT)) ==
+                     (VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_QUAD_BIT);
+        return true;
     }();
     return answer;
+}
+
+bool available() {
+    return supported() && !g.failed;
+}
+
+const char* reason() {
+    return g_reason;
 }
 
 bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_width,
              uint32_t upscale_height) {
     if (!supported()) return false;
+    if (g.failed) return false;
+    free_retired(false);
     if (!g.tried) {
         g.tried = true;
         g.ok = make_samplers() && make_uniforms();
         for (size_t i = 0; i < kPassCount && g.ok; i++) g.ok = make_pipeline(g.passes[i], PASSES[i]);
         if (g.ok) logf("vk: fsr3: %zu pass pipelines ready", kPassCount);
     }
-    if (!g.ok) return false;
+    if (!g.ok) {
+        g.failed = true, g_reason = "its pipelines were not made";
+        return false;
+    }
     const bool same = g.output.image && g.render_width == render_width &&
                       g.render_height == render_height && g.upscale_width == upscale_width &&
                       g.upscale_height == upscale_height;
     if (same) return true;
+
+    // (work recorded against the old size may still run: its images are retired, not destroyed)
+    for_each_image([](Image& t) {
+        if (t.image) g_retired.push_back({t, texture_frame_no()}), t = Image{};
+    });
+    // (the new images start UNDEFINED and hold no history: both are the first evaluation's)
+    g.first_evaluation = true;
+    g.lut_uploaded = false;
+    g.parity = 0;
 
     const uint32_t rw = std::max(1u, render_width), rh = std::max(1u, render_height);
     const uint32_t uw = std::max(1u, upscale_width), uh = std::max(1u, upscale_height);
@@ -443,7 +518,8 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
     made = made && make_image(g.default_reactive, VK_FORMAT_R8_UNORM, 1, 1);
     made = made && make_image(g.output, VK_FORMAT_R16G16B16A16_SFLOAT, uw, uh);
     if (!made) {
-        shutdown();
+        for_each_image([](Image& t) { drop_image(t); });   // (never recorded against)
+        g.failed = true, g_reason = "its images were not made";
         return false;
     }
     g.render_width = rw, g.render_height = rh, g.upscale_width = uw, g.upscale_height = uh;
@@ -473,11 +549,14 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         k.jitter[i] = in.jitter[i];
         k.previous_jitter[i] = first ? in.jitter[i] : g.previous_jitter[i];
     }
-    {   // (setupDeviceDepthToViewSpaceDepthParams for reversed infinite depth)
+    {   // (setupDeviceDepthToViewSpaceDepthParams for standard, finite depth: the shaders read
+        // view depth as device_to_view_depth[1] / (d - device_to_view_depth[0]))
         const float aspect = (float)rw / (float)std::max(1, rh);
         const float cot_half_fov = std::cos(0.5f * in.fov_y) / std::sin(0.5f * in.fov_y);
-        k.device_to_view_depth[0] = -1.0f * FLT_EPSILON;
-        k.device_to_view_depth[1] = in.near_plane;
+        const float n = in.near_plane, f = std::max(in.far_plane, in.near_plane * 1.001f);
+        const float q = f / (n - f);
+        k.device_to_view_depth[0] = -q;
+        k.device_to_view_depth[1] = q * n;
         k.device_to_view_depth[2] = 1.0f / (cot_half_fov / aspect);
         k.device_to_view_depth[3] = 1.0f / cot_half_fov;
         k.tan_half_fov = std::tan(std::atan(std::tan(in.fov_y * 0.5f) * aspect));
@@ -615,7 +694,9 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         return Resource{g.spd_mips.levels[std::min<size_t>(level, n ? n - 1 : 0)]};
     };
     const Resource color{in.color}, depth{in.depth}, motion{in.motion};
-    const Resource exposure = tex(g.frame_info);   // (FSR computes its own exposure)
+    // (the colour is tonemapped already: no auto exposure. The SDK's default exposure is an image of
+    // zero, which its Exposure() reads as 1.0, the same as FSR 4.1's unit exposure in vk_fsr4.cpp)
+    const Resource exposure = tex(g.default_reactive);
     const Resource current_luma = tex(g.luma[p]);
     const Resource cb_fsr{VK_NULL_HANDLE, g.uniforms, base, g.slot_fsr};
     const Resource cb_spd{VK_NULL_HANDLE, g.uniforms, base + g.slot_fsr, g.slot_spd};
@@ -630,10 +711,10 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     run(0, {motion, depth, color, tex(g.dilated_motion_vectors), tex(g.dilated_depth),
             tex(g.previous_nearest_depth), tex(g.farthest_depth), current_luma, cb_fsr},
         groups(rw, 8), groups(rh, 8));
-    run(1, {current_luma, tex(g.farthest_depth), tex(g.spd_atomic), tex(g.frame_info), mip(0), mip(1),
+    run(g.wave ? 1 : 2, {current_luma, tex(g.farthest_depth), tex(g.spd_atomic), tex(g.frame_info), mip(0), mip(1),
             mip(2), mip(3), mip(4), mip(5), tex(g.farthest_depth_mip1), cb_fsr, cb_spd},
         spd_x, spd_y);
-    run(3, {current_luma, tex(g.luma[q]), tex(g.dilated_motion_vectors), exposure, tex(g.spd_atomic),
+    run(g.wave ? 3 : 4, {current_luma, tex(g.luma[q]), tex(g.dilated_motion_vectors), exposure, tex(g.spd_atomic),
             mip(0), mip(1), mip(2), mip(3), mip(4), mip(5), cb_fsr, cb_spd},
         spd_x, spd_y);
     run(5, {tex(g.spd_mips), tex(g.shading_change), cb_fsr}, groups(rw / 2, 8), groups(rh / 2, 8));
@@ -674,18 +755,8 @@ VkImageView output_view() {
 }
 
 void shutdown() {
-    for (Image* t : {&g.farthest_depth, &g.shading_change, &g.new_locks, &g.spd_mips,
-                     &g.farthest_depth_mip1, &g.dilated_motion_vectors, &g.dilated_depth,
-                     &g.previous_nearest_depth, &g.dilated_reactive_masks, &g.frame_info,
-                     &g.spd_atomic, &g.lanczos_lut, &g.default_reactive, &g.output}) {
-        drop_image(*t);
-    }
-    for (size_t i = 0; i < 2; i++) {
-        drop_image(g.accumulation[i]);
-        drop_image(g.luma[i]);
-        drop_image(g.luma_history[i]);
-        drop_image(g.internal_upscaled[i]);
-    }
+    for_each_image([](Image& t) { drop_image(t); });
+    free_retired(true);
     g.render_width = g.render_height = g.upscale_width = g.upscale_height = 0;
     g.first_evaluation = true;
     g.lut_uploaded = false;
