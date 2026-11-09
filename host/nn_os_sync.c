@@ -1125,7 +1125,11 @@ HLE(_ZN2nn2os10TryWaitAnyEPNS0_13MultiWaitTypeE) { RET(wait_any(ARG(0), 0)); }
 HLE(_ZN2nn2os24UnlinkAllMultiWaitHolderEPNS0_13MultiWaitTypeE) {
     Obj *mw = obj(ARG(0), K_MULTIWAIT);
     AcquireSRWLockExclusive(&mw_lock);
-    for (int i = 0; i < mw->nlinks; i++) mw->links[i]->mw = NULL;
+    for (int i = 0; i < mw->nlinks; i++) {
+        Obj *o = holder_target(mw->links[i]);
+        if (o) InterlockedDecrement(&o->mw_linked);
+        mw->links[i]->mw = NULL;
+    }
     mw->nlinks = 0;
     ReleaseSRWLockExclusive(&mw_lock);
 }

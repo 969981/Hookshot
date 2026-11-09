@@ -65,6 +65,78 @@ int main(int argc, char **argv) {
 """
 
 
+# The link count through the real Link / Unlink / UnlinkAll / MoveAll (several holders, two multi-waits): each object's count
+# must equal the holders linking it after every step, or WaitAny goes back to waking on every change (a phantom watcher)
+LINKS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef long LONG;
+typedef struct { int x; } SRWLOCK;
+static SRWLOCK mw_lock;
+static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; }
+static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
+static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
+typedef struct Obj {
+    uint64_t event; int sem_max; struct Obj **links; int nlinks, caplinks; struct Obj *mw; volatile LONG mw_linked; int kind;
+} Obj;
+enum { K_EVENT = 1, K_TIMER, K_SEMA, K_QUEUE, K_MULTIWAIT, K_HOLDER };
+HOLDER_ENUM
+static Obj objs[64];
+static Obj *obj(uint64_t key, int kind) { objs[key].kind = kind; return &objs[key]; }
+typedef struct { uint64_t x[8]; } Ctx;
+#define ARG(i) (c->x[i])
+#define HLE(name) static void name(Ctx *c)
+FUNCTIONS
+static int bad;
+static void expect(const char *step, LONG e1, LONG e2) {
+    if (objs[1].mw_linked != e1 || objs[2].mw_linked != e2) {
+        printf("FAIL after %s: event1 %ld (want %ld), event2 %ld (want %ld)\n", step, objs[1].mw_linked, e1, objs[2].mw_linked, e2);
+        bad = 1;
+    }
+}
+static void call(void (*f)(Ctx *), uint64_t a, uint64_t b) { Ctx c = {{a, b}}; f(&c); }
+int main(void) {
+    const uint64_t A = 10, B = 11, h1 = 20, h2 = 21, h3 = 22, h4 = 23;
+    objs[h1].event = 1; objs[h1].sem_max = H_EVENT;   /* (two holders over event 1, one over event 2, one over a thread) */
+    objs[h2].event = 1; objs[h2].sem_max = H_EVENT;
+    objs[h3].event = 2; objs[h3].sem_max = H_EVENT;
+    objs[h4].event = 3; objs[h4].sem_max = H_THREAD;
+    for (uint64_t h = h1; h <= h4; h++) call(LINK, A, h);
+    expect("four links", 2, 1);
+    call(UNLINK, h2, 0);
+    expect("unlink one", 1, 1);
+    call(UNLINK, h2, 0);
+    expect("unlink it again", 1, 1);
+    call(MOVEALL, B, A);
+    expect("move all", 1, 1);
+    if (objs[h1].mw != &objs[B] || objs[A].nlinks) { puts("FAIL: move all did not move the holders"); bad = 1; }
+    call(UNLINKALL, B, 0);
+    expect("unlink all", 0, 0);
+    call(LINK, A, h1);
+    call(UNLINKALL, B, 0);
+    expect("link again, unlink all of the other", 1, 0);
+    call(UNLINK, h1, 0);
+    expect("unlink the last", 0, 0);
+    puts(bad ? "FAILED" : "ok");
+    return bad;
+}
+"""
+
+
+def links_fixture(source):
+    names = {"LINK": "LinkMultiWaitHolder", "UNLINK": "UnlinkMultiWaitHolder", "UNLINKALL": "UnlinkAllMultiWaitHolder",
+             "MOVEALL": "MoveAllMultiWaitHolder"}
+    parts, defines = [block(source, "static Obj *holder_target(")], []
+    for alias, name in names.items():
+        marker = re.search(r"HLE\((_ZN2nn2os\d+%sE\w*)\)" % name, source)
+        parts.append(block(source, marker.group(0)))
+        defines.append("#define %s %s" % (alias, marker.group(1)))
+    enum = re.search(r"enum \{ H_EVENT[^}]*\};", source).group(0)
+    return LINKS.replace("HOLDER_ENUM", enum).replace("FUNCTIONS", "\n".join(parts + defines))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="clang++")
@@ -91,6 +163,13 @@ def main():
         exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
         subprocess.run([compiler, "-std=c++17", "-O1", "-w", str(folder / "fixture.cpp"), "-o", str(exe)], check=True,
                        timeout=120)
+        (folder / "links.cpp").write_text(links_fixture(source), encoding="utf-8")
+        links = folder / ("links.exe" if os.name == "nt" else "links")
+        subprocess.run([compiler, "-std=c++17", "-O1", "-w", str(folder / "links.cpp"), "-o", str(links)], check=True, timeout=120)
+        result = subprocess.run([str(links)], capture_output=True, text=True, timeout=30)
+        print("links:", result.stdout.strip())
+        if result.returncode:
+            raise SystemExit("FAIL: link counts")
         for mode in ("targeted", "all"):
             env.pop("HOS_MW_WAKE", None)
             argv = [str(exe)]
@@ -101,8 +180,8 @@ def main():
             print(mode + ":", result.stdout.strip())
             if result.returncode:
                 raise SystemExit("FAIL: " + mode)
-    print("PASS: a change wakes WaitAny only for an object a holder links (HOS_MW_WAKE=all: every change); link and unlink"
-          " keep the count; every poke passes its object")
+    print("PASS: a change wakes WaitAny only for an object a holder links (HOS_MW_WAKE=all: every change); link, unlink,"
+          " unlink all and move all keep the count; every poke passes its object")
 
 
 if __name__ == "__main__":
