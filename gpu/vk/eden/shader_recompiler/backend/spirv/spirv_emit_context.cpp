@@ -1497,11 +1497,31 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             AddLabel(continue_label);
             OpBranch(begin_label);
         }};
-        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
-                    [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        // (hookshot) Where the device has a native float add (profile.support_float32_atomic_add, VK_EXT_shader_atomic_float):
+        // the same lookup, then one OpAtomicFAddEXT instead of the loop. Two OoT passes that add through table pointers took
+        // 14-37 ms a frame on a Quadro P4000 with the loop retrying under contention
+        const bool native{profile.support_float32_atomic_add && profile.support_descriptor_aliasing};
+        if (native) {
+            AddExtension("SPV_EXT_shader_atomic_float_add");
+            AddCapability(spv::Capability::AtomicFloat32AddEXT);
+        }
+        const auto native_add{[&](Id pointer) {
+            OpReturnValue(OpAtomicFAdd(F32[1], pointer, Const(static_cast<u32>(spv::Scope::Device)), u32_zero_value, value));
+        }};
+        if (native) {
+            define_body(&StorageDefinitions::F32, addr, storage_types.F32.element, 2,
+                        [&](Id ssbo_pointer) { native_add(ssbo_pointer); }, false);
+        } else {
+            define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                        [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        }
         if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
-            if (gp_level >= 3) cas_loop(psb_member(U32[1], target));
-            else OpReturnValue(ConstantNull(F32[1]));
+            if (gp_level >= 3) {
+                if (native) native_add(psb_member(F32[1], target));
+                else cas_loop(psb_member(U32[1], target));
+            } else {
+                OpReturnValue(ConstantNull(F32[1]));
+            }
         });
         OpReturnValue(ConstantNull(F32[1]));
         OpFunctionEnd();
