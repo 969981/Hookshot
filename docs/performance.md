@@ -69,6 +69,36 @@ mutex** over everything the threads share -- textures and their uploads, program
 samplers, pools and memory stamps. Three of its seventeen sites in the draw path are inside
 `build_descriptors`' per-binding loop, so the count rises with every texture every draw binds.
 
+### Which sites take it
+
+`ParLock` counts by file and line now (free when parallel replay is off, since nothing in it runs
+then), and the same report names them. Over 240 command buffers, per command buffer:
+
+| site | taken | waited |
+|---|---|---|
+| `vk_draw.cpp:1820` | 352 | 1.18 ms |
+| **`vk_memory.cpp:2333`** | 250 | **2.02 ms** |
+| `vk_draw.cpp:1829` | 56 | 0.16 ms |
+| `vk_draw.cpp:3077` | 45 | 0.29 ms |
+| `vk_draw.cpp:5243` | 21 | 0.08 ms |
+| `vk_draw.cpp:3162` | 18 | 0.04 ms |
+
+Two sites are the whole problem, and each has a shape worth knowing:
+
+- **`vk_draw.cpp:1820`** is the slow path of a texture touch: `texture_touch_quick` is lock-free and
+  the lock is only taken when it misses. 352 misses a command buffer is the cost, so the question is
+  why the quick path misses so often, not how to make the locked path cheaper.
+- **`vk_memory.cpp:2333`** waits the longest. It takes `ParLock` **before** `pools_mu`, and its own
+  comment says why: always in that order, because a mirror sync records into the shared upload
+  command buffer. So the lock is held across the whole pool lookup even when no sync follows. The
+  obvious fix -- take it only when a sync will actually record -- is the one thing that must not be
+  done casually, because the ordering rule exists to stop a deadlock against whatever takes these
+  two the other way round.
+
+So the fix is not "split the lock" in the abstract. It is two specific questions: why
+`texture_touch_quick` misses, and whether the `pools_mu` path can resolve a pool without holding the
+shared-recording lock. Both are measurable with the harness that produced this table.
+
 So the parallel path is not slow because parallelism does not suit this game. It is serialised on
 one lock, and then pays the coordination on top. Splitting that lock by what it protects is the
 work that would make it pay, and it is delicate: the mutex is recursive and taken reentrantly, so
