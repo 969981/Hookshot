@@ -1958,6 +1958,15 @@ bool seed_is_compute(size_t i) {
     return false;
 }
 
+// A depth compare on a texture of integer format: an answer seed_compute can try and no bound texture can give (a compare needs a
+// depth format). Its SPIR-V is invalid (a float compare result from a uint image), and RADV's compiler crashes on it
+bool compares_integer_texture(const Program& p) {
+    for (const Stage& st : p.stages)
+        for (const auto& d : st.info.texture_descriptors)
+            if (d.is_depth && d.is_integer) return true;
+    return false;
+}
+
 // (hookshot) The seed's compute programs, each with its texture variants. A program's texture questions are answered in play by the
 // textures bound (Program::answers), which nothing before the game knows; the questions themselves are few, so each is tried with every
 // answer it can get, and an answer that changes the SPIR-V makes a variant. Variants of two answers and more are taken fewest first, up
@@ -2013,6 +2022,7 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
         forced = &f, seed_capture = &t.spirv;
         translate_into(*t.p, *blank, nullptr, nullptr, &code, no_types);
         forced = nullptr, seed_capture = nullptr;
+        if (!t.p->failed && compares_integer_texture(*t.p)) t.p->failed = true;
         t.asked = f.asked;
         return t;
     };
