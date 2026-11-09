@@ -224,6 +224,9 @@ bool create_device() {
     // RX_VK_CHECKPOINTS=0: off
     if (!getenv("RX_VK_CHECKPOINTS") || strcmp(getenv("RX_VK_CHECKPOINTS"), "0") != 0)
         optional(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, dev.checkpoints);
+    // (asked for only: a marker written twice a draw, where the NV ones are not there to hide a race)
+    if (const char* c = getenv("RX_VK_CHECKPOINTS"); !dev.checkpoints && c && strcmp(c, "0") != 0 && strcmp(c, "ext") != 0)
+        optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
 
@@ -372,6 +375,7 @@ bool create_device() {
 
     load_device(dev.device);
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
+    if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
@@ -519,11 +523,13 @@ bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
     if (!replay_start()) return false;
     if (prepare_only()) {
-        static int part;   // (two parts: the programs, then the pipelines the notes name; most of the time is the first)
+        // (three parts: the programs, the pipelines the notes predict, then those they name; most of the time is the first)
+        static int part;
         const auto progress = [](size_t done, size_t total) {
             static size_t last = ~(size_t)0;
             if (!total) return;
-            const size_t at = (part ? 900 : 0) + done * (part ? 100 : 900) / total;
+            static const size_t from[3] = {0, 700, 900}, span[3] = {700, 200, 100};
+            const size_t at = from[part] + done * span[part] / total;
             if (at == last) return;
             last = at;
             printf("@@progress %.3f\n", at / 1000.0);
@@ -532,8 +538,10 @@ bool started_up() {
         printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
         part = 0;
-        prepare_run(progress);
+        const bool prepared = prepare_run(progress);
         part = 1;
+        if (prepared) predict_run(progress);
+        part = 2;
         precompile_run(progress);
         pipeline_cache_save(true);
         remove(skipped_path().c_str());
@@ -575,7 +583,7 @@ bool started_up() {
             DWORD wrote = 0;
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
-        prepare_run(progress);
+        if (prepare_run(progress)) predict_run(progress);
         precompile_run(progress);
         if (console) CloseHandle(console), console = nullptr, FreeConsole();
     }
