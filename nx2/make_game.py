@@ -24,6 +24,7 @@ import filecmp
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -39,12 +40,15 @@ BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile
 STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
-# (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
-# beside the builder), to run under Proton or copy to a Windows PC
-LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
-# (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
-# library" three times and no controller worked: Discord #bug-reporting, 11-08)
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+WINDOWS = _toolchain.windows()
+MACOS = sys.platform == "darwin" and not WINDOWS
+LINUX = sys.platform.startswith("linux") and not WINDOWS
+CROSS = WINDOWS and os.name != "nt"
+if not (WINDOWS or LINUX or MACOS):
+    raise SystemExit("Unsupported host platform: " + sys.platform)
+BESIDE = (["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else
+          ["hookshot", "libSDL2-2.0.0.dylib", "libwgpu_native.dylib"] if MACOS else
+          ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"])
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -84,7 +88,9 @@ def failure_reason(lines):
     tail, seen = [], None
     for line in lines:
         tail = (tail + [line])[-12:]
-        if "error:" in line.lower() and "CalledProcessError" not in line:
+        lower = line.lower()
+        if ("error:" in lower and "CalledProcessError" not in line and
+                "linker command failed" not in lower):
             seen = line
     if seen is not None:
         return seen
@@ -425,6 +431,61 @@ def check_linux_compiler():
              "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
 
 
+def check_macos_toolchain():
+    """Validate the native Apple Silicon compiler and graphics/audio libraries before the long lift."""
+    wgpu = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "wgpu-native"))
+    sdl = os.environ.get("HOOKSHOT_SDL2", "")
+    ffmpeg = os.environ.get("HOOKSHOT_FFMPEG", "")
+    if platform.machine() not in ("arm64", "aarch64"):
+        fail("The macOS builder requires a native Apple Silicon (arm64) process; Rosetta is not supported.")
+    if not os.path.isfile(os.path.join(wgpu, "include", "webgpu", "webgpu.h")):
+        fail("macOS needs arm64 wgpu-native with Metal support: set WGPU_NATIVE to its package directory.")
+    if not os.path.isfile(os.path.join(wgpu, "lib", "libwgpu_native.dylib")):
+        fail("macOS needs libwgpu_native.dylib in WGPU_NATIVE/lib.")
+    if not sdl or not os.path.isfile(sdl):
+        fail("macOS needs an arm64 SDL2 dylib: set HOOKSHOT_SDL2 to libSDL2-2.0.0.dylib.")
+    if not shutil.which("lipo"):
+        fail("Install Xcode Command Line Tools to verify macOS dependency architectures.")
+    libraries = [sdl, os.path.join(wgpu, "lib", "libwgpu_native.dylib")]
+    if ffmpeg:
+        headers = ("libavcodec/avcodec.h", "libswscale/swscale.h", "libswresample/swresample.h",
+                   "libavutil/avutil.h")
+        missing_headers = [h for h in headers if not os.path.isfile(os.path.join(ffmpeg, "include", h))]
+        static_libs = ("libavcodec.a", "libswscale.a", "libswresample.a", "libavutil.a")
+        missing_libs = [l for l in static_libs if not os.path.isfile(os.path.join(ffmpeg, "lib", l))]
+        if missing_headers or missing_libs:
+            missing = missing_headers + missing_libs
+            fail("macOS needs the Hookshot static FFmpeg package; missing: %s" % ", ".join(missing))
+        libraries += [os.path.join(ffmpeg, "lib", l) for l in static_libs]
+    for library in libraries:
+        r = subprocess.run(["lipo", library, "-verify_arch", "arm64"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            fail("macOS dependency must contain native arm64 code: %s" % library)
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    cc = toolchain.find("clang")
+    if not os.path.isfile(cc):
+        fail("Install Xcode Command Line Tools to build Hookshot for macOS.")
+    with tempfile.TemporaryDirectory() as d:
+        src, exe = os.path.join(d, "probe.c"), os.path.join(d, "probe")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write("int main(void) { return 0; }\n")
+        r = subprocess.run([cc] + toolchain.macos_target_flags() + toolchain.macos_sysroot_flags() +
+                           [src, "-o", exe],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        fail("Xcode Command Line Tools could not link a native arm64 macOS test program: %s"
+             % failure_reason((r.stdout + r.stderr).splitlines()))
+    if not ffmpeg:
+        if not shutil.which("pkg-config"):
+            fail("Install pkg-config and arm64 FFmpeg development libraries for the macOS build.")
+        r = subprocess.run(["pkg-config", "--exists", "libavcodec", "libswscale", "libswresample", "libavutil"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            fail("macOS needs arm64 FFmpeg development libraries visible through pkg-config (set PKG_CONFIG_PATH).")
+
+
 def requested_jobs(value):
     """The builder's explicit worker override, or None to keep its automatic selection."""
     if value is None or value == "":
@@ -503,13 +564,12 @@ def check_mingw():
 
 def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
+    if MACOS:
+        return check_macos_toolchain()
     if LINUX:
         return check_linux_compiler()
     if bundled_mingw():
         return check_mingw()
-    if CROSS:
-        fail("Building for Windows on Linux needs llvm-mingw: unpack its Linux release (github.com/mstorsjo/llvm-mingw) and set "
-             "HOOKSHOT_MINGW to its folder.")
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
     cc = toolchain.find("clang")
@@ -570,7 +630,7 @@ def stop_stray_compilers(work, default_work):
     update mid-build) keeps its files open: the next build stopped at once with 'OSError: [Errno 22]' writing sa/gen/a64_fpx.h, or
     WinError 1224 on the play profile. Only that build goes: an earlier make_game on this work folder, the build and lift steps
     whose make_game is gone, and compilers whose command line names this work folder. Never this build or what started it."""
-    if LINUX:
+    if os.name != "nt":
         return
     ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'clang*' -or $_.Name -like 'ld.lld*' -or $_.Name -like 'python*' } "
           "| Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
@@ -661,8 +721,7 @@ def drop_stale_objects(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
     __iob_func. The headers the compiler finds are noted, and when they change the compiled objects go"""
-    if LINUX:
-        _drop_stale_linux(work)
+    if os.name != "nt":
         return
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import hashlib
@@ -875,8 +934,9 @@ def parse_args():
     p.add_argument("--romfs")
     p.add_argument("--exefs")
     p.add_argument("--out")
-    p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-                                                  "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
+    p.add_argument("--work", default=os.path.join(os.path.expanduser("~/Library/Caches"), "HookshotBuilder")
+                   if MACOS else os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                                              "hookshot-builder-windows" if CROSS else "hookshot-builder")
                    if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int)
@@ -1112,6 +1172,11 @@ def main(a=None):
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    # (macOS port) the player's settings file, with the quality presets (host/hos_main.c HOS_QUALITY): there is no Insert
+    # menu with the Metal renderer. Only when the folder has none: the player's own choices stay
+    env_template = os.path.join(ROOT, "scripts", "macos", "hookshot_env.txt")
+    if MACOS and os.path.exists(env_template) and not os.path.exists(os.path.join(out, "hookshot_env.txt")):
+        shutil.copy2(env_template, os.path.join(out, "hookshot_env.txt"))
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         shutil.copy2(icon, os.path.join(out, "hookshot.png"))

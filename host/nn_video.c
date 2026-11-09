@@ -301,6 +301,8 @@ static void dec_finalize(Ctx *c) {
     free(d);
     set_host(ARG(0), DEC_MAGIC, NULL);
 }
+/* (macOS port) HOS_VIDEO_TIMES=1: the decoder's time, every 5 s */
+static volatile LONG64 vt_decode_ns, vt_convert_ns, vt_pictures, vt_since;
 /* a decoded frame into the queue, as RGBA and NV12 (the oldest dropped when the reader falls behind) */
 static void queue_frame(Dec *d, const AVFrame *f) {
     const int w = f->width, h = f->height;
@@ -310,9 +312,16 @@ static void queue_frame(Dec *d, const AVFrame *f) {
         d->sws = sws_getContext(w, h, (enum AVPixelFormat)f->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
         d->sws_w = w, d->sws_h = h, d->sws_fmt = f->format;
     }
+    const int64_t t0 = hos_now_ns();
     Picture p = {0};
     p.w = w, p.h = h, p.pts = f->pts;
-    const int nv12 = f->format == AV_PIX_FMT_NV12;   /* (hookshot: Media Foundation's pictures, kept as NV12 alone) */
+    /* (hookshot: Media Foundation's pictures, kept as NV12 alone. macOS port: dav1d's planar 4:2:0 ones too, their RGBA
+       made by the pool only if a reader asks (pool_rgba): a 1080p RGBA conversion a picture was the decoder thread's
+       time for nothing, the game copying the NV12 planes. HOS_VIDEO_RGBA=1: converted as before) */
+    static int rgba_always = -1;
+    if (rgba_always < 0) rgba_always = getenv("HOS_VIDEO_RGBA") != NULL;
+    const int planar = f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVA420P;
+    const int nv12 = f->format == AV_PIX_FMT_NV12 || (planar && !rgba_always);
     p.rgba = nv12 ? NULL : (uint8_t *)malloc((size_t)w * h * 4);
     p.nv12 = nv12 ? (uint8_t *)malloc((size_t)w * h * 3 / 2) : (uint8_t *)calloc(1, (size_t)w * h * 3 / 2);
     if (!p.nv12 || (!nv12 && !p.rgba)) {   /* (out of memory: this frame is dropped, not written through NULL; issue 342) */
@@ -324,11 +333,11 @@ static void queue_frame(Dec *d, const AVFrame *f) {
     uint8_t *dst[4] = {p.rgba, NULL, NULL, NULL};
     int dst_stride[4] = {w * 4, 0, 0, 0};
     if (d->sws && p.rgba) sws_scale(d->sws, (const uint8_t *const *)f->data, f->linesize, 0, h, dst, dst_stride);
-    if (nv12) {
+    if (f->format == AV_PIX_FMT_NV12) {
         for (int y = 0; y < h; y++) memcpy(p.nv12 + (size_t)y * w, f->data[0] + (size_t)y * f->linesize[0], (size_t)w);
         for (int y = 0; y < h / 2; y++)
             memcpy(p.nv12 + (size_t)w * h + (size_t)y * w, f->data[1] + (size_t)y * f->linesize[1], (size_t)w);
-    } else if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVA420P) {   /* (planar 4:2:0 -> NV12) */
+    } else if (planar) {   /* (planar 4:2:0 -> NV12) */
         for (int y = 0; y < h; y++) memcpy(p.nv12 + (size_t)y * w, f->data[0] + (size_t)y * f->linesize[0], (size_t)w);
         uint8_t *uv = p.nv12 + (size_t)w * h;
         for (int y = 0; y < h / 2; y++)
@@ -343,6 +352,8 @@ static void queue_frame(Dec *d, const AVFrame *f) {
     }
     d->queue[(d->qhead + d->qn) % MAX_QUEUE] = p;
     d->qn++;
+    InterlockedAdd64(&vt_convert_ns, hos_now_ns() - t0);
+    InterlockedIncrement64(&vt_pictures);
 }
 static void mf_picture(void *user, const uint8_t *y, const uint8_t *uv, int w, int h, int stride, int64_t pts) {
     AVFrame f;
@@ -363,8 +374,29 @@ static void drain(Dec *d) {
    Foundation's decoder holds nothing back, so waiting for an empty queue gave the flag only to a buffer handed out
    again, with an older picture's pts, after the real last one went out unmarked */
 static void decode_next(Dec *d);
+/* (HOS_VIDEO_TIMES, above) */
+static void video_times(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("HOS_VIDEO_TIMES") != NULL;
+    if (!on) return;
+    const int64_t now = hos_now_ns(), since = InterlockedCompareExchange64(&vt_since, 0, 0);
+    if (!since) { InterlockedExchange64(&vt_since, now); return; }
+    if (now - since < 5000000000LL || InterlockedCompareExchange64(&vt_since, now, since) != since) return;
+    const int64_t pics = InterlockedExchange64(&vt_pictures, 0), dec = InterlockedExchange64(&vt_decode_ns, 0);
+    const int64_t conv = InterlockedExchange64(&vt_convert_ns, 0);
+    hos_log("video: %lld pictures in %.1f s: decoding %.1f ms a picture (of which converting %.1f ms)", (long long)pics,
+            (now - since) / 1e9, pics ? dec / 1e6 / pics : 0.0, pics ? conv / 1e6 / pics : 0.0);
+}
 static void decode_pending(Dec *d) {
+    if (!d->phead || (d->qn && d->phead->pkt)) return;
+    /* (macOS port) host work, as mkw-recomp's file calls (nn_fs.c): the virtual core goes to another guest thread while
+       dav1d decodes. Held through it, the movie's other threads waited up to 250 ms for a core (the opening at 12-15 fps) */
+    const int64_t t0 = hos_now_ns();
+    const int away = hos_vcore_away();
     while (d->phead && (!d->qn || !d->phead->pkt)) decode_next(d);
+    if (away) hos_vcore_back();
+    InterlockedAdd64(&vt_decode_ns, hos_now_ns() - t0);
+    video_times();
 }
 /* one submission decoded (its pictures into the queue, if any) */
 static void decode_next(Dec *d) {

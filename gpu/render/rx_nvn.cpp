@@ -254,9 +254,13 @@ bool nvn_sampler_of(int id, nvn_samp_par* p) {
 // image handles (8 bytes a slot), as many slots of each as the program's control section says (+0xb1 uniform
 // buffers, +0xb2 storage buffers, +0xb3 textures, +0xb6 images). Found from 173 programs' reads, all of which fit.
 // Graphics programs keep the fixed layout below (c2 texture handles at 0x20 + 8 slot).
+// (macOS port, as gpu/vk/vk_bank.cpp) with push constants first, right after the counts: +0xa9 is their size in words
+// (OoT's NV12 -> RGBA shader: 15), the area rounded to 16 bytes. Without it the tables sat 64 bytes early, that shader
+// read its output image's handle as 0 and was never dispatched: the movies stayed black.
 struct Nvn2CsLayout {
-    uint32_t ubo = 0, ssbo = 0, tex = 0, img = 0;   // slot counts
-    uint32_t ssbo_at() const { return 0x10 + 16 * ubo; }
+    uint32_t ubo = 0, ssbo = 0, tex = 0, img = 0, push = 0;   // slot counts; push: bytes
+    uint32_t ubo_at() const { return 0x10 + push; }
+    uint32_t ssbo_at() const { return ubo_at() + 16 * ubo; }
     uint32_t tex_at() const { return ssbo_at() + 16 * ssbo; }
     uint32_t img_at() const { return tex_at() + 8 * tex; }
     uint32_t end() const { return img_at() + 8 * img; }
@@ -276,6 +280,8 @@ Nvn2CsLayout nvn2_cs_layout(const NvnState& s) {
         gpu_read(s.prog.sd[i].control + 0x56, &st, 2);
         if (magic != 0x98761234 || st != 5) continue;
         l.ubo = c[0xb1 - 0x58], l.ssbo = c[0xb2 - 0x58], l.tex = c[0xb3 - 0x58], l.img = c[0xb6 - 0x58];
+        static const bool no_push = getenv("RX_NO_CS_PUSH") != nullptr;   // (debugging: the old layout)
+        l.push = no_push ? 0 : ((uint32_t)c[0xa9 - 0x58] * 4 + 15) & ~15u;
         break;
     }
     if (by_serial.size() > 4096) by_serial.clear();
@@ -295,7 +301,8 @@ void nvn_driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
             std::memcpy(d + at, &e.addr, 8);
             std::memcpy(d + at + 8, &n, 4);
         };
-        for (uint32_t r = 0; r < l.ubo && r < 16; r++) entry(0x10 + 16 * r, s.ubo[5][r]);
+        std::memcpy(d + 0x10, s.cs_push, std::min<uint32_t>(std::min<uint32_t>(l.push, s.cs_push_n), 0xA00 - 0x10));
+        for (uint32_t r = 0; r < l.ubo && r < 16; r++) entry(l.ubo_at() + 16 * r, s.ubo[5][r]);
         for (uint32_t r = 0; r < l.ssbo && r < 16; r++) entry(l.ssbo_at() + 16 * r, s.ssbo[5][r]);
         for (uint32_t r = 0; r < l.tex && r < 128 && l.tex_at() + 8 * r + 4 <= 0xA00; r++) {
             const uint32_t th = (uint32_t)s.tex[5][r];
@@ -327,6 +334,9 @@ void nvn_driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
         } else if (stage == 0) {
             const float point_max = 2047.9375f;
             std::memcpy(d + 0x610, &point_max, 4);
+            std::memcpy(d + 0x640, &s.draw_base_vertex, 4);   // (the draw macros' parameters, see NvnState)
+            std::memcpy(d + 0x644, &s.draw_base_instance, 4);
+            std::memcpy(d + 0x648, &s.draw_id, 4);
         }
     } else if (bank == 2) {
         for (int r = 0; r < 128; r++) {
@@ -371,7 +381,13 @@ uint32_t nvn_driver_bank_word(const NvnState& s, int bank, int stage, uint32_t o
         auto entry = [&](const nvn_p_bind_buf& e, uint32_t in) -> uint32_t {
             return in == 0 ? lo(e.addr) : in == 4 ? hi(e.addr) : in == 8 ? (uint32_t)e.size : 0;
         };
-        if (offset < l.ssbo_at()) return (offset - 0x10) / 16 < 16 ? entry(s.ubo[5][(offset - 0x10) / 16], (offset - 0x10) % 16) : 0;
+        if (offset < l.ubo_at()) {   // (the push area)
+            uint32_t v = 0;
+            if (offset - 0x10 + 4 <= s.cs_push_n) std::memcpy(&v, s.cs_push + (offset - 0x10), 4);
+            return v;
+        }
+        if (offset < l.ssbo_at())
+            return (offset - l.ubo_at()) / 16 < 16 ? entry(s.ubo[5][(offset - l.ubo_at()) / 16], (offset - l.ubo_at()) % 16) : 0;
         if (offset < l.tex_at())
             return (offset - l.ssbo_at()) / 16 < 16 ? entry(s.ssbo[5][(offset - l.ssbo_at()) / 16], (offset - l.ssbo_at()) % 16) : 0;
         if (offset < l.img_at()) return (offset & 7) ? 0 : lo(s.tex[5][std::min<uint32_t>((offset - l.tex_at()) / 8, 127)]);
@@ -394,6 +410,9 @@ uint32_t nvn_driver_bank_word(const NvnState& s, int bank, int stage, uint32_t o
     }
     if (base && offset >= base && offset < base + 16 * 16) return table(s.ssbo[stage], base);
     if (stage == 0 && offset == 0x610) return std::bit_cast<uint32_t>(2047.9375f);
+    if (stage == 0 && offset == 0x640) return (uint32_t)s.draw_base_vertex;   // (the draw macros' parameters)
+    if (stage == 0 && offset == 0x644) return s.draw_base_instance;
+    if (stage == 0 && offset == 0x648) return s.draw_id;
     return 0;
 }
 
@@ -990,6 +1009,14 @@ void cond_recheck_present() {
             break;
         }
         case NOP_BLEND_COLOR: std::memcpy(s.blend_color, payload<nvn_p_blend_color>(a, avail).rgba, 16); break;
+        case NOP_PUSH_CONST: {   // (macOS port, as gpu/vk/vk_replay.cpp) compute push constants, served from c0
+            const auto u = payload<nvn_p_push_const>(a, avail);
+            if (u.size && u.size <= avail - sizeof u && (uint64_t)u.offset + u.size <= sizeof s.cs_push) {
+                std::memcpy(s.cs_push + u.offset, a + sizeof u, u.size);
+                s.cs_push_n = std::max<uint32_t>(s.cs_push_n, u.offset + u.size);
+            }
+            break;
+        }
         case NOP_PRIMITIVE_RESTART: {
             const auto r = payload<nvn_p_restart>(a, avail);
             s.restart = r.enable != 0, s.restart_index = (uint32_t)r.index;

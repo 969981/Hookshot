@@ -425,22 +425,35 @@ void EmitImageWrite(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
             kind == 0 ? std::string(color) : fmt::format("bitcast<vec4<{}>>({})", kind == 1 ? "f32" : "i32", color));
 }
 
-#define IMAGE_ATOMIC(name)                                                                         \
-    void EmitImageAtomic##name(EmitContext&, IR::Inst&, const IR::Value&, std::string_view,       \
-                               std::string_view) {                                                 \
-        throw NotImplementedException("WGSL image atomics");                                      \
+// (macOS port) Image atomics as a read, the operation and a write of the texel (WebGPU's storage textures have no atomics
+// without wgpu's native TextureAtomic access, which its C API cannot name in a layout). Exact where one invocation at a
+// time touches a texel; OoT's exposure pass (4dc3be520667a40f, one workgroup) used them and the 3D came out white
+// without it. The texel's old value is the result, as the atomic's.
+#define IMAGE_ATOMIC(name, expr)                                                                                  \
+    void EmitImageAtomic##name(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::string_view coords, \
+                               std::string_view value) {                                                          \
+        (void)index;                                                                                              \
+        const auto info{inst.Flags<IR::TextureInstInfo>()};                                                       \
+        const u32 kind = ctx.images.at(info.descriptor_index).kind;                                               \
+        const std::string img{Image(ctx, info)}, c{LoadCoords(info, coords)}, v{value};                           \
+        const std::string load{kind == 0 ? fmt::format("textureLoad({},{}).x", img, c)                           \
+                                         : fmt::format("bitcast<u32>(textureLoad({},{}).x)", img, c)};            \
+        const char* type = kind == 0 ? "u32" : kind == 1 ? "f32" : "i32";                                        \
+        const auto ret{ctx.var_alloc.Define(inst, WgslVarType::U32)};                                             \
+        ctx.Add("{{let o_={};let v_={};let n_={};textureStore({},{},vec4<{}>(bitcast<{}>(n_)));{}=o_;}}", load, v, \
+                expr, img, c, type, type, ret);                                                                   \
     }
-IMAGE_ATOMIC(IAdd32)
-IMAGE_ATOMIC(SMin32)
-IMAGE_ATOMIC(UMin32)
-IMAGE_ATOMIC(SMax32)
-IMAGE_ATOMIC(UMax32)
-IMAGE_ATOMIC(Inc32)
-IMAGE_ATOMIC(Dec32)
-IMAGE_ATOMIC(And32)
-IMAGE_ATOMIC(Or32)
-IMAGE_ATOMIC(Xor32)
-IMAGE_ATOMIC(Exchange32)
+IMAGE_ATOMIC(IAdd32, "o_+v_")
+IMAGE_ATOMIC(SMin32, "bitcast<u32>(min(bitcast<i32>(o_),bitcast<i32>(v_)))")
+IMAGE_ATOMIC(UMin32, "min(o_,v_)")
+IMAGE_ATOMIC(SMax32, "bitcast<u32>(max(bitcast<i32>(o_),bitcast<i32>(v_)))")
+IMAGE_ATOMIC(UMax32, "max(o_,v_)")
+IMAGE_ATOMIC(Inc32, "select(o_+1u,0u,o_>=v_)")
+IMAGE_ATOMIC(Dec32, "select(o_-1u,v_,o_==0u||o_>v_)")
+IMAGE_ATOMIC(And32, "o_&v_")
+IMAGE_ATOMIC(Or32, "o_|v_")
+IMAGE_ATOMIC(Xor32, "o_^v_")
+IMAGE_ATOMIC(Exchange32, "v_")
 #undef IMAGE_ATOMIC
 
 void EmitIsTextureScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& index) {

@@ -11,6 +11,22 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <thread>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
+
+inline void cpu_relax() {
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+    __asm__ volatile("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(_M_X64)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
 
 #include <webgpu/webgpu.h>
 #ifdef __EMSCRIPTEN__
@@ -23,6 +39,14 @@ bool wgpuDevicePoll(WGPUDevice device, bool wait, const void* submission);   // 
 #else
 #define RX_WEB 0
 #include <webgpu/wgpu.h>
+#endif
+// (macOS port) Samplers shared past 16 a stage, as the WGSL backend declares them (wgsl_emit_context.cpp SetupTextures):
+// browsers allow 16, and so does Metal. With 17 or 18 OoT's pixel programs' layouts were invalid there, and every
+// batch holding one of their draws was dropped: the 3D white after the opening
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#define RX_SHARE_SAMPLERS 1
+#else
+#define RX_SHARE_SAMPLERS 0
 #endif
 #ifndef RX_WEB_MT
 #define RX_WEB_MT 0   // (the threaded web build: rx_web_mt.h)
@@ -602,6 +626,13 @@ struct NvnState {
     // per NVN stage (0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess evaluation, 5 compute)
     nvn_p_bind_buf ubo[6][16]{}, ssbo[6][16]{};
     uint64_t tex[6][128]{}, samp[6][128]{}, img[6][32]{};
+    uint8_t cs_push[0x400]{};   // (macOS port, as gpu/vk) compute push constants (PushComputeConstants), c0 from 0x10
+    uint32_t cs_push_n = 0;
+    // (macOS port, as gpu/vk/vk_shader.cpp GetReplaceConstBuffer) the draw being prepared: its base vertex, base instance
+    // and draw index, which NVN's draw macros put in the vertex stage's c0 at 0x640, 0x644 and 0x648 (gl_BaseVertex,
+    // gl_BaseInstance, gl_DrawID). OoT's text finds each string's glyph records with the base instance there.
+    int32_t draw_base_vertex = 0;
+    uint32_t draw_base_instance = 0, draw_id = 0;
     nvn_blend_st blend[8]{};   // by target
     nvn_color_st color{};
     nvn_chmask_st chmask{0xffffffffu};
@@ -678,6 +709,7 @@ ProgramPair* nvn_programs(const NvnState& s, const uint8_t out_types[8]);  // rx
 const std::vector<uint8_t>* nvn_c1(const NvnState& s, int stage);
 /// The bound program's compute code key (its RX_DUMP_WGSL name nvn_cs_<key>), 0 without one.
 uint64_t nvn_cs_key(const NvnState& s);
+bool nvn_cs_matrix(const NvnState& s);   // (macOS port) native matrix multiplies in the compute program
 ShaderModule* nvn_compute_module(const NvnState& s, const std::array<uint8_t, 64>* ssbo_alias = nullptr,
                                  const std::array<uint32_t, 64>* ssbo_alias_words = nullptr,
                                  const std::array<uint16_t, 16>* image_formats = nullptr);

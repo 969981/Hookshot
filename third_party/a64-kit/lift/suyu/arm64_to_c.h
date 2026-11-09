@@ -1629,10 +1629,9 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
 
     // Load/store exclusive and acquire/release.
     //
-    // The non-exclusive acquire/release forms (LDAR/STLR, o2 set) are ordinary
-    // loads and stores as far as this backend is concerned - suyu's memory
-    // accessors are already atomic at these widths, and there is no weaker
-    // ordering here to fence against - so they are translated directly.
+    // The non-exclusive acquire/release forms (LDAR/STLR, o2 set) use the
+    // backend's normal atomic accessors, with explicit fences for AArch64's
+    // acquire/release ordering on weakly ordered hosts.
     //
     // The genuinely exclusive forms (LDXR/LDAXR/STXR/STLXR, o2 clear) are not.
     // They used to become a plain load/store with STXR unconditionally
@@ -1644,6 +1643,7 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
     // to the fallback engine, which owns the kernel's real exclusive monitor.
     if ((i & 0x3F000000) == 0x08000000) {
         const u32 size = i >> 30, o2 = (i >> 23) & 1, L = (i >> 22) & 1, o1 = (i >> 21) & 1;
+        const u32 o0 = (i >> 15) & 1;
         const u32 rt2 = (i >> 10) & 31, rn = (i >> 5) & 31, rt = i & 31;
         // Pair forms: LDXP/LDAXP/STXP/STLXP. size 00/01 is unallocated here,
         // so only the 32- and 64-bit register widths exist.
@@ -1663,6 +1663,7 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
                 // doubleword at the address.
                 std::string s2 = "{ uint64_t _lo,_hi; recomp_ldxp(c," + addr + "," + sz +
                                  ",&_lo,&_hi); ";
+                if (o0) s2 += "__atomic_thread_fence(__ATOMIC_ACQUIRE); ";
                 // A W-register destination is written zero-extended.
                 const char* cast = (rbytes == 4) ? "(uint32_t)" : "";
                 if (rt != 31) {
@@ -1680,7 +1681,9 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
                     (rbytes == 4) ? ("(uint64_t)(uint32_t)" + Xz(rt)) : Xz(rt);
                 const std::string hi =
                     (rbytes == 4) ? ("(uint64_t)(uint32_t)" + Xz(rt2)) : Xz(rt2);
-                std::string s2 = "{ uint32_t _st = recomp_stxp(c," + addr + "," + sz + "," +
+                std::string s2 = "{ ";
+                if (o0) s2 += "__atomic_thread_fence(__ATOMIC_RELEASE); ";
+                s2 += "uint32_t _st = recomp_stxp(c," + addr + "," + sz + "," +
                                  lo + "," + hi + "); ";
                 if (rs != 31) {
                     s2 += "c->x[" + std::to_string(rs) + "] = _st; ";
@@ -1697,25 +1700,26 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
                 // own exclusive monitor, so an exclusive taken here is visible
                 // to a thread running on the fallback JIT.
                 //
-                // Acquire/release ordering (the LDAXR/STLXR spelling, o0 set)
-                // is not modelled separately: suyu's memory accessors are
-                // already atomic at these widths and the host is x86-64, whose
-                // ordering is strong enough that the fence these imply is a
-                // no-op in practice. Noted rather than silently assumed.
                 const std::string addr = "c->x[" + std::to_string(rn) + "]";
                 if (L) {
                     // LDXR/LDAXR: mark and load.
+                    std::string s = "{ uint64_t _v = recomp_ldxr(c," + addr + "," +
+                                    std::to_string(bits / 8) + "); ";
+                    if (o0) s += "__atomic_thread_fence(__ATOMIC_ACQUIRE); ";
                     if (rt != 31) {
-                        put("c->x[" + std::to_string(rt) + "] = recomp_ldxr(c," + addr + "," +
-                            std::to_string(bits / 8) + ");");
+                        s += "c->x[" + std::to_string(rt) + "] = _v; ";
                     } else {
-                        put("(void)recomp_ldxr(c," + addr + "," + std::to_string(bits / 8) + ");");
+                        s += "(void)_v; ";
                     }
+                    s += "}";
+                    put(s);
                 } else {
                     // STXR/STLXR: Rs receives the status, 0 on success. Rs is
                     // held in the Rt2 field's neighbour (bits 20:16).
                     const u32 rs = (i >> 16) & 31;
-                    std::string s2 = "{ uint32_t _st = recomp_stxr(c," + addr + "," +
+                    std::string s2 = "{ ";
+                    if (o0) s2 += "__atomic_thread_fence(__ATOMIC_RELEASE); ";
+                    s2 += "uint32_t _st = recomp_stxr(c," + addr + "," +
                                      std::to_string(bits / 8) + "," + Xz(rt) + "); ";
                     if (rs != 31) {
                         s2 += "c->x[" + std::to_string(rs) + "] = _st; ";
@@ -1729,12 +1733,14 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
             if (L) {
                 // LDAR
                 if (rt != 31) {
-                    put("c->x[" + std::to_string(rt) + "] = recomp_load" +
-                        std::to_string(bits) + "(c," + addr + ");");
+                    put("{ uint64_t _v = recomp_load" + std::to_string(bits) + "(c," + addr +
+                        "); __atomic_thread_fence(__ATOMIC_ACQUIRE); c->x[" +
+                        std::to_string(rt) + "] = _v; }");
                 }
             } else {
                 // STLR - no status register.
-                put("recomp_store" + std::to_string(bits) + "(c," + addr + "," + Xz(rt) + ");");
+                put("{ __atomic_thread_fence(__ATOMIC_RELEASE); recomp_store" +
+                    std::to_string(bits) + "(c," + addr + "," + Xz(rt) + "); }");
             }
             return true;
         }
@@ -6557,7 +6563,7 @@ inline const char* FpxH() {
 #if defined(RECOMP_NO_NATIVE_FP) || defined(__FAST_MATH__) || defined(_M_FP_FAST) || \
     (defined(FLT_EVAL_METHOD) && FLT_EVAL_METHOD != 0)
 #define RECOMP_FPX_HOST 0 /* compiled out: every op takes the exact body */
-#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+#elif (defined(__aarch64__) || defined(__arm64__)) && (defined(__GNUC__) || defined(__clang__))
 #define RECOMP_FPX_HOST 1 /* the host FPU is the guest's */
 #elif ((defined(__x86_64__) || defined(_M_X64)) && !defined(_M_ARM64EC)) || (defined(__wasm__) && defined(__SSE2__))
 #define RECOMP_FPX_HOST 2 /* SSE2 (wasm: Emscripten's SSE2 on wasm SIMD; its float ops are IEEE round-to-nearest too) */

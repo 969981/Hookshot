@@ -10,6 +10,10 @@
 # game it builds runs on glibc 2.35 and newer. work/ (hot_funcs.txt, hot_order.txt, hookshot_pieces.prof,
 # image/chunks.txt: addresses and counts from playing, no game code) is carried along when it is there.
 set -euo pipefail
+if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+    echo "The Linux AppImage build requires a Linux x86_64 host." >&2
+    exit 1
+fi
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
 B=$ROOT/build-linux

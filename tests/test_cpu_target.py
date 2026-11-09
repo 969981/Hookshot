@@ -69,7 +69,8 @@ class HostMarch(unittest.TestCase):
     def test_build_and_appimage_use_it(self):
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
         self.assertIn("from host_cpu import host_march", build)
-        self.assertIn('MARCH = os.environ.get("RX_MARCH") or host_march()', build)
+        self.assertIn('MARCH = os.environ.get("RX_MARCH") or ("apple-m1" if MACOS else host_march())', build)
+        self.assertIn('if not MACOS and MARCH != "x86-64-v3":', build)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         self.assertIn("RX_MARCH=x86-64-v3 RX_VK_ONLY=1", appimage)   # (its prebuilt renderer: not the CI runner's CPU)
 

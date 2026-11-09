@@ -48,6 +48,43 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 `HOS_INPUT_BACKGROUND=0` overrides that option. `HOS_INPUT_EXCLUSIVE=1` controls merging the player's devices while
 the script's existing exclusive interval is active; it is not a focus override.
 
+## macOS (Apple Silicon)
+
+The macOS builder and generated game are native arm64, with no Rosetta dependency. It uses SDL2 for the window and
+input, and the existing WebGPU renderer through `wgpu-native`'s Metal backend; the Vulkan backend is not built on
+macOS. The executable targets macOS 13.3 or newer because Apple's C++20 floating-point formatting support requires it.
+
+The `macOS platform` workflow uploads a `HookshotBuilder-macos-arm64` artifact containing a command-line builder,
+the Hookshot source, a native arm64 Python runtime and modules, SDL2, static FFmpeg, and Metal-enabled `wgpu-native`.
+It does not contain game data or a built game. Download and unpack it on the target Mac; Xcode Command Line Tools
+must be installed there. Double-click `HookshotBuilder.app` to choose your own `.nup` dump and output folder, or
+use the command-line launcher:
+
+```sh
+./HookshotBuilder/HookshotBuilder.command --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+```
+
+For development outside the artifact, use arm64 builds of SDL2 2.26 or newer and `wgpu-native`. `wgpu-native` must
+include its matching `include/webgpu/webgpu.h` and `lib/libwgpu_native.dylib`, built with Metal support. Set
+`HOOKSHOT_FFMPEG` to the static FFmpeg prefix (or provide FFmpeg through `pkg-config`) and build natively:
+
+```sh
+export WGPU_NATIVE=/path/to/arm64-wgpu-native
+export HOOKSHOT_SDL2=/path/to/arm64/libSDL2-2.0.0.dylib
+export HOOKSHOT_FFMPEG=/path/to/arm64/ffmpeg
+python3 -I nx2/make_game.py --nup /path/to/game.nup --out /path/to/game-folder --jobs 4
+```
+
+The normal builder command validates the arm64 compiler, SDL2, FFmpeg and `wgpu-native` before lifting the game,
+then places `hookshot`, `libSDL2-2.0.0.dylib` and `libwgpu_native.dylib` beside `image.bin` in the output folder;
+FFmpeg is statically linked when `HOOKSHOT_FFMPEG` points to the packaged static libraries. The macOS FFmpeg build
+uses its native AV1 decoder to avoid compiling an additional dav1d dependency in CI.
+For lower-level development, `nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4`
+writes the executable and libraries under `work/sa/build/`. Set `RX_BACKEND=metal` to make the renderer choice
+explicit (Metal is the macOS default). As on other platforms, the local game dump is required to generate and build
+the game. The workflow packages and validates builder dependencies without running a game build; it is not a
+notarized app release.
+
 ## Layout
 
 | Path | What |
@@ -56,7 +93,7 @@ the script's existing exclusive interval is active; it is not a focus override.
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c` |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`), with Eden's shader recompiler and sirit |
-| `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the exe falls back to, its op stream (`rx_nvn.h`), suyu's decoders |
+| `gpu/render/`, `gpu/third_party/` | the WebGPU renderer (Metal on macOS), its op stream (`rx_nvn.h`), suyu's decoders |
 | `scripts/` | test runs and the profile reader |
 | `third_party/` | a64-kit (unmodified), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only) |
 

@@ -11,6 +11,9 @@
    the game gets none of it; the capture it had comes back when the menu closes. */
 #include "../hos.h"
 #include "../hos_sdl.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 /* (the window's app id: the applications menu's entry names it as its StartupWMClass, builder/linux/hookshot_builder.py) */
 #define HOS_APP_ID "io.github.NotRexed.Hookshot"
@@ -18,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-#include "../../gpu/vk/vk_api.h"
+#include "../../gpu/vk/vk_api.h"   /* (macOS too: MkwVkPointer and HOS_MOUSE_*, for the free mouse; C types only) */
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
@@ -97,13 +100,29 @@ static void keys_update(void) {
 }
 
 /* ---- the window ---- */
+#ifdef __APPLE__
+static void *metal_view, *metal_layer;
+#endif
 static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
+/* (macOS port) the WebGPU renderer's picture hotkeys (gpu/render/rx_present_fx.cpp: F7 frame interpolation, F8 FSR, F9
+   sharpness, F10 fit / stretch), weak: a build without that renderer has none */
+extern const char *rx_present_hotkey(int key) __attribute__((weak));
 
+#ifndef __APPLE__
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
 static void drawable_size(void *w, int *width, int *height) { hos_sdl_pixel_size(w, width, height); }
 static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL};
+#endif
+static void window_pixel_size(void *w, int *width, int *height) {
+    hos_sdl_pixel_size(w, width, height);
+}
+#ifdef __APPLE__
+void hos_posix_window_pixel_size(int *width, int *height) {
+    window_pixel_size(window, width, height);
+}
+#endif
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
@@ -121,13 +140,17 @@ static void set_fullscreen(int on) {
 }
 
 static DWORD WINAPI renderer_main(void *p) {
+#ifdef __APPLE__
+    const int ok = p ? rx_start(p) : 0;
+#else
     (void)p;
     const int ok = rx_start(&vk_window);
+#endif
     if (!ok) hos_log("display: the renderer did not start: the window stays black");
     renderer = ok;
     if (ok) {   /* (a size change while it started) */
         int w = 0, h = 0;
-        hos_sdl_pixel_size(window, &w, &h);
+        window_pixel_size(window, &w, &h);
         if (w > 0 && h > 0) rx_resize(w, h);
     }
     SetEvent(renderer_up);
@@ -182,10 +205,12 @@ int hos_display_init(void) {
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate
        present then drops vblank for every output. Wayland has mailbox. SDL_VIDEODRIVER (SDL3: SDL_VIDEO_DRIVER) still wins.
        Under gamescope (XDG_CURRENT_DESKTOP names it: Steam Deck game mode) SDL keeps its own order.) */
+#ifndef __APPLE__   /* (macOS: SDL's cocoa driver, the only one there) */
     const char* desktop = getenv("XDG_CURRENT_DESKTOP");
     const int gamescope = desktop && strstr(desktop, "gamescope");
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+#endif
     if (!hos_sdl_init(HOS_SDL_VIDEO | HOS_SDL_EVENTS)) {
         hos_log("display: SDL_Init: %s: no window", hos_sdl_error());
         return 0;
@@ -226,7 +251,9 @@ void hos_display_loop(void) {
         SetEvent(renderer_up);
         for (;;) Sleep(1000);
     }
+#ifndef __APPLE__
     vk_window.window = window;
+#endif
     hos_posix_window[0] = 1;
     {   /* the window's icon: hookshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
            take one from the window; the others find it through the menu entry */
@@ -237,7 +264,14 @@ void hos_display_loop(void) {
         hos_sdl_icon(window, png);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+#ifdef __APPLE__
+    metal_view = hos_sdl_metal_create_view(window);
+    metal_layer = metal_view ? hos_sdl_metal_get_layer(metal_view) : NULL;
+    if (!metal_layer) hos_log("display: SDL_Metal_CreateView did not provide a Metal layer");
+    CloseHandle(CreateThread(NULL, 0, renderer_main, metal_layer, 0, NULL));
+#else
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
+#endif
     for (;;) {
         hos_sdl_pads_pump();
         if (hos_sdl_wait_event(&e, 4)) {
@@ -251,7 +285,7 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_RESIZED:
                     if (renderer) {
                         int w = 0, h = 0;
-                        hos_sdl_pixel_size(window, &w, &h);
+                        window_pixel_size(window, &w, &h);
                         rx_resize(w, h);
                     }
                     break;
@@ -274,6 +308,10 @@ void hos_display_loop(void) {
                     const int scancode = e.scancode, mod = e.mod;
                     if (e.scancode == 41) mouse_capture(0);   /* Esc */
                     if (!e.repeat && (scancode == 68 || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
+                    if (!e.repeat && scancode >= 64 && scancode <= 67 && rx_present_hotkey) {   /* F7..F10 (SDL scancodes 64..67) */
+                        const char *what = rx_present_hotkey(scancode - 57);
+                        if (what && *what) hos_log("display: %s", what);
+                    }
                     break;
                 }
                 case HOS_SDL_EV_MOUSE_DOWN:

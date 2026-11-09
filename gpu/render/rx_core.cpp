@@ -1,6 +1,10 @@
 // The renderer's core: the WebGPU device and the window's surface, batches (one command encoder and its upload
 // memory per GPU submission), render targets, clears, the 3D engine's draw methods (suyu's DrawManager), present.
+#if defined(_MSC_VER)
 #include <intrin.h>
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <atomic>
@@ -53,6 +57,9 @@ bool wgpuDevicePoll(WGPUDevice device, bool wait, const void* submission) {
 #endif
 
 namespace rx {
+#ifdef __APPLE__
+extern "C" void hos_posix_window_pixel_size(int* width, int* height);
+#endif
 bool draw_must_run = false;
 bool rt_history_on() { static const bool on = getenv("RX_RT_HISTORY") != nullptr; return on; }
 
@@ -340,12 +347,17 @@ bool init_device(HWND hwnd) {
 #else
     WGPUInstanceExtras extras{};
     extras.chain.sType = (WGPUSType)WGPUSType_InstanceExtras;
+#ifdef __APPLE__
+    extras.backends = WGPUInstanceBackend_Metal;
+#else
     const char* be = getenv("RX_BACKEND");
     extras.backends = !be                           ? WGPUInstanceBackend_Primary
                       : !_stricmp(be, "vulkan")     ? WGPUInstanceBackend_Vulkan
                       : !_stricmp(be, "dx12")       ? WGPUInstanceBackend_DX12
                       : !_stricmp(be, "gl")         ? WGPUInstanceBackend_GL
+                      : !_stricmp(be, "metal")      ? WGPUInstanceBackend_Metal
                                                     : WGPUInstanceBackend_Primary;
+#endif
     if (getenv("RX_VALIDATION")) extras.flags = WGPUInstanceFlag_Validation | WGPUInstanceFlag_Debug;
     // RX_SHADER_NAMES=1: the debug flag alone (no validation layers): naga names SPIR-V variables after the WGSL ones,
     // so RenderDoc's shader debugger shows f_0, u_12, in_attr3... of the dumped WGSL (RX_DUMP_WGSL)
@@ -383,6 +395,14 @@ bool init_device(HWND hwnd) {
         return false;
     }
     if (hwnd) {
+#ifdef __APPLE__
+        WGPUSurfaceSourceMetalLayer src{};
+        src.chain.sType = WGPUSType_SurfaceSourceMetalLayer;
+        src.layer = hwnd;
+        WGPUSurfaceDescriptor sd{};
+        sd.nextInChain = &src.chain;
+        surface = wgpuInstanceCreateSurface(dev.instance, &sd);
+#else
         WGPUSurfaceSourceWindowsHWND src{};
         src.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
         src.hinstance = GetModuleHandleA(nullptr);
@@ -390,6 +410,7 @@ bool init_device(HWND hwnd) {
         WGPUSurfaceDescriptor sd{};
         sd.nextInChain = &src.chain;
         surface = wgpuInstanceCreateSurface(dev.instance, &sd);
+#endif
     }
 #endif
 
@@ -560,6 +581,11 @@ bool init_device(HWND hwnd) {
 #ifdef __EMSCRIPTEN__
     present_mode = WGPUPresentMode_Fifo;
     configure_surface(1280, 720);
+#elif defined(__APPLE__)
+    int width = 0, height = 0;
+    hos_posix_window_pixel_size(&width, &height);
+    configure_surface((uint32_t)std::max(width, 1), (uint32_t)std::max(height, 1));
+    present_window_size(width, height);
 #else
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -1344,6 +1370,7 @@ bool stats_on = false;
 
 int64_t clock_ns() {
     if (!stats_on) return 0;
+#if defined(__x86_64__) || defined(_M_X64)
     static const double ns_per_tick = [] {
         const int64_t t0 = hos_now_ns();
         const uint64_t c0 = __rdtsc();
@@ -1353,6 +1380,9 @@ int64_t clock_ns() {
         return c1 > c0 ? double(t1 - t0) / double(c1 - c0) : 0.0;
     }();
     return (int64_t)(double(__rdtsc()) * ns_per_tick);
+#else
+    return hos_now_ns();
+#endif
 }
 
 bool gpu_read(uint64_t va, void* dst, uint64_t n) {
