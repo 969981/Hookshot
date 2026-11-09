@@ -31,10 +31,11 @@ static int32_t state_stick[4];
 static int state_count;
 static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 
-static int32_t stick_value(int16_t v, int flip) {
-    int32_t a = v < -32767 ? -32767 : v;
-    if (flip) a = -a;
-    return (a > 7849 || a < -7849) ? a : 0;   /* XInput's dead zone, as nn_hid.c uses */
+int32_t hos_stick_axis(int16_t v, int zone);   /* nn_hid.c: the menu's Stick dead zone, as XInput's pads */
+
+static int32_t stick_value(int16_t v, int flip, int zone) {
+    const int32_t a = hos_stick_axis(v, zone);
+    return flip ? -a : a;
 }
 
 /* SDL's controller support started; 0 when it could not be */
@@ -117,8 +118,11 @@ static void pads_poll(void) {
             int rx_option(int id, int otherwise);
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
-            const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0), stick_value(hos_sdl_pad_axis(gc, AX_LY), 1),
-                                  stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x), stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1)};
+            const int z = rx_option(18, 0);
+            const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0, z),
+                                  stick_value(hos_sdl_pad_axis(gc, AX_LY), 1, z),
+                                  stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x, z),
+                                  stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1, z)};
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {
