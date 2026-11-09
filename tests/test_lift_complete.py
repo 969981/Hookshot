@@ -7,7 +7,6 @@ python -I -B tests/test_lift_complete.py
 """
 import collections
 import contextlib
-import fcntl
 import glob
 import importlib.util
 import io
@@ -104,6 +103,7 @@ def main():
               sorted(f for f in os.listdir(gen) if chunks.PART.fullmatch(f)) == parts)
 
         if os.name != "nt":
+            import fcntl   # (POSIX only: Windows has stop_stray_compilers)
             with open(os.path.join(work, ".build_lock"), "w") as held:   # (another build's lock)
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with contextlib.redirect_stdout(io.StringIO()) as said:
