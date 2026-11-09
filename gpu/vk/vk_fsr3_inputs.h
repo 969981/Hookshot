@@ -1,5 +1,5 @@
-// (hookshot) AMD FSR 3.1's inputs (vk_fsr3_inputs.cpp): everything FSR 3.1's upscaler (vk_fsr3.h) is given besides the
-// picture, in one place, so they can move onto the renderer's shared
+// (hookshot) AMD FSR 3.1's inputs (vk_fsr3_inputs.cpp): everything FSR 3.1's upscaler (vk_fsr3.h) and its frame
+// interpolation (vk_fsr3fi.h) are given besides the picture, in one place, so they can move onto the renderer's shared
 // temporal inputs (#1008) by changing this file alone.
 //
 // What comes from #841 (NVIDIA DLSS's own inputs) and what does not yet:
@@ -37,7 +37,8 @@ struct Frame {
     uint64_t frame = 0;                     ///< texture_frame_no() when prepared
 };
 
-/// FSR 3.1 is asked for at all: its upscaler (the Upscaler row). The scene's camera is kept only then
+/// FSR 3.1 is asked for at all: its upscaler (the Upscaler row) or its frame interpolation (the Frame generation row). The
+/// scene's camera is kept only then
 bool wanted();
 
 /// A draw into a scene-sized target with the vertex stage's uniform buffer 3 at `camera`: what vk_dlss.cpp's
@@ -53,6 +54,10 @@ bool is_scene(const Texture* in);
 /// FSR's inputs (shaders/fsr3_prep.comp). False when they cannot be made (no camera this frame, another size, ...): the
 /// reason is logged when it changes
 bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out);
+
+/// The frame prepare made last, for frame interpolation at the present, once: false when none was made since the last take
+/// (or it is older than the frame before), so a present never interpolates with another frame's depth and motion
+bool take(Frame& out);
 
 /// FSR 3.1's upscaler drew this frame, rw x rh into dw x dh: the host's jitter follows FSR (jitter_size)
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh);

@@ -60,7 +60,8 @@ struct Inputs {
 bool fsr3_wanted();
 
 /// A gameplay upscale's dispatch, as vk_dlss.h's dlss_upscale takes it (vk_draw.cpp's fsr3_stand_in finds them the same
-/// way). true: FSR 3.1 wrote the output (the dispatch is left out); false: the network
+/// way). With FSR 3.1's frame interpolation on, the dispatch's input and this frame's camera become its inputs here
+/// (vk_fsr3_inputs.h) whichever upscaler runs. true: FSR 3.1 wrote the output (the dispatch is left out); false: the network
 /// (or DLSS) runs, the reason logged when it changes
 bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                   VkImageView out_view, uint32_t out_level);

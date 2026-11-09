@@ -21,6 +21,7 @@
 #include "dlss_math.h"
 #include "vk_draw.h"   // (descriptors_disturbed)
 #include "vk_fsr3.h"
+#include "vk_fsr3fi.h"
 #include "vk_texture.h"
 
 #include "shaders/fsr3_prep_comp_spv.h"
@@ -68,7 +69,8 @@ struct State {
     float last_jitter[2]{};
     uint64_t last_frame = 0;  // (the frame prepare last ran, 0: none)
     std::chrono::steady_clock::time_point last_time{};
-    uint32_t frame_w = 0, frame_h = 0;   // (the last one prepared: a new size has no history)
+    Frame frame;              // (the last one prepared: take())
+    bool have_frame = false;
     std::atomic<uint64_t> upscaled_frame{0};   // (the frame FSR's upscaler last drew: jitter_size, on the game's thread)
     std::atomic<uint32_t> jitter_w{0}, jitter_h{0}, jitter_phases{8};
     struct Dead { uint64_t frame; std::function<void()> free; };
@@ -205,7 +207,7 @@ VkImageView depth_view(Texture* t) {
 
 } // namespace
 
-bool wanted() { return fsr3_wanted(); }
+bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
 
 void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                      uint64_t camera_size) {
@@ -269,7 +271,7 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
         !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, rw, rh))
         return fail("its images were not made");
 
-    const bool reset = !s.last_frame || now - s.last_frame > 2 || s.frame_w != rw || s.frame_h != rh;
+    const bool reset = !s.last_frame || now - s.last_frame > 2 || s.frame.width != rw || s.frame.height != rh;
     struct {
         float reproject[16];
         float jitter[2];
@@ -318,7 +320,7 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
                      ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(t - s.last_time).count())
                      : 16.667f;
     f.frame = now;
-    s.frame_w = rw, s.frame_h = rh;
+    s.frame = f, s.have_frame = true;
     s.last_time = t;
     s.last_frame = now;
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
@@ -335,6 +337,15 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
     }
     out = f;
     return true;
+}
+
+bool take(Frame& out) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    const bool have = s.have_frame && texture_frame_no() - s.frame.frame <= 1;
+    s.have_frame = false;
+    if (have) out = s.frame;
+    return have;
 }
 
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
