@@ -4,6 +4,7 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -700,3 +701,22 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
 namespace mkwvk {
 HWND app_window() { return main_window; }   // (hookshot: the Insert menu's Fullscreen row)
 } // namespace mkwvk
+
+#ifdef HOOKSHOT_VK_PGO_GEN
+// (RX_VK_PGO=gen builds, nx2/build.py: the counters written every 15 s to RX_VK_PGO_FILE, so a run that is stopped rather than
+// closed still leaves its profile)
+extern "C" int __llvm_profile_write_file(void);
+extern "C" void __llvm_profile_set_filename(const char*);
+namespace {
+struct PgoDump {
+    PgoDump() {
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(15));
+                if (const char* f = getenv("RX_VK_PGO_FILE")) __llvm_profile_set_filename(f), __llvm_profile_write_file();
+            }
+        }).detach();
+    }
+} pgo_dump;
+}
+#endif

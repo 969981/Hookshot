@@ -711,6 +711,15 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + vk] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+        # (RX_VK_PGO=gen: the back end counts its branches, written every 15 s to RX_VK_PGO_FILE by vk_main.cpp while the game runs;
+        # RX_VK_PGO=<merged .profdata>: built with that profile. The replay thread is the frame's limit, and it is branchy C++)
+        VK_PGO = os.environ.get("RX_VK_PGO", "")
+        if VK_PGO == "gen":
+            vflags = vflags + ["-fprofile-instr-generate", "-DHOOKSHOT_VK_PGO_GEN"]
+        elif VK_PGO:
+            with open(VK_PGO, "rb") as f:   # (the profile's contents in the object keys, as RX_PGO's)
+                vflags = vflags + ["-fprofile-instr-use=" + VK_PGO, "-Wno-profile-instr-unprofiled", "-Wno-profile-instr-out-of-date",
+                                   "-Wno-backend-plugin", "-DHOOKSHOT_VK_PGO_SHA1=" + hashlib.sha1(f.read()).hexdigest()[:16]]
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -873,7 +882,7 @@ def main():
                 "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"]
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])
+                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] + (["-fprofile-instr-generate"] if os.environ.get("RX_VK_PGO") == "gen" else []) +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
