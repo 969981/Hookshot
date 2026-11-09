@@ -11,7 +11,8 @@
 #
 # nightly is the latest development build: a prerelease, never "latest", whose tag is moved to the commit of each push
 # to main (GITHUB_SHA). A run whose commit is no longer main's newest leaves it to the newer run. Its files are replaced,
-# and an AppImage named by an older commit is removed once the new one is there.
+# an AppImage and .zsync named by an older commit are removed once the new ones are there, and SHA256SUMS and the
+# table are made again (the table is in its notes).
 #
 #   scripts/release_upload.sh <tag> <file> ...
 set -euo pipefail
@@ -42,7 +43,9 @@ if [[ $tag == nightly ]]; then
     date=$(gh api "repos/$GH_REPO/commits/$sha" --jq .commit.committer.date)
     notes="The latest development build: main at $sha ($date), made by CI on every push to main.
 
-It is untested and may break your saves or settings. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest)."
+It is untested and may break your saves or settings. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest).
+
+$("$(dirname "$0")/release_files.sh" table nightly)"
     title="Latest development build"
     if gh release view nightly >/dev/null 2>&1; then
         gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
@@ -53,12 +56,14 @@ It is untested and may break your saves or settings. For playing, use the [lates
     gh release upload nightly --clobber "$@"
     new=()
     for f in "$@"; do new+=("$(basename "$f")"); done
+    # (the AppImage and its .zsync of an older commit, once this run has uploaded the new ones)
     gh release view nightly --json assets --jq '.assets[].name' | while read -r old; do
-        [[ $old == Hookshot-*-x86_64.AppImage ]] || continue
+        [[ $old == Hookshot-*-x86_64.AppImage || $old == Hookshot-*-x86_64.AppImage.zsync ]] || continue
         printf '%s\n' "${new[@]}" | grep -qxF "$old" && continue
-        printf '%s\n' "${new[@]}" | grep -qx 'Hookshot-.*-x86_64\.AppImage' || continue
+        printf '%s\n' "${new[@]}" | grep -qx "Hookshot-.*-x86_64\\.AppImage${old##*.AppImage}" || continue
         gh release delete-asset nightly "$old" --yes
     done
+    "$(dirname "$0")/release_files.sh" finish nightly "${RELEASE_SUMS_OUT:-}"
     exit 0
 fi
 if [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then

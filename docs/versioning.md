@@ -90,10 +90,13 @@ the release pull request has no checks of its own: it changes only the changelog
 
 Every push to `main` also updates `nightly`, the latest development build. Once the Linux AppImage and Windows builder
 workflows have built that commit, their release jobs move the `nightly` tag to it and replace the files of the
-`nightly` prerelease with the same four files a release has (`scripts/release_upload.sh nightly ...`). The notes name
-the commit and its date. It is a prerelease, never "latest", and not a version: `nightly` is not a `v*` tag, so
-release-please, `git describe` and the builder's update check ignore it. A run that finishes after a newer push leaves
-it alone. Its new parts go to `linux-parts` and `builder-parts`, like a release's.
+`nightly` prerelease with the same files a release has (`scripts/release_upload.sh nightly ...`), `SHA256SUMS` and
+the build provenance included. The notes name the commit and its date. It is a prerelease, never "latest", and not a
+version: `nightly` is not a `v*` tag, so release-please, `git describe` and the builder's update check ignore it. A
+run that finishes after a newer push leaves it alone. Its new parts go to `linux-parts` and `builder-parts`, like a
+release's. Its AppImage's update information names the `nightly` release instead of `latest`, so AppImageUpdate
+updates a nightly AppImage to the next nightly. (Gear Lever reads only `latest`, `latest-pre` and `latest-all`, and
+offers the latest release for any other name.)
 
 ## The files of a release
 

@@ -94,12 +94,16 @@ jobs:
             { echo "the profile did not download: built without it"; exit 0; }
           ls -la work work/image
 
-      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release)
+      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release, or
+      # for the nightly the next nightly)
       - name: AppImage
+        env:
+          HOOKSHOT_UPDATE_RELEASE: >-
+            ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || 'latest' }}
         run: scripts/linux/appimage.sh
 
-      # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
-      - if: env.RELEASE_TAG != ''
+      # (a release's or the nightly's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
+      - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -159,8 +163,8 @@ jobs:
       - name: Update parts
         run: scripts/linux/publish_parts.sh dist/parts
       # (the Release workflow's draft release, or for a tag pushed by hand the release made here or by the Windows
-      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand also
-      # gets its SHA256SUMS here; a draft gets it from the Release workflow's publish job)
+      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand and the
+      # nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's publish job)
       - name: AppImage to the release
         # (a push to main that is not a release: the nightly)
         run: >-
