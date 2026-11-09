@@ -84,6 +84,9 @@ absolute path to the script.
 | `screenshot` | Capture the current presented frame as a PNG (1280x720 on Vulkan), inline and on disk. |
 | `wait` | Wait for wall time while the game runs. |
 | `logs` | Return recent log lines, optionally filtered. |
+| `settings` | Every setting the Insert menu shows, the cheat rows when the cheat menu is on, and the lists they use. |
+| `set_setting` | Change one of the player's settings by its key, as the menu does; kept in `hookshot_options.ini`. |
+| `cheat` | Act on a cheat row (Gameplay → Cheats) directly: toggles, time, teleport, age, pouch and inventory. |
 
 Resources: `hookshot://log`, `hookshot://last-screenshot` and `hookshot://status`.
 
@@ -95,6 +98,9 @@ press(["PLUS"], hold_ms=200)
 wait(800)
 screenshot()
 sequence([{"at_ms": 0, "buttons": ["A"], "hold_ms": 200}])
+settings()
+set_setting("text_speed", 3)
+cheat("heart_protection", 1)
 stop()
 ```
 
@@ -116,8 +122,55 @@ where screenshots are wanted in the middle, pass `wait=false`, then call `wait` 
 | `env_file` | Read `hookshot_env.txt` first (the server then overrides its own control switches). |
 | `fresh_user` | Use a save folder inside this run instead of `work/mcp/user`. |
 | `extra_env` | Extra switches such as `RX_VK_FLASH=1`. The server's control switches are reserved. |
+| `cheats` | Turn the cheat menu on (`HOS_OOT_CHEATS=1`) so `cheat` works. Off by default, as the game is. |
 | `force` | Start even if another `hookshot` process is detected. |
 | `wait_ready` | Wait for the first screenshot before `launch` returns. |
+
+## Settings and cheats
+
+`settings()` reads the Insert menu: every row of its Graphics, Gameplay and Controls tabs (the row's key, its label, the
+value, its range, and the text the player sees), and — when the cheat menu is on — the Cheats page's rows with the
+teleport destinations, the pouch's items and the inventory's items and counts. The keys are the names
+`hookshot_options.ini` uses.
+
+`set_setting(name, value)` goes through the menu's own setter: it clamps to the row's range, applies a quality preset or a
+control layout the way the menu does, marks the settings Custom, and writes `hookshot_options.ini`. A row whose text says
+"(restart)" keeps its value but takes effect at the next launch, exactly as when a player changes it.
+
+```text
+settings()                               # the rows, their values and their ranges
+set_setting("frame_generation", 0)               # frame generation off
+set_setting("resolution", 1)             # a fixed 100%, not Auto
+set_setting("text_speed", 3)             # instant dialogue
+set_setting("show_fps", 1)
+```
+
+`cheat(name, value=0, item=None)` acts on the cheat menu directly. The game keeps that menu behind `HOS_OOT_CHEATS=1`, so
+the run must be started with `launch(cheats=true)` (or with the setting in `hookshot_env.txt`, which the server reads).
+
+| Cheat | What to pass |
+|---|---|
+| `heart_protection`, `no_clip_flight`, `free_camera` | `value` 1 on, 0 off |
+| `mark_position`, `return_to_mark`, `switch_age` | nothing else |
+| `set_time` | `value`, the hour 0 to 23 |
+| `teleport` | `item`, a destination's name or index (from `settings()`) |
+| `pouch` | `item`, a pouch item, and `value`, the amount to add or remove (-10 to 10) |
+| `inventory` | `item`, an inventory item, and `value`, the count wanted (-1 unlocks or relocks it) |
+
+```text
+launch(cheats=true, wait_ready=true)
+cheat("heart_protection", 1)
+cheat("set_time", 18)
+cheat("teleport", item="Kakariko Village")
+cheat("inventory", item="Hookshot")          # unlocked
+cheat("inventory", item="Bombs", value=20)   # twenty bombs
+cheat("pouch", item="Arrows", value=5)
+```
+
+The server writes these as live input lines (`!settings`, `!setting <key> <value>`, `!cheat <name> <value> <extra>`) and
+the game answers in its log, which the server reads back. Settings and cheats are therefore the Vulkan back end's: the
+WebGPU fallback has no Insert menu and `settings()` says so. A cheat acts on the game in play; at the title screen there is
+no player to give hearts or a destination to travel to yet.
 
 ## How it works
 
@@ -130,6 +183,7 @@ HOS_INPUT_SCRIPT_BACKGROUND=1
 HOS_INPUT_EXCLUSIVE=1
 HOS_HEADLESS=1              (unless window=true)
 HOS_AUDIO=0                 (unless audio=true)
+HOS_OOT_CHEATS=1            (when cheats=true)
 RX_BACKEND=vulkan           (or webgpu)
 HOOKSHOT_NO_ENV_FILE=1
 RX_VK_SHOT_FILE=<run>/shot.request

@@ -31,6 +31,7 @@ static int64_t now_ns = 10000000000LL, sampling;
 static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
 static unsigned char *memory;
 static char last_log[256];
+static char log_all[8192];   /* (every line: the MCP server's commands answer with several) */
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
@@ -44,6 +45,8 @@ int rx_option(int id, int otherwise) { return id == 4 ? menu_background : id == 
 int64_t hos_now_ns(void) { return now_ns; }
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
+    strncat(log_all, last_log, sizeof log_all - strlen(log_all) - 2);
+    strncat(log_all, "\n", sizeof log_all - strlen(log_all) - 1);
 }
 void hos_log_flush(void) {}
 HWND GetForegroundWindow(void) { focus_queries++; return (HWND)(uintptr_t)(front ? 1 : 2); }
@@ -76,6 +79,16 @@ void rx_request_frame_dump(void) { commands++; }
 void rx_set_screenshot_ms(int64_t ms) { (void)ms; commands++; }
 void rx_request_rdoc_capture(int frames) { (void)frames; commands++; }
 void rx_flash_dark_arm(void) { commands++; }
+/* (the MCP server's live commands: host/nn_hid.c) */
+int rx_settings_dump(char *out, int cap) {
+    const char *dump = "mcp: settings begin\nmcp: settings end\nmcp: cheats off\nmcp: dump end\n";
+    const size_t n = strlen(dump);
+    if ((int)n >= cap) return 0;
+    memcpy(out, dump, n + 1);
+    return (int)n;
+}
+int rx_setting_set(const char *key, int value) { (void)key; return value; }
+int rx_cheat(const char *name, int value, int extra) { (void)name; (void)value; (void)extra; return -1; }
 
 #include "input_actual.inc"
 
@@ -148,6 +161,16 @@ static void frame_clock_case(const char *name) {
         packet((1ULL << B_A) | (1ULL << B_B), 0, 32767, 0);
         hos_present_count = 1072;
         packet(0, 0, 0, 0);
+        /* (the MCP server's commands: the dump goes to the log line by line, and a set answers with the row) */
+        append_live("!settings\n"); now_ns += 30000000;
+        packet(0, 0, 0, 0);
+        CHECK(strstr(log_all, "mcp: settings begin") && strstr(log_all, "mcp: dump end"));
+        append_live("!setting frame_pacing 1\n"); now_ns += 30000000;
+        packet(0, 0, 0, 0);
+        CHECK(strstr(log_all, "mcp: setting ok|frame_pacing|1") != NULL);
+        append_live("!cheat heart_protection 1\n"); now_ns += 30000000;
+        packet(0, 0, 0, 0);
+        CHECK(strstr(log_all, "mcp: cheat error|heart_protection|unknown") != NULL);
     } else {
         for (int i = 0; i < MAX_PRESSES; i++) CHECK(parse_presses("0:A/200", 0, 1) == 1);
         now_ns += 7000000000LL;

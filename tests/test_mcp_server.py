@@ -51,6 +51,33 @@ while True:
             print(f"[hos fake] hid: live input at 0.1 s: {line}", file=sys.stderr, flush=True)
             if line.startswith("!"):
                 print(f"[hos fake] hid: live command at 0.1 s: {line}", file=sys.stderr, flush=True)
+            if line == "!settings":
+                for text in ("mcp: settings begin",
+                             "mcp: value|frame_generation|Frame generation|graphics|2|0|8|1|2x",
+                             "mcp: value|text_speed|Text speed|gameplay|0|0|3|1|Normal",
+                             "mcp: settings end",
+                             "mcp: cheats on",
+                             "mcp: cheats begin",
+                             "mcp: cheatrow|heart_protection|Heart protection|toggle|0|Off",
+                             "mcp: cheatrow|teleport|Teleport|choice|0|Kokiri Forest",
+                             "mcp: cheatrow|inventory|Inventory|action|0|",
+                             "mcp: cheats end",
+                             "mcp: pouch begin", "mcp: pouch|0|Deku Seeds", "mcp: pouch end",
+                             "mcp: teleports begin", "mcp: teleport|0|Kokiri Forest",
+                             "mcp: teleport|1|Hyrule Field", "mcp: teleports end",
+                             "mcp: items begin", "mcp: item|0|Kokiri Sword|0|1", "mcp: items end",
+                             "mcp: dump end"):
+                    print(f"[hos fake] {text}", file=sys.stderr, flush=True)
+            if line.startswith("!setting "):
+                parts = line.split()
+                key = parts[1] if len(parts) > 1 else ""
+                value = parts[2] if len(parts) > 2 else "0"
+                print(f"[hos fake] mcp: setting ok|{key}|{value}", file=sys.stderr, flush=True)
+            if line.startswith("!cheat "):
+                parts = line.split()
+                name = parts[1] if len(parts) > 1 else ""
+                value = parts[2] if len(parts) > 2 else "0"
+                print(f"[hos fake] mcp: cheat ok|{name}|{value}", file=sys.stderr, flush=True)
             if line.startswith("!quit"):
                 raise SystemExit(0)
     if request.exists():
@@ -74,7 +101,8 @@ def protocol_checks():
         async with Client(hookshot.mcp) as client:
             tools = await client.list_tools()
             names = {tool.name for tool in tools.tools}
-            expected = {"launch", "stop", "status", "press", "stick", "sequence", "screenshot", "wait", "logs"}
+            expected = {"launch", "stop", "status", "press", "stick", "sequence", "screenshot", "wait", "logs",
+                        "settings", "set_setting", "cheat"}
             if names != expected:
                 raise SystemExit(f"unexpected tools: {sorted(names)}")
             resources = {resource.uri for resource in (await client.list_resources()).resources}
@@ -139,12 +167,23 @@ def stdio_checks():
 def native_checks():
     """The game-side seams the server depends on are still there."""
     vk = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
+    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
     webgpu = (ROOT / "gpu" / "render" / "rx_core.cpp").read_text(encoding="utf-8")
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
     main = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    for needle in ("RX_VK_SHOT_FILE", "read_shot_request", "written to"):
+    for needle in ("RX_VK_SHOT_FILE", "read_shot_request", "written to", "menu_settings_dump", "menu_cheat"):
         if needle not in vk:
             raise SystemExit(f"gpu/vk/vk_replay.cpp lost {needle}")
+    for needle in ("mcp: dump end", "menu_settings_dump", "menu_cheat", "HOS_OOT_CHEATS"):
+        if needle not in menu:
+            raise SystemExit(f"gpu/vk/vk_menu.cpp lost {needle}")
+    for needle in ("rx_settings_dump", "rx_setting_set", "rx_cheat"):
+        if needle not in backend:
+            raise SystemExit(f"host/rx_backend.c lost {needle}")
+    for needle in ("!settings", "!setting ", "rx_cheat", "mcp: cheat ok"):
+        if needle not in hid:
+            raise SystemExit(f"host/nn_hid.c lost {needle}")
     if "RX_SCREENSHOT_FILE" not in webgpu:
         raise SystemExit("gpu/render/rx_core.cpp lost RX_SCREENSHOT_FILE")
     for needle in ("HOS_INPUT_SCRIPT_ONLY", "LX=", "!quit"):
@@ -262,6 +301,30 @@ def fake_game_checks():
                     if not status.structured_content or not status.structured_content.get("ready"):
                         raise SystemExit(f"status after a screenshot: {status}")
             run_async(screenshot_tool())
+
+            async def settings_tools():
+                async with Client(hookshot.mcp) as client:
+                    listed = await client.call_tool("settings", {})
+                    got = listed.structured_content or {}
+                    if listed.is_error or len(got.get("settings", [])) != 2 or not got.get("cheats_enabled"):
+                        raise SystemExit(f"settings tool: {listed.content}")
+                    if not any(s["name"] == "text_speed" and s["text"] == "Normal" and s["tab"] == "gameplay"
+                               for s in got["settings"]):
+                        raise SystemExit(f"settings rows: {got['settings']}")
+                    if not any(c["name"] == "teleport" and got["teleports"][1]["name"] == "Hyrule Field"
+                               for c in got["cheats"]):
+                        raise SystemExit(f"cheat rows: {got['cheats']} {got['teleports']}")
+                    changed = await client.call_tool("set_setting", {"name": "frame_generation", "value": 3})
+                    if changed.is_error or (changed.structured_content or {}).get("value") != 3:
+                        raise SystemExit(f"set_setting: {changed.content}")
+                    acted = await client.call_tool("cheat", {"name": "teleport", "item": "Hyrule Field"})
+                    if acted.is_error or (acted.structured_content or {}).get("value") != 1:
+                        raise SystemExit(f"cheat: {acted.content}")
+                    wrong = await client.call_tool("cheat", {"name": "teleport", "item": "Nowhere"})
+                    if not wrong.is_error or "unknown teleport destination" not in wrong.content[0].text:
+                        raise SystemExit(f"a bad destination was accepted: {wrong.content}")
+            run_async(settings_tools())
+
             stopped = session.stop()
             if not stopped["stopped"]:
                 raise SystemExit(f"stop: {stopped}")
@@ -279,7 +342,7 @@ def main():
     env_checks()
     game_dir_checks()
     fake_game_checks()
-    print("PASS: MCP protocol (in memory and stdio), native seams, input lines, environment, game_dir and fake-game screenshot")
+    print("PASS: MCP protocol (in memory and stdio), native seams, input lines, environment, game_dir, settings and cheats, fake-game screenshot")
 
 
 if __name__ == "__main__":

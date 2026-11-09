@@ -60,6 +60,17 @@ bool menu_is_open();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
+
+// ---- (hookshot, tests) the settings and cheat rows the MCP server drives (scripts/hookshot_mcp.py, docs/mcp.md) ----
+/// Every row of the Insert menu and, when the cheat menu is on (HOS_OOT_CHEATS=1), its rows, the pouch's items, the
+/// teleports and the inventory, as "mcp: ..." text lines (the server reads them from the game's log). Returns the bytes
+/// written; 0 when there is no menu.
+int menu_settings_dump(char* out, int cap);
+/// Set a setting by its options-file key, as the menu's own setter does. Returns the value applied, -1 for an unknown key.
+int menu_setting_set(const char* key, int value);
+/// A cheat row named as the server names it, with a value and an extra (the pouch's or the inventory's item and amount).
+/// Returns the value applied: -1 unknown name, -2 the cheat menu is off, -3 a value out of its range.
+int menu_cheat(const char* name, int value, int extra);
 int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();

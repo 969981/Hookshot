@@ -231,6 +231,7 @@ class LaunchOptions:
     extra_env: dict[str, str] | None = None
     force: bool = False
     wait_ready: bool = False
+    cheats: bool = False
     ready_timeout_s: float = 180.0
 
 
@@ -306,6 +307,11 @@ class LogStream:
         with self._cond:
             return [line for _, line in list(self._lines)[-n:]]
 
+    def since(self, after: int) -> list[str]:
+        """The lines read since `after` (a seq taken before a command went out)."""
+        with self._cond:
+            return [line for seq, line in self._lines if seq > after]
+
 
 class GameSession:
     def __init__(self, cfg: Config, opts: LaunchOptions):
@@ -329,6 +335,7 @@ class GameSession:
         self.exit_code: int | None = None
         self.renderer: str | None = None
         self.last_screenshot: dict[str, Any] | None = None
+        self.settings_snapshot: dict[str, Any] | None = None
         self._shot_seq = 0
 
     def alive(self) -> bool:
@@ -372,6 +379,8 @@ class GameSession:
                 env["HOS_WINDOW_SIZE"] = self.opts.window_size
         else:
             env["HOS_HEADLESS"] = "1"
+        if self.opts.cheats:
+            env["HOS_OOT_CHEATS"] = "1"   # (Gameplay > Cheats, and the rows settings() lists)
         for key, value in (self.opts.extra_env or {}).items():
             if key in CONTROL_ENV:
                 raise ToolError(f"extra_env may not set {key}; use the dedicated launch argument")
@@ -466,6 +475,90 @@ class GameSession:
             self._sleep_ms(duration + settle_ms)
         return {"line": line, "steps": len(steps), "duration_ms": duration, "acked": acked,
                 "queued": True, "waited": wait}
+
+    def command(self, line: str, marker: str, timeout_ms: int = 5000) -> list[str]:
+        """Write one live input command and wait for a log line containing `marker`; return the lines read since."""
+        self.require_running()
+        before = self.log_stream.seq
+        with open(self.input_path, "ab") as handle:
+            handle.write((line + "\n").encode("ascii"))
+        found = self.log_stream.wait_for(lambda text: marker in text, timeout_ms / 1000.0, before)
+        if found is None:
+            raise ToolError(f"the game did not answer {line!r} within {timeout_ms} ms; log:\n"
+                            + "\n".join(self.log_stream.tail(20)))
+        return self.log_stream.since(before)
+
+    @staticmethod
+    def mcp_lines(lines: list[str]) -> list[str]:
+        """The server's own "mcp: ..." lines, without the game's thread prefix."""
+        out = []
+        for line in lines:
+            at = line.find("mcp: ")
+            if at >= 0:
+                out.append(line[at + 5:])
+        return out
+
+    def read_settings(self) -> dict[str, Any]:
+        """The Insert menu's rows and, when the cheat menu is on, its rows and the lists they use."""
+        payload = self.mcp_lines(self.command("!settings", "mcp: dump end", timeout_ms=15000))
+        if "settings none" in payload:
+            raise ToolError("this renderer has no Insert menu: settings are available on the Vulkan back end")
+        snapshot: dict[str, Any] = {"cheats_enabled": "cheats on" in payload, "settings": [], "cheats": [],
+                                    "pouch": [], "teleports": [], "items": []}
+        for line in payload:
+            parts = line.split("|")
+            if parts[0] == "value" and len(parts) == 9:
+                snapshot["settings"].append({
+                    "name": parts[1], "label": parts[2], "tab": parts[3], "value": int(parts[4]),
+                    "min": int(parts[5]), "max": int(parts[6]), "step": int(parts[7]), "text": parts[8]})
+            elif parts[0] == "cheatrow" and len(parts) == 6:
+                snapshot["cheats"].append({"name": parts[1], "label": parts[2], "kind": parts[3],
+                                           "value": int(parts[4]), "text": parts[5]})
+            elif parts[0] == "pouch" and len(parts) == 3:
+                snapshot["pouch"].append({"index": int(parts[1]), "name": parts[2]})
+            elif parts[0] == "teleport" and len(parts) == 3:
+                snapshot["teleports"].append({"index": int(parts[1]), "name": parts[2]})
+            elif parts[0] == "item" and len(parts) == 5:
+                snapshot["items"].append({"index": int(parts[1]), "label": parts[2], "quantity": parts[3] == "1",
+                                          "count": int(parts[4])})
+        self.settings_snapshot = snapshot
+        return snapshot
+
+    def _snapshot(self) -> dict[str, Any]:
+        """The rows of this run, read now or at the last settings() call."""
+        return self.settings_snapshot or self.read_settings()
+
+    def set_setting(self, name: str, value: int) -> dict[str, Any]:
+        """Change one setting by its key, as the Insert menu's own setter does (kept in hookshot_options.ini)."""
+        payload = self.mcp_lines(self.command(f"!setting {name} {int(value)}", "mcp: setting ", timeout_ms=5000))
+        reply = next((line for line in payload if line.startswith("setting ")), "setting error||no answer")
+        parts = reply.split("|")
+        if parts[0] == "setting ok" and len(parts) == 3:
+            return {"name": parts[1], "value": int(parts[2])}
+        raise ToolError(f"the game refused {name}={value}: {reply}")
+
+    def cheat(self, name: str, value: int = 0, item: str | int | None = None) -> dict[str, Any]:
+        """Act on a cheat row (Gameplay > Cheats) without the window."""
+        snapshot = self._snapshot()
+        if not snapshot["cheats_enabled"]:
+            raise ToolError("the cheat menu is off for this run: call launch with cheats=true (HOS_OOT_CHEATS=1)")
+        value = int(value)
+        extra = -1
+        if name == "teleport":
+            value = pick(item, snapshot["teleports"], "teleport destination")
+        elif name == "pouch":
+            extra = value
+            value = pick(item, snapshot["pouch"], "pouch item")
+        elif name == "inventory":
+            extra = value
+            choices = [{"index": row["index"], "name": row["label"]} for row in snapshot["items"]]
+            value = pick(item, choices, "inventory item")
+        payload = self.mcp_lines(self.command(f"!cheat {name} {value} {extra}", "mcp: cheat ", timeout_ms=5000))
+        reply = next((line for line in payload if line.startswith("cheat ")), "cheat error||no answer")
+        parts = reply.split("|")
+        if parts[0] == "cheat ok" and len(parts) == 3:
+            return {"name": parts[1], "value": int(parts[2])}
+        raise ToolError(f"the game refused the cheat {name!r}: {reply}")
 
     def next_shot_path(self, path: str | None) -> Path:
         if path:
@@ -607,6 +700,25 @@ def normalize_buttons(buttons: list[str] | str) -> list[str]:
     return names
 
 
+def pick(value: str | int | None, choices: list[dict[str, Any]], what: str) -> int:
+    """A name or index from one of the dump's lists (the teleports, the pouch's items, the inventory), as its index."""
+    if value is None or value == "":
+        raise ToolError(f"which {what}? pass its name or index; call settings() for the list")
+    if isinstance(value, int) or (isinstance(value, str) and value.strip().lstrip("-").isdigit()):
+        index = int(value)
+        if any(choice["index"] == index for choice in choices):
+            return index
+        raise ToolError(f"no {what} {index}; the list has {len(choices)} entries")
+    want = str(value).strip().lower()
+    for choice in choices:
+        if choice["name"].lower() == want:
+            return choice["index"]
+    for choice in choices:
+        if want in choice["name"].lower():
+            return choice["index"]
+    raise ToolError(f"unknown {what} {value!r}; call settings() for the names")
+
+
 def stick_tokens(stick: Literal["left", "right"], x: float, y: float) -> list[str]:
     if stick not in STICK_AXES:
         raise ToolError("stick must be left or right")
@@ -722,6 +834,7 @@ def launch(
     env_file: Annotated[bool | None, Field(description="Read hookshot_env.txt before applying the server's switches.")] = None,
     fresh_user: Annotated[bool, Field(description="Use a fresh save folder inside this run.")] = False,
     extra_env: Annotated[dict[str, str] | None, Field(description="Extra environment switches.")] = None,
+    cheats: Annotated[bool, Field(description="Turn the cheat menu on (HOS_OOT_CHEATS=1), so cheat() works.")] = False,
     force: Annotated[bool, Field(description="Start even when another game process is detected.")] = False,
     wait_ready: Annotated[bool, Field(description="Wait for the first screenshot before returning.")] = False,
     ready_timeout_s: Annotated[float, Field(ge=1, le=900, description="How long wait_ready waits.")] = 180.0,
@@ -730,7 +843,7 @@ def launch(
     opts = _launch_options(game_dir=game_dir, exe=exe, image=image, romfs=romfs, user=user, run_dir=run_dir,
                            cache_dir=cache_dir, window=window, focus=focus, window_size=window_size, audio=audio,
                            backend=backend, script_only=script_only, frame_clock=frame_clock, exclusive=exclusive,
-                           env_file=env_file, fresh_user=fresh_user, extra_env=extra_env, force=force)
+                           env_file=env_file, fresh_user=fresh_user, extra_env=extra_env, force=force, cheats=cheats)
     opts.wait_ready = wait_ready
     opts.ready_timeout_s = ready_timeout_s
     return CONTROLLER.launch(opts)
@@ -833,6 +946,31 @@ def logs(
     """Return recent game log lines, optionally filtered."""
     session = CONTROLLER.require_session()
     return "\n".join(session.log_tail(tail, pattern))
+
+
+@mcp.tool(title="Settings")
+def settings() -> dict[str, Any]:
+    """Every setting the Insert menu shows, the cheat rows when the cheat menu is on, and the lists they use."""
+    return CONTROLLER.require_session().read_settings()
+
+
+@mcp.tool(title="Change a setting")
+def set_setting(
+    name: Annotated[str, Field(description="The row's key from settings(), such as 'framegen', 'resolution' or 'text_speed'.")],
+    value: Annotated[int, Field(description="The new value; clamped to the row's range (its min and max).")],
+) -> dict[str, Any]:
+    """Change one of the player's settings, as the Insert menu does; it is kept in hookshot_options.ini."""
+    return CONTROLLER.require_session().set_setting(name, value)
+
+
+@mcp.tool(title="Use a cheat")
+def cheat(
+    name: Annotated[str, Field(description="A row from settings()'s cheats: heart_protection, no_clip_flight, free_camera, mark_position, return_to_mark, set_time, teleport, switch_age, pouch, inventory.")],
+    value: Annotated[int, Field(description="0/1 for a toggle, the hour for set_time, the pouch's amount, the inventory's count (-1 toggles).")] = 0,
+    item: Annotated[str | int | None, Field(description="The teleport destination, pouch item or inventory item, by name or index.")] = None,
+) -> dict[str, Any]:
+    """Act on the cheat menu (Gameplay > Cheats) directly; the run must be launched with cheats=true."""
+    return CONTROLLER.require_session().cheat(name, value, item)
 
 
 @mcp.resource("hookshot://log", mime_type="text/plain", description="Recent Hookshot game log lines.")

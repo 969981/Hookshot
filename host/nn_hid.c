@@ -305,7 +305,48 @@ static void live_input(void) {
                 void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
-                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                int rx_settings_dump(char *out, int cap);   /* host/rx_backend.c: the Insert menu's rows (gpu/vk/vk_menu.cpp) */
+                int rx_setting_set(const char *key, int value);
+                int rx_cheat(const char *name, int value, int extra);
+                if (!strncmp(line, "!settings", 9)) {   /* the MCP server reads the menu's rows back from the log */
+                    static char dump[65536];
+                    const int bytes = rx_settings_dump(dump, (int)sizeof dump);
+                    if (bytes > 0) {
+                        for (char *p = dump; *p;) {
+                            char *end = strchr(p, '\n');
+                            if (end) *end = 0;
+                            hos_log("%s", p);
+                            if (!end) break;
+                            p = end + 1;
+                        }
+                    } else {
+                        hos_log("mcp: settings none");   /* (the WebGPU back end has no Insert menu) */
+                    }
+                } else if (!strncmp(line, "!setting ", 9)) {
+                    char key[64] = {0};
+                    int value = 0, used = 0;
+                    if (sscanf(line + 9, "%63s %d %n", key, &value, &used) >= 2 && key[0] && used > 0) {
+                        const int applied = rx_setting_set(key, value);
+                        if (applied < 0) hos_log("mcp: setting error|%s|unknown", key);
+                        else hos_log("mcp: setting ok|%s|%d", key, applied);
+                    } else {
+                        hos_log("mcp: setting error||usage: !setting <key> <value>");
+                    }
+                } else if (!strncmp(line, "!cheat ", 7)) {
+                    char name[64] = {0};
+                    int value = 0, extra = 0;
+                    const int used = sscanf(line + 7, "%63s %d %d", name, &value, &extra);
+                    const int named = used >= 1 && name[0] && !(name[0] == '-' || (name[0] >= '0' && name[0] <= '9'));
+                    if (named) {   /* "!cheat <name> [value] [extra]": the cheat menu's own rows, for the MCP server */
+                        const int applied = rx_cheat(name, value, extra);
+                        if (applied == -2) hos_log("mcp: cheat error|%s|disabled", name);
+                        else if (applied == -3) hos_log("mcp: cheat error|%s|range", name);
+                        else if (applied < 0) hos_log("mcp: cheat error|%s|unknown", name);
+                        else hos_log("mcp: cheat ok|%s|%d", name, applied);
+                    } else {
+                        __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                    }
+                }
                 if (!strncmp(line, "!quit", 5)) {   /* a test run's clean stop: the MCP server writes this */
                     hos_log("hid: live command at %.1f s: !quit", at / 1000.0);
                     hos_log("hid: quit requested (live input)");

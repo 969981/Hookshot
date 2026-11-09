@@ -165,6 +165,11 @@ typedef struct MkwVkRenderer {
     /* (hookshot, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
        in percent (the - and = keys, host/nn_hid.c) */
     void (*option_set)(int id, int value);
+    /* (hookshot, tests) the Insert menu's settings and cheats for the MCP server (gpu/vk/vk_menu.cpp): the rows as
+       "mcp: ..." text lines, and a set by key or name (host/nn_hid.c's "!settings", "!setting" and "!cheat") */
+    int (*settings_dump)(char *out, int cap);
+    int (*setting_set)(const char *key, int value);
+    int (*cheat)(const char *name, int value, int extra);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

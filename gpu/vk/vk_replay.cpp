@@ -3842,6 +3842,9 @@ void fill_replay_table(MkwVkRenderer& t) {
                id == HOS_OPT_DLSS_JITTER_PHASES ? (int)dlss_jitter_size(2) : 0;
     };
     t.option_set = menu_option_set;
+    t.settings_dump = menu_settings_dump;
+    t.setting_set = menu_setting_set;
+    t.cheat = menu_cheat;
     t.nvn_register_sampler = register_sampler_queued;
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
