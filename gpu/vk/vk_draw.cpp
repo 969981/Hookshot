@@ -5559,6 +5559,28 @@ bool scene_jitter(float* x, float* y) {
     return true;
 }
 
+/// (hookshot) Whether a temporal backend should throw its history away this frame.
+///
+/// docs/upscaling.md states the contract -- history is reset on a resize, on first use, and after a
+/// gap of more than 250 ms -- and nothing implemented it, so every `Inputs::reset` was false
+/// always. What that costs is not a crash: it is an upscaler accumulating across a loading screen
+/// or a camera cut, and a frame interpolator blending two frames from different places, both of
+/// which look like a smear for a few frames and are easy to blame on the backend.
+///
+/// The gap is measured between the scene's own evaluations, not between presents, because that is
+/// what the history belongs to.
+bool scene_history_stale(uint32_t render_width, uint32_t render_height) {
+    using clk = std::chrono::steady_clock;
+    static uint32_t last_w = 0, last_h = 0;
+    static clk::time_point last{};
+    const clk::time_point now = clk::now();
+    const bool first = last.time_since_epoch().count() == 0;
+    const bool resized = render_width != last_w || render_height != last_h;
+    const bool gap = !first && now - last > std::chrono::milliseconds(250);
+    last_w = render_width, last_h = render_height, last = now;
+    return first || resized || gap;
+}
+
 /// (hookshot) The scene's depth and matrix, for the present path (vk_draw.h).
 bool scene_frame_inputs(SceneFrameInputs* out) {
     if (!out) return false;
@@ -5860,6 +5882,9 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                 assembled.inputs.render_height = scene_depth.height;
                 assembled.inputs.colour = 0;   // (the dispatch's single sampled texture)
                 assembled.colour_binding = assembled.inputs.colour;
+                // One answer for both backends: whichever takes this dispatch gets the same
+                // statement about whether its history still belongs to this scene.
+                const bool stale = scene_history_stale(scene_depth.width, scene_depth.height);
                 if (upscale::choose(avail, assembled) == upscale::Backend::Dlss) {
                     // NGX is handed whole resources, not views: the colour's image and format come from the
                     // lockstep DescWriter::Source, the depth's from the targets, and the motion's from the
@@ -5878,6 +5903,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     di.upscale_width = req.output_width, di.upscale_height = req.output_height;
                     di.motion_scale[0] = 1.0f, di.motion_scale[1] = 1.0f;   // (already render pixels)
                     scene_jitter(&di.jitter[0], &di.jitter[1]);
+                    di.reset = stale;
                     float dnp = 0.0f, dfp = 0.0f;
                     const float dth = hos_oot_camera ? hos_oot_camera(&dnp, &dfp) : 0.0f;
                     if (dth > 0.0f && dnp > 0.0f) di.near_plane = dnp, di.fov_y = 2.0f * std::atan(dth);
@@ -5909,6 +5935,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     // The offset this frame's scene was rasterized with, which the upscaler has to
                     // undo. Zero where nothing is jittering, which is what that means.
                     scene_jitter(&ai.jitter[0], &ai.jitter[1]);
+                    ai.reset = stale;
                     float np = 0.0f, fp = 0.0f;
                     const float th = hos_oot_camera ? hos_oot_camera(&np, &fp) : 0.0f;
                     if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);

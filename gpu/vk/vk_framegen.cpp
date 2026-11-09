@@ -646,6 +646,16 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     const int cur = fg.cur, prev = cur ^ 1, m = multiplier();
     const bool blend = fg.have_prev && !gap;
+    // (hookshot) A gap is a loading screen or a cut, and the renderer's own interpolator already
+    // refuses to blend across one. Everything else with a history has to be told as well: the
+    // camera motion would otherwise reproject through a matrix from before the cut, and either
+    // frame-generation backend would interpolate between two frames taken in different places.
+    // Each of these had a reset() that nothing ever called.
+    if (gap) {
+        camera_motion::reset();
+        dlssg::reset();
+        fsr3fi::reset();
+    }
     const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
     const uint32_t qw = (uw + 3) / 4, qh = (uh + 3) / 4, cw = (qw + 3) / 4, ch = (qh + 3) / 4;
     full_barrier(cmd);
