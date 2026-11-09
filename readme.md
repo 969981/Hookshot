@@ -57,7 +57,7 @@ the table says what works and what does not yet.
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Some tested: reports from the RX 6600, RX 7800 XT and RX 7900 XTX. Known issue: the game loses the GPU in the Deku Tree on the RX 6600 ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#17](https://github.com/NotRexed/Hookshot/issues/17)) |
-| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. A fallback was tried and taken out again for now ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
+| Cards without mesh shaders (such as AMD RX 5000 and older) | ⚠️ Work through a fallback that draws the foliage, grass and effects with compute shaders instead. Tested on an AMD RX 5500M laptop (4 GB of VRAM: use the Minimum (4GB) preset). The first start after an update takes longer while it prepares them, and see-through mesh effects can draw in the wrong order ([#640](https://github.com/NotRexed/Hookshot/issues/640), [details](docs/mesh_fallback_rdna1.md)) |
 | Linux | ✅ Works with the AppImage. Tested on several distributions (CachyOS, Fedora, Bazzite, SteamOS) and cards, with open problems on some AMD cards ([#604](https://github.com/NotRexed/Hookshot/issues/604), [#528](https://github.com/NotRexed/Hookshot/issues/528)) |
 
 ## Install and play
@@ -71,9 +71,10 @@ you start the game from its launcher, which also updates it.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
   SteamOS ...) and a CPU with AVX2.
-- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
-  AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
-  not supported.
+- A graphics card with Vulkan 1.3, with an up-to-date driver. On Linux, Mesa or NVIDIA's driver. Cards with mesh
+  shaders (NVIDIA GeForce RTX 20 series or newer, AMD Radeon RX 6000 series or newer, Intel Arc) draw the game as the
+  console does; older cards use the mesh shader fallback instead (see **Mesh shader fallback** under the in-game
+  menu), so far tested on an AMD RX 5500M.
 - 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
 - 16 GB of RAM or more. A run uses about 10 GB.
 - About 60 GB free while building.
@@ -162,8 +163,8 @@ with `--update <game folder>`.
 | Where is the log? | `hookshot_log.txt` in the game folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead |
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
-| Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
-| Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
+| Parts of the picture are missing, or a message says your card has no mesh shader support | The card has no mesh shaders, and the fallback that draws those parts instead is off or cannot run. Set **Mesh shader fallback** to Auto in the in-game menu and restart, and update the graphics driver ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
+| Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver. `vulkaninfo \| grep mesh` lists `VK_EXT_mesh_shader` on a card with mesh shaders; without it, the mesh shader fallback draws those parts. Update Mesa or the NVIDIA driver |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
@@ -193,6 +194,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Handheld profile | Off, On (after a restart) | Off |
 | | Ultrawide | 16:9, Monitor's shape (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
+| | Mesh shader fallback | Auto, Off, On (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
@@ -218,6 +220,12 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
+- **Mesh shader fallback** draws what the game makes with mesh shaders (foliage, grass, some doors and effects) through
+  compute shaders instead. Auto uses it only on cards without mesh shaders, and picks this at every start. On uses it on
+  every card: try it if an AMD RX 6000 or newer hangs, as another Switch 2 emulator found native mesh shaders hang those
+  cards. Off never uses it, which leaves those parts out on a card without mesh shaders. A change applies after a
+  restart, and that start prepares the shaders again. It is not part of the Quality preset. How it works and what it
+  fixed: [docs/mesh_fallback_rdna1.md](docs/mesh_fallback_rdna1.md).
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
