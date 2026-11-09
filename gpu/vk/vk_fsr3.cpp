@@ -230,8 +230,11 @@ bool make_image(Image& t, VkFormat format, uint32_t width, uint32_t height, uint
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // (TRANSFER_SRC as well as DST: the output is blitted from, which is how the seam gets it into
+    //  the game's target. Asking only for DST while blitting from it is a validation error waiting
+    //  on a device that checks; caught in review, not by a run)
     ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-               VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!create_image(ci, t.image, t.memory, false)) {
         logf("vk: fsr3: a %ux%u image (format %d) was not made", t.width, t.height, (int)format);

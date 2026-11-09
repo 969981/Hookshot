@@ -316,3 +316,137 @@ across hitches over 100 ms. Real motion and depth improve what it makes, but the
 either property. DLSS frame generation is a Streamline feature and so would be Windows-only; FSR's
 frame interpolation is available on both. Neither removes the latency a frame-interpolating renderer
 has by construction, and #755 should be read before any of it is wired to the Insert menu.
+
+## DLSS Super Resolution: what is in the tree, and what it is not
+
+Row 4 of the order of work now has a backend: `gpu/vk/vk_dlss.h` and `gpu/vk/vk_dlss.cpp`, the same
+shape as the FSR one (`supported()`, `prepare()`, `upscale()`, `output_image()`/`output_view()`,
+`shutdown()`) so the seam can hold either. **It has never been run.** It compiles, it links, and
+nothing more than that has been established; read the rest of this section before assuming
+otherwise.
+
+Two switches, both off by default, both neutral while off:
+
+| | |
+|---|---|
+| `RX_VK_DLSS=1` | asks for the backend at run time. Without it nothing is loaded, nothing is looked at and nothing is logged |
+| `RX_VK_DLSS_SDK` | a **build-time** gate. Off, the NGX half of the backend is not compiled and `supported()` is false. On, the build needs an NGX SDK's `include/` on the include path |
+
+### The licensing decision, and why it is a gate rather than a hand-written ABI
+
+The rule from CONTRIBUTING.md is not negotiable and is not negotiated: **no NVIDIA header and no
+NVIDIA library is in this repository**, a tree with no SDK builds, and a machine with no DLSS
+runtime runs. The question was how to reach NGX under that rule, and there were two answers.
+
+The first — declare the minimal NGX ABI by hand and resolve the entry points with `dlopen` — is
+what the FSR API route would look like, and it is the wrong answer here. NGX is not a handful of C
+functions. Every call goes through `NVSDK_NGX_Parameter`, which is a **C++ class of pure-virtual
+`Set`/`Get` overloads**: its vtable order is the ABI. `NVSDK_NGX_Resource_VK`,
+`NVSDK_NGX_FeatureCommonInfo` and the DLSS create parameters are struct layouts, and the ~20
+parameter names are strings. None of that can be derived from the exported function names, none of
+it is checked by a compiler, and none of it can be tested without an NVIDIA GPU, the driver's NGX
+core and the model library. A wrong vtable slot or a shifted field is memory corruption inside
+NVIDIA's runtime on a user's machine — a worse failure than "DLSS is unavailable", and one that
+would be reported as a driver crash.
+
+So the second answer was taken: **the NGX half is gated at build time and is off by default.**
+Behind the gate NVIDIA's own headers declare all of it and the compiler checks every line against
+them; in front of the gate there is nothing of NVIDIA's at all. The five functions the gate covers
+(`ngx_available`, `ngx_feature`, `ngx_evaluate`, `ngx_drop_feature`, `ngx_shutdown`) each refuse
+when it is off, and everything else in the file — the output image, the extents, the layout
+transitions, the barriers, and every clause that refuses an evaluation — is vendor-neutral and
+compiles in every build.
+
+Two things follow that are worth stating plainly:
+
+- **This is not the FSR arrangement.** FSR 3.1 is compiled from MIT sources in this tree and is a
+  backend that can be a default. DLSS is a backend that is off unless someone builds it on purpose
+  with a licensed SDK they fetched themselves. That asymmetry is the licensing, not a judgment about
+  the upscalers.
+- **The gate is also the honest answer to the ABI question.** If a later change declares the ABI in
+  this tree instead, the gated build stops needing NVIDIA's headers, and
+  `tests/test_dlss_contract.py` fails on exactly that.
+
+Even behind the gate, the entry points are **resolved by name at run time** from the NGX core the
+driver ships (`libnvidia-ngx.so.1`, then `libnvidia-ngx.so`; `nvngx.dll` on Windows) through the
+`LoadLibraryA`/`GetProcAddress` pattern the renderer already uses for `vulkan-1.dll`, which
+`host/posix/win32_posix.c` makes `dlopen`/`dlsym` on Linux. So a gated build has no link dependency
+on NVIDIA's library either, and on a machine with the SDK-built binary and no NVIDIA driver every
+pointer is null and `supported()` is false instead of the process failing to start. The model
+library (`libnvidia-ngx-dlss.so.*`) is NGX's to find, and it is told where to look: the game folder
+goes in `NVSDK_NGX_FeatureCommonInfo::PathListInfo` and as the application data path.
+
+One consequence of resolving rather than linking: the SDK's `NGX_VULKAN_CREATE_DLSS_EXT1` and
+`NGX_VULKAN_EVALUATE_DLSS_EXT` helpers are **not** used, because they call
+`NVSDK_NGX_VULKAN_CreateFeature` / `..._EvaluateFeature` by name and would hand the link back to
+NVIDIA's library. What they do besides that is set the parameters below, and those come from the
+SDK's own key macros here, so a wrong name is a compile error exactly as it would be through the
+helper. What that trades away is the helper's completeness — a key DLSS wants and this code does not
+set would be silently ignored — so the set is written out here to be reviewed against the SDK's
+helper rather than taken on trust:
+
+| Create | Evaluate |
+|---|---|
+| `Width`, `Height`, `OutWidth`, `OutHeight` | `Color`, `Depth`, `MotionVectors`, `Output` |
+| `PerfQualityValue` | `Jitter.Offset.X`/`.Y`, `MV.Scale.X`/`.Y` |
+| `DLSS.Feature.Create.Flags` (`IsHDR`, `MVLowRes`, `DepthInverted`) | `DLSS.Render.Subrect.Dimensions.Width`/`.Height` |
+| `DLSS.Enable.Output.Subrects` (0) | `Reset`, `Sharpness` |
+| `CreationNodeMask`, `VisibilityNodeMask` | `DLSS.Pre.Exposure`, `DLSS.Exposure.Scale` (both 1.0) |
+
+The three create flags are statements about *this game's* inputs rather than preferences, and they
+come from the input contract above: the colour is HDR, the motion is at the render extent, and the
+depth is reversed. Each one set wrongly is a wrong picture.
+
+### Windows and Streamline are deliberately not written
+
+Streamline is the normal route to DLSS on Windows and the only route to DLSS frame generation, and
+none of it is implemented. That is a decision, not an oversight: it needs a second runtime, a second
+set of headers and a Windows machine to try it on. The shape is left for it — a third arm of the
+gate implementing the same five functions, which is why they are named for the job rather than for
+NGX — and nothing outside those five would change. Streamline has no Linux build, so the NGX arm
+stays the Linux one whatever happens on Windows.
+
+### What `dlss::Inputs` adds to `fsr3::Inputs`, and why
+
+Field for field it is FSR's, plus the images and formats of the three inputs. FSR records its own
+compute passes, so a `VkImageView` is the whole of an input to it; NGX is handed resources, and an
+`NVSDK_NGX_Resource_VK` is a view *and* its image, its subresource range, its format and the extent
+it is read at. There is nothing to default those to, so an evaluation refuses without them.
+
+That has a consequence for wiring it up, and it is the main one: **the caller does not have them
+all today.** `scene_depth` in `gpu/vk/vk_draw.cpp` carries its `VkImage` and format already, but the
+colour arrives as `dw.imgs[i].imageView` with no image beside it, and
+`camera_motion::record()` returns only a view. Both need an accessor before DLSS can be given a
+dispatch. Those files were out of scope for the change that added this backend.
+
+### Also not done, and needed before this can run
+
+- **Nothing calls it.** `upscale_seam.h` has no `Backend::Dlss`, and `vk_draw.cpp` does not reach
+  for `dlss::supported()`. The backend stands alone.
+- **The device does not enable what NGX asks for.** NGX reports the instance and device extensions
+  DLSS needs (`NVSDK_NGX_VULKAN_RequiredExtensions`), and `vk_main.cpp` enables none of them.
+  Until it does, `Init` or `CreateFeature` will fail on a machine that is otherwise capable — which
+  is a refusal and not a crash, but it is the first thing to check when DLSS reports unavailable on
+  hardware that should have it.
+- **Jitter.** As with FSR, the jitter the game's own network used is not extracted, so a run would
+  pass zero sub-pixel offset. DLSS without jitter is not DLSS at its quality; a soft image from such
+  a run is this, not the network behaving badly.
+- **The library names are a guess.** `libnvidia-ngx.so.1` and `libnvidia-ngx.so` were not checked
+  against an installed driver, because this machine has neither the runtime nor the SDK. If NGX
+  loads nowhere, that list is the first place to look; the loader logs which name it opened.
+- **The gated half has never been compiled against the real SDK.** It was syntax-checked against a
+  hand-written stand-in outside the repository, which catches typos and arities against what the API
+  is *believed* to be and proves nothing about the real one. Expect the first build with a real SDK
+  to need corrections, in the `Init_with_ProjectID` argument list above all: whether that entry
+  point takes the two `vkGet*ProcAddr` pointers varies by SDK version.
+
+### What is checked without a GPU, a game or an SDK
+
+`tests/test_dlss_contract.py` (with `tests/dlss_contract_test.cpp`) drives the real translation unit
+and asserts the no-SDK contract: it compiles and links with no NVIDIA SDK, and with `RX_VK_DLSS=1`
+and a device it reports DLSS unavailable *and says why*, without allocating an image, recording a
+barrier or handing back an output. The log line is the point — a check that only asserted "false"
+would pass against a `supported()` that had been deleted. It also fails if any NGX name in
+`vk_dlss.cpp` escapes the build-time gate, if an NVIDIA SDK header or library appears in the tree,
+or if a gated build stops needing NVIDIA's own headers. It needs `clang++` and the Vulkan headers,
+and takes about a second.
