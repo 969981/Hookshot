@@ -219,6 +219,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 if (reg >= 255 || reg + 3 < reserved_base) continue;   // (a quad below may reach up)
                 if (register_field && reg >= reserved_base) any_high = true;
             }
+            // Every number a register field of this instruction names, high or not. A marker among them would map that
+            // field too, and the run for a native register comes after the renamed ones in the prefix, so it takes the
+            // marker back (ApplyRegisterMap: the last run wins). OoT's foliage mesh (d38b0d52): FFMA R247, R180, R216,
+            // R247 took 216 for R247, the run for the native R216 mapped 216 to R216 again, the FFMA wrote over the
+            // weight in R216, and the light probes' weighted average divided by data: overexposed stalks, grass and
+            // flowers (issues 696, 667)
+            std::array<bool, 256> named_here{};
+            for (u32 f = 0; f < 4 && any_high; ++f) {
+                const u32 bit = bits[f], reg = insn.Bits(bit, 8);
+                const bool register_field = bit != 32 || insn.Bits(9, 3) == 1 || opcode == 0xb60 || opcode == 0xb66 ||
+                                            opcode == 0x927 || opcode == 0xb9b || opcode == 0x59f || opcode == 0x983 ||
+                                            opcode == 0x98e || opcode == 0xb6c || opcode == 0x9a8 || (renameable & (1U << f));
+                if (reg >= 255 || !register_field) continue;
+                const u32 exact = FieldSpan(opcode, f);
+                const u32 span = exact ? exact : span_of(reg);
+                for (u32 k = 0; k < span && reg + k < 255; ++k) named_here[reg + k] = true;
+            }
             for (u32 f = 0; f < 4 && any_high; ++f) {
                 const u32 bit = bits[f], reg = insn.Bits(bit, 8);
                 if (reg >= 255 || reg + 3 < reserved_base) continue;
@@ -234,7 +251,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     for (u32 m = 216; m + span <= 246 && marker == 255; m += span) {
                         bool ok = true;
                         for (u32 k = 0; k < span && ok; ++k)
-                            ok = m + k != 239 && !avoid[m + k] && !marker_taken[m + k] && !native_high[m + k];
+                            ok = m + k != 239 && !avoid[m + k] && !marker_taken[m + k] && !native_high[m + k] &&
+                                 !named_here[m + k];
                         if (ok) marker = m;
                     }
                     if (marker != 255 && nrenamed < 8) {
