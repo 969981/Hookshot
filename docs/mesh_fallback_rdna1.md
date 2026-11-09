@@ -16,6 +16,7 @@ This page explains how it behaves, why it was broken, and how each problem was f
 | Lighting and bloom on AMD | Working on the test laptop |
 | GPUs **with** mesh shaders (the #640 device loss) | Fixed in the code, **not tested** on such a GPU |
 | Texture noise after alt-tab on low-VRAM cards | **Working, but further testing needed** |
+| Glowing stems and flowers in Kokiri Forest | **Known issue, not fixed:** traced to the programs that cause it (see item 11) |
 
 ### The test laptop: low VRAM
 
@@ -237,6 +238,44 @@ tried again 30 frames later, with the cause logged. **It worked on the test lapt
 alt-tabbing, but was only tested briefly.** It needs more play, and testing on other low-VRAM
 cards. A texture can still show noise for a moment between a failed upload and its retry.
 
+### 11. Glowing stems and flowers in Kokiri Forest (known issue, not fixed)
+
+Some plants in Kokiri Forest look "radioactive". Flower petals bloom out bright yellow or white, stems glow cyan or white,
+and coloured specks and streaks shine in the bushes.
+
+**Ruled out:**
+- **Post-processing.** It stays with frame generation, sharpness and upscaling all off.
+- **Warp operations.** It stays with `RX_VK_WARP64=0` (graphics stages on the 32-lane path), and with
+  `RX_VK_FRAG_SHUFFLE_FALLBACK=0` (fragment shuffles native).
+- **A mismatch between the generated vertex stage and the fragment stage.** All 1,348 fallback programs were checked
+  offline. Every location a fragment stage reads is written, with matching types, and none reads `PrimitiveId`.
+
+**Tried and kept, but not the fix:**
+- The generated vertex stage now starts every output at zero, as the console's stage buffer does. Before, an output
+  component the mesh program did not write was undefined.
+- Butterfly shuffles (`SHFL.BFLY`) in fragment stages now go through Lichii #273's broadcast workaround on AMD's driver,
+  as the other shuffles do. 11 fallback fragment stages use them.
+
+**Tried and reverted:** sending quad swaps through the same workaround. A program whose only warp operation is a quad
+swap has neither the lane-ID input nor the capability the workaround needs, and the invalid SPIR-V crashed shader
+preparation.
+
+**Located with the live switch** (see "Testing and tools"), standing in Kokiri Forest, with 39 fallback programs in view:
+
+- **The flowers are drawn by the fallback.** With Mesh shader fallback Off they are not drawn at all.
+- **The stems:** hiding these 10 programs removes their glow:
+  `6afe3fda3f4b1752 5ba7cf23d6857836 9d8403e2e566c773 ccf4f709e0deeac1 6b7f79e2ff3a2746 3e56f2fd4b0c4e1a 22063ecfa481a731 50f7cddcf3bb96bd 2918fc795610b2d4 974ea2c913cc8443`
+- **The flowers:** hiding these 9 removes their glow, and the flowers underneath then look normal. Hiding any subset
+  of the 9 leaves some glow, so several of them contribute:
+  `da7a7ab28b8e73d9 7210c04a4d923d4b 636eed4d5000d1c0 e3f341ac12c40e2c 10dc355939390bdc 4d391dd9f0735bae 6f0bb6c9afa747de 2bcc4174a654992f 3a131272834635ab`
+- **These 19 behave like extra passes drawn over plants that other programs draw.** Shown alone they draw almost
+  nothing, as a pass that only draws where its depth matches would. Over the plants they come out far too bright.
+- **The stem programs share their fragment stage and record layout with programs that look right.** So the difference
+  is in the values their mesh stage writes, not in how the fragment stage reads them.
+
+**Next step:** read back one of these programs' records from the GPU, and look at each value's range, NaNs and
+infinities. That should show which value is wrong.
+
 ## Known limits
 
 - **Draw order.** Records land in the order the GPU claims them, so semi-transparent mesh
@@ -247,6 +286,7 @@ cards. A texture can still show noise for a moment between a failed upload and i
   GTX 10 series) should behave the same, but have not been tried.
 - **No GPU with mesh shaders tested** since the fix in item 9.
 - **The texture fix** (item 10) needs more testing.
+- **Glowing stems and flowers** (item 11): not fixed.
 
 ## Testing and tools
 
@@ -266,6 +306,18 @@ cards. A texture can still show noise for a moment between a failed upload and i
   - `vk: fallback: N buffer pairs, X MB` (fallback memory)
   - `vk: BC3 texture ... its upload failed (...)` (the texture fix)
 - **`RX_VK_PASS_TIMING=2`** logs GPU time per render pass, to see where frame time goes.
+- **Live switch, for finding which fallback program draws something:** create `hookshot_fallback_debug.txt` in the
+  game folder. The game re-reads it within half a second of a change, while fallback draws happen, with no restart and
+  no shader preparation.
+  - `off` hides every fallback draw.
+  - `list` logs each fallback program drawn (`vk: fallback debug: draws <key> ...`).
+  - Any other line is a program key's hex prefix, and hides that program.
+  - Lines starting with `#` are comments.
+
+  Delete the file to draw everything again. This is how the culprits in item 11 were found.
+- **Diagnostic switches** (each changes the shaders, so the start prepares them again):
+  - `RX_VK_WARP64=0` or `1` forces the 64-lane warp path for graphics stages off or on.
+  - `RX_VK_FRAG_SHUFFLE_FALLBACK=0` or `1` forces fragment-stage shuffles native or through broadcasts.
 
 ## Credits
 
