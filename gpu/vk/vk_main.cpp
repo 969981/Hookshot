@@ -19,6 +19,7 @@
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
+#include "memory_priority.h"
 #include "vk_menu.h"
 #include "vk_progress.h"
 
@@ -223,6 +224,13 @@ bool create_device() {
     optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, dev.vertex_divisor);
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
+    // (memory priorities: what the driver moves out of VRAM first when the process holds more than it allows; the pageable
+    // extension changes one after the allocation, for a texture left unused (memory_priority.h). OPT-IN: RX_VK_MEMORY_PRIORITY=1)
+    static const bool priorities = memory_priority::wanted(getenv("RX_VK_MEMORY_PRIORITY"));
+    if (priorities) {
+        optional(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME, dev.memory_priority);
+        if (dev.memory_priority) optional(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME, dev.pageable_memory);
+    }
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
@@ -314,7 +322,19 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT mprio{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    if (dev.memory_priority) *tail = &mprio, tail = &mprio.pNext;
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
+    if (dev.pageable_memory) *tail = &pageable, tail = &pageable.pNext;
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    dev.memory_priority = dev.memory_priority && mprio.memoryPriority;
+    dev.pageable_memory = dev.memory_priority && dev.pageable_memory && pageable.pageableDeviceLocalMemory;
+    pageable.pageableDeviceLocalMemory = dev.pageable_memory ? VK_TRUE : VK_FALSE;
+    logf("vk: memory priorities: %s", !priorities ? "off (RX_VK_MEMORY_PRIORITY=1: on)"
+                                      : !dev.memory_priority ? "not supported"
+                                      : dev.pageable_memory ? "on, pageable device-local memory (unused textures drop to the lowest)"
+                                                            : "on, without pageable device-local memory (fixed at allocation)");
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
