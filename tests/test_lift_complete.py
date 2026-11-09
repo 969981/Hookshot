@@ -113,6 +113,14 @@ def main():
                     except SystemExit:
                         refused = True
                 check("a second build on the same work folder is refused", refused and "Another Hookshot build" in said.getvalue())
+            # (a file system without locks: the build goes on, unguarded, not refused as if another build held the folder)
+            import errno
+            from unittest import mock
+            with mock.patch.object(fcntl, "flock", side_effect=OSError(errno.ENOLCK, "No locks available")), \
+                    contextlib.redirect_stdout(io.StringIO()) as said:
+                make_game.lock_work(work)
+            check("a work folder that cannot be locked is built anyway", work not in make_game._WORK_LOCKS and
+                  "cannot be locked" in said.getvalue())
             make_game.lock_work(work)
             make_game.lock_work(work)   # (the same process again: main run twice, as the tests do)
             check("the build holds the work folder", work in make_game._WORK_LOCKS)

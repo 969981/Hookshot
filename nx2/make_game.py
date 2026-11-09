@@ -896,13 +896,18 @@ def lock_work(work):
     build (another window, the game's update offer, the command line) would lift into the same sa/gen at once (undefined_functions)"""
     if os.name == "nt" or work in _WORK_LOCKS:
         return
+    import errno
     import fcntl
     f = open(os.path.join(work, ".build_lock"), "w")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as e:
         f.close()
-        fail("Another Hookshot build is using the work folder %s. Let it finish, or stop it, then build again." % work)
+        if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            fail("Another Hookshot build is using the work folder %s. Let it finish, or stop it, then build again." % work)
+        # (a file system without locks, ENOLCK / EOPNOTSUPP: built as before, unguarded, not refused as if another build held it)
+        print("the work folder %s cannot be locked (%s): two builds on it at once are not stopped" % (work, e), flush=True)
+        return
     _WORK_LOCKS[work] = f
 
 
