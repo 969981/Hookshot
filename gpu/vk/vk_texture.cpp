@@ -1777,6 +1777,7 @@ VkCommandBuffer upload_command_buffer() {
 }
 bool texture_uploads_recorded() {
     if (memory_rb_refresh(up_cmd)) up_used = true;   // (PR 430: readback pages from guest memory, last of the uploads)
+    if (memory_preimages_record(up_cmd)) up_used = true;   // (the masked write-backs' pre-images, after all of those)
     memory_table_flush();   // (vk_memory.cpp: the page table's changes, after this recording's mirror copies)
     if (up_used) full_barrier(up_cmd);   // (before the recording that reads them)
     return up_used;

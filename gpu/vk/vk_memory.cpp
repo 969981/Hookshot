@@ -30,6 +30,8 @@
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
+#include "wb_mask.h"
+#include <sirit/sirit.h>
 #ifdef __linux__
 #include <cerrno>
 #include <dlfcn.h>
@@ -1909,6 +1911,182 @@ struct WriteBack {
     uint64_t lo, hi;   // offsets in the pool
 };
 std::vector<WriteBack> writebacks;
+
+// ---- (hookshot) masked write-backs (wb_mask.h): a written binding's range in the mirror is copied aside (its pre-image) by
+// the recording's upload command buffer, after its mirror syncs and before its work; the write-back then copies only the
+// words that differ from it, the ones the GPU changed. A particle pass binds the targeting cursor's 16 KB slot buffer as
+// written every frame and stores a few words a slot: the whole 16 KB went back, the mirror's 0x6f fill over the slots the
+// CPU had filled in since the sync, and 1-3 of the cursor's 4 arrows stayed gone. RX_VK_WB_UNMASKED=1: whole ranges, as
+// before. Not for a parallel replay (RX_VK_PARALLEL: its segments have their own uploads) or a range over 16 MB. ----
+std::unordered_map<Pool*, PreCover> pre_cover;   // (the recording's write-back ranges with a pre-image)
+struct PreCopy {
+    VkBuffer mirror;
+    VkBufferCopy copy;
+};
+std::vector<PreCopy> pre_pending;   // (the copies the recording's upload makes: mirror -> pre_buf)
+PreRing pre_ring;
+VkBuffer pre_buf = VK_NULL_HANDLE;
+VmaAllocation pre_mem = nullptr;
+bool pre_failed = false;
+int64_t st_wb_masked_bytes = 0, st_pre_big = 0, st_pre_full = 0;   // (bytes: masked; left whole, too big or no room)
+constexpr uint64_t kPreMaxRange = 16ull << 20;
+uint64_t pre_bytes() {   // (the ring: RX_VK_WB_PRE_MB=<MB>)
+    static const uint64_t v = (uint64_t)std::clamp(getenv("RX_VK_WB_PRE_MB") ? atoi(getenv("RX_VK_WB_PRE_MB")) : 128, 16, 1024) << 20;
+    return v;
+}
+VkDescriptorSetLayout wbm_set = VK_NULL_HANDLE;
+VkPipelineLayout wbm_layout = VK_NULL_HANDLE;
+VkPipeline wbm_pipe = VK_NULL_HANDLE;
+
+/// for (i < count): if (mirror[src + i] != pre[pre + i]) guest[dst + i] = mirror[src + i]; 64 lanes, the push constants
+/// count, src, pre, dst (words), bindings 0-2 the mirror, the pre-images and the guest's pool
+std::vector<uint32_t> wb_mask_code() {
+    using namespace Sirit;
+    Module m{0x00010300};
+    m.AddCapability(spv::Capability::Shader);
+    m.SetMemoryModel(spv::AddressingModel::Logical, spv::MemoryModel::GLSL450);
+    const Id void_t = m.TypeVoid(), u32 = m.TypeUInt(32), b1 = m.TypeBool(), uvec3 = m.TypeVector(u32, 3);
+    const Id words = m.TypeRuntimeArray(u32);
+    m.Decorate(words, spv::Decoration::ArrayStride, 4U);
+    const Id block = m.TypeStruct(words);
+    m.Decorate(block, spv::Decoration::Block);
+    m.MemberDecorate(block, 0U, spv::Decoration::Offset, 0U);
+    const Id block_ptr = m.TypePointer(spv::StorageClass::StorageBuffer, block);
+    Id buf[3];
+    for (uint32_t i = 0; i < 3; i++) {
+        buf[i] = m.AddGlobalVariable(block_ptr, spv::StorageClass::StorageBuffer);
+        m.Decorate(buf[i], spv::Decoration::DescriptorSet, 0U);
+        m.Decorate(buf[i], spv::Decoration::Binding, i);
+    }
+    const Id pc_t = m.TypeStruct(u32, u32, u32, u32);
+    m.Decorate(pc_t, spv::Decoration::Block);
+    for (uint32_t i = 0; i < 4; i++) m.MemberDecorate(pc_t, i, spv::Decoration::Offset, i * 4);
+    const Id pc = m.AddGlobalVariable(m.TypePointer(spv::StorageClass::PushConstant, pc_t), spv::StorageClass::PushConstant);
+    const Id gid = m.AddGlobalVariable(m.TypePointer(spv::StorageClass::Input, uvec3), spv::StorageClass::Input);
+    m.Decorate(gid, spv::Decoration::BuiltIn, spv::BuiltIn::GlobalInvocationId);
+    const Id word_ptr = m.TypePointer(spv::StorageClass::StorageBuffer, u32), pc_ptr = m.TypePointer(spv::StorageClass::PushConstant, u32);
+    const auto c = [&](uint32_t v) { return m.Constant(u32, v); };
+    const Id main = m.OpFunction(void_t, spv::FunctionControlMask::MaskNone, m.TypeFunction(void_t));
+    m.AddLabel();
+    const Id i = m.OpCompositeExtract(u32, m.OpLoad(uvec3, gid), 0U);
+    const auto arg = [&](uint32_t k) { return m.OpLoad(u32, m.OpAccessChain(pc_ptr, pc, c(k))); };
+    const Id count = arg(0), src = arg(1), pre = arg(2), dst = arg(3);
+    const Id in_range = m.OpULessThan(b1, i, count);
+    const Id l_body = m.OpLabel(), l_end = m.OpLabel();
+    m.OpSelectionMerge(l_end, spv::SelectionControlMask::MaskNone);
+    m.OpBranchConditional(in_range, l_body, l_end);
+    m.AddLabel(l_body);
+    const Id now = m.OpLoad(u32, m.OpAccessChain(word_ptr, buf[0], c(0), m.OpIAdd(u32, src, i)));
+    const Id was = m.OpLoad(u32, m.OpAccessChain(word_ptr, buf[1], c(0), m.OpIAdd(u32, pre, i)));
+    const Id changed = m.OpINotEqual(b1, now, was);
+    const Id l_store = m.OpLabel(), l_join = m.OpLabel();
+    m.OpSelectionMerge(l_join, spv::SelectionControlMask::MaskNone);
+    m.OpBranchConditional(changed, l_store, l_join);
+    m.AddLabel(l_store);
+    m.OpStore(m.OpAccessChain(word_ptr, buf[2], c(0), m.OpIAdd(u32, dst, i)), now);
+    m.OpBranch(l_join);
+    m.AddLabel(l_join);
+    m.OpBranch(l_end);
+    m.AddLabel(l_end);
+    m.OpReturn();
+    m.OpFunctionEnd();
+    m.AddEntryPoint(spv::ExecutionModel::GLCompute, main, "main", gid);   // (SPIR-V 1.3: the inputs only)
+    m.AddExecutionMode(main, spv::ExecutionMode::LocalSize, 64U, 1U, 1U);
+    return m.Assemble();
+}
+
+bool wb_mask_ready() {   // (pools_mu held)
+    static int state = 0;
+    if (state) return state > 0;
+    state = -1;
+    if (getenv("RX_VK_WB_UNMASKED")) {
+        logf("vk: write-backs copy whole ranges (RX_VK_WB_UNMASKED)");
+        return false;
+    }
+    if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
+    VkDescriptorSetLayoutBinding b[3];
+    for (uint32_t i = 0; i < 3; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    li.bindingCount = 3;
+    li.pBindings = b;
+    if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &wbm_set) != VK_SUCCESS) return false;
+    const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pi.setLayoutCount = 1;
+    pi.pSetLayouts = &wbm_set;
+    pi.pushConstantRangeCount = 1;
+    pi.pPushConstantRanges = &pr;
+    if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &wbm_layout) != VK_SUCCESS) return false;
+    const std::vector<uint32_t> code = wb_mask_code();
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    mi.codeSize = code.size() * 4;
+    mi.pCode = code.data();
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(dev.device, &mi, nullptr, &module) != VK_SUCCESS) return false;
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
+    ci.layout = wbm_layout;
+    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &wbm_pipe);
+    vkDestroyShaderModule(dev.device, module, nullptr);
+    if (r != VK_SUCCESS) {
+        logf("vk: the masked write-back's pipeline failed (%d): write-backs copy whole ranges", (int)r);
+        return false;
+    }
+    state = 1;
+    logf("vk: write-backs copy only the words the GPU changed (RX_VK_WB_UNMASKED=1: whole ranges)");
+    return true;
+}
+
+/// A write-back range of p (pool offsets), as the recording binds it written: its parts without a pre-image get one
+void pre_note(Pool* p, uint64_t lo, uint64_t hi) {   // (pools_mu held)
+    if (hi <= lo || (lo & 3) || (hi & 3) || par_active.load(std::memory_order_relaxed)) return;
+    if (hi - lo > kPreMaxRange) {
+        st_pre_big += (int64_t)(hi - lo);
+        return;
+    }
+    if (!wb_mask_ready() || pre_failed) return;
+    if (!pre_buf) {
+        if (!create_buffer(pre_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, pre_buf,
+                           pre_mem, nullptr, true)) {
+            pre_failed = true;
+            logf("vk: no buffer for the write-backs' pre-images: write-backs copy whole ranges");
+            return;
+        }
+        pre_ring.size = pre_bytes();
+    }
+    std::vector<PreCover::Piece> copies;
+    pre_cover[p].add(lo, hi, [](uint64_t n, uint64_t& at) {
+        if (pre_ring.take(n, mem_rec_value, mem_completed, at)) return true;
+        st_pre_full += (int64_t)n;   // (the ring holds unfinished submissions' pre-images: this part whole)
+        return false;
+    }, copies);
+    for (const PreCover::Piece& c : copies) pre_pending.push_back({p->mirror, {c.lo, c.at, c.size}});
+}
+
+/// The masked parts of p's write-back: the words of the mirror that differ from their pre-image, into the guest's pool
+void wb_masked_copy(VkCommandBuffer cmd, Pool& p, const std::vector<PreCover::Piece>& pieces) {
+    if (pieces.empty()) return;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wbm_pipe);
+    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    constexpr uint64_t kChunk = 16ull << 20;   // (4M words: 65536 groups of 64)
+    for (const PreCover::Piece& pc : pieces)
+        for (uint64_t done = 0; done < pc.size; done += kChunk) {
+            const uint64_t n = std::min(kChunk, pc.size - done), off = pc.lo + done, at = pc.at + done;
+            const uint64_t ob = off & ~(align - 1), ab = at & ~(align - 1);
+            const VkDescriptorBufferInfo bi[3] = {{p.mirror, ob, off - ob + n}, {pre_buf, ab, at - ab + n}, {p.buffer, ob, off - ob + n}};
+            VkWriteDescriptorSet w[3];
+            for (uint32_t k = 0; k < 3; k++) {
+                w[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                w[k].dstBinding = k, w[k].descriptorCount = 1, w[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                w[k].pBufferInfo = &bi[k];
+            }
+            vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wbm_layout, 0, 3, w);
+            const uint32_t args[4] = {(uint32_t)(n / 4), (uint32_t)((off - ob) / 4), (uint32_t)((at - ab) / 4), (uint32_t)((off - ob) / 4)};
+            vkCmdPushConstants(cmd, wbm_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof args, args);
+            vkCmdDispatch(cmd, (uint32_t)((n / 4 + 63) / 64), 1, 1);
+        }
+}
 // (hookshot, 11-07) The counter reports the replay writes into guest memory on the CPU (vk_replay.cpp NOP_REPORT_COUNTER), by
 // guest address: a mirrored pool's write-back copied the GPU's mirror over them at the end of the submission, the mirror's
 // stale words over the replay's newer ones, and the next render condition read those: a lighting pass left out, the whole lit
@@ -2369,7 +2547,10 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         return remember({p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
-    if (written) writebacks.push_back({p, off, std::min(off + size, p->hi - p->lo)});
+    if (written) {
+        writebacks.push_back({p, off, std::min(off + size, p->hi - p->lo)});
+        pre_note(p, off, std::min(off + size, p->hi - p->lo));
+    }
     return remember({p->mirror, off, size, 0});
 }
 
@@ -2573,6 +2754,25 @@ void imports_give_back() {   // (pools_mu held)
              (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
 }
 
+/// The recording's pre-images (masked write-backs), last of its uploads: after its mirror syncs, before its work
+bool memory_preimages_record(VkCommandBuffer up) {
+    std::lock_guard lk(pools_mu);
+    if (pre_pending.empty()) return false;
+    full_barrier(up, "barrier (before the write-backs' pre-images)");
+    std::sort(pre_pending.begin(), pre_pending.end(), [](const PreCopy& a, const PreCopy& b) {
+        return a.mirror != b.mirror ? a.mirror < b.mirror : a.copy.srcOffset < b.copy.srcOffset;
+    });
+    std::vector<VkBufferCopy> rs;
+    for (size_t i = 0; i < pre_pending.size();) {
+        const VkBuffer mirror = pre_pending[i].mirror;
+        rs.clear();
+        for (; i < pre_pending.size() && pre_pending[i].mirror == mirror; i++) rs.push_back(pre_pending[i].copy);
+        vkCmdCopyBuffer(up, mirror, pre_buf, (uint32_t)rs.size(), rs.data());
+    }
+    pre_pending.clear();
+    return true;
+}
+
 void memory_begin_submission() {
     std::lock_guard lk(pools_mu);
     reap_mirrors();
@@ -2581,6 +2781,7 @@ void memory_begin_submission() {
     mirror_upload = true;
     mirror_synced.clear();
     writebacks.clear();
+    pre_cover.clear(), pre_pending.clear();
     imports_give_back();
     if (tex_capture_on()) publish_tex_spans(texture_frame_no());
     if (!mirror_on()) return;
@@ -2738,6 +2939,14 @@ void memory_end_submission(VkCommandBuffer cmd) {
                  (long long)(st_sync_old_pages - l_old), (long long)(st_sync_live_pages - l_live), cap_bufs.size(),
                  (long long)st_sync_gpu_pages, (long long)st_sync_gpu_live, (long long)st_prot_kept.load());
             l_cap = st_sync_cap_pages, l_live = st_sync_live_pages, l_old = st_sync_old_pages;
+            {
+                static int64_t l_wb, l_masked, l_big, l_full;
+                logf("vk: write-backs (600 submits): %.1f MB, %.1f MB of it masked (only the words the GPU changed); bound "
+                     "written with no pre-image: %.1f MB in ranges over 16 MB, %.1f MB with the ring full",
+                     (st_wb_bytes - l_wb) / 1048576.0, (st_wb_masked_bytes - l_masked) / 1048576.0,
+                     (st_pre_big - l_big) / 1048576.0, (st_pre_full - l_full) / 1048576.0);
+                l_wb = st_wb_bytes, l_masked = st_wb_masked_bytes, l_big = st_pre_big, l_full = st_pre_full;
+            }
             std::vector<std::pair<int64_t, uint64_t>> top;
             for (const auto& [lo, k] : live_by_pool) top.push_back({k, lo});
             std::sort(top.rbegin(), top.rend());
@@ -2792,7 +3001,9 @@ void memory_end_submission(VkCommandBuffer cmd) {
         GprofSpan gp(cmd, "wb copies (mirror -> guest memory, with its two barriers)");   // (RX_VK_PASS_TIMING)
         gp.items = 0;
         transfer_barrier(cmd);
-        std::vector<VkBufferCopy> runs;
+        std::vector<VkBufferCopy> runs, whole;
+        std::vector<PreCover::Piece> masked;
+        std::vector<std::pair<uint64_t, uint64_t>> plain;
         for (size_t i = 0; i < writebacks.size();) {
             Pool* p = writebacks[i].pool;
             runs.clear();
@@ -2806,9 +3017,29 @@ void memory_end_submission(VkCommandBuffer cmd) {
             cut_cpu_words(*p, runs);
             if (runs.empty()) continue;
             checkpoint_mark(cmd, p->lo, 'b');
-            vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)runs.size(), runs.data());
+            // (the parts with a pre-image: only the words the GPU changed, the rest copied whole)
+            masked.clear(), whole.clear();
+            const auto pc = pre_cover.find(p);
+            for (const VkBufferCopy& r : runs) {
+                if (pc == pre_cover.end()) {
+                    whole.push_back(r);
+                    continue;
+                }
+                plain.clear();
+                pc->second.split(r.srcOffset, r.srcOffset + r.size, masked, plain);
+                for (const auto& [a, b] : plain) whole.push_back({a, a, b - a});
+            }
+            // (the shader moves whole words: a piece not on word boundaries, if a run was ever cut there, goes whole)
+            std::erase_if(masked, [&](const PreCover::Piece& m) {
+                if (!((m.lo | m.size) & 3)) return false;
+                whole.push_back({m.lo, m.lo, m.size});
+                return true;
+            });
+            if (!whole.empty()) vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)whole.size(), whole.data());
+            wb_masked_copy(cmd, *p, masked);
+            for (const PreCover::Piece& m : masked) st_wb_masked_bytes += (int64_t)m.size;
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size, gp.bytes += r.size;
-            gp.items += (int)runs.size();
+            gp.items += (int)(whole.size() + masked.size());
             for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);   // (EvilBoyce)
             {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the pools written back the most, every 600 write-back submissions
                 static const bool log_wb = getenv("RX_VK_LOG_WRITEBACK") != nullptr;
@@ -2839,6 +3070,7 @@ void memory_end_submission(VkCommandBuffer cmd) {
         transfer_barrier(cmd);
         writebacks.clear();
     }
+    pre_cover.clear();
     // (what this submission synced is current as of now: the GPU's own writes, stamped while it was recorded, are
     // in the mirror and written back; CPU writes collected at the next submission get a newer generation)
     for (Pool* p : mirror_synced) p->synced_gen = gen_now;
