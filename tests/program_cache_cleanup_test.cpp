@@ -76,6 +76,7 @@ void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* 
 }
 void disk_init() {}
 void logf(const char*, ...) {}
+#define PROF_EXACT() ((void)0)   // (gpu/vk/vk_internal.h's profiler scope, used by program_cache_load: not timed here)
 bool disk_on = true, disk_listing = true;
 FILE* disk_in = nullptr;
 FILE* disk_out = nullptr;
