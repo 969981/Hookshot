@@ -4594,7 +4594,66 @@ bool fallback_compute_pipelines(Program& p) {
 }
 
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
+/// (hookshot) a live switch to find what the fallback draws: hookshot_fallback_debug.txt beside the game, read again within
+/// half a second of a change. "off": every mesh fallback draw left out; "list": each fallback program drawn is logged once;
+/// any other line: a program key's hex prefix, that program left out; "#": a comment. No file: everything drawn. The
+/// Lichii handoff's way to bisect the fallback live, with no restart and no shaders made again
+bool fallback_debug_skip(const Program& p) {
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point next{};
+    static std::string text;
+    static bool all = false, list = false;
+    static std::vector<std::string> prefixes;
+    static std::unordered_set<uint64_t> listed;
+    std::lock_guard lk(mu);
+    if (const auto now = std::chrono::steady_clock::now(); now >= next) {
+        next = now + std::chrono::milliseconds(500);
+        static const std::string path = [] {
+            char exe[MAX_PATH];
+            const DWORD n = game_module_path(exe, MAX_PATH);
+            const std::string dir(exe, n);
+            return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_fallback_debug.txt";
+        }();
+        std::string got;
+        if (FILE* f = fopen(path.c_str(), "rb")) {
+            char buf[4096];
+            for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) got.append(buf, n);
+            fclose(f);
+        }
+        if (got != text) {
+            text = got, all = list = false, prefixes.clear(), listed.clear();
+            for (size_t at = 0; at < got.size();) {
+                size_t end = got.find_first_of("\r\n", at);
+                if (end == std::string::npos) end = got.size();
+                std::string line = got.substr(at, end - at);
+                at = end + 1;
+                line.erase(0, line.find_first_not_of(" \t"));
+                line.erase(line.find_last_not_of(" \t") + 1);
+                for (char& c : line) c = (char)tolower((unsigned char)c);
+                if (line.empty() || line[0] == '#') continue;
+                if (line == "off") all = true;
+                else if (line == "list") list = true;
+                else prefixes.push_back(line);
+            }
+            logf("vk: fallback debug: %s%s, %zu program prefixes left out", all ? "every fallback draw left out" : "fallback draws on",
+                 list ? ", the programs drawn listed" : "", prefixes.size());
+        }
+    }
+    if (list && listed.insert(p.key).second)
+        logf("vk: fallback debug: draws %016llx (%s, at most %u corners a workgroup, %u record words, topology %d)",
+             (unsigned long long)p.key, p.fallback_task ? "task and mesh" : "mesh only", p.fallback_vertices_per_workgroup,
+             p.fallback_record_words, (int)p.fallback_topology);
+    if (all) return true;
+    if (prefixes.empty()) return false;
+    char hex[20];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
+    for (const std::string& q : prefixes)
+        if (!strncmp(hex, q.c_str(), q.size())) return true;
+    return false;
+}
+
 bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
+    if (fallback_debug_skip(p)) return false;   // (left out as a draw that is not ready is)
     if (d.count_addr) {   // (more than one draw in the records: each its own dispatch, not one)
         static std::atomic<int> told{0};
         if (told++ < 2) logf("vk: fallback: a mesh draw with a count buffer is left out (issue 640)");

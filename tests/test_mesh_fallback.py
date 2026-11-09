@@ -96,6 +96,10 @@ def main():
     body = block(mesh, "void EmitMeshFallbackVertexBody(")
     if "ctx.Const(MESH_FALLBACK_HEADER_WORDS)" not in body or "ctx.vertex_index" not in body:
         raise SystemExit("the vertex stage does not read the record of its VertexIndex past the header")
+    # (an output component the mesh program does not write is zero, as in the console's stage buffer: undefined, AMD drew
+    # Kokiri Forest's flowers glowing, with specks of colour in the bushes)
+    if "ctx.OpStore(info.id, ctx.f32_zero_value);" not in body:
+        raise SystemExit("the generated vertex stage leaves the outputs the mesh program does not write undefined")
     if "per_primitive_generics" not in body or "spv::Decoration::Flat" not in body:
         raise SystemExit("the generated vertex stage does not declare its per-primitive outputs Flat")
 
@@ -200,6 +204,9 @@ def main():
     forced = main_cpp[main_cpp.index("if (opts.mesh_fallback == 2) {"):main_cpp.index("optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME")]
     if "dev.mesh_shader = false;" not in forced or "optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);" not in forced:
         raise SystemExit("On in the menu does not leave a GPU's mesh shaders off for the fallback")
+    # (the live switch, hookshot_fallback_debug.txt: a fallback draw it names is left out before anything is recorded)
+    if "if (fallback_debug_skip(p)) return false;" not in record:
+        raise SystemExit("the fallback's live debug switch is not asked before a fallback draw")
     pipelines = block(draw, "bool fallback_compute_pipelines(Program& p)")
     if "compare_exchange_strong(none, 1)" not in pipelines or "jobs_push" not in pipelines:
         raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")

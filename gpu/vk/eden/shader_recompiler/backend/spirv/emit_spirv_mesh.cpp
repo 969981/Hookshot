@@ -466,6 +466,27 @@ void EmitMeshFallbackVertexBody(EmitContext& ctx) {
             }
         }
     }
+    // (every output component starts at zero, as the console's stage buffer has what a mesh program did not write (the
+    // mesh prologue zeroes it, "as they come out on NVIDIA"); the records' lines then go over them. Left undefined, AMD
+    // gave the fragment stage what its registers held: Kokiri Forest's flowers glowed, and specks of colour shone in the
+    // bushes, on an RX 5500M)
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        for (u32 element = 0; element < 4; ++element) {
+            const GenericElementInfo& info{ctx.output_generics[index][element]};
+            if (!Sirit::ValidId(info.id)) {
+                continue;
+            }
+            if (info.num_components == 1) {
+                ctx.OpStore(info.id, ctx.f32_zero_value);
+            } else {
+                ctx.OpStore(ctx.OpAccessChain(ctx.output_f32, info.id, ctx.Const(element - info.first_element)),
+                            ctx.f32_zero_value);
+            }
+        }
+    }
+    if (Sirit::ValidId(ctx.output_point_size)) {
+        ctx.OpStore(ctx.output_point_size, ctx.Const(1.0f));
+    }
     const MeshInfo& mesh{ctx.mesh_info};
     const u32 vertex_lines{static_cast<u32>(mesh.vertex_lines.size())};
     const u32 primitive_lines{static_cast<u32>(mesh.primitive_lines.size())};
