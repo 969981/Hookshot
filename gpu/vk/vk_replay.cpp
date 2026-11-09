@@ -145,6 +145,7 @@ bool batch_on() {
     return on && batch_tl != VK_NULL_HANDLE;
 }
 } // namespace
+uint64_t timeline_completed() { return completed(); }
 void queue_flush_locked() {   // (dev.present_mu held)
     if (pend.cbs.empty()) return;
     VkSemaphoreSubmitInfo sig[3]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO},

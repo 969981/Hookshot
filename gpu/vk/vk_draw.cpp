@@ -4596,32 +4596,109 @@ bool fallback_compute_pipelines(Program& p) {
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
 /// (hookshot) a live switch to find what the fallback draws: hookshot_fallback_debug.txt beside the game, read again within
 /// half a second of a change. "off": every mesh fallback draw left out; "list": each fallback program drawn is logged once;
-/// any other line: a program key's hex prefix, that program left out; "#": a comment. No file: everything drawn. The
-/// Lichii handoff's way to bisect the fallback live, with no restart and no shaders made again
+/// "read <prefix>": that program's next draw copies its records out, and once the GPU is done each record word's range is
+/// logged and the records written to hookshot_fallback_read_<key>.bin (every one named, in the frame after the file changes,
+/// up to 16); "info <prefix>": that program's next draw logs its targets, write masks, blending and depth test (once); any other
+/// line: a program key's hex prefix, that program left out; "#": a comment. No file: everything drawn. The Lichii handoff's
+/// way to bisect the fallback live, with no restart and no shaders made again
+constexpr uint32_t kFallbackReadSlots = 16;
+constexpr uint64_t kFallbackReadBytes = 4ull << 20;   // (a slot's)
+struct FallbackDebug {
+    std::mutex mu;
+    std::chrono::steady_clock::time_point next{};
+    std::string text;
+    bool all = false, list = false;
+    std::vector<std::string> prefixes, reads, infos;
+    std::unordered_set<uint64_t> listed, read, informed;
+    // (the reads: a host buffer of slots the records are copied to, all in one frame, the one after the file changed: a
+    // depth prepass and its colour pass are compared with the wind the same. Each slot's program, record words, frame and
+    // recording's value, 0 when free)
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation mem = nullptr;
+    uint32_t* mapped = nullptr;
+    bool tried = false;
+    uint64_t arm_frame = 0;
+    struct Slot {
+        uint64_t key = 0, value = 0, frame = 0;
+        uint32_t words = 0;
+    } slots[kFallbackReadSlots];
+};
+FallbackDebug fdbg;
+
+const std::string& fallback_debug_dir() {
+    static const std::string dir = [] {
+        char exe[MAX_PATH];
+        const DWORD n = game_module_path(exe, MAX_PATH);
+        const std::string path(exe, n);
+        return path.substr(0, path.find_last_of("\\/") + 1);
+    }();
+    return dir;
+}
+
+bool key_listed(uint64_t key, const std::vector<std::string>& prefixes) {
+    char hex[20];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    for (const std::string& q : prefixes)
+        if (!strncmp(hex, q.c_str(), q.size())) return true;
+    return false;
+}
+
+/// The records read back (fdbg.mu held, the GPU done with them): the header, then for each record word its finite values'
+/// range and mean, and how many were NaN, infinite, zero, or denormal (an integer seen as a float: word 0, the written flag, is)
+void fallback_read_report(const FallbackDebug::Slot& slot, uint32_t i) {
+    invalidate_mapped(fdbg.mem, kFallbackReadBytes * kFallbackReadSlots);
+    const uint32_t* w = fdbg.mapped + i * (kFallbackReadBytes / 4);
+    const uint32_t H = Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS, words = slot.words;
+    const unsigned long long key = slot.key;
+    if (w[1] == 0xFFFFFFFFu) {   // (the instance count the copy brings is 1)
+        logf("vk: fallback read: %016llx: the copy did not run (its recording was not submitted)", key);
+        return;
+    }
+    const uint32_t n = std::min<uint32_t>(w[0], (uint32_t)((kFallbackReadBytes / 4 - H) / words));
+    logf("vk: fallback read: %016llx: frame %llu, %u records drawn (%u read), %u words each; header %u %u %u %u %u %u %u %u", key,
+         (unsigned long long)slot.frame, w[0], n, words, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    for (uint32_t k = 0; k < words; k++) {
+        uint32_t nan = 0, inf = 0, zero = 0, denormal = 0, finite = 0;
+        float lo = 0, hi = 0;
+        double sum = 0;
+        for (uint32_t r = 0; r < n; r++) {
+            const uint32_t bits = w[H + r * words + k];
+            float v;
+            memcpy(&v, &bits, 4);
+            if (v != v) nan++;
+            else if (v - v != 0) inf++;
+            else {
+                zero += bits == 0, denormal += bits && !(bits & 0x7F800000u);
+                lo = finite ? std::min(lo, v) : v, hi = finite ? std::max(hi, v) : v, sum += v, finite++;
+            }
+        }
+        logf("vk: fallback read: %016llx word %2u: min %g max %g mean %g; NaN %u, inf %u, zero %u, denormal %u (first %08x)", key,
+             k, lo, hi, finite ? sum / finite : 0.0, nan, inf, zero, denormal, n ? w[H + k] : 0u);
+    }
+    char name[64];
+    snprintf(name, sizeof name, "hookshot_fallback_read_%016llx.bin", key);
+    const std::string path = fallback_debug_dir() + name;
+    if (FILE* f = fopen(path.c_str(), "wb")) {   // (the header, then the records: n * words little-endian words)
+        fwrite(w, 4, H + (size_t)n * words, f);
+        fclose(f);
+        logf("vk: fallback read: %016llx: records written to %s", key, path.c_str());
+    }
+}
+
 bool fallback_debug_skip(const Program& p) {
-    static std::mutex mu;
-    static std::chrono::steady_clock::time_point next{};
-    static std::string text;
-    static bool all = false, list = false;
-    static std::vector<std::string> prefixes;
-    static std::unordered_set<uint64_t> listed;
-    std::lock_guard lk(mu);
-    if (const auto now = std::chrono::steady_clock::now(); now >= next) {
-        next = now + std::chrono::milliseconds(500);
-        static const std::string path = [] {
-            char exe[MAX_PATH];
-            const DWORD n = game_module_path(exe, MAX_PATH);
-            const std::string dir(exe, n);
-            return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_fallback_debug.txt";
-        }();
+    std::lock_guard lk(fdbg.mu);
+    if (const auto now = std::chrono::steady_clock::now(); now >= fdbg.next) {
+        fdbg.next = now + std::chrono::milliseconds(500);
+        static const std::string path = fallback_debug_dir() + "hookshot_fallback_debug.txt";
         std::string got;
         if (FILE* f = fopen(path.c_str(), "rb")) {
             char buf[4096];
             for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) got.append(buf, n);
             fclose(f);
         }
-        if (got != text) {
-            text = got, all = list = false, prefixes.clear(), listed.clear();
+        if (got != fdbg.text) {
+            fdbg.text = got, fdbg.all = fdbg.list = false, fdbg.prefixes.clear(), fdbg.reads.clear(), fdbg.listed.clear();
+            fdbg.read.clear(), fdbg.infos.clear(), fdbg.informed.clear(), fdbg.arm_frame = texture_frame_no() + 1;
             for (size_t at = 0; at < got.size();) {
                 size_t end = got.find_first_of("\r\n", at);
                 if (end == std::string::npos) end = got.size();
@@ -4631,25 +4708,60 @@ bool fallback_debug_skip(const Program& p) {
                 line.erase(line.find_last_not_of(" \t") + 1);
                 for (char& c : line) c = (char)tolower((unsigned char)c);
                 if (line.empty() || line[0] == '#') continue;
-                if (line == "off") all = true;
-                else if (line == "list") list = true;
-                else prefixes.push_back(line);
+                if (line == "off") fdbg.all = true;
+                else if (line == "list") fdbg.list = true;
+                else if (line.rfind("read ", 0) == 0) fdbg.reads.push_back(line.substr(line.find_first_not_of(" \t", 5)));
+                else if (line.rfind("info ", 0) == 0) fdbg.infos.push_back(line.substr(line.find_first_not_of(" \t", 5)));
+                else fdbg.prefixes.push_back(line);
             }
-            logf("vk: fallback debug: %s%s, %zu program prefixes left out", all ? "every fallback draw left out" : "fallback draws on",
-                 list ? ", the programs drawn listed" : "", prefixes.size());
+            logf("vk: fallback debug: %s%s, %zu program prefixes left out, %zu read",
+                 fdbg.all ? "every fallback draw left out" : "fallback draws on", fdbg.list ? ", the programs drawn listed" : "",
+                 fdbg.prefixes.size(), fdbg.reads.size());
         }
     }
-    if (list && listed.insert(p.key).second)
+    for (uint32_t i = 0; i < kFallbackReadSlots; i++)
+        if (FallbackDebug::Slot& slot = fdbg.slots[i]; slot.value && timeline_completed() >= slot.value)
+            fallback_read_report(slot, i), slot.value = 0;
+    if (fdbg.list && fdbg.listed.insert(p.key).second)
         logf("vk: fallback debug: draws %016llx (%s, at most %u corners a workgroup, %u record words, topology %d)",
              (unsigned long long)p.key, p.fallback_task ? "task and mesh" : "mesh only", p.fallback_vertices_per_workgroup,
              p.fallback_record_words, (int)p.fallback_topology);
-    if (all) return true;
-    if (prefixes.empty()) return false;
-    char hex[20];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
-    for (const std::string& q : prefixes)
-        if (!strncmp(hex, q.c_str(), q.size())) return true;
-    return false;
+    return fdbg.all || key_listed(p.key, fdbg.prefixes);
+}
+
+/// Whether this draw of p logs its state ("info" in the switch): the first draw of each program asked for
+bool fallback_debug_info(const Program& p) {
+    std::lock_guard lk(fdbg.mu);
+    return !fdbg.infos.empty() && key_listed(p.key, fdbg.infos) && fdbg.informed.insert(p.key).second;
+}
+
+/// The slot this draw of p copies its records to ("read" in the switch), or -1: the first draw of each program asked for, in
+/// the frame after the file changed
+int fallback_debug_read(const Program& p) {
+    std::lock_guard lk(fdbg.mu);
+    if (fdbg.reads.empty() || !rec_value || texture_frame_no() != fdbg.arm_frame || fdbg.read.count(p.key) ||
+        !key_listed(p.key, fdbg.reads))
+        return -1;
+    uint32_t i = 0;
+    while (i < kFallbackReadSlots && fdbg.slots[i].value) i++;
+    if (i == kFallbackReadSlots) return -1;
+    if (!fdbg.buf) {
+        if (fdbg.tried) return -1;
+        fdbg.tried = true;
+        void* m = nullptr;
+        if (!create_buffer_cached(kFallbackReadBytes * kFallbackReadSlots, VK_BUFFER_USAGE_TRANSFER_DST_BIT, fdbg.buf, fdbg.mem, &m) ||
+            !m) {
+            logf("vk: fallback read: no memory for its buffer");
+            fdbg.buf = VK_NULL_HANDLE;
+            return -1;
+        }
+        fdbg.mapped = (uint32_t*)m;
+    }
+    fdbg.read.insert(p.key);
+    fdbg.slots[i] = {p.key, rec_value, texture_frame_no(), std::max(1u, p.fallback_record_words)};
+    fdbg.mapped[i * (kFallbackReadBytes / 4) + 1] = 0xFFFFFFFFu;   // (the copy writes the header's instance count, 1, over it)
+    flush_mapped(fdbg.mem, kFallbackReadBytes * kFallbackReadSlots);
+    return (int)i;
 }
 
 bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
@@ -4718,6 +4830,19 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (!send(stages[0], true)) return false;
     }
     full_barrier(cmd);   // (the records and the draw's command, which the draw reads as indirect arguments)
+    if (const int slot = fallback_debug_read(p); slot >= 0) {   // (written by the dispatches above; the next draw's barrier comes before its fills)
+        const VkBufferCopy c{0, (VkDeviceSize)slot * kFallbackReadBytes, kFallbackReadBytes};
+        vkCmdCopyBuffer(cmd, f->records, fdbg.buf, 1, &c);
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
     return true;
 }
 } // namespace
@@ -5059,6 +5184,27 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     {
         FINE_SCOPE(FT_DYN);
         dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);
+    }
+    if (p.fallback && fallback_debug_info(p)) {   // ("info <prefix>" in the live switch: where this draw writes, and how)
+        const Stage* fs = nullptr;
+        for (const Stage& st : p.stages)
+            if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) fs = &st;
+        char line[1200];
+        int k = snprintf(line, sizeof line,
+                         "vk: fallback info %016llx: %ux%u x%d, %d targets, blend_en %#x, depth #%u fmt %d test %u write %u op %d, "
+                         "stencil %u, cull %u, dynamic masks %d",
+                         (unsigned long long)p.key, at.width, at.height, (int)at.samples, at.n, (unsigned)s.color.blend_en,
+                         at.depth ? at.depth->id : 0u, (int)at.depth_format, (unsigned)last_dyn.dt, (unsigned)last_dyn.dw,
+                         (int)last_dyn.dop, (unsigned)last_dyn.st, (unsigned)last_dyn.cull, dev.eds3_blend ? 1 : 0);
+        for (int i = 0; i < at.n && k < 1050; i++) {
+            const nvn_blend_st& b = s.blend[i];
+            k += snprintf(line + k, sizeof line - k, " [%d: #%u fmt %d, game mask %x, shader %s%x, mask %x (set %x), src %#x dst %#x eq %u]",
+                          i, at.color[i] ? at.color[i]->id : 0u, (int)at.color_format[i], (unsigned)(s.chmask.mask >> (4 * i) & 15),
+                          fs && fs->info.stores_frag_color[i] ? "" : "none ", fs ? (unsigned)fs->info.frag_color_components[i] : 0u,
+                          target_write_mask(p, s, i), (unsigned)last_dyn.wm[i], (unsigned)b.src_rgb, (unsigned)b.dst_rgb,
+                          (unsigned)b.eq_rgb);
+        }
+        logf("%s", line);
     }
     if (trace_tex_hit && texture_frame_no() % 30 == 0) {
         static std::atomic<int> told{0};

@@ -207,6 +207,14 @@ def main():
     # (the live switch, hookshot_fallback_debug.txt: a fallback draw it names is left out before anything is recorded)
     if "if (fallback_debug_skip(p)) return false;" not in record:
         raise SystemExit("the fallback's live debug switch is not asked before a fallback draw")
+    # (its "read": the records copied out after the dispatches, read on the CPU only once the GPU has passed the recording)
+    after = record[record.rindex("full_barrier(cmd);"):]
+    if "fallback_debug_read(p); slot >= 0)" not in after or "vkCmdCopyBuffer(cmd, f->records, fdbg.buf" not in after:
+        raise SystemExit("a fallback read does not copy the records after the dispatches that wrote them")
+    if "timeline_completed() >= slot.value" not in block(draw, "bool fallback_debug_skip(const Program& p)"):
+        raise SystemExit("a fallback read is looked at before the GPU is done with it")
+    if "if (p.fallback && fallback_debug_info(p))" not in draw:
+        raise SystemExit("the live switch's info line logs no draw state")
     pipelines = block(draw, "bool fallback_compute_pipelines(Program& p)")
     if "compare_exchange_strong(none, 1)" not in pipelines or "jobs_push" not in pipelines:
         raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")

@@ -46,6 +46,8 @@ struct DrawArgs {
 
 /// A recording starts (its slot's descriptor pool and upload stream are reset); value: the timeline value it signals
 void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value);
+/// The timeline value the GPU has reached: every recording of that value or less is done (vk_replay.cpp)
+uint64_t timeline_completed();
 /// The recording's stream still holds [at, at + n) in the mapping at base (a reset starts used over)
 bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
 /// The open render pass ends (before transfers, clears, barriers and the recording's end)
