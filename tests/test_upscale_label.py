@@ -41,8 +41,13 @@ int main() {
     CHECK(std::strcmp(tx_upscale(0), "Off") == 0);
     CHECK(std::strcmp(tx_upscale(1), "Catmull-Rom") == 0);
     CHECK(std::strcmp(tx_upscale(2), "Lanczos") == 0);
+    /* (hookshot) 3 and 4 are the scene upscalers the row carries as further values: the first three
+       filter the finished picture, these resolve the 3D scene itself. */
+    CHECK(std::strcmp(tx_upscale(3), "FSR 3.1") == 0);
+    CHECK(std::strcmp(tx_upscale(4), "DLSS") == 0);
+    /* a value past the row still answers with the label and not the next bytes of memory */
     CHECK(std::strcmp(tx_upscale(-1), "Off") == 0);
-    CHECK(std::strcmp(tx_upscale(3), "Off") == 0);
+    CHECK(std::strcmp(tx_upscale(5), "Off") == 0);
     CHECK(std::strcmp(tx_upscale(99), "Off") == 0);
     std::printf("PASS: upscale labels for 0..2 and for a setting past the row\n");
 }
