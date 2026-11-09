@@ -373,6 +373,17 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
+/* (hookshot) the control bridge (host/control.c): the Vulkan back end's, none with WebGPU (0) */
+int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height) {
+    if (!vk || !vk->frame_info) return 0;
+    vk->frame_info(presents, draws, width, height);
+    return 1;
+}
+int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx) {
+    return vk && vk->shot ? vk->shot(path, after, done, ctx) : 0;
+}
+int rx_control_setting(int index, MkwVkSetting *out) { return vk && vk->setting ? vk->setting(index, out) : 0; }
+int rx_control_setting_set(int index, int value) { return vk && vk->setting_set ? vk->setting_set(index, value) : 0; }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }

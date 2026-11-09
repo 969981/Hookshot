@@ -281,6 +281,9 @@ int detect_pad_layout() {
     return 3;
 }
 void save() {
+    // (the control bridge changes settings from a thread of its own, menu_setting_set)
+    static std::mutex save_mu;
+    std::lock_guard lk(save_mu);
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     std::string kept;
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
@@ -869,6 +872,52 @@ void menu_option_set(int id, int value) {
     if (id != 7) return;
     opts.mouse_sens = std::min(std::max(value, 10), 500);   // (the keys work while the menu is closed: it shows it when opened)
     save();
+}
+
+// (hookshot) the control bridge's option_get and option_set (host/control.c): the rows with a value, by index
+int menu_setting(int index, MkwVkSetting* out) {
+    static const char* const tabs[TAB_COUNT] = {"graphics", "gameplay", "controls"};
+    for (int i = 0, n = 0; i < kRows; i++) {
+        if (!rows[i].value || n++ != index) continue;
+        const Row& r = rows[i];
+        *out = MkwVkSetting{};
+        size_t k = 0;   // (ini_key's spelling, into the caller's buffer: its own is shared with save)
+        for (const char* p = r.name; *p && k + 1 < sizeof out->key; p++) out->key[k++] = *p == ' ' ? '_' : (char)tolower(*p);
+        snprintf(out->name, sizeof out->name, "%s", r.name);
+        snprintf(out->tab, sizeof out->tab, "%s", tabs[r.tab]);
+        out->value = *r.value, out->lo = r.lo, out->hi = r.hi, out->step = r.step;
+        snprintf(out->text, sizeof out->text, "%s", r.text ? r.text(out->value) : "");
+        return 1;
+    }
+    return 0;
+}
+/// A row set to value as Left and Right set it (cut to its range; the rows that are the quality preset's make it Custom), then
+/// kept in the options file. 0: no such row
+int menu_setting_set(int index, int value) {
+    Row* r = nullptr;
+    for (int i = 0, n = 0; i < kRows && !r; i++)
+        if (rows[i].value && n++ == index) r = &rows[i];
+    if (!r) return 0;
+    int v = std::min(std::max(value, r->lo), r->hi);
+    if (r->value == &opts.framegen && v == 1) v = 2;   // (off, 2x ... 8x)
+    if (r->value == &opts.pad_layout) {
+        *r->value = std::min(v, 2);
+        apply_pad_layout(*r->value);
+    } else if (r->value == &opts.preset) {
+        *r->value = v;
+        apply_preset(v);
+    } else {
+        *r->value = v;
+        if (r->value != &opts.fullscreen && r->value != &opts.show_fps && r->value != &opts.gpu_device &&
+            r->value != &opts.invert_cam_x && r->value != &opts.invert_cam_y && r->value != &opts.mouse_native &&
+            r->value != &opts.mouse_sens && r->value != &opts.mouse_invert) {   // (as menu_tick: the controls are not the preset's)
+            opts.preset = 0;   // Custom
+            sync_preset_budgets(0);
+        }
+    }
+    menu_refresh = true;
+    save();
+    return 1;
 }
 
 void menu_tick() {

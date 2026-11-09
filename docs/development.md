@@ -45,6 +45,10 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 `HOS_INPUT_BACKGROUND=0` overrides that option. `HOS_INPUT_EXCLUSIVE=1` controls merging the player's devices while
 the script's existing exclusive interval is active; it is not a focus override.
 
+`HOS_CONTROL=<socket path>` turns on the control bridge: a local socket a tool or coding agent drives the running game
+through (inputs timed in frames, screenshots, waits for the game's state, the Insert menu's settings, quit), with
+`scripts/hookshot_ctl.py` as its client. Off unless set; see [control.md](control.md).
+
 ## Layout
 
 | Path | What |

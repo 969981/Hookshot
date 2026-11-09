@@ -28,6 +28,7 @@ OS = "windows" if WINDOWS else "linux"
 ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_input_background.py": ["--cc", "gcc"],
+    "tests/test_control.py": ["--cc", "gcc"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
@@ -65,6 +66,7 @@ SKIP = {
     "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
     # (Linux only)
     "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
+    "tests/test_control.py": ({"windows"}, "the control bridge's Unix socket (the Windows named pipe is not built here)"),
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)

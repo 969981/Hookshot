@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 4
+#define MKWVK_API_VERSION 5
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -29,6 +29,13 @@ enum { HOS_BIND_PAD, HOS_BIND_KEY };
 /* keys only (HOS_BIND_KEY), after the Switch's buttons: the left stick's and the camera's directions */
 enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
        HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_N };
+
+/* (hookshot) one of the Insert menu's settings, for the control bridge (MkwVkRenderer setting): key is its line in
+   hookshot_options.ini, name the row's, text how the menu shows the value */
+typedef struct MkwVkSetting {
+    char key[32], name[48], text[64], tab[16];
+    int value, lo, hi, step;
+} MkwVkSetting;
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -128,6 +135,18 @@ typedef struct MkwVkRenderer {
     /* (hookshot, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
        in percent (the - and = keys, host/nn_hid.c) */
     void (*option_set)(int id, int value);
+    /* (hookshot) the control bridge (host/control.c, docs/control.md) */
+    /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
+       the offscreen image's) */
+    void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);
+    /* a PNG of the first present replayed after present `after` (-1: the next one), 1280x720 as RX_VK_SHOTS', written to
+       path on a thread of its own, which then calls done(ctx, the present, 1 when the file was written). 0: not taken
+       (too many waiting) */
+    int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+    /* the Insert menu's settings, the index-th (0: past the last row with a value), and one changed as the menu's Left and
+       Right change it, kept in the options file (0: no such row) */
+    int (*setting)(int index, MkwVkSetting *out);
+    int (*setting_set)(int index, int value);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

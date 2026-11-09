@@ -428,6 +428,8 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    void hos_control_start(const char *version);
+    hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];

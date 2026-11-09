@@ -2473,6 +2473,91 @@ void log_frame_stats() {
     }
 }
 
+// ---- (hookshot) the control bridge's shots (host/control.c, docs/control.md): a PNG of the first present after a given one,
+// asked for from another thread. Read back as RX_VK_SHOTS' are (at a later present, once the GPU reached it, and written on a
+// thread of its own), with an image and a buffer of their own: the two kinds never share a readback ----
+struct ShotAsk {
+    std::string path;
+    int64_t after = -1;
+    void (*done)(void* ctx, int64_t present, int ok) = nullptr;
+    void* ctx = nullptr;
+};
+std::mutex shot_ask_mu;
+std::deque<ShotAsk> shot_asks;   // (shot_ask_mu)
+struct { bool on; uint64_t value; int64_t present; ShotAsk ask; } shot_asked{};   // (replay_mu: the one being read back)
+VkImage ask_image = VK_NULL_HANDLE;
+VmaAllocation ask_image_alloc = nullptr, ask_buf_alloc = nullptr;
+VkBuffer ask_buf = VK_NULL_HANDLE;
+void* ask_map = nullptr;
+
+int shot_ask(const char* path, int64_t after, void (*done)(void*, int64_t, int), void* ctx) {
+    if (!path || !*path || !done) return 0;
+    std::lock_guard lk(shot_ask_mu);
+    if (shot_asks.size() >= 16) return 0;
+    shot_asks.push_back({path, after, done, ctx});
+    return 1;
+}
+/// (do_present, replay_mu) the copy of this present for the first shot asked for before it, unless one is being read back
+void shot_ask_record(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, const int crop[4], uint64_t value) {
+    if (shot_asked.on || !src) return;
+    ShotAsk a;
+    {
+        std::lock_guard lk(shot_ask_mu);
+        if (shot_asks.empty() || shot_asks.front().after >= presents) return;
+        a = std::move(shot_asks.front());
+        shot_asks.pop_front();
+    }
+    if (!ask_image) {
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.extent = {kShotW, kShotH, 1};
+        ci.mipLevels = ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (!create_image(ci, ask_image, ask_image_alloc) ||
+            !create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, ask_buf, ask_buf_alloc,
+                           &ask_map)) {
+            ask_image = VK_NULL_HANDLE;
+            a.done(a.ctx, presents, 0);
+            return;
+        }
+    }
+    image_barrier(cmd, ask_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    blit_crop(cmd, src, sw, sh, crop, ask_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
+    image_barrier(cmd, ask_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
+    vkCmdCopyImageToBuffer(cmd, ask_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ask_buf, 1, &c);
+    shot_asked.on = true, shot_asked.value = value, shot_asked.present = presents, shot_asked.ask = std::move(a);
+}
+/// (do_present, replay_mu) the shot being read back, once the GPU is past it: never waited for
+void shot_ask_take() {
+    if (!shot_asked.on || completed() < shot_asked.value) return;
+    auto px = std::make_shared<std::vector<uint8_t>>((const uint8_t*)ask_map, (const uint8_t*)ask_map + (size_t)kShotW * kShotH * 4);
+    ShotAsk a = std::move(shot_asked.ask);
+    const int64_t at = shot_asked.present;
+    shot_asked.on = false;
+    std::thread([px, a, at] {
+        // (through a file of its own and a rename: whoever is told the path never reads half a picture)
+        const std::string part = a.path + ".part";
+        write_png(part.c_str(), px->data(), kShotW, kShotH);
+        std::remove(a.path.c_str());
+        const bool ok = std::rename(part.c_str(), a.path.c_str()) == 0;
+        if (!ok) std::remove(part.c_str());
+        logf("vk: present %lld %s %s (the control bridge)", (long long)at, ok ? "written to" : "could not be written to",
+             a.path.c_str());
+        a.done(a.ctx, at, ok ? 1 : 0);
+    }).detach();
+}
+void frame_info(int64_t* replayed, int64_t* draws, int* width, int* height) {
+    int64_t v[4] = {0, 0, 0, 0};
+    draw_stats(&v[0], &v[1], &v[2], &v[3]);
+    if (replayed) *replayed = presents_now;
+    if (draws) *draws = v[0];
+    if (width) *width = (int)dev.swap_extent.width;
+    if (height) *height = (int)dev.swap_extent.height;
+}
+
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 void do_present(const nvn_tex* t, const int crop[4]) {
     {   // (hookshot, RX_VK_PASS_TRACE_AT=<frames>: the passes of the frames around these frame numbers, for finding what a frame is made of)
@@ -2586,11 +2671,13 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);
             }
         }
+        shot_ask_record(r.cmd, src, sw, sh, crop, value);   // (the control bridge's, host/control.c)
         memory_end_submission(r.cmd);
         full_barrier(r.cmd);
         submit_recording(r);   // (nothing is stopped at a present: drain)
         if (pushed.load() < value) pushed = value;
         done_max = std::max(done_max, value), signaled = std::max(signaled, value);
+        shot_ask_take();   // (an earlier present's, when the GPU is past it)
         if (fg_after) {
             // (its slot is free again once the next submit's value is reached: that one comes after it)
             Recording& g = begin_recording(value + 1);
@@ -3544,6 +3631,10 @@ void fill_replay_table(MkwVkRenderer& t) {
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : 0;
     };
     t.option_set = menu_option_set;
+    t.frame_info = frame_info;
+    t.shot = shot_ask;
+    t.setting = menu_setting;
+    t.setting_set = menu_setting_set;
     t.nvn_register_sampler = register_sampler_queued;
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
