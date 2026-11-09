@@ -155,15 +155,42 @@ static int file_sha256(const wchar_t *path, char out[65]) {
     return ok;
 }
 
-static int run_wait(wchar_t *cmd, const wchar_t *dir) {
+/* (out, when given: what the program wrote, so a failure can say what it was instead of guessing. Kept in a temporary
+   file, not a pipe: a pipe that fills while nobody reads it stops the program) */
+static int run_wait(wchar_t *cmd, const wchar_t *dir, wchar_t *out, int n) {
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi;
     si.dwFlags = STARTF_USESHOWWINDOW, si.wShowWindow = SW_HIDE;
-    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) return -1;
+    HANDLE log = INVALID_HANDLE_VALUE;
+    if (out && n > 0) {
+        wchar_t tmp[MAX_PATH], name[MAX_PATH];
+        SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+        out[0] = 0;
+        if (GetTempPathW(MAX_PATH, tmp) && GetTempFileNameW(tmp, L"hks", 0, name))
+            log = CreateFileW(name, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &sa,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        if (log != INVALID_HANDLE_VALUE)
+            si.dwFlags |= STARTF_USESTDHANDLES, si.hStdInput = NULL, si.hStdOutput = log, si.hStdError = log;
+    }
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, log != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) {
+        if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+        return -1;
+    }
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    if (log != INVALID_HANDLE_VALUE) {
+        char buf[1024];
+        DWORD got = 0, want = (DWORD)(n - 1 < (int)sizeof buf - 1 ? n - 1 : (int)sizeof buf - 1);   /* (a byte is at most one character) */
+        SetFilePointer(log, 0, NULL, FILE_BEGIN);
+        if (ReadFile(log, buf, want, &got, NULL) && got) {
+            buf[got] = 0;
+            int len = MultiByteToWideChar(CP_ACP, 0, buf, -1, out, n);   /* (tar.exe writes in the ANSI code page) */
+            while (len > 1 && (out[len - 2] == L'\n' || out[len - 2] == L'\r' || out[len - 2] == L' ')) out[--len - 1] = 0;
+        }
+        CloseHandle(log);   /* (and the file goes with it) */
+    }
     return (int)code;
 }
 
@@ -595,7 +622,11 @@ static DWORD WINAPI work(LPVOID unused) {
             mkdirs(dest);
             GetSystemDirectoryW(sys, MAX_PATH);
             swprintf(tarcmd, 2 * MAX_PATH + 64, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", sys, zip, dest);
-            if (run_wait(tarcmd, dest) != 0) fail(L"Unpacking part %d of %d failed (Windows' tar.exe). Is there enough free space on C:?", i + 1, nparts);
+            wchar_t said[512];
+            if (run_wait(tarcmd, dest, said, 512) != 0) {   /* (issue #1148: a "free space" guess hid what tar.exe said) */
+                if (said[0]) fail(L"Unpacking part %d of %d failed. Windows' tar.exe said:\n\n%ls", i + 1, nparts, said);
+                fail(L"Unpacking part %d of %d failed (Windows' tar.exe). Is there enough free space on C:?", i + 1, nparts);
+            }
             if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
                 wchar_t from[MAX_PATH], to[MAX_PATH], wf[260], wt[260];
                 w(p->from, wf, 260), w(p->to, wt, 260);
