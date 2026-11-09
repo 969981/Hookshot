@@ -1066,7 +1066,14 @@ struct SubmittedPage {
     bool overlay = false;   // (bytes is the capture's copy of the page; otherwise guest memory stands)
     uint8_t bytes[4096]{};
 };
-thread_local SubmittedPage submitted_page;
+// (hookshot) 32 of them a thread, by page: a handle program reads a uniform word on one page and a storage buffer word on
+// another, and with one page kept nearly every read missed, took pools_mu and copied a whole page for its 4 bytes (a
+// quarter of the replay thread's draw time on OoT's Market, in program_for's answer handles)
+constexpr int kSubmittedPages = 32;
+thread_local SubmittedPage submitted_pages[kSubmittedPages];
+inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its neighbours, and pages 32 apart, in different slots)
+    return submitted_pages[(page + (page >> 5) * 13) & (kSubmittedPages - 1)];
+}
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
@@ -1076,6 +1083,7 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
         if (guest) {
             const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
             const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
+            SubmittedPage& submitted_page = submitted_page_for(page0);
             if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page,
                                                        submitted_page.pgen, submitted_page.view) &&
                 submitted_page.overlay) {
@@ -1090,6 +1098,7 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     if (!guest) return true;
     const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
     const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
+    SubmittedPage& submitted_page = submitted_page_for(page0);
     if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page, submitted_page.pgen,
                                                submitted_page.view))
         return true;
