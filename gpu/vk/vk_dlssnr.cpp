@@ -5,6 +5,7 @@
 #include "vk_dlssnr.h"
 
 #include "vk_menu.h"
+#include "vk_opennr.h"   // (hookshot: the open backend, which every build has)
 #include "vk_streamline.h"
 
 #if defined(RX_VK_STREAMLINE) && defined(_WIN32)
@@ -257,6 +258,8 @@ bool asked() {
 
 VkImage apply(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh,
               VkImageView* out_view) {
+    // (hookshot) The open backend, when it is the one selected (gpu/vk/vk_opennr.h): same contract, same place.
+    if (opennr::selected()) return opennr::apply(cmd, src, sw, sh, out_view);
     State& s = state();
     if (!src || !sw || !sh) return VK_NULL_HANDLE;
     if (s.failed.load(std::memory_order_relaxed) || !capable() || !asked()) return VK_NULL_HANDLE;
@@ -425,7 +428,10 @@ namespace mkwvk::dlssnr {
 bool built_with_sdk() { return false; }
 bool capable() { return false; }
 bool asked() { return false; }
-VkImage apply(VkCommandBuffer, VkImage, uint32_t, uint32_t, VkImageView*) { return VK_NULL_HANDLE; }
+// (hookshot) The open backend runs in every build, Linux's too (gpu/vk/vk_opennr.h)
+VkImage apply(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, VkImageView* out_view) {
+    return opennr::selected() ? opennr::apply(cmd, src, sw, sh, out_view) : VK_NULL_HANDLE;
+}
 void shutdown() {}
 
 } // namespace mkwvk::dlssnr

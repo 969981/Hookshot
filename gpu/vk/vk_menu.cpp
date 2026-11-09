@@ -32,6 +32,7 @@
 
 #include "vk_dlssnr.h"   // (whether this build can offer DLSS 5 neural rendering at all)
 #include "vk_streamline.h"   // (nr_why: why neural rendering is not available here)
+#include "vk_opennr.h"   // (hookshot: the open backend: the row is offered with it, and its why)
 #include "vk_fsr3.h"     // (the Upscaler row: whether FSR 3.1 runs on this device)
 #include "vk_ffx.h"      // (and FSR 4, AMD's runtime)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -243,7 +244,7 @@ const char* hn_nr(int v, int variant) {
     static const char* const longest =
         "Not available: NVIDIA's model is RTX 50 only. RTX 20-40: a patched nvngx_dlssnr.dll (readme).";
     if (variant < 0) {
-        const char* w = streamline::nr_why();
+        const char* w = opennr::selected() ? opennr::why() : streamline::nr_why();   // (the selected backend's why)
         return *w ? w : t[std::clamp(v, 0, 1)];
     }
     return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? longest : nullptr;
@@ -1698,7 +1699,8 @@ void menu_init() {
     // do anything in a build with no Streamline headers, or on Linux, where Streamline has no
     // plugins to load. The switch is left in place and says why, because a missing tab is a bug
     // report and a tab that explains itself is not.
-    if (!dlssnr::built_with_sdk())
+    // (the open backend, gpu/vk/vk_opennr.h, runs in every build, so it keeps the row)
+    if (!dlssnr::built_with_sdk() && !opennr::selected())
         for (Row& r : rows)
             if (r.value == &opts.nr) {
                 r.hi = 0;
