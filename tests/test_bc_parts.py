@@ -14,6 +14,17 @@ def check_source():
                    "void texture_bc_continue()", "bc_part_texels = 0;"):
         if needle not in tex:
             raise SystemExit("vk_texture.cpp no longer has: " + needle)
+    # (a new image's deferred layers are filled from the last one encoded, not left with the image pool's old memory)
+    for needle in ("bc_parts::fill_source(", "if (!tex.uploaded && src != ~0u)",
+                   "vkCmdCopyImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, tex.image, VK_IMAGE_LAYOUT_GENERAL"):
+        if needle not in tex:
+            raise SystemExit("vk_texture.cpp no longer fills a new image's deferred BC3 layers: " + needle)
+    # (a continuation that could not record goes back on the list, and is not logged as finished)
+    cont = tex[tex.index("void texture_bc_continue()"):tex.index("bool texture_bc_pending()")]
+    if "const bool ok = upload_astc_gpu(" not in cont or "bc_parts::retry_continue(" not in cont:
+        raise SystemExit("texture_bc_continue drops a continuation that could not record")
+    if cont.index("if (!ok)") > cont.index("deferred layers are in"):
+        raise SystemExit("texture_bc_continue logs a failed continuation as finished")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     for needle in ("texture_bc_continue();", "texture_bc_pending()"):
         if needle not in replay:

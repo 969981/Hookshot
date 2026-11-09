@@ -56,5 +56,13 @@ int main() {
     CHECK("a big budget takes several runs a recording", simulate(terrain, layer, 256ull << 20, 8, &recs) == 0 && recs == 3);
     std::vector<uint32_t> dirty = {3, 4, 5, 40, 41, 89};
     CHECK("dirty layers only", simulate(dirty, layer, 16ull << 20, 8, &recs) == 0 && recs == 3);
+    // (a new image's deferred layers: filled from the last layer the upload encoded, never from one still to come)
+    CHECK("the fill comes from the last layer encoded", fill_source(terrain.data(), 3) == 2);
+    CHECK("dirty layers: the last one encoded, not r0 - 1", fill_source(dirty.data(), 3) == 5);
+    CHECK("nothing encoded: nothing to fill from", fill_source(terrain.data(), 0) == ~0u);
+    // (a continuation that cannot record goes back a few times, then is given up: never dropped at the first failure)
+    int tries = 0;
+    while (retry_continue(tries)) tries++;
+    CHECK("a failed continuation is retried", retry_continue(0) && tries == kContinueTries && tries > 1);
     std::puts("bc parts: all checks passed");
 }

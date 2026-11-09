@@ -750,14 +750,17 @@ VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
 // the next recordings (texture_bc_continue, at each one's start). All in one upload, Hyrule Field's two 1365 x 1365 x 90 terrain
 // arrays, made again when Link came back from Castle Town (evicted there), were a decode, a resize and an encode of ~570 M
 // texels in one submission: on an RX 7700S (8 GB, Adrenalin 26.10.1) it ran past Windows' 2 seconds three times out of three,
-// the driver was reset and the device lost. Until its last layers are in, a texture shows what its image held for those (a
-// frame or two of a scene change). Only AMD by default: on an RTX 3070 the parts made the Hyrule Castle load hitch ~1.2 s
-// longer (2.1 s against 0.9 s) with no reset to avoid. RX_VK_BC_PART_MTEXELS=<M texels a recording> (AMD: 16 by default;
+// the driver was reset and the device lost. Until its last layers are in (a frame or two of a scene change), a new texture
+// shows the last layer encoded in their place (bc_parts::fill_source): left as they were, they showed what the image's
+// memory held before, other textures' BC3 blocks (opaque squares in the sky on an RX 7800 XT). A continuation that cannot
+// record goes back on the list (bc_parts::retry_continue). Only AMD by default: on an RTX 3070 the parts made the Hyrule
+// Castle load hitch ~1.2 s longer (2.1 s against 0.9 s) with no reset to avoid. RX_VK_BC_PART_MTEXELS=<M texels a recording> (AMD: 16 by default;
 // other GPUs: 0, all at once, as before)
 struct BcPending {
     Texture* tex;
     uint64_t total;
     std::vector<uint32_t> layers;
+    int tries = 0;   // (continuations that could not record: bc_parts::retry_continue)
 };
 std::vector<BcPending> bc_pending;
 thread_local uint64_t bc_part_texels = 0;   // (what this recording's upload holds already)
@@ -819,6 +822,30 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             const uint64_t budget = tl_seg_index >= 0 ? 0 : bc_part_budget();
             if (!bc_parts::run_fits(bc_part_texels, run_texels, budget, r0 == 0)) {   // (the rest: the next recordings)
                 bc_pending.push_back({&tex, total, std::vector<uint32_t>(layers.begin() + (long)r0, layers.end())});
+                // (a new image: its deferred layers filled from the last one encoded, every level, a copy in VRAM with no
+                // decode or encode; see bc_parts::fill_source. A texture uploaded before keeps its old layers meanwhile)
+                const uint32_t src = bc_parts::fill_source(layers.data(), r0);
+                if (!tex.uploaded && src != ~0u) {
+                    std::vector<VkImageCopy> fill;
+                    fill.reserve((layers.size() - r0) * tex.levels);
+                    for (size_t k = r0; k < layers.size(); k++)
+                        for (uint32_t level = 0; level < tex.levels; level++) {
+                            VkImageCopy c{};
+                            c.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, src, 1};
+                            c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layers[k], 1};
+                            c.extent = {std::max(1u, tex.width >> level), std::max(1u, tex.height >> level), 1};
+                            fill.push_back(c);
+                        }
+                    full_barrier(cmd, "barrier (BC3 deferred layers filled)");
+                    vkCmdCopyImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, tex.image, VK_IMAGE_LAYOUT_GENERAL,
+                                   (uint32_t)fill.size(), fill.data());
+                    full_barrier(cmd, "barrier (BC3 deferred layers filled)");
+                    static int64_t filled;
+                    if (filled++ < 20 || filled % 200 == 0)
+                        logf("vk: BC3 texture %#llx %ux%u x%u: its %zu deferred layers filled from layer %u until they are in "
+                             "(%lld so far)", (unsigned long long)tex.gpu, tex.width, tex.height, tex.layers,
+                             layers.size() - r0, src, (long long)filled);
+                }
                 static int64_t deferred;
                 if (deferred++ < 20 || deferred % 200 == 0)
                     logf("vk: BC3 texture %#llx %ux%u x%u: %zu of %u layers left for the next recordings (%lld so far)",
@@ -1928,8 +1955,18 @@ void texture_bc_continue() {
         Ranges r;
         for (uint32_t l : p.layers) r.push_back({(uint64_t)l * ls + tail0, (uint64_t)(l + 1) * ls});
         const size_t before = bc_pending.size();
-        upload_astc_gpu(t, p.total, &r);   // (what does not fit goes back on the list)
+        const bool ok = upload_astc_gpu(t, p.total, &r);   // (what does not fit goes back on the list)
         t.last_value = rec_value;          // (its image is written by this recording's upload)
+        if (!ok) {   // (nothing recorded: no staging, no scratch. Not "in": back on the list, a few times)
+            if (bc_parts::retry_continue(p.tries)) {
+                p.tries++;
+                bc_pending.push_back(std::move(p));
+            } else {
+                logf("vk: BC3 texture %#llx %ux%u x%u: its last %zu deferred layers could not be uploaded (%d tries): left "
+                     "filled", (unsigned long long)t.gpu, t.width, t.height, t.layers, p.layers.size(), p.tries);
+            }
+            continue;
+        }
         if (bc_pending.size() == before) {   // (nothing of it went back: its last layers are in)
             static int64_t finished;
             if (finished++ < 40 || finished % 200 == 0)
