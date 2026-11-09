@@ -5801,6 +5801,8 @@ static bool movie_keep_all_networks() {
 
 static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
                           Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal);
+static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
+                                      const nvn_tex* out);
 
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     static const bool off = getenv("RX_VK_NO_UPSCALE_STUB") != nullptr;
@@ -5845,6 +5847,10 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     if (!src || !dst || !src->image || !dst->image || (src->aspect | dst->aspect) != VK_IMAGE_ASPECT_COLOR_BIT || src->bc ||
         dst->bc || src->samples != VK_SAMPLE_COUNT_1_BIT || dst->samples != VK_SAMPLE_COUNT_1_BIT)
         return false;
+    // (hookshot) an upscale network that did not translate here (the Render resolution's fixed shares have one each, and on a
+    // GPU without cooperative matrices they are left out): the temporal upscaler is offered it first, as temporal_stand_in
+    // offers the networks that did translate. It takes only the scene into the picture; anything else goes on below
+    if (temporal_wanted() && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
     VkFormatProperties fs{}, fd{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, src->format, &fs);
     vkGetPhysicalDeviceFormatProperties(dev.physical, dst->format, &fd);
@@ -6088,6 +6094,34 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
     return done;
+}
+/// (hookshot) The same for an upscale network that did not translate on this GPU (upscale_stub found its input, the largest
+/// texture it samples, and its output, the largest image it writes): the Render resolution row's fixed shares (67%
+/// 6676619641320ba7, 58%, 50%, 33%) are cooperative-matrix networks, left out without cooperative matrices (AMD RDNA 2), so
+/// without this DLSS and FSR would only ever see the game's 3/4. True: the temporal upscaler wrote the output
+static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
+                                      const nvn_tex* out) {
+    end_pass(cmd);
+    VkFormat in_format = VK_FORMAT_UNDEFINED, out_format = VK_FORMAT_UNDEFINED;
+    const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
+    const VkImageView out_view = texture_view(dst, out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, &out_format,
+                                              VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+    // (the gameplay networks' own formats; the movies' (RGB9E5 bits in a shared R11 image, RGBA8) are not the scene)
+    if (!in_view || !out_view || in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+        return false;
+    const bool done = temporal_upscale(cmd, key, false, src, in_view, dst, out_view, 0);
+    last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    vertex_set.on = false, last_ib.on = false;
+    if (!done) return false;
+    full_barrier(cmd);
+    texture_written(dst);
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    std::lock_guard lk(mu);
+    if (seen.size() < 32 && seen.insert(key).second)
+        logf("vk: network %016llx does not translate here: the temporal upscaler draws its upscale (%ux%u -> %ux%u)",
+             (unsigned long long)key, src->width, src->height, dst->width, dst->height);
+    return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
