@@ -158,11 +158,11 @@ bool ngx_feature(VkCommandBuffer cmd) {
     // inline helper would put NVSDK_NGX_VULKAN_CreateFeature in this object file and hand the link
     // back to NVIDIA's library. The keys themselves are the SDK's own macros, so a wrong one is a
     // compile error.
-    params->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
-    params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
-    params->Set(NVSDK_NGX_Parameter_Width, g.width);
-    params->Set(NVSDK_NGX_Parameter_Height, g.height);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFormat, (unsigned)g.present_format);
+    ngx::set(params, NVSDK_NGX_Parameter_CreationNodeMask, 1u);
+    ngx::set(params, NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
+    ngx::set(params, NVSDK_NGX_Parameter_Width, g.width);
+    ngx::set(params, NVSDK_NGX_Parameter_Height, g.height);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_BackbufferFormat, (unsigned)g.present_format);
     const NVSDK_NGX_Result res =
         ngx::create_feature(cmd, NVSDK_NGX_Feature_FrameGeneration, params, &feature);
     if (NVSDK_NGX_FAILED(res) || !feature) {
@@ -186,65 +186,65 @@ bool ngx_generate(VkCommandBuffer cmd, const Inputs& in, Image& out) {
                                                  in.render_width, in.render_height, false);
     NVSDK_NGX_Resource_VK made =
         ngx::resource(out.view, out.image, out.format, out.width, out.height, true);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_Backbuffer, &colour);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_Depth, &depth);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MVecs, &motion);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_OutputInterpolated, &made);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_Backbuffer, &colour);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_Depth, &depth);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MVecs, &motion);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_OutputInterpolated, &made);
     // The optional inputs this game does not have: no separate HUD-less colour, no UI layer, no
     // distortion field. They are set to null rather than left from the frame before, because a
     // parameter block is reused and a stale resource is a use-after-free inside the runtime.
-    params->Set(NVSDK_NGX_DLSSG_Parameter_HUDLess, (void*)nullptr);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_UI, (void*)nullptr);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_UIAlpha, (void*)nullptr);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField, (void*)nullptr);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_OutputReal, (void*)nullptr);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_OutputDisableInterpolation, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_HUDLess, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_UI, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_UIAlpha, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_BidirectionalDistortionField, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_OutputReal, (void*)nullptr);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_OutputDisableInterpolation, (void*)nullptr);
 
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, in.frames_made);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, in.frame_index);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, in.frames_made);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, in.frame_index);
     // The matrices are the whole of what places a made frame in time. They are passed as the SDK
     // takes them -- a pointer to sixteen floats -- in the row-major order the rest of this renderer
     // uses; the camera-motion pass uses the same pair and its picture agreed with the game's, which
     // is the only check available without NVIDIA's own tooling.
     if (in.have_matrices) {
-        params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToPrevClip, (void*)in.clip_to_prev_clip);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_PrevClipToClip, (void*)in.prev_clip_to_clip);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraViewToClip, (void*)in.camera_view_to_clip);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToCameraView, (void*)in.clip_to_camera_view);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToLensClip, (void*)in.clip_to_lens_clip);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosX, in.camera_pos[0]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosY, in.camera_pos[1]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosZ, in.camera_pos[2]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpX, in.camera_up[0]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpY, in.camera_up[1]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpZ, in.camera_up[2]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightX, in.camera_right[0]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightY, in.camera_right[1]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightZ, in.camera_right[2]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdX, in.camera_forward[0]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdY, in.camera_forward[1]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdZ, in.camera_forward[2]);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetX, 0.0f);
-        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetY, 0.0f);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_ClipToPrevClip, (void*)in.clip_to_prev_clip);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_PrevClipToClip, (void*)in.prev_clip_to_clip);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraViewToClip, (void*)in.camera_view_to_clip);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_ClipToCameraView, (void*)in.clip_to_camera_view);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_ClipToLensClip, (void*)in.clip_to_lens_clip);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraPosX, in.camera_pos[0]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraPosY, in.camera_pos[1]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraPosZ, in.camera_pos[2]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraUpX, in.camera_up[0]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraUpY, in.camera_up[1]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraUpZ, in.camera_up[2]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraRightX, in.camera_right[0]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraRightY, in.camera_right[1]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraRightZ, in.camera_right[2]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraFwdX, in.camera_forward[0]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraFwdY, in.camera_forward[1]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraFwdZ, in.camera_forward[2]);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetX, 0.0f);
+        ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetY, 0.0f);
     }
-    params->Set(NVSDK_NGX_DLSSG_Parameter_OrthoProjection, 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecDilated, 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecInvalidValue, -FLT_MAX);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MinRelativeLinearDepthObjectSeparation, 40.0f);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_JitterOffsetX, in.jitter[0]);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_JitterOffsetY, in.jitter[1]);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecScaleX, in.motion_scale[0]);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecScaleY, in.motion_scale[1]);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_CameraNear, in.near_plane);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFar, in.far_plane);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFOV, in.fov_y);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_CameraAspectRatio, in.aspect);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_ColorBuffersHDR, in.colour_hdr ? 1u : 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_DepthInverted, in.depth_inverted ? 1u : 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_CameraMotionIncluded,
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_OrthoProjection, 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MvecDilated, 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MvecInvalidValue, -FLT_MAX);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MinRelativeLinearDepthObjectSeparation, 40.0f);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_JitterOffsetX, in.jitter[0]);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_JitterOffsetY, in.jitter[1]);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MvecScaleX, in.motion_scale[0]);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_MvecScaleY, in.motion_scale[1]);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraNear, in.near_plane);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraFar, in.far_plane);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraFOV, in.fov_y);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraAspectRatio, in.aspect);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_ColorBuffersHDR, in.colour_hdr ? 1u : 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_DepthInverted, in.depth_inverted ? 1u : 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_CameraMotionIncluded,
                 in.camera_motion_included ? 1u : 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_Reset, (in.reset || g.first_evaluation) ? 1u : 0u);
-    params->Set(NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames, 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_Reset, (in.reset || g.first_evaluation) ? 1u : 0u);
+    ngx::set(params, NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames, 0u);
     const NVSDK_NGX_Result res = ngx::evaluate_feature(cmd, feature, params);
     if (NVSDK_NGX_FAILED(res)) {
         static int told = 0;

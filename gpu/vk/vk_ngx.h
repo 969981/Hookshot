@@ -27,6 +27,25 @@
 
 namespace mkwvk::ngx {
 
+/// NGX's parameters through its C functions, never NVSDK_NGX_Parameter's virtual Set/Get. The object comes from NVIDIA's
+/// MSVC-built library, and its vtable is laid out by Microsoft's ABI, which llvm-mingw's Itanium-ABI calls do not follow:
+/// on a Windows build the overloads line up by luck, if at all (gpu/vk/vk_dlss.cpp says the same). One overload per type
+/// NGX takes, so a call site reads as it did and the value's type picks the function; any other type does not compile.
+inline void set(NVSDK_NGX_Parameter* p, const char* key, unsigned v) { NVSDK_NGX_Parameter_SetUI(p, key, v); }
+inline void set(NVSDK_NGX_Parameter* p, const char* key, int v) { NVSDK_NGX_Parameter_SetI(p, key, v); }
+inline void set(NVSDK_NGX_Parameter* p, const char* key, float v) { NVSDK_NGX_Parameter_SetF(p, key, v); }
+inline void set(NVSDK_NGX_Parameter* p, const char* key, double v) { NVSDK_NGX_Parameter_SetD(p, key, v); }
+inline void set(NVSDK_NGX_Parameter* p, const char* key, void* v) { NVSDK_NGX_Parameter_SetVoidPointer(p, key, v); }
+/// (a Vulkan resource is handed over by its address, as NGX's own helpers in nvsdk_ngx_helpers_vk.h do)
+inline void set(NVSDK_NGX_Parameter* p, const char* key, NVSDK_NGX_Resource_VK* v) {
+    NVSDK_NGX_Parameter_SetVoidPointer(p, key, v);
+}
+template <typename T> void set(NVSDK_NGX_Parameter*, const char*, T) = delete;
+inline NVSDK_NGX_Result get(NVSDK_NGX_Parameter* p, const char* key, int* v) { return NVSDK_NGX_Parameter_GetI(p, key, v); }
+inline NVSDK_NGX_Result get(NVSDK_NGX_Parameter* p, const char* key, unsigned* v) {
+    return NVSDK_NGX_Parameter_GetUI(p, key, v);
+}
+
 /// Loads the NGX core the driver ships and resolves what the backends call. False, with one line
 /// logged, where there is no NGX runtime here or it is missing an entry point. Asked more than once
 /// is free: the answer is kept.

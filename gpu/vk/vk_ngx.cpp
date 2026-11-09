@@ -93,13 +93,13 @@ bool feature_available(const char* available_key, const char* needs_driver_key,
         return false;
     }
     int available = 0;
-    if (NVSDK_NGX_FAILED(caps->Get(available_key, &available)) || !available) {
+    if (NVSDK_NGX_FAILED(get(caps, available_key, &available)) || !available) {
         // What NGX says about it: an old driver and a feature that failed to initialize are
         // different reports, and a user with the first can act on it.
         int needs_driver = 0, major = 0, minor = 0;
-        caps->Get(needs_driver_key, &needs_driver);
-        caps->Get(major_key, &major);
-        caps->Get(minor_key, &minor);
+        get(caps, needs_driver_key, &needs_driver);
+        get(caps, major_key, &major);
+        get(caps, minor_key, &minor);
         if (needs_driver)
             logf("vk: ngx: this driver is too old for %s (%d.%d or newer wanted)", name, major,
                  minor);
