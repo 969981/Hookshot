@@ -195,6 +195,20 @@ def package(a):
             print("%d prebuilt third_party files from %s" % (n, os.path.basename(tp)))
     else:
         print("no setup list: the package has no play profile and no prebuilt third_party files")
+    # (hookshot) the renderer CI built with NVIDIA DLSS, DLSS 5 neural rendering and AMD FSR 4 in it, which nx2/make_game.py
+    # uses on the player's PC instead of compiling one without those (prebuilt_renderer), and AMD's FSR runtime beside it
+    if a.vk:
+        copy(a.vk, os.path.join(tools, "prebuilt", "hookshot_vk.dll"))
+        print("prebuilt renderer: %s" % a.vk)
+    if a.amd_fsr:
+        n = 0
+        for f in sorted(os.listdir(a.amd_fsr)):
+            if f.lower().startswith("amd_fidelityfx_") and f.lower().endswith("_vk.dll"):
+                copy(os.path.join(a.amd_fsr, f), os.path.join(tools, "amd-fsr", f))
+                n += 1
+        if os.path.isfile(os.path.join(a.amd_fsr, "LICENSE.txt")):
+            copy(os.path.join(a.amd_fsr, "LICENSE.txt"), os.path.join(tools, "amd-fsr", "LICENSE.txt"))
+        print("AMD FSR runtime: %d DLLs from %s" % (n, a.amd_fsr))
     print("package folder: %s" % out)
     return 0
 
@@ -217,6 +231,8 @@ def main():
     s.add_argument("--publish", required=True)
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
+    s.add_argument("--vk", help="(hookshot) a hookshot_vk.dll built by CI, into tools/prebuilt")
+    s.add_argument("--amd-fsr", help="(hookshot) a folder holding AMD's amd_fidelityfx_*_vk.dll, into tools/amd-fsr")
     a = p.parse_args()
     return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 

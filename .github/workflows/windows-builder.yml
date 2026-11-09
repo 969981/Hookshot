@@ -30,6 +30,8 @@ jobs:
     name: Hookshot Builder package and setup
     # (builder-parts holds the installer's parts: no package there)
     if: github.ref_name != 'builder-parts'
+    # (hookshot) the package carries the renderer the vulkan job built (tools/prebuilt), so it waits for it
+    needs: vulkan
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
@@ -104,10 +106,35 @@ jobs:
           dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj --configuration Release
           -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
 
+      # (hookshot) the renderer built with NVIDIA DLSS, DLSS 5 neural rendering and AMD FSR 4 compiled in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hookshot_vk-windows
+          path: ${{ runner.temp }}/vk
+      # (hookshot) AMD's FSR runtime: the loader, the upscaler and frame generation, signed by AMD and MIT-licensed in
+      #  FSR SDK 2.4 (its docs/license.md lists Kits/FidelityFX/signedbin under MIT). gpu/vk/vk_ffx.cpp loads it from
+      #  beside the game; nx2/make_game.py puts it there
+      - name: AMD's FSR runtime (FSR SDK v2.4.0)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+          ref: 7539ae8b6568ad29ed78a753404351daf3b5cca7 # v2.4.0
+          path: _amd
+          persist-credentials: false
+          sparse-checkout: |
+            Kits/FidelityFX/signedbin
+          sparse-checkout-cone-mode: true
+      - name: AMD's FSR runtime, with its notice
+        run: |
+          mkdir -p "$RUNNER_TEMP/amd-fsr"
+          cp _amd/Kits/FidelityFX/signedbin/amd_fidelityfx_*_vk.dll "$RUNNER_TEMP/amd-fsr/"
+          cp third_party/ffx-api/LICENSE.txt "$RUNNER_TEMP/amd-fsr/LICENSE.txt"
+          ls -l "$RUNNER_TEMP/amd-fsr"
       - name: Package folder
         run: >-
           python -I scripts/release_parts.py package "$RUNNER_TEMP/package"
           --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/HookshotBuilder-Setup.exe" ${PREVIOUS:+--list "$PREVIOUS"}
+          --vk "$RUNNER_TEMP/vk/hookshot_vk.dll" --amd-fsr "$RUNNER_TEMP/amd-fsr"
 
       - name: Setup parts
         run: |
@@ -170,14 +197,13 @@ jobs:
       - name: llvm-mingw
         run: echo "HOOKSHOT_MINGW=$(python -I scripts/release_parts.py llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
       # (as scripts/linux/appimage.sh builds Linux's: the back end alone, no lift, no game)
-      # (built with DLSS support compiled in: the SDK is fetched here, never committed, and found at the tree root
-      #  by nx2/build.py. NVIDIA's runtime (nvngx_dlss.dll) is theirs to ship and is not included -- readme.md tells
-      #  a player where to put it. This link had no coverage at all until now, and was Windows-broken because of it.)
-      - name: Check out NVIDIA's DLSS SDK (built against, not shipped)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: NVIDIA/DLSS
-          path: dlss-sdk
+      # (hookshot) built with NVIDIA DLSS compiled in, as vulkan-dlss.yml builds it: NVIDIA's SDK fetched here by
+      #  scripts/ngx_sdk.py (headers and the static library, under NVIDIA's license), never committed. NVIDIA's runtime
+      #  (nvngx_dlss.dll) is theirs to ship and is not included -- readme.md tells a player where to put it. This DLL is
+      #  what the release's Builder installs (nx2/make_game.py prebuilt_renderer): a renderer compiled on the player's
+      #  PC has none of NVIDIA's SDKs, and the Insert menu then offers none of DLSS, its frame generation or NR.
+      - name: NVIDIA's DLSS SDK (headers and nvsdk_ngx_s.lib)
+        run: python -I scripts/ngx_sdk.py --platform windows --build-only --accept-nvidia-license "$RUNNER_TEMP/ngx-sdk"
       # (DLSS 5 neural rendering: only NVIDIA Streamline's MIT-licensed headers, fetched here and never
       #  committed, found at the tree root by nx2/build.py streamline_sdk_path. Nothing is linked from it --
       #  sl.interposer.dll and the sl.* plugins are the player's own files, loaded at run time. v2.14.1 is the
@@ -193,9 +219,14 @@ jobs:
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
         run: |
-          OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
-            python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS"
+          OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" HOOKSHOT_NGX_SDK="$RUNNER_TEMP/ngx-sdk" \
+            python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS" | tee "$RUNNER_TEMP/vk-build.log"
+          test "${PIPESTATUS[0]}" -eq 0
           ls -l "$RUNNER_TEMP/vk-work/sa/build/hookshot_vk.dll"
+          # (a release must carry what it says: a renderer without DLSS or neural rendering compiled in fails here,
+          #  not on a player's PC as rows missing from the Insert menu)
+          grep -q "vk: DLSS (NGX): compiled in" "$RUNNER_TEMP/vk-build.log"
+          grep -q "vk: DLSS 5 neural rendering (Streamline): compiled in" "$RUNNER_TEMP/vk-build.log"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hookshot_vk-windows
