@@ -348,6 +348,63 @@ Two things worth keeping from this:
   script exists for that: without it, "before" and "after" are two different scenes and the
   difference between them is whatever you want it to be.
 
+## FSR 3 frame interpolation: what is verified and what is not
+
+`gpu/vk/vk_fsr3fi.*` records AMD's seventeen passes -- seven of optical flow, ten of interpolation --
+in the order the SDK's own dispatch schedules them, behind `RX_VK_FSR_FG=<1-3>`. It takes the same
+assembled inputs DLSS frame generation takes, so `framegen_record` asks DLSS first, this second, and
+keeps the renderer's own colour interpolation for the frames neither takes.
+
+Verified against the sources, not from memory: every binding number comes from the pass file's own
+`FFX_..._BIND_*` defines, every descriptor type from the declarations in the callbacks headers, the
+image formats from the GLSL's format qualifiers, and each of the four constant blocks carries a
+`static_assert` on its size. The dispatch sizes and the SPD setups are transcribed from AMD's host
+reference.
+
+**What is inferred rather than verified.** The picture cannot be checked from here -- no capture, no
+validation layers, no eye on the output -- so this list is the honest part, in the order worth
+looking at:
+
+1. **`opticalFlowScale = 1 / displaySize`.** No vendored source assigns it: the FSR3 wrapper that
+   would is not in the SDK subset here. It is derived from `GetOpticalFlowSize()` in the GLSL having
+   to come out as the flow image's size. If the flow is scaled wrongly, start here.
+2. **A count above one repeats a frame.** FSR 3.1 interpolates the midpoint and only the midpoint --
+   no phase in its constants, and its own header writes `t = 0.5` outright -- so `RX_VK_FSR_FG=2`
+   copies the one made frame rather than making two. DLSS's `MultiFrameCount` is the only route to
+   more than one real made frame.
+3. **A reset frame reports failure** although the chain is recorded, so the caller's own
+   interpolation takes it rather than a blend against a black previous source. The SDK returns OK
+   there; this is a deliberate difference.
+4. **sRGB transfer and `{0, 1}` luminance**, right for the R8G8B8A8 window and untested against
+   anything else. AMD's own sources are inconsistent here: the optical flow's transfer-function-0
+   path treats the colour as linear while the interpolation applies an sRGB decode. Left as AMD has
+   it.
+5. Optical-flow confidence is a cleared image where the SDK binds null and reads zero through it;
+   the flow vector-field dispatch rounds the last partial block up where the SDK truncates in float;
+   the constants staged for the passes before the flow's own pyramid are a sane value rather than
+   the SDK's leftovers. Each is commented where it is.
+
+## The jitter, and why the renderer supplies it
+
+Neither upscaler had one, and there is none to extract. `capture_view_projection` refuses any
+projection whose m02 is not exactly zero, and it finds one -- so the matrix the game hands its own
+network carries no sub-pixel offset. Its network is single-image and has no use for one. That
+settles the question without a run.
+
+So the renderer supplies it, as a sub-pixel **viewport** offset rather than a change to the
+projection. The projection lives in the game's own memory where the GPU reads it, so offsetting it
+would mean binding a patched copy to every draw that reads it, which is the shape of per-draw work
+that has already cost this renderer 300 ms a frame once. A viewport offset moves rasterization by
+the same amount, costs two additions, and applies to colour, depth and motion together because they
+are one pass.
+
+It is applied only to the scene's own passes -- the ones drawing into a depth target of the extent
+the upscaler is given -- never the HUD, the menus or the movie layer, which have nothing to resolve
+them and would simply shimmer. The sequence is Halton with AMD's 8-times-ratio-squared phase count,
+and the offset is handed to both backends so they can undo it. `RX_VK_JITTER=0` turns it off with an
+upscaler still on, which is the comparison worth having; the sign convention is the thing to check
+first if the image looks wrong, because a wrong sign there is soft or shimmering rather than broken.
+
 ## FSR 3 and FSR 4 are two backends, not two versions
 
 FSR 4 is not source-available: it ships as prebuilt signed libraries inside AMD's SDK releases, so it cannot come out
