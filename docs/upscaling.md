@@ -401,9 +401,29 @@ shape as the FSR one (`supported()`, `prepare()`, `upscale()`, `output_image()`/
 `shutdown()`) so the seam can hold either.
 
 It is now built against a real NGX SDK (`NVSDK_NGX_VERSION_API_MACRO` 0x15, the SDK whose Linux
-feature libraries are `libnvidia-ngx-dlss.so.310.9.16` and its `dlssd`/`dlssg` companions), and the
-whole renderer compiles with the NGX half enabled. What has *not* happened yet is an evaluation
-against a running game; until that line is in this document, treat the backend as plumbing.
+feature libraries are `libnvidia-ngx-dlss.so.310.9.16` and its `dlssd`/`dlssg` companions), and
+**it has run against the game**: Linux, RTX 5060 Ti, driver 615.71.09, the feature library beside
+the binary, `RX_VK_DLSS=1`.
+
+```
+vk: dlss wants VK_NVX_binary_import: enabled
+vk: dlss wants VK_NVX_image_view_handle: enabled
+vk: dlss wants VK_KHR_buffer_device_address: enabled
+vk: ngx initialized
+vk: dlss: feature ready, 1536x864 -> 2048x1152
+vk: dlss 1536x864 -> 2048x1152 with assembled depth and camera motion
+```
+
+Those three extensions are what NGX asked for on this driver, enabled at device creation because
+they were asked for before it rather than written out from memory. The evaluation is the same
+assembled inputs FSR gets: the dispatch's own colour, the scene's depth, and motion reprojected from
+that depth.
+
+What is still missing is the jitter. Neither backend is given one, because the game does not appear
+to jitter its own projection -- its network is single-image and has no reason to. Without sub-pixel
+diversity a temporal upscaler reconstructs from motion alone, which is softer than it should be.
+Supplying a jitter means perturbing the projection the game writes and telling the upscaler what was
+injected, and that is the next real piece of quality work rather than a flag to set.
 
 Two things the backend needs that the upscaler half does not, both added with the seam wiring:
 
@@ -427,6 +447,50 @@ Two switches, both off by default, both neutral while off:
 | `RX_VK_FSR_STAGE=<0-3>` | diagnostics, and wrong output on purpose above 0: how far down the upscale path a run goes. 1 stops before the backend, 2 records every barrier, clear and descriptor but none of the nine dispatches, 3 keeps the dispatches and drops the blit into the game's target. It exists because three hypotheses about a frame-rate cost were each disproved by a measurement that a stage switch would have given in one run |
 | `RX_VK_DLSS=1` | asks for the backend at run time. Without it nothing is loaded, nothing is looked at and nothing is logged |
 | `RX_VK_DLSS_SDK` | a **build-time** gate. Off, the NGX half of the backend is not compiled and `supported()` is false. On, the build needs an NGX SDK's `include/` on the include path |
+
+### Ray Reconstruction, and what "neural rendering" can mean here
+
+The SDK ships three Linux feature libraries and only two of them have a job in this game.
+
+- `libnvidia-ngx-dlss.so` -- **Super Resolution**. Running (above). On this driver that is the
+  transformer model, which is the neural network people mean by DLSS 4.
+- `libnvidia-ngx-dlssg.so` -- **Frame Generation**. Written and wired; `gpu/vk/vk_dlssg.h`.
+- `libnvidia-ngx-dlssd.so` -- **Ray Reconstruction**, which NVIDIA also calls the neural renderer.
+  It replaces the denoiser in a ray-traced pipeline, and it is given a G-buffer -- albedo, normals,
+  roughness, specular -- plus noisy ray-traced lighting. Ocarina of Time on NX2 is a rasterized game
+  with no ray tracing and no such G-buffer. There is nothing here for it to denoise, and handing it
+  invented inputs would be a worse picture dressed up as a feature. It is not wired, and the reason
+  is the game, not the plumbing.
+
+So "neural rendering" in this project means the super-resolution network and the frame-generation
+network, and on AMD it will mean FSR 4's upscaling network for the same reason.
+
+### How NGX is actually reached on Linux
+
+The first design resolved the `NVSDK_NGX_*` entry points by name from the NGX core the driver ships
+(`libnvidia-ngx.so.1`), so that a gated build would not need the SDK's library at link time. That
+does not work, and a run said so plainly:
+
+```
+vk: ngx loaded from libnvidia-ngx.so.1
+vk: ngx: the NGX runtime has no NVSDK_NGX_VULKAN_Init_with_ProjectID
+```
+
+The driver's core exports none of the public API. Those nineteen Vulkan entry points live in the
+SDK's own static library (`lib/Linux_x86_64/libnvsdk_ngx.a`), which calls into the core. So a build
+with `RX_VK_DLSS_SDK=<path>` links that library -- `dlss_sdk_link()` in `nx2/build.py` -- and
+`gpu/vk/vk_ngx.cpp` calls NGX directly. The licensing rule is unchanged and unbent: the SDK is the
+builder's own copy under the path they name, nothing of NVIDIA's is in this repository, and a build
+without that path links exactly what it linked before.
+
+Two things cost a run each and are worth writing down:
+
+- **The project id must be a real UUID.** NGX validates the shape and answers
+  `NVSDK_NGX_Result_FAIL_InvalidParameter` (`0xbad00005`) otherwise. Ours spelled `hookshot-dlss`
+  into the last two groups, which is not hex.
+- **The feature libraries are the player's to supply.** `libnvidia-ngx-dlss.so.*` and its `dlssd`
+  (ray reconstruction) and `dlssg` (frame generation) companions sit beside the binary, where NGX
+  looks for them because the application data path points there. They are never ours to ship.
 
 ### The licensing decision, and why it is a gate rather than a hand-written ABI
 
