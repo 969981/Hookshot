@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.8.0
+Date: 09. 11. 2026
+  Features:
+    - Vk: DLSS 5 neural rendering through NGX directly, beside Streamline.
+  Bugfixes:
+    - Vk: DLSS frame generation sets NGX's parameters through its C functions.
+---------------------------------------------------------------------------------------------------
 Version: 2.7.0
 Date: 09. 11. 2026
   Features:
