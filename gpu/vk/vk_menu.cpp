@@ -394,7 +394,7 @@ void apply_preset(int p) {
     sync_preset_budgets(p);
 }
 
-MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
+MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom, with the preset's memory caps kept.",
            "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 50%, 2x frames, Handheld profile.",
            "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 35%, 2x frames, Handheld profile.",
            "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 25%, 2x frames.",
