@@ -172,6 +172,9 @@ the game answers in its log, which the server reads back. Settings and cheats ar
 WebGPU fallback has no Insert menu and `settings()` says so. A cheat acts on the game in play; at the title screen there is
 no player to give hearts or a destination to travel to yet.
 
+The game-side mechanisms behind player actions that are not menu settings (equipment, the item button, the ocarina) are
+mapped in [actions.md](actions.md).
+
 ## How it works
 
 The server sets these for the game:
