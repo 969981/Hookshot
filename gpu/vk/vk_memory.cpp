@@ -2679,16 +2679,24 @@ bool mirror_make(Pool& pool) {
                 const uint64_t a = std::max(r.lo, p->lo), b = std::min(r.hi, p->hi);
                 // (only the pages not stamped since its last sync: one the CPU wrote after it has the game's newer data in the
                 // copy of guest memory above, and the old mirror's over it counted as synced, stale for good (mirror_inherit.h).
-                // RX_VK_INHERIT_ALL=1: the whole part, as before)
+                // As mirror_sync, a page a shader wrote through a bare entry keeps the mirror's copy (RX_VK_PROTECT_BARE=1).
+                // Synced in this submission: the whole part. Its synced_gen is raised only at the submission's end
+                // (memory_end_submission), so what the GPU wrote in this submission's earlier segments (RX_VK_PARALLEL) is
+                // stamped above it, and guest memory has that only after the write-back; the CPU's writes were collected
+                // before the sync. RX_VK_INHERIT_ALL=1: the whole part always, as before)
                 static const bool inherit_all = getenv("RX_VK_INHERIT_ALL") != nullptr;
                 std::vector<VkBufferCopy> parts;
                 uint64_t from_guest = 0;
-                if (inherit_all)
+                const uint32_t synced = r.synced_gen;
+                if (inherit_all || r.synced_epoch == mirror_epoch)
                     parts.push_back({a - r.lo, a - p->lo, b - a});
                 else
-                    from_guest = mirror_inherit::runs(a, b, r.lo, p->lo, r.synced_gen, kPageShift, kRegionPages,
-                                                      [&](uint64_t region) { return region_gen[region] <= r.synced_gen; },
-                                                      [](uint64_t page) { return page_gen(page); },
+                    from_guest = mirror_inherit::runs(a, b, r.lo, p->lo, kPageShift, kRegionPages,
+                                                      [&](uint64_t region) { return region_gen[region] <= synced; },
+                                                      [&](uint64_t page) {
+                                                          return page_gen(page) <= synced ||
+                                                                 (protect_bare_on() && prot_page_since(page, synced));
+                                                      },
                                                       [&](uint64_t src, uint64_t dst, uint64_t size) { parts.push_back({src, dst, size}); });
                 if (!parts.empty())
                     vkCmdCopyBuffer(upload_command_buffer(), r.mirror, p->mirror, (uint32_t)parts.size(), parts.data());

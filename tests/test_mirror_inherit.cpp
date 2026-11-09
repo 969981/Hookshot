@@ -19,19 +19,20 @@ void expect(bool ok, const char* what) {
 
 struct Case {
     std::map<uint64_t, uint32_t> gens;   // page -> generation (0 where absent)
+    std::map<uint64_t, bool> kept;       // pages kept from the mirror though newer (RX_VK_PROTECT_BARE's bare entries)
     uint32_t synced = 10;
     std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> runs;
     uint64_t skipped = 0;
     void run(uint64_t a, uint64_t b, uint64_t r_lo, uint64_t p_lo) {
         runs.clear();
         skipped = mirror_inherit::runs(
-            a, b, r_lo, p_lo, synced, kShift, kRegion,
+            a, b, r_lo, p_lo, kShift, kRegion,
             [&](uint64_t region) {
                 for (uint64_t p = region * kRegion; p < (region + 1) * kRegion; p++)
                     if (gens.count(p) && gens[p] > synced) return false;
                 return true;
             },
-            [&](uint64_t page) { return gens.count(page) ? gens[page] : 0u; },
+            [&](uint64_t page) { return (gens.count(page) ? gens[page] : 0u) <= synced || kept.count(page); },
             [&](uint64_t src, uint64_t dst, uint64_t size) { runs.emplace_back(src, dst, size); });
     }
 };
@@ -86,6 +87,16 @@ int main() {
         expect(c.skipped == kPage, "one page left");
         expect(c.runs.size() == 2, "one run before it (the clean region and the pages after), one after");
         if (c.runs.size() == 2) expect(std::get<2>(c.runs[0]) == (kRegion + 7) * kPage, "the first run spans the clean region");
+    }
+    {   // a newer page the caller still counts current (a bare entry's, as mirror_sync keeps it) is inherited
+        Case c;
+        const uint64_t page = (r_lo >> kShift) + 3;
+        c.gens[page] = 11;
+        c.kept[page] = true;
+        c.gens[page + 1] = 11;
+        c.run(r_lo, r_lo + 16 * kPage, r_lo, p_lo);
+        expect(c.skipped == kPage, "only the newer page not kept is left to guest memory");
+        expect(c.runs.size() == 2 && std::get<2>(c.runs[0]) == 4 * kPage, "the kept page joins the run before it");
     }
     if (failures) return EXIT_FAILURE;
     std::printf("PASS: a remade pool's mirror takes only the pages not written since the retired mirror's last sync\n");
