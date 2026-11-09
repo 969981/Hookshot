@@ -378,7 +378,23 @@ parameters in `nvsdk_ngx_params_dlssg.h` -- and the SDK ships `libnvidia-ngx-dls
 `Linux_x86_64` beside the super-resolution and ray-reconstruction libraries. It is reached exactly
 as super resolution is, through the shared session in `gpu/vk/vk_ngx.h`.
 
-`gpu/vk/vk_dlssg.h` is that backend. It makes the frames the existing interpolator would have made,
+`gpu/vk/vk_dlssg.h` is that backend, and it has run: on this GPU NGX reports Frame Generation
+available, the feature is created at 2048x1152 from 1536x864 inputs, and evaluations are accepted.
+Getting there cost two refusals, both worth writing down because each names a real requirement:
+
+- **`FAIL_PlatformError` from `CreateFeature`, with the feature reporting itself available.** The
+  device had been made without the extensions frame generation needs. The extension query was gated
+  on `RX_VK_DLSS`, which a frame-generation run does not set, so a run that asked only for frame
+  generation created a device for nothing. Each feature is asked separately now.
+- **`FAIL_MissingInput` from `EvaluateFeature`.** NGX's own helper sets five matrices plus the
+  camera's position and axes; this set two of them. They are in a struct NVIDIA calls
+  `Opt_Eval_Params`, and they are not optional.
+
+So the draw path now keeps the view and the projection as well as their product, and the present
+path builds the rest: the projection's inverse, an identity lens clip, the camera's axes out of the
+view's rows, its position from -R transpose times the translation, and the clip-to-previous-clip
+pair from this frame's view projection and the last one. In doubles, because a float inverse of a
+projection with a far plane in the thousands loses the precision the reprojection depends on. It makes the frames the existing interpolator would have made,
 from the scene's own depth and the camera motion reprojected from it, and `MultiFrameCount` lets it
 make more than one between two real frames -- which is the only way past a rate the game's own
 simulation limits. It slots into `framegen_record` ahead of the colour interpolation: where it
