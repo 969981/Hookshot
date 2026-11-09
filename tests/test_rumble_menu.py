@@ -82,6 +82,10 @@ struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 /* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
 unsigned upscalers_available() { return 1; }
+/* (the Frame generation method row's stepping, which set_row calls: the real rules, Auto and Built-in here) */
+#include "%(framegen_methods)s"
+namespace framegen_methods = mkwvk::framegen_methods;
+unsigned framegen_available() { return framegen_methods::always(); }
 void mic_chosen() {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
@@ -165,6 +169,7 @@ def menu_fixture():
         "snap": one_line(menu, "int rumble_step"),
         "ini_key": definition(menu, "const char* ini_key"),
         "set_row": definition(menu, "void set_row"),
+        "framegen_methods": str(ROOT / "gpu" / "vk" / "framegen_methods.h"),
         "wheel": block(tick, loop),
         "arrow": "bool press[5] = {false, false, false, !right, right}; " + arrow.group(1),
         "exempt": ", nullptr, false, true" if exempt else "",   # (after the help: no hint, no restart)

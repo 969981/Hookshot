@@ -217,9 +217,10 @@ card runs: FSR 4's machine-learning upscaler on an RX 9000 (and the cards AMD ad
 carries on others. The log's `vk: amd fsr 4:` lines say which one you got. To try another copy of AMD's DLLs, put them in
 a folder and name it with `RX_VK_FFX_DIR`; `RX_VK_FFX=0` keeps them from being loaded at all.
 
-**Frame generation** takes the first of these that runs on your PC: NVIDIA DLSS frame generation (`nvngx_dlssg.dll` in
-the `ngx` folder, RTX 40 and 50), AMD FSR 4's (Windows), AMD FSR 3.1's (any GPU), then the renderer's own blend. You do
-not pick; the log says which one is drawing.
+**Frame generation** -- with **Frame generation method** on Auto -- takes the first of these that runs on your PC: NVIDIA DLSS frame generation (`nvngx_dlssg.dll` in
+the `ngx` folder, RTX 40 and 50), AMD FSR 4's (Windows), AMD FSR 3.1's (any GPU), then the renderer's own blend. Or pick one in **Frame generation method**: the row offers only the methods that run here,
+and a frame the chosen method cannot make falls back to the built-in blend. The log's `vk: frame generation method:` line
+says which is in effect (`RX_VK_FG_METHOD=0..4` picks one for a run).
 
 **The Windows release carries the renderer CI built** (`tools\prebuilt\hookshot_vk.dll`), with DLSS, DLSS 5 neural
 rendering and FSR 4 compiled in, and the Builder installs that one rather than compiling its own: your PC has none of
@@ -305,6 +306,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Frame generation | Off, 2x to 8x | Off |
+| | Frame generation method | Auto, NVIDIA DLSS, AMD FSR 4, AMD FSR 3.1, Built-in (only those that run on this PC; Auto takes the best of them) | Auto |
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |

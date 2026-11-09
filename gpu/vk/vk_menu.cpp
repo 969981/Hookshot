@@ -35,6 +35,9 @@
 #include "vk_dlssnr_ngx.h"   // (nr::why, nr::built: whichever backend the Backend row runs)
 #include "vk_fsr3.h"     // (the Upscaler row: whether FSR 3.1 runs on this device)
 #include "vk_ffx.h"      // (and FSR 4, AMD's runtime)
+#include "vk_dlssg.h"    // (the Frame generation method row: whether DLSS frame generation runs here)
+#include "vk_fsr3fi.h"   // (and FSR 3.1's)
+#include "framegen_methods.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
 #include "vk_reflex.h"
@@ -480,6 +483,32 @@ const char* hn_framegen(int v, int variant) {
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
     return b[std::clamp(v, 2, 8)];
 }
+// (hookshot) The Frame generation method (opts.framegen_method): what makes the frames, of what runs here (framegen_methods.h)
+namespace fgm = framegen_methods;
+/// One bit per method that runs here. Each backend caches its own answer
+unsigned framegen_available() {
+    unsigned m = fgm::always();
+    if (dlssg::supported()) m |= fgm::bit(fgm::DLSS);
+    if (ffx::frames_supported()) m |= fgm::bit(fgm::FSR4);
+    if (fsr3fi::supported()) m |= fgm::bit(fgm::FSR3);
+    return m;
+}
+const char* tx_framegen_method(int v) {
+    static const char* t[] = {"Auto", "NVIDIA DLSS", "AMD FSR 4", "AMD FSR 3.1", "Built-in"};
+    return t[fgm::effective(v, framegen_available())];
+}
+const char* hn_framegen_method(int v, int variant) {
+    static const char* const t[] = {
+        "The best that runs here: DLSS, then FSR 4, then FSR 3.1, then the built-in blend. The log says which.",
+        "NVIDIA's network, from the game's depth and motion: RTX 40 and 50, with nvngx_dlssg.dll in the game's ngx folder.",
+        "AMD's FSR 4 frame generation, through AMD's runtime beside the game: Windows.",
+        "AMD's FSR 3.1 frame generation, built from AMD's open shaders: any GPU.",
+        "The renderer's own blend of the two frames around it: every GPU, the least sharp.",
+    };
+    if (variant < 0) v = fgm::effective(v, framegen_available());
+    else if (variant > 0) return nullptr;
+    return t[std::clamp(v, 0, fgm::kMethods - 1)];
+}
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
 MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
@@ -533,6 +562,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen},
+    {TAB_GRAPHICS, "Frame generation method", &opts.framegen_method, 0, framegen_methods::kMethods - 1, 1,
+     tx_framegen_method, "What makes the frames, of the methods that run on this PC. Used while Frame generation is on; "
+     "a method that cannot make a frame leaves it to the built-in blend.", hn_framegen_method, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
@@ -973,6 +1005,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
+    if (r.value == &opts.framegen_method)   // (hookshot: only the methods that run here)
+        v = framegen_methods::step(framegen_methods::effective(*r.value, framegen_available()), dir, framegen_available());
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
     if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
         v = step_output_choice(*r.value, dir);

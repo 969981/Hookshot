@@ -22,6 +22,7 @@
 #include "vk_dlssg.h"
 #include "vk_fsr3fi.h"
 #include "vk_ffx.h"   // (hookshot: AMD FSR 4 frame generation)
+#include "framegen_methods.h"
 #include "vk_draw.h"   // (scene_frame_inputs: the depth and matrix the draw path kept)
 
 #include <cmath>
@@ -733,9 +734,31 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // own motion and depth instead of colour alone. It refuses -- no NGX, no runtime, a GPU that
     // does not report it, or a frame where the scene's depth and matrix are not both in hand -- and
     // then the interpolation below runs exactly as it did before this existed.
-    if (blend && m > 1 && dlssg::supported()) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
-    if (set->made == 0 && blend && m > 1 && ffx::frames_supported()) set->made = ffx_frames(cmd, *set, cur, uw, uh, m);
-    if (set->made == 0 && blend && m > 1 && fsr3fi::supported())
+    // (hookshot) The Frame generation method row (framegen_methods.h): Auto tries each vendor method best first; one chosen
+    // outright is tried alone. Read every frame, so a change in the menu reaches the next one. RX_VK_FG_METHOD=<0-4>
+    // wins over the row for a run
+    namespace fgm = framegen_methods;
+    static const int env_method = getenv("RX_VK_FG_METHOD") ? atoi(getenv("RX_VK_FG_METHOD")) : -1;
+    const int chosen = env_method >= 0 ? env_method : opts.framegen_method;
+    unsigned avail = fgm::always();
+    if (dlssg::supported()) avail |= fgm::bit(fgm::DLSS);
+    if (ffx::frames_supported()) avail |= fgm::bit(fgm::FSR4);
+    if (fsr3fi::supported()) avail |= fgm::bit(fgm::FSR3);
+    const int method = fgm::effective(chosen, avail);
+    {
+        static int said = -1;
+        if (blend && m > 1 && said != method) {
+            said = method;
+            logf("vk: frame generation method: %s (chosen %d, available mask %#x)",
+                 method == fgm::AUTO ? "auto" : method == fgm::DLSS ? "NVIDIA DLSS" : method == fgm::FSR4 ? "AMD FSR 4"
+                 : method == fgm::FSR3 ? "AMD FSR 3.1" : "built-in", chosen, avail);
+        }
+    }
+    if (blend && m > 1 && fgm::tries(method, fgm::DLSS) && (avail & fgm::bit(fgm::DLSS)))
+        set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && fgm::tries(method, fgm::FSR4) && (avail & fgm::bit(fgm::FSR4)))
+        set->made = ffx_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && fgm::tries(method, fgm::FSR3) && (avail & fgm::bit(fgm::FSR3)))
         set->made = fsr3fi_frames(cmd, *set, cur, uw, uh, m);
     if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
