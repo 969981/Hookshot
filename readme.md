@@ -238,11 +238,22 @@ and Frame generation are set to. Eleven rows: the switch, Backend, Model, Style,
 Local tone, Local structure, Global tone, Skin structure and Auto mask. All of them take effect on
 the next frame.
 
-**Two ways to the same model** (the **Backend** row, saved as `nr_backend`; `RX_VK_DLSS_NR_BACKEND=auto|streamline|ngx`
-over it for one run): **Streamline**, NVIDIA's plugin and the files in the table below; or **NGX direct**, which asks
-NVIDIA's NGX for the feature itself, through the same NGX session DLSS uses, and needs only `nvngx_dlssnr.dll`. **Auto**
-takes Streamline where it is attached and accepts the GPU, and NGX direct otherwise. The other rows apply to whichever
-runs.
+**Three ways to the same network** (the **Backend** row, saved as `nr_backend`;
+`RX_VK_DLSS_NR_BACKEND=auto|streamline|ngx|open` over it for one run): **Streamline**, NVIDIA's plugin and the files in the
+table below; **NGX direct**, which asks NVIDIA's NGX for the feature itself, through the same NGX session DLSS uses, and
+needs only `nvngx_dlssnr.dll`; or **Open (OpenDLSS-NR)**, below, which runs the network on Vulkan without NVIDIA's runtime.
+**Auto** takes Streamline where it is attached and accepts the GPU, then NGX direct where it can run, then Open where a model
+folder is in place. The other rows apply to whichever runs.
+
+**Open (OpenDLSS-NR)** is [OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR) (MIT), a Vulkan implementation of the
+DLSS 5 NR network, built into the renderer on Windows and Linux alike: on Linux it is the way to the feature today. It
+needs an NVIDIA RTX 40 or 50 card for now (`VK_NV_cooperative_matrix2` and `VK_EXT_shader_float8`; the log names anything
+missing), and **a model folder you supply**: the network's weights, in OpenDLSS-NR's layout (`manifest.json` and its stage
+files), in a folder called `nr-model` in the game folder (or wherever `RX_VK_OPENNR_MODEL` points). **Hookshot includes no
+weights and no way to get them**; without a folder the Neural tab says so. Put the folder in place before starting the
+game: the GPU is set up for the network at the start. Its log lines start `vk: open NR`;
+[docs/neural-rendering.md](docs/neural-rendering.md) says what was measured (the kernels, against the network's own CPU
+reference, on synthetic weights) and what was not (image quality with real weights).
 
 **NGX direct** looks for `nvngx_dlssnr.dll` where NGX looks for DLSS's own runtime: the folder `RX_VK_DLSS_DIR` names, then
 the **`ngx` folder in the game folder**, then `%LOCALAPPDATA%\Hookshot\ngx`, then the game folder itself. On Linux NGX
