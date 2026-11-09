@@ -53,6 +53,16 @@ class PrepareAtBuildTests(unittest.TestCase):
             self.assertLess(main.index(before), at, before)
         self.assertLess(at, main.index("say(\"done\", out)"))
 
+    def test_the_builders_can_leave_it_to_the_first_start(self):
+        text = SOURCE.read_text(encoding="utf-8")
+        self.assertIn('"--no-prepare-shaders"', text)
+        main = text[text.index("\ndef main("):]
+        guard = main[:main.index("prepare_shaders([os.path.join(game_dir")].rsplit("\n", 2)[-2]
+        self.assertIn("a.no_prepare_shaders", guard)
+        self.assertIn('HOOKSHOT_NO_PREPARE', guard)
+        for builder in ("builder/HookshotBuilder/MainWindow.xaml.cs", "builder/linux/hookshot_builder.py"):
+            self.assertEqual((ROOT / builder).read_text(encoding="utf-8").count("--no-prepare-shaders"), 2, builder)   # (build and update)
+
 
 if __name__ == "__main__":
     unittest.main()

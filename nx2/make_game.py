@@ -958,6 +958,8 @@ def parse_args():
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--no-prepare-shaders", action="store_true",
+                   help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
@@ -1258,7 +1260,7 @@ def main(a=None):
             for sub in ("sa", "objcache", "probe"):
                 shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
             print("the build files in %s were deleted (HOOKSHOT_KEEP_BUILD_FILES=1 keeps them for quicker updates)" % work, flush=True)
-    if not os.environ.get("HOOKSHOT_NO_PREPARE"):   # (=1: left to the first start, as before)
+    if not a.no_prepare_shaders and not os.environ.get("HOOKSHOT_NO_PREPARE"):   # (either: left to the first start, as before)
         prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"])
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],

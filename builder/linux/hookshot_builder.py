@@ -178,6 +178,7 @@ class Builder(tk.Tk):
         names = [n for _, n in make_game.LANGUAGES]
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
+        self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
         self.stage_text = tk.StringVar()
@@ -244,6 +245,9 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Language").grid(row=row, column=0, sticky="w", **self.pad)
         ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly").grid(
             row=row, column=1, sticky="w", **self.pad)
+        row += 1
+        ttk.Checkbutton(f, text="Prepare shaders now (unticked: at the game's first start, behind a black window)",
+                        variable=self.prepare).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
         row += 1
         ttk.Label(f, text="Takes about 45 minutes and needs 60 GB.").grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
         row += 1
@@ -414,7 +418,8 @@ class Builder(tk.Tk):
             self.status.set("This builder is the latest version.")
             self.lookup_latest()
             return
-        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder]
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
+            ([] if self.prepare.get() else ["--no-prepare-shaders"])   # (as the last build chose)
         self.heading.configure(text="Updating your game")
         self.stage_text.set("Compiling what changed")
         self.started = time.time()
@@ -458,12 +463,13 @@ class Builder(tk.Tk):
         except ValueError as error:
             return messagebox.showerror("Hookshot", str(error))
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
-        self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code)
+        self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
+                        prepare="1" if self.prepare.get() else "0")
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
-            ([] if jobs is None else ["--jobs", str(jobs)])
+            ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"])
         self.show_progress()
         self.started = time.time()
         self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
