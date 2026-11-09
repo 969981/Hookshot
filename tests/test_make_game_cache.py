@@ -8,6 +8,7 @@ import importlib.util
 import io
 import os
 import shutil
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -163,6 +164,44 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(self.extractions, [])
         self.assertEqual(self.cache(), before)
         self.assertEqual((scratch / "main").read_bytes(), (self.out / ".hookshot_exefs/main").read_bytes())
+
+    @unittest.skipUnless(os.name == "nt", "Windows read-only file attribute")
+    def test_update_replaces_readonly_scratch_exefs(self):
+        scratch = self.work / "exefs"
+        scratch.mkdir()
+        stale = scratch / "stale"
+        stale.write_bytes(b"authored read-only module")
+        os.chmod(stale, stat.S_IREAD)
+        before = self.cache()
+        try:
+            with self.assertRaises(Prepared):
+                self.run_to_lift(None, update=True)
+            self.assertFalse(stale.exists())
+            self.assertEqual(self.cache(), before)
+            self.assertEqual((scratch / "main").read_bytes(), (self.out / ".hookshot_exefs/main").read_bytes())
+        finally:
+            if stale.exists():
+                os.chmod(stale, stat.S_IREAD | stat.S_IWRITE)
+
+    @unittest.skipUnless(os.name == "nt", "Windows read-only file attribute")
+    def test_update_leaves_a_shared_readonly_file_alone(self):
+        scratch = self.work / "exefs"
+        scratch.mkdir()
+        kept = self.out / ".hookshot_exefs/main"
+        shared = scratch / "shared"
+        os.link(kept, shared)
+        os.chmod(kept, stat.S_IREAD)
+        before = self.cache()
+        try:
+            with self.assertRaises(SystemExit) as result:
+                self.run_to_lift(None, update=True)
+            self.assertEqual(result.exception.code, 1)
+            self.assertIn("@@error Could not clear", self.output)
+            self.assertTrue(shared.samefile(kept))
+            self.assertTrue(kept.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
+            self.assertEqual(self.cache(), before)
+        finally:
+            os.chmod(kept, stat.S_IREAD | stat.S_IWRITE)
 
     def test_changed_source_replaces_romfs_and_exefs_together(self):
         with self.assertRaises(Prepared):

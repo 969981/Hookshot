@@ -804,6 +804,20 @@ def profile_readable(prof):
     return r.returncode == 0
 
 
+def retry_readonly_unlink(function, path, exc_info):
+    error = exc_info[1]
+    if function is not os.unlink or getattr(error, "winerror", None) != 5:   # ERROR_ACCESS_DENIED
+        raise error
+    info = os.lstat(path)
+    attrs = info.st_file_attributes
+    # Changing attributes of a hard link would also change the original file.
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT or not attrs & stat.FILE_ATTRIBUTE_READONLY):
+        raise error
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    function(path)
+
+
 def copy_writable(src, dst):
     """src's bytes at dst, writable whatever src's mode: copy2 took the mode along, and from a read-only install (a Nix
     store, a packaged tools folder) the copies in the work folder were read-only, so lift.py could not write chunks.txt
@@ -1006,7 +1020,7 @@ def main(a=None):
 
     say("stage", "read", "Reading your game files")
     try:
-        shutil.rmtree(exefs)
+        shutil.rmtree(exefs, onerror=retry_readonly_unlink if os.name == "nt" else None)
     except OSError as e:
         if not isinstance(e, FileNotFoundError) or os.path.lexists(exefs):
             fail("Could not clear the builder's working copy of exefs at %s (%s). "
