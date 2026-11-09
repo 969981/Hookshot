@@ -98,9 +98,27 @@ def _emit_run(es):
                  for b, c in zip(before, counters)]
 
 
+def proc_mb(path, field):
+    """(linux) A field of /proc/meminfo or /proc/self/status, in MB; None: not there"""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1]) >> 10
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def emit_jobs():
-    """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16; each holds its run's
-    texts and the pages of the lift it touches). 1 where there is no fork"""
+    """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16), as many as the memory
+    free holds. 1 where there is no fork.
+    (issues 768, 807) Each process comes to hold its own copy of the pages of the lift it touches: Python writes the count of
+    every object it reads, and a run's functions are spread over all of the lift's memory (a lift-shaped heap: a process
+    emitting 1/8 of it copied 40%). 16 on a 16 GB Steam Deck class PC ran it out of memory: the system stopped lift.py
+    (signal 9, or 15) and every process then failed on its result pipe (BrokenPipeError). So each process is counted at
+    half the lift's own memory (RssAnon, now that it is whole), keeping HOOKSHOT_MEM_RESERVE_GB (default 1.5) free, as
+    build.py's MemoryGate does for the compilers"""
     if "fork" not in multiprocessing.get_all_start_methods():
         return 1
     if os.environ.get("HOOKSHOT_LIFT_JOBS"):
@@ -109,7 +127,16 @@ def emit_jobs():
         n = len(os.sched_getaffinity(0))
     except AttributeError:
         n = os.cpu_count() or 1
-    return max(1, min(16, n))
+    n = max(1, min(16, n))
+    free, lift = proc_mb("/proc/meminfo", "MemAvailable"), proc_mb("/proc/self/status", "RssAnon")
+    if free is None or not lift:
+        return n
+    reserve = float(os.environ.get("HOOKSHOT_MEM_RESERVE_GB") or 1.5) * 1024
+    fits = max(1, int((free - reserve) // max(1, lift // 2)))
+    if fits < n:
+        print("lift: %d emit process%s, not %d: %d MB free, ~%d MB each (HOOKSHOT_LIFT_JOBS=<n> to choose)"
+              % (fits, "" if fits == 1 else "es", n, free, lift // 2), flush=True)
+    return min(n, fits)
 
 
 def parallel_emit(emit, order, texts, counters, jobs, run=2000):
