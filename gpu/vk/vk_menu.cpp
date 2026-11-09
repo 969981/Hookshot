@@ -280,6 +280,10 @@ const char* tx_text_speed(int v) {
     return t[v];
 }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_prompts(int v) {
+    static const char* t[] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
+    return t[std::min(std::max(v, 0), 5)];
+}
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
@@ -452,6 +456,7 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "A at the bottom (action and talk), B on the right, X on the left, Y at the top.",
            "A at the bottom, B on the right; X and Y as on the Switch.",
            "Bindings of your own, from the Controls page.")
+MENU_HINTS(hn_prompts, 0, "Those of the first controller, from its name.")
 
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS: row_shown)
@@ -536,6 +541,9 @@ Row rows[] = {
      nullptr, false, true},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
+    {TAB_CONTROLS, "Button prompts", &opts.prompts, 0, 5, 1, tx_prompts,
+     "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
+     "put each action on.", hn_prompts, true, true},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
     // (Restart, Quit and Cheats stay the table's last three rows: kRestartRow, kQuitRow and kCheatsRow count back from its end)
