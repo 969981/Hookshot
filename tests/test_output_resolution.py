@@ -28,12 +28,8 @@ using DWORD = unsigned long;
 constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
+volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
 struct { int handheld, output_res; } opts;
-/* host/hos_main.c's, which hos_rt_pool_size reads as an extern: the output's size at the screen's
-   shape, or 0 for an ordinary 16:9 one. Zero here, so the pool size is the output's own -- without
-   this definition the fixture did not link at all ("undefined reference to hos_wide_out") and the
-   whole test failed for a reason that had nothing to do with output resolutions. */
-volatile uint64_t hos_wide_out;
 ''' + host[host.index("static int ini_option("):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + menu[
         menu.index("struct Out {"):menu.index("const char* tx_speed(")] + r'''
 int main(int argc, char **argv) {
@@ -42,7 +38,8 @@ int main(int argc, char **argv) {
     const unsigned w = atoi(argv[2]), h = atoi(argv[3]);
     assert(output_mode() == mode);
     assert(hos_output_size(0) == w && hos_output_size(1) == h);
-    assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : 305ull) << 20));
+    // (host/nn_applet.c: never below 512 MB since the guard-house pool fix, #1202; 4K scales the game's 305 MB to 687)
+    assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : 512ull) << 20));
     assert(kLastOutput == 3);
     assert(output_choice(-1) == 0 && output_choice(4) == 0);
     assert(step_output_choice(3, -1) == 3);

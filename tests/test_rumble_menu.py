@@ -51,10 +51,8 @@ def one_line(text, head):
 FIXTURE = r"""
 #include <algorithm>
 #include <cctype>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <iterator>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
@@ -69,9 +67,11 @@ void sync_preset_budgets(int) {}
 %(stops)s
 %(snap)s
 %(ini_key)s
-/* (the Output resolution row's own stepping, which set_row calls: extracted, not retyped, so a
-    change to the order of the outputs changes this test too) */
-%(outputs)s
+/* (the Microphone row's hook in set_row: no microphones here) */
+bool can_mic() { return false; }
+void mic_chosen() {}
+// (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
+int step_output_choice(int id, int dir) { return id + dir; }
 %(set_row)s
 /* (menu_tick's wheel over a value, as in the source) */
 void wheel(Row& d, int amount) {
@@ -82,7 +82,7 @@ void wheel(Row& d, int amount) {
 /* (menu_tick's arrows: Left, Right, and Enter as Right; a click on the value's left or right half presses them) */
 void arrow(Row& r, bool right) { %(arrow)s }
 int main() {
-    Row r = {TAB_CONTROLS, "Rumble strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr};
+    Row r = {TAB_CONTROLS, "Rumble strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr%(exempt)s};
     CHECK(r.lo == 0 && r.hi == 150 && r.step == 25);
     CHECK(opts.rumble == 100);
     CHECK(!std::strcmp(ini_key(r), "rumble_strength"));
@@ -127,34 +127,13 @@ int main() {
 """
 
 
-def outputs(menu):
-    """struct Out through step_output_choice: what set_row needs for the Output resolution row.
-
-    set_row calls step_output_choice, which walks kOutputOrder. Without it the fixture did not
-    compile at all ("step_output_choice was not declared in this scope") and this whole test failed
-    for a reason that had nothing to do with rumble.
-    """
-    start = menu.find("struct Out {")
-    if start < 0:
-        raise SystemExit("the menu lost struct Out: this test no longer checks what it says it does")
-    marker = "int step_output_choice(int id, int dir) {"
-    at = menu.find(marker, start)
-    if at < 0:
-        raise SystemExit("the menu lost step_output_choice: set_row's stepping moved")
-    end = menu.index("{", at) + 1
-    depth = 1
-    while depth:
-        depth += (menu[end] == "{") - (menu[end] == "}")
-        end += 1
-    return menu[start:end]
-
-
 def menu_fixture():
     menu = MENU.read_text(encoding="utf-8")
     header = read("gpu", "vk", "vk_menu.h")
     row = re.search(r'\{TAB_CONTROLS, "Rumble strength", &opts\.rumble, (-?\d+), (\d+), (\d+), tx_rumble,', menu)
     if not row:
         raise SystemExit("the menu lost its Rumble strength row")
+    exempt = block(menu, row.start()).rstrip().endswith(", true}")   # (Row::preset_exempt: a control, not the preset's)
     load = menu.index("bool has_resolution = false;")   # (the ini's load, not save()'s read of its other lines)
     load = block(menu, menu.rindex('if (FILE* f = fopen(ini_path().c_str(), "r"))', 0, load))
     if "opts.rumble = rumble_step(opts.rumble);" not in load:
@@ -172,10 +151,10 @@ def menu_fixture():
         "stops": one_line(menu, "bool stops_at_ends"),
         "snap": one_line(menu, "int rumble_step"),
         "ini_key": definition(menu, "const char* ini_key"),
-        "outputs": outputs(menu),
         "set_row": definition(menu, "void set_row"),
         "wheel": block(tick, loop),
         "arrow": "bool press[5] = {false, false, false, !right, right}; " + arrow.group(1),
+        "exempt": ", true" if exempt else "",
         "lo": row.group(1), "hi": row.group(2), "step": row.group(3),
     }
 
@@ -183,9 +162,10 @@ def menu_fixture():
 def option_ids():
     """option 9 is the menu's Rumble strength, and no other option has its id"""
     replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
-    cheat = re.search(r"enum \{ HOS_OPT_CHEAT_HEARTS = (\d+), ([^}]*)\}", api)
-    names = ["HOS_OPT_CHEAT_HEARTS"] + [n.strip() for n in cheat.group(2).split(",") if n.strip()]
-    value = {n: int(cheat.group(1)) + i for i, n in enumerate(names)}
+    value = {}   # (every HOS_OPT_* enum: the cheats' and the motion rows')
+    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+), ([^}]*)\}", api):
+        names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
+        value.update({n: int(start) + i for i, n in enumerate(names)})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))
     ids = []
     for name in re.findall(r"\bid == (\w+)", table):

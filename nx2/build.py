@@ -65,16 +65,17 @@ VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
 
 
 def check_vk_symbols(so):
-    """(hookshot) The renderer is dlopened with RTLD_NOW, so one unresolved symbol stops the whole
-    thing loading -- and the only sign of that at run time is "the renderer did not start: the window
+    """The back end is dlopened with RTLD_NOW, so one unresolved symbol stops the whole thing
+    loading -- and the only sign of that at run time is "the renderer did not start: the window
     stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
     leave symbols for its loader to supply, which is exactly what the host executable does for the
     weak hos_* ones.
 
     So: anything still undefined here that is not weak and not the C or C++ runtime's is a mistake,
     and this says which. It has caught two, each of which had cost a run apiece to find by hand: a
-    host function referenced without __attribute__((weak)), and an `extern` of one of our own globals
-    written inside an anonymous namespace, which makes a different symbol that nothing defines.
+    host function referenced without __attribute__((weak)), and an `extern` of one of our own
+    globals written inside an anonymous namespace, which makes a different symbol that nothing
+    defines.
     """
     nm = shutil.which("nm") or shutil.which("llvm-nm")
     if not nm:
