@@ -83,6 +83,7 @@ jobs:
       # description, the unit exposure; the descriptor buffers in vk_main.cpp): built once more in a copy of the back end's
       # work folder, where only vk_fsr4.cpp compiles again. The AppImage above is not changed)
       - name: hookshot_vk.so with AMD FSR 4 (build check)
+        shell: bash   # (this container's default is sh, which has no PIPESTATUS)
         run: |
           cp -r build-linux/vk-work "$RUNNER_TEMP/vk-fsr"
           rm -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"   # (the AppImage's own, without FSR: the test below is this build's)
