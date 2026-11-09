@@ -411,6 +411,31 @@ and the offset is handed to both backends so they can undo it. `RX_VK_JITTER=0` 
 upscaler still on, which is the comparison worth having; the sign convention is the thing to check
 first if the image looks wrong, because a wrong sign there is soft or shimmering rather than broken.
 
+## The settings a player actually sees
+
+None of this has a switch of its own in the menu. It is the two rows that were already there, which
+is the point: a player asking "what makes the picture bigger" should find one answer, not a filter
+row and a second row that can disagree with it.
+
+**Upscaling** carries five values. `Off`, `Catmull-Rom` and `Lanczos` are filters over the finished
+picture, exactly as before. `FSR 3.1` and `DLSS` instead resolve the 3D scene itself, in the place
+of the game's own upscaler. `window_filter()` and `scene_upscaler()` in `gpu/vk/vk_menu.h` say which
+half a caller means, so the filter's shader is never handed a mode it does not have.
+
+**Frame generation** stays what it was: how many frames to make between the game's own, 2x to 8x. It
+does not ask which library makes them. Both backends are asked whenever it is on, and
+`framegen_record` tries DLSS, then FSR 3, then its own colour blend -- so the setting means the same
+thing on every machine, and a card that cannot do one of them simply gets the next.
+
+**A build with no NGX SDK does not offer DLSS at all.** `dlss::built_with_sdk()` is a compile-time
+fact, and `menu_init` clamps the Upscaling row to stop at FSR 3.1 when it is false. Every released
+build is such a build: CI has no NVIDIA SDK and none may be committed, so a release that listed DLSS
+would be listing something the binary cannot do. That was shipped once, in v2.1.0, and this is the
+fix.
+
+The `RX_VK_*` switches still win wherever they are set, so a test run is never at the mercy of a
+saved ini.
+
 ## Neural rendering on AMD: the answer is the game's own network, not FSR 4
 
 The obvious reading of "neural rendering on AMD" is FSR 4, and FSR 4 is the wrong place to start.
