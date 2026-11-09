@@ -77,3 +77,7 @@ void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
 int hos_sdl_pad_type(void *pad);
 int hos_sdl_pad_has_effect(void);
 int hos_sdl_pad_effect(void *pad, const void *data, int size);
+/* (HD rumble) the pad's USB vendor and product ids (SDL_GetGamepadVendor / Product, SDL_GameControllerGetVendor /
+   Product): 0 when SDL does not know them or has no such call */
+unsigned hos_sdl_pad_vendor(void *pad);
+unsigned hos_sdl_pad_product(void *pad);

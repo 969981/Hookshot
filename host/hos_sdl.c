@@ -20,7 +20,7 @@ static struct {
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
-    void *PadType, *PadEffect;   /* (optional: HD rumble, host/pad_sdl.c) */
+    void *PadType, *PadEffect, *PadVendor, *PadProduct;   /* (optional: HD rumble, host/pad_sdl.c) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
 } f;
@@ -62,6 +62,8 @@ static int get_all(HMODULE m, int three) {
     /* (SDL2 2.0.12 and 2.0.16 on, SDL3 3.2 on: without them every pad keeps the motor rumble) */
     *(FARPROC *)&f.PadType = GetProcAddress(m, three ? "SDL_GetGamepadType" : "SDL_GameControllerGetType");
     *(FARPROC *)&f.PadEffect = GetProcAddress(m, three ? "SDL_SendGamepadEffect" : "SDL_GameControllerSendEffect");
+    *(FARPROC *)&f.PadVendor = GetProcAddress(m, three ? "SDL_GetGamepadVendor" : "SDL_GameControllerGetVendor");
+    *(FARPROC *)&f.PadProduct = GetProcAddress(m, three ? "SDL_GetGamepadProduct" : "SDL_GameControllerGetProduct");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -538,6 +540,8 @@ void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
 }
 int hos_sdl_pad_type(void *pad) { return f.PadType ? CALL(int (*)(void *), PadType)(pad) : 0; }
 int hos_sdl_pad_has_effect(void) { return f.PadEffect != NULL; }
+unsigned hos_sdl_pad_vendor(void *pad) { return f.PadVendor ? CALL(uint16_t (*)(void *), PadVendor)(pad) : 0; }
+unsigned hos_sdl_pad_product(void *pad) { return f.PadProduct ? CALL(uint16_t (*)(void *), PadProduct)(pad) : 0; }
 int hos_sdl_pad_effect(void *pad, const void *data, int size) {
     if (!f.PadEffect) return 0;
     if (version == 3) return CALL(_Bool (*)(void *, const void *, int), PadEffect)(pad, data, size);

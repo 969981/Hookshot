@@ -3,8 +3,10 @@
 host/hd_rumble.h turns the game's nn::hid VibrationValue {amp_low, freq_low, amp_high, freq_high} into the 4 bytes a
 Switch controller plays per side, and builds the rumble report SDL's Switch driver takes (SDL_SendGamepadEffect). The
 values below are rows of the community's documented tables (dekuNukem's Nintendo_Switch_Reverse_Engineering
-rumble_data_table.md, Switchbrew's HID "Rumble data"). host/pad_sdl.c sends a pad its packet at a steady cadence, and
-falls back to the motor rumble for a pad whose SDL refuses it; its hd_open and hd_poll run here against a fake SDL.
+rumble_data_table.md, Switchbrew's HID "Rumble data"). Switch 2 controllers get their own 5 bytes per side, checked
+against a copy of SDL's own encoder (SDL_hidapi_switch2.c's EncodeHDRumble), in the packet SDL's Switch 2 driver takes
+once it has raw HD rumble. host/pad_sdl.c sends a pad its packet at a steady cadence, and falls back to the motor rumble
+for a pad whose SDL refuses it; its hd_open and hd_poll run here against a fake SDL.
 
 Run with: python -I -B tests/test_hd_rumble.py
 """
@@ -68,6 +70,7 @@ static int same(const uint8_t *a, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3
 }
 static const struct { double amp; int ha, la; } amps[] = { %(amps)s };
 static const struct { double hz; int hf, lf; } freqs[] = { %(freqs)s };
+static int switch2(void);
 int main(void) {
     /* the tables' amplitudes: codes and both bands' bytes */
     for (unsigned i = 0; i < sizeof amps / sizeof amps[0]; i++) {
@@ -177,6 +180,112 @@ int main(void) {
     CHECK(!hd_rumble_due(quiet, loud, 1, t + G - 1, t));    /* a stop, after the gap */
     CHECK(hd_rumble_due(quiet, loud, 1, t + G, t));
     CHECK(!hd_rumble_due(quiet, quiet, 1, t + 10 * F, t));  /* silence that was sent: not again */
+    return switch2();
+}
+"""
+
+# Switch 2: SDL's own encoder, as SDL_hidapi_switch2.c has it (amplitudes 0 to 65535, sent as their top 10 bits), and the
+# packet its driver takes for raw HD rumble (Switch2HDRumblePacket_t)
+SWITCH2 = r"""
+static void EncodeHDRumble(uint16_t high_freq, uint16_t high_amp, uint16_t low_freq, uint16_t low_amp, uint8_t rumble_data[5])
+{
+    rumble_data[0] = (uint8_t)(high_freq & 0xFF);
+    rumble_data[1] = (uint8_t)(((high_amp >> 4) & 0xfc) | ((high_freq >> 8) & 0x03));
+    rumble_data[2] = (uint8_t)((high_amp >> 12) | (low_freq << 4));
+    rumble_data[3] = (uint8_t)((low_amp & 0xc0) | ((low_freq >> 4) & 0x3f));
+    rumble_data[4] = (uint8_t)(low_amp >> 8);
+}
+typedef struct { uint8_t ucPacketType; uint8_t rgucLeft[5]; uint8_t rgucRight[5]; } Switch2HDRumblePacket_t;
+static int same5(const uint8_t *a, const uint8_t *b) { return !memcmp(a, b, 5); }
+static int switch2(void) {
+    uint8_t out[5], ref[5];
+    /* the bit layout: every field's every bit lands where SDL's encoder puts it */
+    for (int bit = 0; bit < 10; bit++) {
+        const int x = 1 << bit;
+        hd_rumble2_pack(x, 0, 0, 0, out), EncodeHDRumble((uint16_t)x, 0, 0, 0, ref); CHECK(same5(out, ref));
+        hd_rumble2_pack(0, x, 0, 0, out), EncodeHDRumble(0, (uint16_t)(x << 6), 0, 0, ref); CHECK(same5(out, ref));
+        hd_rumble2_pack(0, 0, x, 0, out), EncodeHDRumble(0, 0, (uint16_t)x, 0, ref); CHECK(same5(out, ref));
+        hd_rumble2_pack(0, 0, 0, x, out), EncodeHDRumble(0, 0, 0, (uint16_t)(x << 6), ref); CHECK(same5(out, ref));
+    }
+    for (unsigned k = 0, r = 12345; k < 20000; k++) {
+        r = r * 1103515245u + 12345u;
+        const int hf = (int)(r >> 3 & 0x3FF), ha = (int)(r >> 13 & 0x3FF);
+        r = r * 1103515245u + 12345u;
+        const int lf = (int)(r >> 3 & 0x3FF), la = (int)(r >> 13 & 0x3FF);
+        hd_rumble2_pack(hf, ha, lf, la, out);
+        EncodeHDRumble((uint16_t)hf, (uint16_t)(ha << 6), (uint16_t)lf, (uint16_t)(la << 6), ref);
+        CHECK(same5(out, ref));
+    }
+    /* SDL's own rumble at full strength: RUMBLE_MAX 29000 of 65535 as the 10-bit field, the game's 1.0 here */
+    CHECK(HD_RUMBLE2_AMP_TOP == 29000 >> 6);
+    /* frequencies: 10 Hz * 2^(code / 96); SDL's fixed 0x187 and 0x112 come back from their own frequencies */
+    CHECK(hd_rumble2_freq_code(160.0f, 0) == 384 && hd_rumble2_freq_code(320.0f, 0) == 480);
+    CHECK(hd_rumble2_freq_code(10.0f, 0) == 0 && hd_rumble2_freq_code(20.0f, 0) == 96 && hd_rumble2_freq_code(1280.0f, 0) == 672);
+    CHECK(hd_rumble2_freq_code((float)(10.0 * pow(2.0, 0x187 / 96.0)), 0) == 0x187);
+    CHECK(hd_rumble2_freq_code((float)(10.0 * pow(2.0, 0x112 / 96.0)), 0) == 0x112);
+    for (int c = 0; c < 1024; c++) CHECK(hd_rumble2_freq_code((float)(10.0 * pow(2.0, c / 96.0)), -1) == c);
+    CHECK(hd_rumble2_freq_code(5.0f, 7) == 0 && hd_rumble2_freq_code(1e9f, 7) == 1023 && hd_rumble2_freq_code(INFINITY, 7) == 1023);
+    CHECK(hd_rumble2_freq_code(0.0f, 7) == 7 && hd_rumble2_freq_code(NAN, 7) == 7 && hd_rumble2_freq_code(-5.0f, 7) == 7);
+    /* amplitudes: linear to the top, then kept there */
+    CHECK(hd_rumble2_amp_code(0.0f) == 0 && hd_rumble2_amp_code(NAN) == 0 && hd_rumble2_amp_code(-1.0f) == 0);
+    CHECK(hd_rumble2_amp_code(1.0f) == 453 && hd_rumble2_amp_code(0.5f) == 227 && hd_rumble2_amp_code(0.25f) == 113);
+    CHECK(hd_rumble2_amp_code(1.5f) == 453 && hd_rumble2_amp_code(INFINITY) == 453);
+    for (float a = 0.0f, last = 0; a <= 1.2f; a += 0.0005f) {
+        const int c = hd_rumble2_amp_code(a);
+        CHECK(c >= last && c <= HD_RUMBLE2_AMP_TOP);
+        last = (float)c;
+    }
+
+    /* a side: what SDL's encoder writes for those codes */
+    { const float v[4] = {0.5f, 160.0f, 0.25f, 320.0f}; hd_rumble2_encode(v, 100, out); EncodeHDRumble(480, 113 << 6, 384, 227 << 6, ref); CHECK(same5(out, ref)); }
+    { const float v[4] = {0.8f, 75.0f, 1.0f, 600.0f}; hd_rumble2_encode(v, 100, out);
+      EncodeHDRumble((uint16_t)hd_rumble2_freq_code(600.0f, 0), 453 << 6, (uint16_t)hd_rumble2_freq_code(75.0f, 0), 362 << 6, ref); CHECK(same5(out, ref)); }
+    /* silence: both bands at 0, at 320 and 160 Hz; whatever the frequencies, or with no strength */
+    static const uint8_t quiet2[5] = {0xE0, 0x01, 0x00, 0x18, 0x00};
+    EncodeHDRumble(480, 0, 384, 0, ref);
+    CHECK(same5(quiet2, ref));
+    { const float v[4] = {0.0f, 0.0f, 0.0f, 0.0f}; hd_rumble2_encode(v, 100, out); CHECK(same5(out, quiet2)); }
+    { const float v[4] = {0.0f, 75.0f, 0.0f, 600.0f}; hd_rumble2_encode(v, 100, out); CHECK(same5(out, quiet2)); }
+    { const float v[4] = {NAN, 75.0f, -1.0f, 600.0f}; hd_rumble2_encode(v, 100, out); CHECK(same5(out, quiet2)); }
+    { const float v[4] = {0.5f, 75.0f, 0.5f, 600.0f}; hd_rumble2_encode(v, 0, out); CHECK(same5(out, quiet2)); }
+    { const float v[4] = {0.0005f, 75.0f, 0.0f, 600.0f}; hd_rumble2_encode(v, 100, out); CHECK(same5(out, quiet2)); }   /* (rounds to 0) */
+    /* one band alone: the other at 0 amplitude, its frequency kept (or 160 / 320 Hz when it has none) */
+    { const float v[4] = {0.0f, 75.0f, 1.0f, NAN}; hd_rumble2_encode(v, 100, out); EncodeHDRumble(480, 453 << 6, (uint16_t)hd_rumble2_freq_code(75.0f, 0), 0, ref); CHECK(same5(out, ref)); }
+    /* the strength, as the Switch's: a plain factor under the top, the bands' balance kept over it */
+    { const float v[4] = {0.4f, 160.0f, 0.2f, 320.0f}; hd_rumble2_encode(v, 50, out); EncodeHDRumble(480, 45 << 6, 384, 91 << 6, ref); CHECK(same5(out, ref)); }
+    { const float v[4] = {0.9f, 160.0f, 0.45f, 320.0f}; hd_rumble2_encode(v, 150, out); EncodeHDRumble(480, 227 << 6, 384, 453 << 6, ref); CHECK(same5(out, ref)); }
+
+    /* the packet: type 0x02, the left side, the right side, as SDL's Switch2HDRumblePacket_t lays them out */
+    const uint8_t L[5] = {1, 2, 3, 4, 5}, R[5] = {6, 7, 8, 9, 10};
+    uint8_t p[HD_RUMBLE2_PACKET_SIZE];
+    hd_rumble2_packet(L, R, p);
+    CHECK(sizeof(Switch2HDRumblePacket_t) == HD_RUMBLE2_PACKET_SIZE && HD_RUMBLE2_PACKET_SIZE <= HD_RUMBLE_PACKET_MAX);
+    Switch2HDRumblePacket_t sp;
+    memcpy(&sp, p, sizeof sp);
+    CHECK(sp.ucPacketType == 0x02 && same5(sp.rgucLeft, L) && same5(sp.rgucRight, R));
+    /* (never taken for a Switch packet, nor the other way around: sizes and type bytes differ) */
+    CHECK(HD_RUMBLE2_PACKET_SIZE != HD_RUMBLE_PACKET_SIZE && HD_RUMBLE2_TYPE != HD_RUMBLE_REPORT);
+
+    /* which pads: Nintendo's Switch 2 ids, whatever type SDL gives them; the GameCube controller is none */
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_PRO, 0x057e, 0x2069) == HD_RUMBLE2_PRO);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_JOYCON_LEFT, 0x057e, 0x2067) == HD_RUMBLE2_JOYCON_LEFT);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_JOYCON_RIGHT, 0x057e, 0x2066) == HD_RUMBLE2_JOYCON_RIGHT);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_JOYCON_PAIR, 0x057e, 0x2068) == HD_RUMBLE2_JOYCON_PAIR);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_NONE, 0x057e, 0x2069) == HD_RUMBLE2_PRO);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_NONE, 0x057e, 0x2073) == HD_RUMBLE_NONE);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_PRO, 0x057e, 0x2009) == HD_RUMBLE_PRO);           /* (the Switch Pro Controller) */
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_JOYCON_LEFT, 0x057e, 0x2006) == HD_RUMBLE_JOYCON_LEFT);
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_PRO, 0, 0) == HD_RUMBLE_PRO);                     /* (ids unknown: the type) */
+    CHECK(hd_rumble_kind_ids(HD_RUMBLE_PRO, 0x2dc8, 0x2069) == HD_RUMBLE_PRO);           /* (another vendor) */
+    for (int k = HD_RUMBLE_NONE; k <= HD_RUMBLE_JOYCON_PAIR; k++) CHECK(!hd_rumble_switch2(k));
+    for (int k = HD_RUMBLE2_PRO; k <= HD_RUMBLE2_JOYCON_PAIR; k++) CHECK(hd_rumble_switch2(k) && hd_rumble_start(k, 1, 0) == HD_RUMBLE_UNKNOWN);
+
+    /* the cadence: a change at once, the same packet never again (SDL's driver repeats it itself) */
+    uint8_t a[HD_RUMBLE2_PACKET_SIZE], b[HD_RUMBLE2_PACKET_SIZE], q[HD_RUMBLE2_PACKET_SIZE];
+    hd_rumble2_packet(quiet2, quiet2, q);
+    hd_rumble2_packet(L, R, a);
+    hd_rumble2_packet(R, L, b);
+    CHECK(!hd_rumble2_due(q, q) && hd_rumble2_due(a, q) && !hd_rumble2_due(a, a) && hd_rumble2_due(b, a) && hd_rumble2_due(q, b));
     return 0;
 }
 """
@@ -192,17 +301,24 @@ POLL = r"""
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 #define MAX_PADS 8
 %(pads)s
-static int fake_type = 7, fake_has = 1, fake_ok = 1, sent_n, logged;
-static uint8_t sent_last[HD_RUMBLE_PACKET_SIZE];
+static int fake_type = 7, fake_has = 1, fake_ok = 1, fake_switch2 = 0, sent_n, sent_size, logged;
+static unsigned fake_vendor = 0x057e, fake_product = 0x2009;
+static uint8_t sent_last[HD_RUMBLE_PACKET_MAX];
 static int hos_sdl_load(void) { return 3; }
 static int hos_sdl_pad_type(void *pad) { (void)pad; return fake_type; }
+static unsigned hos_sdl_pad_vendor(void *pad) { (void)pad; return fake_vendor; }
+static unsigned hos_sdl_pad_product(void *pad) { (void)pad; return fake_product; }
 static int hos_sdl_pad_has_effect(void) { return fake_has; }
+/* SDL's effect call: its Switch driver takes a Switch packet; its Switch 2 driver (fake_switch2) a Switch 2 packet once
+   it has raw HD rumble (fake_ok), nothing before */
 static int hos_sdl_pad_effect(void *pad, const void *data, int size) {
     (void)pad;
-    if (size != HD_RUMBLE_PACKET_SIZE) return 0;
     sent_n++;
-    memcpy(sent_last, data, HD_RUMBLE_PACKET_SIZE);
-    return fake_ok;
+    sent_size = size;
+    memcpy(sent_last, data, size < HD_RUMBLE_PACKET_MAX ? (size_t)size : HD_RUMBLE_PACKET_MAX);
+    const uint8_t *d = data;
+    if (fake_switch2) return fake_ok && size == HD_RUMBLE2_PACKET_SIZE && d[0] == HD_RUMBLE2_TYPE;
+    return fake_ok && size == HD_RUMBLE_PACKET_SIZE && d[0] == HD_RUMBLE_REPORT;
 }
 static const char *hos_sdl_pad_name(void *pad) { (void)pad; return "pad"; }
 static const char *hos_sdl_error(void) { return "unsupported"; }
@@ -211,7 +327,7 @@ static void hos_log(const char *fmt, ...) { (void)fmt; logged++; }
 %(poll)s
 int main(void) {
     static int dummy;
-    uint8_t side[2][4];
+    uint8_t side[2][4], side2[2][5];
     const float quiet[4] = {0.0f, 160.0f, 0.0f, 320.0f}, left[4] = {0.5f, 120.0f, 0.3f, 280.0f}, right[4] = {0.2f, 100.0f, 0.0f, 320.0f};
     const long long t = 1000000000LL;
 
@@ -219,48 +335,90 @@ int main(void) {
     pads[0].gc = &dummy;
     hd_open(0, &dummy);
     CHECK(pads[0].hd == HD_RUMBLE_UNKNOWN && pads[0].hd_kind == HD_RUMBLE_PRO);
-    hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]);
-    CHECK(hd_poll(0, side, t) == 1 && sent_n == 0);
-    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]);
-    CHECK(hd_poll(0, side, t + 4000000) == 1 && sent_n == 1 && pads[0].hd == HD_RUMBLE_ON);
+    hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]), hd_rumble2_encode(quiet, 100, side2[0]), hd_rumble2_encode(quiet, 100, side2[1]);
+    CHECK(hd_poll(0, side, side2, t) == 1 && sent_n == 0);
+    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]), hd_rumble2_encode(left, 100, side2[0]), hd_rumble2_encode(right, 100, side2[1]);
+    CHECK(hd_poll(0, side, side2, t + 4000000) == 1 && sent_n == 1 && pads[0].hd == HD_RUMBLE_ON);
     CHECK(sent_last[0] == 0x10 && !memcmp(sent_last + 2, side[0], 4) && !memcmp(sent_last + 6, side[1], 4));
-    for (long long now = t + 8000000; now < t + 4000000 + 1000000000LL; now += 4000000) CHECK(hd_poll(0, side, now) == 1);
+    for (long long now = t + 8000000; now < t + 4000000 + 1000000000LL; now += 4000000) CHECK(hd_poll(0, side, side2, now) == 1);
     CHECK(sent_n >= 1 + 1000 / 41 && sent_n <= 1 + 1000 / 32);   /* (a held rumble: about every 40 ms, never faster than 32) */
     const int before = sent_n;
-    hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]);
+    hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]), hd_rumble2_encode(quiet, 100, side2[0]), hd_rumble2_encode(quiet, 100, side2[1]);
     long long now = t + 2000000000LL;
-    CHECK(hd_poll(0, side, now) == 1 && sent_n == before + 1 && hd_rumble_silent(sent_last));   /* the stop */
+    CHECK(hd_poll(0, side, side2, now) == 1 && sent_n == before + 1 && hd_rumble_silent(sent_last));   /* the stop */
     for (int k = 0; k < 100; k++) {
         now += 4000000;
-        CHECK(hd_poll(0, side, now) == 1);
+        CHECK(hd_poll(0, side, side2, now) == 1);
     }
     CHECK(sent_n == before + 1);   /* silence is not sent again */
 
-    /* a pad whose SDL refuses the packet (SDL2's own driver, a Switch 2 controller, the kernel's driver, a combined
-       pair): its first rumble falls back to the motors, for good */
+    /* a pad whose SDL refuses the packet (SDL2's own driver, the kernel's driver, a combined pair): its first rumble
+       falls back to the motors, for good */
     sent_n = 0, fake_ok = 0;
     pads[1].gc = &dummy;
     pads[1].rumble_lo = 7, pads[1].rumble_ns = 99;
     hd_open(1, &dummy);
-    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(left, 100, side[1]);
-    CHECK(hd_poll(1, side, t) == 0 && sent_n == 1 && pads[1].hd == HD_RUMBLE_OFF);
+    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(left, 100, side[1]), hd_rumble2_encode(left, 100, side2[0]), hd_rumble2_encode(left, 100, side2[1]);
+    CHECK(hd_poll(1, side, side2, t) == 0 && sent_n == 1 && pads[1].hd == HD_RUMBLE_OFF);
     CHECK(pads[1].rumble_lo == 0 && pads[1].rumble_ns == 0);   /* (the motor path sends what plays at once) */
     CHECK(logged == 2);   /* (HD rumble on the first pad, the second's fallback: once each) */
     fake_ok = 1;
-    CHECK(hd_poll(1, side, t + 1000000000LL) == 0 && sent_n == 1);
+    CHECK(hd_poll(1, side, side2, t + 1000000000LL) == 0 && sent_n == 1);
 
     /* not Switch controllers, or SDL without the call: the motor path, nothing sent */
     fake_type = 1;   /* (SDL_GAMEPAD_TYPE_STANDARD) */
     hd_open(2, &dummy), pads[2].gc = &dummy;
-    CHECK(pads[2].hd == HD_RUMBLE_OFF && hd_poll(2, side, t) == 0 && sent_n == 1);
+    CHECK(pads[2].hd == HD_RUMBLE_OFF && hd_poll(2, side, side2, t) == 0 && sent_n == 1);
     fake_type = 7, fake_has = 0;
     hd_open(3, &dummy), pads[3].gc = &dummy;
-    CHECK(pads[3].hd == HD_RUMBLE_OFF && hd_poll(3, side, t) == 0 && sent_n == 1);
+    CHECK(pads[3].hd == HD_RUMBLE_OFF && hd_poll(3, side, side2, t) == 0 && sent_n == 1);
     /* a single right Joy-Con plays the right side */
     fake_has = 1, fake_type = 9;
     hd_open(4, &dummy), pads[4].gc = &dummy;
-    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]);
-    CHECK(hd_poll(4, side, t) == 1 && sent_n == 2 && !memcmp(sent_last + 2, side[1], 4) && !memcmp(sent_last + 6, side[1], 4));
+    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]), hd_rumble2_encode(left, 100, side2[0]), hd_rumble2_encode(right, 100, side2[1]);
+    CHECK(hd_poll(4, side, side2, t) == 1 && sent_n == 2 && !memcmp(sent_last + 2, side[1], 4) && !memcmp(sent_last + 6, side[1], 4));
+
+    /* Switch 2 controllers, told apart by their ids (SDL gives them the Switch types) */
+    fake_switch2 = 1, fake_type = 7, fake_product = 0x2069;
+    /* an SDL whose Switch 2 driver has no raw HD rumble (every release so far): the first rumble goes to the motors */
+    sent_n = 0, logged = 0, fake_ok = 0;
+    pads[5].gc = &dummy;
+    hd_open(5, &dummy);
+    CHECK(pads[5].hd_kind == HD_RUMBLE2_PRO && pads[5].hd == HD_RUMBLE_UNKNOWN);
+    hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]), hd_rumble2_encode(quiet, 100, side2[0]), hd_rumble2_encode(quiet, 100, side2[1]);
+    CHECK(hd_poll(5, side, side2, t) == 1 && sent_n == 0);   /* (silence: nothing to ask yet) */
+    hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]), hd_rumble2_encode(left, 100, side2[0]), hd_rumble2_encode(right, 100, side2[1]);
+    pads[5].rumble_lo = 7, pads[5].rumble_ns = 99;
+    CHECK(hd_poll(5, side, side2, t + 4000000) == 0 && sent_n == 1 && pads[5].hd == HD_RUMBLE_OFF);
+    CHECK(sent_size == HD_RUMBLE2_PACKET_SIZE && sent_last[0] == HD_RUMBLE2_TYPE);   /* (never a Switch packet) */
+    CHECK(pads[5].rumble_lo == 0 && pads[5].rumble_ns == 0 && logged == 1);
+    CHECK(hd_poll(5, side, side2, t + 1000000000LL) == 0 && sent_n == 1);
+    /* one that has it: the game's two sides, each change at once, nothing repeated (SDL's driver repeats it) */
+    sent_n = 0, fake_ok = 1;
+    hd_open(6, &dummy), pads[6].gc = &dummy;
+    CHECK(hd_poll(6, side, side2, t) == 1 && sent_n == 1 && pads[6].hd == HD_RUMBLE_ON && sent_size == HD_RUMBLE2_PACKET_SIZE);
+    CHECK(sent_last[0] == 0x02 && !memcmp(sent_last + 1, side2[0], 5) && !memcmp(sent_last + 6, side2[1], 5));
+    for (long long now = t + 4000000; now < t + 1000000000LL; now += 4000000) CHECK(hd_poll(6, side, side2, now) == 1);
+    CHECK(sent_n == 1);
+    hd_rumble2_encode(right, 100, side2[0]);
+    CHECK(hd_poll(6, side, side2, t + 1000000000LL) == 1 && sent_n == 2 && !memcmp(sent_last + 1, side2[0], 5));
+    CHECK(hd_poll(6, side, side2, t + 1000000000LL + 1) == 1 && sent_n == 2);
+    hd_rumble2_encode(quiet, 100, side2[0]), hd_rumble2_encode(quiet, 100, side2[1]);
+    CHECK(hd_poll(6, side, side2, t + 1000000000LL + 2) == 1 && sent_n == 3);   /* (the stop, at once) */
+    CHECK(hd_poll(6, side, side2, t + 2000000000LL) == 1 && sent_n == 3);
+    /* a single right Joy-Con 2: both sides go (SDL's driver plays the right one on it) */
+    fake_type = 9, fake_product = 0x2066;
+    hd_open(7, &dummy), pads[7].gc = &dummy;
+    hd_rumble2_encode(left, 100, side2[0]), hd_rumble2_encode(right, 100, side2[1]);
+    CHECK(pads[7].hd_kind == HD_RUMBLE2_JOYCON_RIGHT && hd_poll(7, side, side2, t) == 1 && sent_n == 4);
+    CHECK(!memcmp(sent_last + 1, side2[0], 5) && !memcmp(sent_last + 6, side2[1], 5));
+    /* the GameCube controller, and a Switch 2 pad with HOS_HD_RUMBLE=0 or no effect call: the motors */
+    fake_type = 11, fake_product = 0x2073;
+    hd_open(1, &dummy);
+    CHECK(pads[1].hd_kind == HD_RUMBLE_NONE && pads[1].hd == HD_RUMBLE_OFF && hd_poll(1, side, side2, t) == 0 && sent_n == 4);
+    fake_type = 7, fake_product = 0x2069, fake_has = 0;
+    hd_open(1, &dummy);
+    CHECK(pads[1].hd == HD_RUMBLE_OFF && hd_poll(1, side, side2, t) == 0 && sent_n == 4);
     return 0;
 }
 """
@@ -285,7 +443,7 @@ class HdRumbleTests(unittest.TestCase):
         amps = ", ".join("{%r, %d, %d}" % (a, ha, la) for a, ha, la in AMPLITUDES)
         freqs = ", ".join("{%r, %d, %d}" % (hz, -1 if hf is None else hf, -1 if lf is None else lf)
                           for hz, hf, lf in FREQUENCIES)
-        build_and_run(self, FIXTURE % {"amps": amps, "freqs": freqs})
+        build_and_run(self, FIXTURE % {"amps": amps, "freqs": freqs} + SWITCH2)
 
     def test_poll_cadence_and_fallback(self):
         source = POLL % {"pads": pads_struct(), "open": function(PAD, "static void hd_open"),
@@ -297,7 +455,9 @@ class HdRumbleTests(unittest.TestCase):
         self.assertIn("hd_open(slot, gc)", poll)
         self.assertIn("hd_rumble_encode(hv[0], strength, side[0])", poll)   # (the menu's Rumble strength, as the motors')
         self.assertIn("hd_rumble_encode(hv[1], strength, side[1])", poll)
-        self.assertLess(poll.index("if (hd_poll(i, side, now)) continue;"), poll.index("rumble_due("))
+        self.assertIn("hd_rumble2_encode(hv[0], strength, side2[0])", poll)
+        self.assertIn("hd_rumble2_encode(hv[1], strength, side2[1])", poll)
+        self.assertLess(poll.index("if (hd_poll(i, side, side2, now)) continue;"), poll.index("rumble_due("))
         self.assertIn('getenv("HOS_HD_RUMBLE")', function(PAD, "static void hd_open"))
         self.assertIn("hos_sdl_rumble_hd(dev, v);", function(HID, "static void vibration_send"))
 

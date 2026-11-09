@@ -31,7 +31,7 @@ static struct {
     uint16_t rumble_lo, rumble_hi;
     int64_t rumble_ns;
     uint8_t hd, hd_kind, hd_ever;   /* HD rumble (hd_rumble.h): HD_RUMBLE_UNKNOWN / ON / OFF, the pad's kind, sent once */
-    uint8_t hd_sent[HD_RUMBLE_PACKET_SIZE];
+    uint8_t hd_sent[HD_RUMBLE_PACKET_MAX];
     int64_t hd_ns;
 } pads[MAX_PADS];
 static SRWLOCK state_lock = SRWLOCK_INIT;
@@ -100,31 +100,42 @@ static void rumble_strength(unsigned heavy, unsigned light, int percent, uint16_
     out[1] = (uint16_t)l;
 }
 
-/* A pad SDL just opened: HD rumble when it is a Switch Pro Controller or a Joy-Con and the SDL has the effect call
-   (HOS_HD_RUMBLE=0: never); whether SDL's driver takes it shows with the first packet. */
+/* A pad SDL just opened: HD rumble when it is a Switch or Switch 2 Pro Controller or Joy-Con and the SDL has the
+   effect call (HOS_HD_RUMBLE=0: never); whether SDL's driver takes it shows with the first packet. */
 static void hd_open(int i, void *gc) {
     static int env_off = -1;
     if (env_off < 0) {
         const char *e = getenv("HOS_HD_RUMBLE");
         env_off = e && !strcmp(e, "0");
     }
-    pads[i].hd_kind = (uint8_t)hd_rumble_kind(hos_sdl_load(), hos_sdl_pad_type(gc));
+    pads[i].hd_kind = (uint8_t)hd_rumble_kind_ids(hd_rumble_kind(hos_sdl_load(), hos_sdl_pad_type(gc)),
+                                                  hos_sdl_pad_vendor(gc), hos_sdl_pad_product(gc));
     pads[i].hd = (uint8_t)hd_rumble_start(pads[i].hd_kind, hos_sdl_pad_has_effect(), env_off);
     pads[i].hd_ever = 0;
     pads[i].hd_ns = 0;
-    const uint8_t n[4] = {0x00, 0x01, 0x40, 0x40};
-    hd_rumble_packet(HD_RUMBLE_PRO, n, n, pads[i].hd_sent);
+    const uint8_t n[4] = {0x00, 0x01, 0x40, 0x40}, n2[5] = {0xE0, 0x01, 0x00, 0x18, 0x00};   /* (silence) */
+    if (hd_rumble_switch2(pads[i].hd_kind)) hd_rumble2_packet(n2, n2, pads[i].hd_sent);
+    else hd_rumble_packet(HD_RUMBLE_PRO, n, n, pads[i].hd_sent);
 }
 
-/* A pad's HD rumble, each poll: its packet when due (hd_rumble_due). 1 when the pad plays HD rumble (the motor rumble
-   is not sent to it); 0 when it does not, or SDL just refused it (then it gets the motor rumble from now on). */
-static int hd_poll(int i, const uint8_t side[2][4], long long now) {
+/* A pad's HD rumble, each poll: its packet when due (hd_rumble_due, hd_rumble2_due), from the sides' bytes (side for
+   Switch controllers, side2 for Switch 2 ones). 1 when the pad plays HD rumble (the motor rumble is not sent to it); 0
+   when it does not, or SDL just refused it (then it gets the motor rumble from now on). */
+static int hd_poll(int i, const uint8_t side[2][4], const uint8_t side2[2][5], long long now) {
     if (pads[i].hd == HD_RUMBLE_OFF) return 0;
-    uint8_t packet[HD_RUMBLE_PACKET_SIZE];
-    hd_rumble_packet(pads[i].hd_kind, side[0], side[1], packet);
-    if (!hd_rumble_due(packet, pads[i].hd_sent, pads[i].hd_ever, now, pads[i].hd_ns)) return 1;
+    uint8_t packet[HD_RUMBLE_PACKET_MAX];
+    int size;
+    if (hd_rumble_switch2(pads[i].hd_kind)) {
+        hd_rumble2_packet(side2[0], side2[1], packet);
+        size = HD_RUMBLE2_PACKET_SIZE;
+        if (!hd_rumble2_due(packet, pads[i].hd_sent)) return 1;
+    } else {
+        hd_rumble_packet(pads[i].hd_kind, side[0], side[1], packet);
+        size = HD_RUMBLE_PACKET_SIZE;
+        if (!hd_rumble_due(packet, pads[i].hd_sent, pads[i].hd_ever, now, pads[i].hd_ns)) return 1;
+    }
     const int was = pads[i].hd;
-    pads[i].hd = (uint8_t)hd_rumble_after_send(hos_sdl_pad_effect(pads[i].gc, packet, sizeof packet));
+    pads[i].hd = (uint8_t)hd_rumble_after_send(hos_sdl_pad_effect(pads[i].gc, packet, size));
     if (pads[i].hd == HD_RUMBLE_OFF) {
         hos_log("hid: \"%s\" did not take HD rumble (%s): its rumble goes to its motors", hos_sdl_pad_name(pads[i].gc),
                 hos_sdl_error());
@@ -133,7 +144,7 @@ static int hd_poll(int i, const uint8_t side[2][4], long long now) {
         return 0;
     }
     if (was == HD_RUMBLE_UNKNOWN) hos_log("hid: HD rumble on \"%s\"", hos_sdl_pad_name(pads[i].gc));
-    memcpy(pads[i].hd_sent, packet, sizeof packet);
+    memcpy(pads[i].hd_sent, packet, (size_t)size);
     pads[i].hd_ns = now;
     pads[i].hd_ever = 1;
     return 1;
@@ -183,7 +194,7 @@ static void pads_poll(void) {
         uint16_t motors[2];
         rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
         const uint16_t lo = motors[0], hi = motors[1];
-        uint8_t side[2][4];   /* (the HD rumble pads': each side's bytes) */
+        uint8_t side[2][4], side2[2][5];   /* (the HD rumble pads': each side's bytes, Switch and Switch 2) */
         {
             float hv[2][4];
             AcquireSRWLockShared(&hd_lock);
@@ -191,6 +202,8 @@ static void pads_poll(void) {
             ReleaseSRWLockShared(&hd_lock);
             hd_rumble_encode(hv[0], strength, side[0]);
             hd_rumble_encode(hv[1], strength, side[1]);
+            hd_rumble2_encode(hv[0], strength, side2[0]);
+            hd_rumble2_encode(hv[1], strength, side2[1]);
         }
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
@@ -206,7 +219,7 @@ static void pads_poll(void) {
                                   stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x), stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1)};
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
-            if (hd_poll(i, side, now)) continue;
+            if (hd_poll(i, side, side2, now)) continue;
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {
                 hos_sdl_pad_rumble(gc, lo, hi, lo || hi ? 1000 : 0);
                 pads[i].rumble_lo = lo;

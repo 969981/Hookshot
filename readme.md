@@ -259,11 +259,13 @@ and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn
 
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
-one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
-the game's rumble on their two motors. The menu's Rumble strength scales it too. `HOS_HD_RUMBLE=0` sends the Switch
-controllers the motor rumble too. On Linux, SDL talks to the Switch controller itself through its hidraw device, which
-needs read and write access for your user; Steam's udev rules (the `steam-devices` package on most distributions) give
-it. Without them the kernel's hid-nintendo driver runs the controller, and it gets the motor rumble.
+one). A Switch 2 Pro Controller or Joy-Con 2 plays it the same way, connected over USB, once SDL3's Switch 2 driver
+takes raw HD rumble (not in a release yet); until then it gets the motor rumble. Other controllers, a pair of Joy-Cons
+used as one controller, and SDL2's own library get the game's rumble on their two motors. The menu's Rumble strength
+scales it too. `HOS_HD_RUMBLE=0` sends the Switch controllers the motor rumble too. On Linux, SDL talks to the Switch
+controller itself through its hidraw device, which needs read and write access for your user; Steam's udev rules (the
+`steam-devices` package on most distributions) give it. Without them the kernel's hid-nintendo driver runs the
+controller, and it gets the motor rumble.
 
 To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
