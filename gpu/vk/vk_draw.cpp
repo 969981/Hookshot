@@ -4525,6 +4525,11 @@ SceneViewProjection scene_vp;
 /// Recognizes the buffer by its own contents rather than by a program key: the projection's m11 is
 /// 1/tan(fovy/2) and its last row makes w = -z. A buffer that does not look like that is left alone.
 static void capture_view_projection(const NvnState& s) {
+    // Once per render target set, not once per draw. Called from draw() it ran 1106 times a frame
+    // and walked every stage and slot reading uniforms each time, which stuttered hard on a real
+    // display. The serial changes when the targets do, so the matrix still refreshes every frame.
+    static thread_local uint64_t done_for = ~0ull;
+    if (done_for == targets_serial) return;
     for (int stage = 0; stage < kNvnStages; stage++) {
         for (int slot = 0; slot < 16; slot++) {
             const nvn_p_bind_buf& u = s.ubo[stage][slot];
@@ -4550,6 +4555,7 @@ static void capture_view_projection(const NvnState& s) {
             }
             memcpy(scene_vp.m, vp, sizeof vp);
             scene_vp.have = true;
+            done_for = targets_serial;
             static std::atomic<int> told{0};
             if (told++ == 0)
                 logf("vk: the scene's view projection: stage %d slot %d, view at +0 and projection "
@@ -5664,8 +5670,13 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // format conversion the game's network would have done itself.
     // (hookshot) The two inputs this dispatch never carries, assembled: the scene's own depth, and
     // motion reprojected from it. docs/upscaling.md says why they cannot be taken from here.
-    if (fsr_here && scene_depth.view && fsr3::supported() &&
-        scene_depth.width == req.inputs.render_width && scene_depth.height == req.inputs.render_height) {
+    // (the dispatch's own input extent, which is what the network upscales from. req.inputs is the
+    //  contract's view of the bindings and leaves the render extent at 0 for this dispatch, because
+    //  it has no motion or depth among them -- gating on that meant FSR could never be reached)
+    uint32_t in_w = 0, in_h = 0;
+    if (!bindings.empty()) in_w = bindings[0].width, in_h = bindings[0].height;
+    if (fsr_here && scene_depth.view && fsr3::supported() && in_w && in_h &&
+        scene_depth.width == in_w && scene_depth.height == in_h) {
         camera_motion::Matrix vp{};
         bool have_vp = scene_vp.have;
         if (have_vp) memcpy(vp.m, scene_vp.m, sizeof vp.m);
@@ -5679,10 +5690,11 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                 assembled.inputs.inputs_complete = true;
                 assembled.inputs.render_width = scene_depth.width;
                 assembled.inputs.render_height = scene_depth.height;
+                assembled.inputs.colour = 0;   // (the dispatch's single sampled texture)
                 assembled.colour_binding = assembled.inputs.colour;
                 if (upscale::temporal_possible(assembled)) {
                     fsr3::Inputs ai;
-                    ai.color = dw.imgs[req.inputs.colour != upscale::kNone ? req.inputs.colour : 0].imageView;
+                    ai.color = dw.imgs[0].imageView;   // (its only sampled texture)
                     ai.depth = scene_depth.view;
                     ai.motion = motion;
                     ai.render_width = scene_depth.width, ai.render_height = scene_depth.height;
