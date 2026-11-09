@@ -85,6 +85,79 @@ NGX sessions never come up against the same device.
 `eAllowOTA` and `eLoadDownloadedPlugins` are deliberately not set: they let Streamline fetch plugins
 over the network and bootstrap `nvngx_update.exe`, and a game has no business starting an updater.
 
+## NGX direct: the second backend
+
+`gpu/vk/vk_dlssnr_ngx.{h,cpp}` creates the same model as NGX feature 18 (`NVSDK_NGX_Feature_Reserved18`), over the one NGX
+session DLSS super resolution owns (`dlss_ngx_session`), and needs no Streamline at all. The Neural tab's **Backend** row
+(`opts.nr_backend`, saved as `nr_backend`; `RX_VK_DLSS_NR_BACKEND=auto|streamline|ngx` over it) chooses: Auto is Streamline
+where `streamline::nr_available()`, NGX direct otherwise. `nr::apply` is the present's one call (`vk_replay.cpp`
+`present_image`), and every other row applies to whichever runs.
+
+Why it exists: Streamline's own plugin may gate RTX 20-40 even with a patched `nvngx_dlssnr.dll` (the "not measured here"
+below), and on Linux there is no Streamline at all while NGX is there.
+
+**The parameter set is openNR's** ([clshortfuse/openNR](https://github.com/clshortfuse/openNR), MIT), from its native
+benchmark (`benchmarks/native/d3d11/main.cpp`, `benchmarks/native/include/neural_rendering_direct.hpp`). The public NGX
+SDK names the feature id and nothing else. Names and types were taken as facts; no code was copied:
+
+| when | keys | type |
+|---|---|---|
+| create | `Width`/`Height`/`OutWidth`/`OutHeight`, `DLSSNR.Width`/`Height`, `DLSSNR.InputWidth`/`InputHeight`, `DLSSNR.OutputWidth`/`OutputHeight`, `DLSSNR.Output.Width`/`Output.Height` | uint |
+| create | `DLSSNR.Hint.Render.Preset` (0 default, 1-7 = A-G) | uint |
+| create | `PerfQualityValue` = sl::DLSSMode - 1 (the Model row: 0 perf, 1 balanced, 2 quality, 5 DLAA) | int |
+| create | `DLSSNRComputeScalingRatioCallback`: NGX calls it with a parameter block and it answers `DLSSNR.ScalingRatio` = 1, i.e. no upscaling | void* |
+| create | `DLSSNR.ScalingRatio` 1, `DLSSNR.Scale` 1 / `DLSSNR.Upscaling` 0 | float / int |
+| evaluate | `DLSSNR.Color`, `Output`, `MVec`, `Depth` (`NVSDK_NGX_Resource_VK`, images in `GENERAL`), `UI`/`UIAlpha` null | void* |
+| evaluate | `DLSSNR.<Color/Output/MVec/Depth>Subrect<BaseX/BaseY/Width/Height>` | uint |
+| evaluate | `Jitter.Offset.X/Y`, `DLSSNR.JitterOffsetX/Y` 0, `DLSSNR.MVecScaleX/Y` 1 | float |
+| evaluate | `DLSSNR.DepthInverted` 0, `Enabled` 1, `Reset` (first frame of a feature), `UseAutoMask`, `UICorrection` 0 | int |
+| evaluate | `DLSSNR.Intensity`, `LocalToneStrength`, `LocalStructureStrength`, `GlobalToneStrength`, `SkinStructureStrength` | float |
+| evaluate | `DLSSNR.Style` | uint |
+
+All of them are set with NGX's C functions (`NVSDK_NGX_Parameter_SetUI/SetI/SetF/SetVoidPointer`), not the
+`NVSDK_NGX_Parameter` virtuals: NGX's Windows object is MSVC-built and llvm-mingw's vtable does not line up with it
+(`vk_dlss.cpp`). Preset and Model are creation parameters, so changing either remakes the feature; the rest go with every
+evaluation. A refusal is held against those exact settings (any row change tries again), and six refusals turn it off
+for the run. The device is created with whatever extensions NGX names for feature 18
+(`NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements`, `vk_main.cpp`), asked whatever the switch says because the
+device exists before a player can turn it on.
+
+Its inputs are the Streamline path's: the window image copied into an `R8G8B8A8_UNORM` image of its own, a flat 0.5 `R32`
+depth, zero `R16G16` motion, no jitter. openNR's benchmark feeds `RGBA16F`; whether 8-bit colour is accepted by feature
+18 on Vulkan is not known yet.
+
+**Availability.** It reads `DLSSNR.Available` and `DLSSNR.FeatureInitResult` from NGX's capability parameters (and
+`DLSSNR.NeedsUpdatedDriver` / `MinDriverVersionMajor/Minor` by the naming every NGX feature's keys follow; a key NGX does
+not answer is reported as such) and logs them. Where NGX does not answer for the feature at all, the first frame's
+`CreateFeature` is the answer. When it is refused:
+
+- **Linux**: NGX loads features as `libnvidia-ngx-<name>.so*` from the folders `vk_dlss.cpp ngx_init` gives it, and then
+  the game folder itself (`dlss_ngx_runtime` lists them all), and NVIDIA ships no `libnvidia-ngx-dlssnr.so` -- SDK 310.9.16's Linux libraries are
+  dlss, dlssd and dlssg only. The log and the Neural tab say exactly that, and that the Windows build under Proton is the
+  way to the feature today. The day NVIDIA ships the library, putting it in the game folder's `ngx` folder should be all
+  it takes. That is a prediction, not a measurement.
+- **Windows**: the same reasoning as `vk_streamline.cpp explain_refusal` -- the GPU's generation, the `nvngx_dlssnr.dll`
+  found in NGX's folders and whether Windows trusts its signature (only in a build that links wintrust, i.e. one with
+  Streamline's headers), and NGX's signature override, read and never written.
+
+### What is measured for NGX direct, and what is not
+
+- Measured, 2026-11-09, Linux, RTX 5060 Ti (Blackwell), driver 615.71.09, NGX SDK 310.9.16, windowed on Xvfb (a
+  `HOS_HEADLESS=1` run never reaches `present_image`, so it never reaches either backend):
+  - NGX asks for `VK_KHR_buffer_device_address` for feature 18 (`vk: dlss-nr wants ...: enabled`).
+  - With Backend Auto, the run chose NGX direct (no Streamline on Linux); with NGX direct, the same.
+  - NGX's own log (`RX_VK_DLSS_LOG=1`) shows it looking for `libnvidia-ngx-dlssnr.so` in the game folder's `ngx`, then
+    `~/.local/share/hookshot/ngx`, then the game folder itself, and finding none.
+  - NGX answers `DLSSNR.Available = 0`, `DLSSNR.FeatureInitResult = 0xbad00004` (`FAIL_FeatureNotFound`): the core
+    knows the feature and has no library for it. The Linux message is logged once; the game went on to gameplay
+    (~2,185 draws a frame, ~36 fps) for 10,000+ presents.
+  - Nothing on Linux has created or evaluated feature 18, because there is nothing to create it from.
+- Not measured: anything on Windows. No run has created feature 18 through NGX on Vulkan, evaluated it, or seen a frame
+  from it; whether NGX's Windows core answers `DLSSNR.Available` for a patched DLL on RTX 20-40; whether
+  `PerfQualityValue` and `Hint.Render.Preset` are taken at creation as openNR's D3D11/D3D12 benchmark takes them; and
+  whether openNR's D3D parameter set is the whole Vulkan set (its benchmark loads the snippet itself, not through NGX's
+  core, so the core's own checks are not exercised by it).
+
 ## What a player needs
 
 Windows x64 only. Streamline's interposer and plugins are DLLs; on Linux, run the Windows build under
@@ -127,8 +200,8 @@ override's state, says which of them is missing, and gives the Neural tab a one-
 
 Not measured here: the patched DLLs through *Streamline* on *Vulkan*. Every report found used NGX directly from D3D12
 (RenoDX's add-on, OptiScaler). If Streamline's own plugin turns out to gate on the architecture as well, the log line will
-say `AdapterUnsupported` with a signed-off DLL and the override on, and the answer is an NGX-direct path for feature 18
-beside the DLSS-G one (`gpu/vk/vk_ngx.h`) -- which would also bring NR to Linux.
+say `AdapterUnsupported` with a signed-off DLL and the override on, and the answer is the NGX-direct path for feature 18
+(above, the Backend row's NGX direct) -- which is also the one that would bring NR to Linux.
 
 ## On AMD
 

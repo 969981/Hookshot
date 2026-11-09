@@ -322,12 +322,10 @@ constexpr const char* kRuntime = "libnvidia-ngx-dlss.so";
 constexpr const fs::path::value_type* kRuntimeName = "libnvidia-ngx-dlss.so";
 #endif
 
-/// NGX on this device, once: false when DLSS cannot run here (the reason logged)
-bool ngx_init() {
-    State& s = st();
-    if (s.ngx_tried) return s.ngx_ok;
-    s.ngx_tried = true;
-    // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
+/// Where NGX is told to look for its features' runtimes (kRuntime, and every other feature's: NGX takes the newest it finds
+/// of each), in that order. (hookshot) One list, so that DLSS 5 neural rendering's NGX path (vk_dlssnr_ngx.cpp) names the
+/// same folders in its log as NGX was given here
+std::vector<fs::path> ngx_dirs() {
     std::vector<fs::path> dirs;
 #ifdef _WIN32
     if (fs::path e = env_path(L"RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
@@ -339,6 +337,16 @@ bool ngx_init() {
     if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
     else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
 #endif
+    return dirs;
+}
+
+/// NGX on this device, once: false when DLSS cannot run here (the reason logged)
+bool ngx_init() {
+    State& s = st();
+    if (s.ngx_tried) return s.ngx_ok;
+    s.ngx_tried = true;
+    // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
+    const std::vector<fs::path> dirs = ngx_dirs();
     std::vector<std::wstring> wdirs;
     for (const auto& d : dirs) wdirs.push_back(wide(d));
     std::vector<const wchar_t*> paths;
@@ -800,6 +808,29 @@ bool dlss_ngx_session() {
     return s.ngx_started;
 }
 
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    bool have = false;
+    std::error_code ec;
+    // (and the game folder itself, after them: NGX looks there too, which its own log shows with RX_VK_DLSS_LOG=1, and
+    // it is where the DLSS SDK's runtimes are usually put)
+    std::vector<fs::path> dirs = ngx_dirs();
+    dirs.push_back(game_dir());
+    for (const fs::path& d : dirs) {
+        if (where) *where += (where->empty() ? "" : ", ") + shown(d);
+        if (have) continue;
+        for (const auto& f : fs::directory_iterator(d, ec)) {
+            const std::string file = shown(f.path().filename());
+            if (file.rfind(name, 0) != 0) continue;
+            have = true;
+            if (found) *found = shown(f.path());
+            break;
+        }
+    }
+    return have;
+}
+
 void dlss_probe() {
     if (dlss_why() != DLSS_OK || g_why.load(std::memory_order_relaxed) >= 0 || !dev.device) return;
     State& s = st();
@@ -1159,6 +1190,11 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 
 bool dlss_built() { return false; }
 bool dlss_ngx_session() { return false; }
+bool dlss_ngx_runtime(const char*, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    return false;
+}
 void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}

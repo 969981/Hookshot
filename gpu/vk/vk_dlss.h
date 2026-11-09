@@ -2,6 +2,7 @@
 // SDK (HOOKSHOT_NGX, scripts/ngx_sdk.py: Linux and Windows); without it these say DLSS is not there and the game's network runs.
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "vk_internal.h"
@@ -23,6 +24,11 @@ void dlss_probe();
 /// NVSDK_NGX_VULKAN_Init_with_ProjectID beside this one is what it avoids. True even where super resolution itself is not
 /// available, since the session is. Starts it if dlss_probe has not yet (and RX_VK_DLSS is not 0)
 bool dlss_ngx_session();
+/// (hookshot) Whether a file whose name begins `name` ("nvngx_dlssnr.dll", "libnvidia-ngx-dlssnr.so") is in one of the folders
+/// NGX is told to look for its features' runtimes in (ngx_init's: RX_VK_DLSS_DIR, the game folder's ngx, then
+/// %LOCALAPPDATA%\Hookshot\ngx or $XDG_DATA_HOME/hookshot/ngx), or the game folder itself, which NGX also searches. `where` gets the folders, in UTF-8 for the log; `found` the
+/// first such file's path. False and both empty in a build without DLSS
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found);
 /// What is asked for: 0 off, 1 DLSS (in place of the game's gameplay upscale, at any render share), 2 DLAA (anti-aliasing at the render size, the 3D at full scale):
 /// the Insert menu's Upscaler row (opts.dlss), or RX_VK_DLSS=0 / 1 / 2 over it. 0 when dlss_why() says it cannot run
 int dlss_mode();

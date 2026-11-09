@@ -233,11 +233,26 @@ are never in a release: they come from NVIDIA's DLSS SDK (`github.com/NVIDIA/DLS
 The **Neural** tab is NVIDIA's DLSS 5 neural rendering: a model that goes over the finished frame and
 rebuilds detail, tone and structure in it. It is not an upscaler and not ray reconstruction -- it
 takes the picture, not the scene -- so it works on this game, and it stacks with whatever Upscaling
-and Frame generation are set to. Ten rows: the switch, Model, Style, Preset, Intensity, Local tone,
-Local structure, Global tone, Skin structure and Auto mask. All of them take effect on the next
-frame.
+and Frame generation are set to. Eleven rows: the switch, Backend, Model, Style, Preset, Intensity,
+Local tone, Local structure, Global tone, Skin structure and Auto mask. All of them take effect on
+the next frame.
 
-**Windows x64.** Streamline ships as DLLs, so on Linux run the Windows build under Proton.
+**Two ways to the same model** (the **Backend** row, saved as `nr_backend`; `RX_VK_DLSS_NR_BACKEND=auto|streamline|ngx`
+over it for one run): **Streamline**, NVIDIA's plugin and the files in the table below; or **NGX direct**, which asks
+NVIDIA's NGX for the feature itself, through the same NGX session DLSS uses, and needs only `nvngx_dlssnr.dll`. **Auto**
+takes Streamline where it is attached and accepts the GPU, and NGX direct otherwise. The other rows apply to whichever
+runs.
+
+**NGX direct** looks for `nvngx_dlssnr.dll` where NGX looks for DLSS's own runtime: the folder `RX_VK_DLSS_DIR` names, then
+the **`ngx` folder in the game folder**, then `%LOCALAPPDATA%\Hookshot\ngx`, then the game folder itself. On Linux NGX
+looks in the same places (`$XDG_DATA_HOME/hookshot/ngx` or `~/.local/share/hookshot/ngx` third) for
+`libnvidia-ngx-dlssnr.so`, which **NVIDIA has not shipped yet**: the Linux NGX core knows the feature, but NVIDIA's SDK has Linux libraries only for DLSS, Ray
+Reconstruction and Frame Generation. Until it does, the Neural tab and the log say so, and on Linux the way to the
+feature is the Windows build under Proton. NGX direct's log lines start `vk: DLSS 5 neural rendering (NGX direct)`; when
+NGX refuses it on Windows they name the GPU, the `nvngx_dlssnr.dll` found, whether it is signed, and the override, as the
+Streamline path's do.
+
+**Streamline is Windows x64 only**: it ships as DLLs.
 
 **RTX 50 with NVIDIA's own model; RTX 20, 30 and 40 with a patched one.** NVIDIA's `nvngx_dlssnr.dll` runs on RTX 50
 (Blackwell) only: on an older card NGX refuses it (`0xbad00001`) and the Neural tab says so. Community builds of the same
@@ -252,11 +267,11 @@ Two things to know:
   PC, so turn it back off when you are done, and keep patched DLLs away from games with anti-cheat.
 - It costs more on older cards: about 1.5 times an RTX 5070 Ti's GPU time on an RTX 4070 SUPER, by one report.
 
-When the feature is refused, the log's `vk: DLSS 5 neural rendering is not supported here` line names the GPU, whether
+When Streamline refuses the feature, the log's `vk: DLSS 5 neural rendering is not supported here` line names the GPU, whether
 the `nvngx_dlssnr.dll` there is NVIDIA's or a patched one, and whether the override is set, and the line after it says
 what is missing.
 
-These files go beside the game, or in a `streamline` folder beside it, or wherever
+For Streamline, these files go beside the game, or in a `streamline` folder beside it, or wherever
 `RX_VK_STREAMLINE_DIR` points. They are NVIDIA's to ship; Hookshot builds against Streamline's
 MIT-licensed headers only and loads nothing it has not checked NVIDIA's signature on:
 
@@ -652,6 +667,8 @@ Hookshot exists thanks to the work of many people:
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **NVIDIA DLSS**: builds made with NVIDIA's DLSS SDK (optional, downloaded by each build, never bundled) use NVIDIA DLSS
   Super Resolution, NVIDIA's technology. NVIDIA and DLSS are trademarks of NVIDIA Corporation.
+- **[openNR](https://github.com/clshortfuse/openNR)** (MIT, Carlos Lopez): the NGX parameter names DLSS 5 neural rendering's
+  NGX direct backend drives feature 18 with, and the layout of its Streamline options.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
