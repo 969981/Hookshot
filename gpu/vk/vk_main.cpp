@@ -4,6 +4,8 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
+#include "vk_dlss.h"   // (the device extensions DLSS needs, asked of NGX before the device is made)
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -228,6 +230,28 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+
+    // (hookshot) What DLSS needs on this driver, asked of NGX rather than written out here: the set
+    // is the driver's to state and a list hard-coded in our source would be wrong on the next one.
+    // Only where RX_VK_DLSS=1 and this build has an NGX SDK, so a run that did not ask for DLSS
+    // creates exactly the device it created before. An extension NGX names and this GPU does not
+    // have is named in the log and left out: DLSS will then report itself unavailable, which is the
+    // honest outcome, rather than vkCreateDevice failing and taking the whole renderer with it.
+    {
+        const char* dlss_want[16] = {};
+        const size_t dlss_n = dlss::device_extensions(dev.instance, dev.physical, dlss_want,
+                                                      sizeof dlss_want / sizeof *dlss_want);
+        for (size_t i = 0; i < dlss_n; i++) {
+            if (!has_extension(exts, dlss_want[i])) {
+                logf("vk: dlss wants %s, which this GPU does not have: DLSS will be unavailable",
+                     dlss_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, dlss_want[i]) == 0;
+            if (!already) want.push_back(dlss_want[i]), logf("vk: dlss wants %s: enabled", dlss_want[i]);
+        }
+    }
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);

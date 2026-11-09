@@ -208,6 +208,14 @@ VkImageView record(VkCommandBuffer cmd, VkImageView depth, VkFormat depth_format
     return g.view;
 }
 
+VkImage motion_image() {
+    return g.image;
+}
+
+VkFormat motion_format() {
+    return g.image ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_UNDEFINED;
+}
+
 void reset() {
     g.have_previous = false;
 }

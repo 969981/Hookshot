@@ -28,6 +28,11 @@ struct Matrix {
 /// a matrix from before a cut or a load.
 void reset();
 
+/// The motion target this module writes, for a backend that is handed resources rather than views
+/// (gpu/vk/vk_dlss.h). Null and VK_FORMAT_UNDEFINED before the first record().
+[[nodiscard]] VkImage motion_image();
+[[nodiscard]] VkFormat motion_format();
+
 void shutdown();
 
 } // namespace mkwvk::camera_motion

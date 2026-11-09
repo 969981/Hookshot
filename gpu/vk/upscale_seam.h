@@ -14,6 +14,8 @@ namespace mkwvk::upscale {
 enum class Backend : uint8_t {
     None,     ///< nothing does: the dispatch runs as itself
     StandIn,  ///< the compute resolve in shaders/taau_upscale.comp
+    Fsr3,     ///< AMD FSR 3.1, recorded as our own compute passes (gpu/vk/vk_fsr3.h)
+    Dlss,     ///< NVIDIA DLSS Super Resolution through NGX (gpu/vk/vk_dlss.h)
 };
 
 /// What the renderer can offer this dispatch. A backend that is not here cannot be chosen, whatever the inputs say.
@@ -22,6 +24,10 @@ struct Availability {
     bool push_descriptor = false;
     /// The program key is in the stand-in's list (RX_VK_TAAU_KEYS), so the translated network is not to be trusted.
     bool stand_in_wanted = false;
+    /// FSR 3.1 was asked for (RX_VK_FSR=1) and this device can run its passes.
+    bool fsr3 = false;
+    /// DLSS was asked for (RX_VK_DLSS=1), this build has an NGX SDK, and the driver reports Super Resolution.
+    bool dlss = false;
 };
 
 /// A dispatch resolved once, in the terms a backend needs. Extents are in pixels; zero means the renderer could not
@@ -73,8 +79,16 @@ inline const char* temporal_refusal(const Request& r) {
 /// The stand-in does not need the contract: it is a spatial resolve, and it runs wherever the key list asks for it,
 /// exactly as it did before this seam existed. A temporal backend will be preferred here once there is one, and only
 /// where `temporal_possible` agrees.
-inline Backend choose(const Availability& a, const Request&) {
+inline Backend choose(const Availability& a, const Request& r) {
     if (!a.push_descriptor) return Backend::None;
+    // A vendor upscaler only where the inputs are all there: both of them resolve from colour, motion and depth at
+    // one extent, and neither degrades gracefully when handed less -- it produces a wrong picture instead.
+    if (temporal_possible(r)) {
+        // DLSS first where the hardware has it, because on that hardware it is the better of the two and its
+        // availability already means an NVIDIA driver reporting Super Resolution; FSR runs anywhere.
+        if (a.dlss) return Backend::Dlss;
+        if (a.fsr3) return Backend::Fsr3;
+    }
     if (a.stand_in_wanted) return Backend::StandIn;
     return Backend::None;
 }
@@ -82,6 +96,8 @@ inline Backend choose(const Availability& a, const Request&) {
 inline const char* backend_name(Backend b) {
     switch (b) {
     case Backend::StandIn: return "stand-in";
+    case Backend::Fsr3: return "FSR 3.1";
+    case Backend::Dlss: return "DLSS";
     default: break;
     }
     return "none";

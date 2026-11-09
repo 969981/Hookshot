@@ -49,6 +49,18 @@ struct Inputs {
 /// whatever it would otherwise have done.
 [[nodiscard]] bool upscale(VkCommandBuffer cmd, const Inputs& in);
 
+/// (diagnostics) How far down the upscale path a run goes: RX_VK_FSR_STAGE, 0 (the whole path) by
+/// default. 1 stops before FSR, 2 drops the nine dispatches, 3 drops the blit into the game's
+/// target. It exists so a run names a cost instead of a hypothesis; every stage but 0 is wrong
+/// output on purpose.
+int fsr_stage();
+
+/// (diagnostics) Called once where the scene's upscale is reached, whatever stage the run is in:
+/// every 30 calls it logs the milliseconds between them, which is the frame time when the scene
+/// evaluates once a frame. One line per run, so a stage that is the cost shows up as a stage whose
+/// removal returns the rate.
+void note_frame();
+
 /// The image an evaluation resolves into: RGBA16F at the upscale size, or null before prepare().
 [[nodiscard]] VkImage output_image();
 [[nodiscard]] VkImageView output_view();

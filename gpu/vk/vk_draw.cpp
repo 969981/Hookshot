@@ -43,6 +43,7 @@
 #include "upscale_format.h"
 #include "upscale_seam.h"
 #include "vk_camera_motion.h"
+#include "vk_dlss.h"
 #include "vk_fsr3.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -1673,8 +1674,19 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
+    /// (hookshot) What each entry of `imgs` is a view of, pushed in lockstep so index i is the same binding in
+    /// both. A view is the whole of an input to a draw and to our own compute passes, but NGX is handed whole
+    /// resources (gpu/vk/vk_dlss.h: a view *and* its image, format and extent), so DLSS cannot be given a
+    /// dispatch's colour from `imgs` alone. Default-constructed where the binding fell back to a dummy, which is
+    /// what a backend has to refuse on.
+    struct Source {
+        VkImage image = VK_NULL_HANDLE;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        uint32_t width = 0, height = 0;
+    };
+    std::vector<Source> srcs;
     void reset() {
-        writes.clear(), bufs.clear(), imgs.clear(), views.clear();
+        writes.clear(), bufs.clear(), imgs.clear(), views.clear(), srcs.clear();
     }
 };
 thread_local DescWriter dw;
@@ -2139,6 +2151,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (view && tex && tex->gpu_written) draw_sampled.push_back(tex);
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
                 dw.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
+                dw.srcs.push_back(tex ? DescWriter::Source{tex->image, tex->format, tex->width, tex->height}
+                                      : DescWriter::Source{});
             }
             w.pImageInfo = &dw.imgs[first];
             dw.writes.push_back(w);
@@ -2174,6 +2188,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (dump_on()) dump_input(d.is_written ? 'W' : 'R', (uint32_t)dw.imgs.size(), handle, view ? tex : nullptr);
                 if (!view && !dev.null_descriptor) view = VK_NULL_HANDLE;
                 dw.imgs.push_back({VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL});
+                dw.srcs.push_back(tex ? DescWriter::Source{tex->image, tex->format, tex->width, tex->height}
+                                      : DescWriter::Source{});
             }
             w.pImageInfo = &dw.imgs[first];
             dw.writes.push_back(w);
@@ -5619,7 +5635,13 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // stand-in never does; gating everything on it would have made FSR unreachable on exactly the
     // hardware that can run it. RX_VK_FSR=1 therefore brings us in here on its own.
     static const bool fsr_wanted = getenv("RX_VK_FSR") && atoi(getenv("RX_VK_FSR")) != 0;
-    const bool fsr_here = fsr_wanted && avail.push_descriptor && upscale_trace_key(p.key);
+    // (hookshot) Both vendor backends ask their own question: FSR whether this device can run its
+    // passes, DLSS whether this is an NVIDIA driver reporting Super Resolution with an NGX runtime
+    // loaded. Each answers once and caches, so this costs nothing per dispatch. upscale::choose
+    // picks between them; this function does not.
+    avail.fsr3 = fsr_wanted && fsr3::supported();
+    avail.dlss = dlss::supported();
+    const bool fsr_here = (avail.fsr3 || avail.dlss) && avail.push_descriptor && upscale_trace_key(p.key);
     if (p.stages.empty()) return false;
     if (upscale::choose(avail, req) != upscale::Backend::StandIn && !fsr_here) return false;
     const Stage& st = p.stages[0];
@@ -5677,6 +5699,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!bindings.empty()) in_w = bindings[0].width, in_h = bindings[0].height;
     if (fsr_here && scene_depth.view && fsr3::supported() && in_w && in_h &&
         scene_depth.width == in_w && scene_depth.height == in_h) {
+        fsr3::note_frame();   // (the frame time at this seam, for every RX_VK_FSR_STAGE)
         camera_motion::Matrix vp{};
         bool have_vp = scene_vp.have;
         if (have_vp) memcpy(vp.m, scene_vp.m, sizeof vp.m);
@@ -5692,6 +5715,43 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                 assembled.inputs.render_height = scene_depth.height;
                 assembled.inputs.colour = 0;   // (the dispatch's single sampled texture)
                 assembled.colour_binding = assembled.inputs.colour;
+                if (upscale::choose(avail, assembled) == upscale::Backend::Dlss) {
+                    // NGX is handed whole resources, not views: the colour's image and format come from the
+                    // lockstep DescWriter::Source, the depth's from the targets, and the motion's from the
+                    // module that just wrote it. A missing one is a refusal inside the backend.
+                    dlss::Inputs di;
+                    di.color = dw.imgs[0].imageView;
+                    di.depth = scene_depth.view;
+                    di.motion = motion;
+                    di.color_image = dw.srcs.empty() ? VK_NULL_HANDLE : dw.srcs[0].image;
+                    di.color_format = dw.srcs.empty() ? VK_FORMAT_UNDEFINED : dw.srcs[0].format;
+                    di.depth_image = scene_depth.image;
+                    di.depth_format = scene_depth.format;
+                    di.motion_image = camera_motion::motion_image();
+                    di.motion_format = camera_motion::motion_format();
+                    di.render_width = scene_depth.width, di.render_height = scene_depth.height;
+                    di.upscale_width = req.output_width, di.upscale_height = req.output_height;
+                    di.motion_scale[0] = 1.0f, di.motion_scale[1] = 1.0f;   // (already render pixels)
+                    float dnp = 0.0f, dfp = 0.0f;
+                    const float dth = hos_oot_camera ? hos_oot_camera(&dnp, &dfp) : 0.0f;
+                    if (dth > 0.0f && dnp > 0.0f) di.near_plane = dnp, di.fov_y = 2.0f * std::atan(dth);
+                    if (dlss::upscale(cmd, di)) {
+                        static std::atomic<int> said_dlss{0};
+                        if (said_dlss++ == 0)
+                            logf("vk: dlss %ux%u -> %ux%u with assembled depth and camera motion",
+                                 di.render_width, di.render_height, di.upscale_width, di.upscale_height);
+                        VkImageBlit b{};
+                        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+                        b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        vkCmdBlitImage(cmd, dlss::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
+                                       VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                        return true;
+                    }
+                    // (DLSS refused this one, so FSR below where it is available rather than nothing. The
+                    //  backend logs its own refusal, once.)
+                }
                 if (upscale::temporal_possible(assembled)) {
                     fsr3::Inputs ai;
                     ai.color = dw.imgs[0].imageView;   // (its only sampled texture)
@@ -5713,13 +5773,16 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                             logf("vk: fsr3 %ux%u -> %ux%u with assembled depth and camera motion",
                                  ai.render_width, ai.render_height, ai.upscale_width, ai.upscale_height);
                         if (n % 300 == 0) logf("vk: fsr3 evaluations: %d", n + 1);
-                        VkImageBlit b{};
-                        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                        b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
-                        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
-                        b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
-                        vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
-                                       VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                        if (fsr3::fsr_stage() != 3) {   // (3: everything but this blit, so its cost shows)
+                            VkImageBlit b{};
+                            b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                            b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+                            b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                            vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL,
+                                           out->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+                                           VK_FILTER_NEAREST);
+                        }
                         return true;
                     }
                 }

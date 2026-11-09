@@ -192,6 +192,11 @@ struct Ngx {
     decltype(&NVSDK_NGX_VULKAN_CreateFeature) create = nullptr;
     decltype(&NVSDK_NGX_VULKAN_EvaluateFeature) evaluate = nullptr;
     decltype(&NVSDK_NGX_VULKAN_ReleaseFeature) release = nullptr;
+    /// The two discovery calls, which answer before a device exists. Optional: an NGX without them
+    /// is an NGX whose DLSS needs nothing beyond the core, and refusing to load over a missing
+    /// discovery call would turn a working configuration into an unavailable one.
+    decltype(&NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements) instance_exts = nullptr;
+    decltype(&NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements) device_exts = nullptr;
     bool started = false;
     NVSDK_NGX_Parameter* params = nullptr;    ///< the evaluation's own parameters
     NVSDK_NGX_Handle* feature = nullptr;
@@ -239,7 +244,26 @@ bool ngx_load() {
     NGX_RESOLVE(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature")
     NGX_RESOLVE(release, "NVSDK_NGX_VULKAN_ReleaseFeature")
 #undef NGX_RESOLVE
+    ngx.instance_exts = (decltype(ngx.instance_exts))(void*)GetProcAddress(
+        ngx.module, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements");
+    ngx.device_exts = (decltype(ngx.device_exts))(void*)GetProcAddress(
+        ngx.module, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
     return true;
+}
+
+const wchar_t* data_path();   // (defined below: the folder NGX keeps its own files in)
+
+/// What a discovery call is asked about: Super Resolution, this SDK's version, our project id.
+NVSDK_NGX_FeatureDiscoveryInfo discovery_info() {
+    NVSDK_NGX_FeatureDiscoveryInfo info{};
+    info.SDKVersion = NVSDK_NGX_Version_API;
+    info.FeatureID = NVSDK_NGX_Feature_SuperSampling;
+    info.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
+    info.Identifier.v.ProjectDesc.ProjectId = kProjectId;
+    info.Identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
+    info.Identifier.v.ProjectDesc.EngineVersion = kEngineVersion;
+    info.ApplicationDataPath = data_path();
+    return info;
 }
 
 /// The game folder, wide, for NGX's application data path: where it writes what it keeps and where
@@ -455,6 +479,38 @@ bool supported() {
         return ngx_available();
     }();
     return answer;
+}
+
+size_t instance_extensions(const char** out, size_t max) {
+#if defined(RX_VK_DLSS_SDK)
+    if (!wanted() || !ngx_load() || !ngx.instance_exts) return 0;
+    const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info();
+    uint32_t n = 0;
+    VkExtensionProperties* props = nullptr;
+    if (NVSDK_NGX_FAILED(ngx.instance_exts(&info, &n, &props)) || !props) return 0;
+    size_t kept = 0;
+    for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
+    return kept;
+#else
+    (void)out, (void)max;
+    return 0;
+#endif
+}
+
+size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {
+#if defined(RX_VK_DLSS_SDK)
+    if (!wanted() || !instance || !gpu || !ngx_load() || !ngx.device_exts) return 0;
+    const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info();
+    uint32_t n = 0;
+    VkExtensionProperties* props = nullptr;
+    if (NVSDK_NGX_FAILED(ngx.device_exts(instance, gpu, &info, &n, &props)) || !props) return 0;
+    size_t kept = 0;
+    for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
+    return kept;
+#else
+    (void)instance, (void)gpu, (void)out, (void)max;
+    return 0;
+#endif
 }
 
 bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_width,

@@ -95,6 +95,28 @@ int main() {
         a.stand_in_wanted = true, a.push_descriptor = false;
         check(choose(a, good()) == Backend::None, "without push descriptors nothing can be recorded");
     }
+
+    // The vendor backends. Each one is a wrong picture rather than a worse one when the inputs are short, so
+    // neither may be chosen where the contract is not met -- that is the difference between them and the stand-in.
+    {
+        Availability a;
+        a.push_descriptor = true;
+        a.fsr3 = true;
+        check(choose(a, good()) == Backend::Fsr3, "FSR takes a dispatch whose inputs are complete");
+        Request bare;
+        check(choose(a, bare) == Backend::None, "FSR is not given a dispatch without the inputs");
+        a.stand_in_wanted = true;
+        check(choose(a, bare) == Backend::StandIn, "the stand-in still takes what FSR cannot");
+        check(choose(a, good()) == Backend::Fsr3, "a vendor backend is preferred over the stand-in");
+        a.dlss = true;
+        check(choose(a, good()) == Backend::Dlss, "DLSS is preferred where the hardware has it");
+        a.fsr3 = false;
+        check(choose(a, good()) == Backend::Dlss, "DLSS does not need FSR to be available");
+        a.push_descriptor = false;
+        check(choose(a, good()) == Backend::None, "without push descriptors no backend can be recorded");
+    }
+    check(backend_name(Backend::Fsr3)[0] == 'F' && backend_name(Backend::Dlss)[0] == 'D',
+          "the vendor backends are named");
     check(backend_name(Backend::StandIn)[0] == 's' && backend_name(Backend::None)[0] == 'n', "backends are named");
 
     if (failures != 0) {

@@ -16,6 +16,8 @@
 
 #include "vk_fsr3.h"
 #include "vk_gprof.h"    // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
+#include <chrono>
+
 #include "vk_texture.h"   // (full_barrier: what the rest of the renderer uses between passes)
 
 #include "shaders/fsr3_accumulate_comp_spv.h"
@@ -31,6 +33,14 @@
 #include "shaders/fsr3_shading_change_pyramid_nowave_comp_spv.h"
 
 namespace mkwvk::fsr3 {
+int fsr_stage() {
+    static const int n = []() {
+        const char* e = getenv("RX_VK_FSR_STAGE");
+        return e ? atoi(e) : 0;
+    }();
+    return n;
+}
+
 namespace {
 
 /// A descriptor's kind, in the binding order each pass file declares. Every pass also takes the two
@@ -383,11 +393,13 @@ void record_pass(VkCommandBuffer cmd, const Pipeline& p, const PassInfo& info, c
     // (one timed span per pass with RX_VK_PASS_TIMING=1, so the profiler's report gives GPU ms by
     //  pass name. Nine passes costing half a second between them needs a number per pass, not
     //  another hypothesis)
+    // (hookshot, diagnostics) RX_VK_FSR_STAGE cuts this path short so each run names a cost
+    //  instead of a hypothesis: 2 records every barrier, clear and descriptor but no dispatch.
     const bool timed = gprof_begin(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
     vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0,
                               (uint32_t)writes.size(), writes.data());
-    vkCmdDispatch(cmd, std::max(1u, groups_x), std::max(1u, groups_y), 1);
+    if (fsr_stage() != 2) vkCmdDispatch(cmd, std::max(1u, groups_x), std::max(1u, groups_y), 1);
     if (timed) gprof_end(cmd, std::string("fsr3 ") + info.name);
     // (every pass reads what the one before it wrote)
     memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
@@ -459,6 +471,28 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
     g.render_width = rw, g.render_height = rh, g.upscale_width = uw, g.upscale_height = uh;
     logf("vk: fsr3: %ux%u -> %ux%u", rw, rh, uw, uh);
     return true;
+}
+
+// (hookshot, diagnostics) How far down this path a run goes, and how far apart the evaluations are.
+//  0 (default) is the whole path; 1 stops before it (vk_draw.cpp); 2 records everything but the nine
+//  dispatches; 3 keeps the dispatches and drops the blit (vk_draw.cpp). The interval is the frame
+//  time when the scene evaluates once a frame, so one line says whether a stage is the cost.
+
+void note_frame() {
+    using clk = std::chrono::steady_clock;
+    static clk::time_point last{};
+    static double sum_ms = 0.0;
+    static int n = 0;
+    const clk::time_point now = clk::now();
+    if (last.time_since_epoch().count() != 0) {
+        sum_ms += std::chrono::duration<double, std::milli>(now - last).count();
+        if (++n == 30) {
+            logf("vk: fsr3 stage %d: %.1f ms between evaluations (%.1f a second)", fsr_stage(),
+                 sum_ms / n, 1000.0 * n / sum_ms);
+            sum_ms = 0.0, n = 0;
+        }
+    }
+    last = now;
 }
 
 bool upscale(VkCommandBuffer cmd, const Inputs& in) {

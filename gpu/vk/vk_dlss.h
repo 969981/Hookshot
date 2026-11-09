@@ -69,6 +69,20 @@ struct Inputs {
 /// Unlike FSR's, this does not make the thing that does the work: `NVSDK_NGX_VULKAN_CreateFeature`
 /// records into a command buffer, and there is none here. The feature is created at the first
 /// `upscale()` after a change of extents instead, which is why this signature can stay FSR's.
+/// The instance and device extensions DLSS needs here, asked of NGX itself rather than written out
+/// from the documentation: the set depends on the driver, and a list hard-coded here would be wrong
+/// on the next one. Both answer before the thing they are about exists, which is why they take what
+/// they do and not `dev`. `out` is filled with at most `max` names and the count is returned; zero
+/// means DLSS was not asked for, this build has no NGX SDK, or NGX does not answer -- in every one
+/// of those the device is created as it would have been. The names are NGX's own storage and last
+/// as long as the process.
+///
+/// Call them before vkCreateInstance / vkCreateDevice. DLSS cannot be made to work afterwards: an
+/// extension it needs and the device does not have is the one failure that is not recoverable at
+/// evaluation time.
+size_t instance_extensions(const char** out, size_t max);
+size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max);
+
 [[nodiscard]] bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_width,
                            uint32_t upscale_height);
 

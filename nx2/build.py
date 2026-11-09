@@ -702,6 +702,12 @@ def main():
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+            # (hookshot) RX_VK_DLSS_SDK=<path to an NGX SDK> compiles the DLSS backend's NGX half
+            # against that SDK's headers. Nothing of NVIDIA's is in this repository and nothing of
+            # NVIDIA's may be put in it (CONTRIBUTING.md): the SDK is the builder's own copy, named
+            # here, and a build without it leaves DLSS reporting itself unavailable.
+            *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(os.environ["RX_VK_DLSS_SDK"], "include")]
+              if os.environ.get("RX_VK_DLSS_SDK") else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
