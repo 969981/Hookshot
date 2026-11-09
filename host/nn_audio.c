@@ -1927,7 +1927,6 @@ HLE(_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE) { 
 HLE(_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv) { RET(0); }
 HLE(_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb) {}
 HLE(_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE) { ret_float(c, 1.0f); }
-HLE(_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi) { RET(0); }
 HLE(_ZN2nn5audio34GetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleE) { ret_float(c, 1.0f); }
 HLE(_ZN2nn5audio34SetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleEf) {}
 
