@@ -136,7 +136,8 @@ bool buffer_side(const NvnState& st, const Sub& s, uint64_t addr, uint64_t& size
         warn(3, "copy row stride does not fit the level's blocks: skipped");
         return false;
     }
-    size = row * hb * s.layers * s.d;
+    // The last row ends at its last block: its trailing stride padding is not accessed by Vulkan.
+    size = row * ((uint64_t)hb * s.layers * s.d - 1) + (uint64_t)wb * s.bpb;
     span = gpu_buffer_bind(addr, size, written);
     if (!addr || !span) {
         warn(3, "copy buffer is not one mapped pool span: skipped");
@@ -331,7 +332,8 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
         const nvn_view* v = p.has_view ? &p.view : nullptr;
         for (uint32_t k = 0; k < s.layers; k++) {
             nvn_view lv = v ? *v : nvn_view{};
-            lv.set_levels = 1, lv.base_level = (uint8_t)s.level, lv.nlevels = 1;
+            // texture_view takes a guest mip level and subtracts skip itself.
+            lv.set_levels = 1, lv.base_level = (uint8_t)(s.level + s.tex->skip), lv.nlevels = 1;
             lv.set_layers = 1, lv.min_layer = (uint16_t)(s.layer + k), lv.nlayers = 1;
             const VkImageView view = texture_view(s.tex, p.tex, &lv, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment);
             if (!view) continue;

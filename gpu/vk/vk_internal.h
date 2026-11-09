@@ -114,6 +114,8 @@ void memory_end_submission(VkCommandBuffer cmd);
 /// The game made a memory pool (gpu address, bytes): imported in the background, before it is used
 /// RX_VK_CHECKPOINTS: the draws the GPU reached, logged once the device is lost (vk_draw.cpp)
 void checkpoints_report();
+/// The device is lost: that report once, then the process ends (vk_replay.cpp)
+[[noreturn]] void device_lost();
 /// VK_AMD_buffer_marker's buffer, for RX_VK_CHECKPOINTS on a device without the NV checkpoints (vk_draw.cpp)
 void buffer_markers_init();
 void coopmat_init();   // vk_coopmat.cpp (once the device is made)
@@ -233,6 +235,9 @@ bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
 /// Device-local memory this process uses and what the driver allows it now (VK_EXT_memory_budget), summed over the
 /// device-local heaps; false when unknown
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free = nullptr);
+/// vram_usage asked of the driver now (VMA asks again for a new frame index), for the status line; false when the driver
+/// gives no budget (VK_EXT_memory_budget): used is then the game's own allocations
+bool vram_usage_now(uint64_t* used, uint64_t* budget);
 void vma_log_heaps();
 PFN_vkGetInstanceProcAddr instance_proc();   // vk_main.cpp
 

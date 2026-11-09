@@ -14,7 +14,8 @@
    frame, as the console's renderer does them (see "parameter updates").
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
    HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs);
-   HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has (see au_speakers). */
+   HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
+   (see au_speakers). */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@
 #else
 #include "hos_sdl.h"
 #endif
+#include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -83,7 +85,7 @@ typedef struct {
     WB wbc[MAX_WB];                            /* and their contents when appended */
     int nwb, pending_wb;                       /* (pending: appended, not yet applied by an update) */
     uint64_t rel[MAX_REL];                     /* released, for GetReleasedWaveBuffer */
-    int nrel;
+    int nrel, nrel_seen;                       /* (seen: the first nrel_seen, released by the last update) */
     int64_t played;
     int64_t pos;                               /* sample frame within the current wave buffer */
     int started_wb;                            /* the current one's start was set up */
@@ -235,6 +237,7 @@ static void release_wb(Voice *v, uint64_t wb) {
     if (v->nrel == MAX_REL) {
         memmove(v->rel, v->rel + 1, (size_t)(MAX_REL - 1) * sizeof v->rel[0]);
         v->nrel--;
+        if (v->nrel_seen) v->nrel_seen--;
     }
     v->rel[v->nrel++] = wb;
 }
@@ -636,20 +639,43 @@ static int au_device_channels(void) {
 #else
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 #endif
-/* The speakers the game mixes for: 6 when the default output has 5.1 or more, else 2 (HOS_AUDIO_CHANNELS=2 or 6 to
-   choose). The game asks once, at its start (GetActiveAudioDeviceChannelCountForOutput), and pans for that many. Told 2
-   (always, before), it put nothing behind the player, and a 5.1 system played the whole game from the front speakers
-   (issue 1124). Its device sink has the six channels either way; with two speakers they are mixed down. */
+/* (hookshot) The Insert menu's Audio output (gpu/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
+   0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
+   host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
+static int au_menu_output(void) {
+    char path[MAX_PATH];
+    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    if (!slash) return 0;
+    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[80];
+    int v = 0;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "audio_output=", 13)) v = atoi(line + 13);
+    fclose(f);
+    return v < 1 ? 0 : v > 2 ? 2 : v;
+}
+/* The speakers the game mixes for: the Insert menu's Audio output, Stereo 2 or 5.1 6, HOS_AUDIO_CHANNELS=2 or 6 over it;
+   Auto: 6 when the default output has 5.1 or more, else 2. The game asks once, at its start
+   (GetActiveAudioDeviceChannelCountForOutput), and pans for that many, so a change takes a restart. Told 2 (always,
+   before), it put nothing behind the player, and a 5.1 system played the whole game from the front speakers (issue
+   1124). Its device sink has the six channels either way; with two speakers they are mixed down. */
 static int au_speakers(void) {
     static volatile int known;
     if (!known) {
         au_lock();   /* (the game's thread and the mixer's ask at about the same time: one of them looks) */
         if (!known) {
             const char *want = getenv("HOS_AUDIO_CHANNELS");
+            const int menu = want && *want ? 0 : au_menu_output();
             int n;
             if (want && *want) {
                 n = atoi(want) >= 6 ? 6 : 2;
                 hos_log("audio: %s for the game (HOS_AUDIO_CHANNELS)", n == 6 ? "5.1" : "stereo");
+            } else if (menu) {
+                n = menu == 2 ? 6 : 2;
+                hos_log("audio: %s for the game (the Insert menu's Audio output)", n == 6 ? "5.1" : "stereo");
             } else {
                 const int device = au_device_channels();
                 n = device >= 6 ? 6 : 2;
@@ -878,6 +904,11 @@ static void output_frame(const int16_t *pcm) {
    its VoiceType for the next sound right after releasing it, so its handle names the new voice by the time the
    update comes (looked up then, a queued release ended the new sound: no footsteps or hits). A released slot stays
    taken until the update applies the release, so the indices hold for the queue's life.
+   The other way too: the wave buffers the mixer finishes reach the game at the next update (GetReleasedWaveBuffer
+   returns them, GetWaveBufferCount stops counting them), as the console's renderer reports them. Seen as the mixer
+   finished them, a pass over the voices could find the first ones full and a later one a buffer short: Ocarina's sound
+   thread feeds its six speaker voices that way, appended the short one an extra buffer, then one more each pass, until
+   the queue was full and that speaker went silent for good (a run in five or so).
    HOS_AUDIO_IMMEDIATE=1: every change applied as it comes (as before). */
 enum { OP_VOICE_RELEASE, OP_VOICE_DEST, OP_VOICE_MIX_VOLUME, OP_VOICE_VOLUME, OP_VOICE_PITCH, OP_VOICE_BIQUAD,
        OP_VOICE_STATE, OP_VOICE_APPEND, OP_MIX_RELEASE, OP_MIX_VOLUME, OP_MIX_DEST, OP_MIX_MIX_VOLUME, OP_SPLIT_RELEASE,
@@ -983,6 +1014,7 @@ static void submit(const Cmd *k) {   /* (with the lock held) */
 static void commit(void) {   /* (with the lock held) */
     for (int i = 0; i < ncmds; i++) apply(&cmds[i]);
     ncmds = 0;
+    for (int i = 0; i < MAX_VOICES; i++) voices[i].nrel_seen = voices[i].nrel;   /* (the finished buffers, to the game) */
 }
 
 /* The mixer's next deadline. `next` was the one just woken for; one frame is `period` later, on that same grid.
@@ -1458,10 +1490,11 @@ HLE(_ZN2nn5audio21GetReleasedWaveBufferEPNS0_9VoiceTypeE) {
     au_lock();
     Voice *v = voice_of(ARG(0));
     uint64_t r = 0;
-    if (v && v->nrel) {
+    if (v && v->nrel_seen) {   /* (those released by the last update: see "parameter updates") */
         r = v->rel[0];
         memmove(v->rel, v->rel + 1, (size_t)(v->nrel - 1) * sizeof v->rel[0]);
         v->nrel--;
+        v->nrel_seen--;
     }
     au_unlock();
     RET(r);
@@ -1469,7 +1502,7 @@ HLE(_ZN2nn5audio21GetReleasedWaveBufferEPNS0_9VoiceTypeE) {
 HLE(_ZN2nn5audio18GetWaveBufferCountEPKNS0_9VoiceTypeE) {
     au_lock();
     Voice *v = voice_of(ARG(0));
-    RET(v ? v->nwb + v->pending_wb : 0);
+    RET(v ? v->nwb + v->pending_wb + (v->nrel - v->nrel_seen) : 0);   /* (finished since the last update: still queued) */
     au_unlock();
 }
 HLE(_ZN2nn5audio25GetVoicePlayedSampleCountEPKNS0_9VoiceTypeE) {

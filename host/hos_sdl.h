@@ -21,6 +21,7 @@ void *hos_sdl_window(const char *title, int width, int height);
 void hos_sdl_fullscreen(void *window, int on);   /* (the desktop's mode, borderless) */
 void hos_sdl_relative_mouse(void *window, int on);
 int hos_sdl_desktop_size(int *width, int *height);
+int hos_sdl_refresh_mhz(void *window);   /* the refresh rate of the window's display in mHz, 0 when not known (the main thread) */
 int hos_sdl_vulkan_surface(void *window, void *instance, void *surface_out);   /* (VkInstance, VkSurfaceKHR *): 1 if made */
 void hos_sdl_pixel_size(void *window, int *width, int *height);
 const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID usage), 1 a key down */
@@ -72,6 +73,12 @@ int16_t hos_sdl_pad_axis(void *pad, int axis);
 const char *hos_sdl_pad_name(void *pad);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
+/* (HD rumble, host/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
+   unknown, or no such call); whether the SDL has the effect call; a raw effect sent (SDL_SendGamepadEffect /
+   SDL_GameControllerSendEffect): 1 when SDL took it */
+int hos_sdl_pad_type(void *pad);
+int hos_sdl_pad_has_effect(void);
+int hos_sdl_pad_effect(void *pad, const void *data, int size);
 /* motion sensors (SDL_SENSOR_ACCEL m/s^2, SDL_SENSOR_GYRO rad/s, three values each): 0 when the pad or the SDL has none */
 enum { HOS_SDL_SENSOR_ACCEL = 1, HOS_SDL_SENSOR_GYRO = 2 };
 int hos_sdl_pad_has_sensor(void *pad, int type);

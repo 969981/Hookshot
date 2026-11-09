@@ -17,6 +17,9 @@
 #include "../gpu/render/rx.h"
 void rx_close_asked(void);   /* host/rx_backend.c */
 #include "../gpu/vk/vk_api.h"
+
+void hos_relaunch_ask(void);        /* (host/hos_relaunch.c) */
+void hos_window_closed_exit(void);
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
 #endif
@@ -36,7 +39,7 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
-/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
     InterlockedExchangeAdd(&mouse_dy, dy);
@@ -243,14 +246,22 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_ERASEBKGND:
         return renderer ? 1 : DefWindowProcA(w, msg, wp, lp);
+    case WM_APP + 9:   /* (the Insert menu's Restart now: closed as by the player, then started again: host/hos_relaunch.c) */
+        hos_relaunch_ask();
+        /* fall through */
     case WM_CLOSE:
         rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
-        hos_log("display: window closed, exiting");
-        hos_log_flush();
-        ExitProcess(0);
+        hos_window_closed_exit();
         return 0;
     }
     return DefWindowProcA(w, msg, wp, lp);
+}
+
+static void display_start_failed(const char *operation) {
+    const DWORD error = GetLastError();
+    hos_log("display: %s failed (error %lu)", operation, (unsigned long)error);
+    hos_log_flush();
+    ExitProcess(1);
 }
 
 static DWORD WINAPI display_main(void *p) {
@@ -272,7 +283,8 @@ static DWORD WINAPI display_main(void *p) {
     RegisterClassA(&wc);
     dpi_aware_thread();
     extern float hos_aspect_ratio;
-    int win_w = hos_aspect_ratio > 1.8f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
+    /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
+    int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
     if (getenv("HOS_WINDOW_SIZE")) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
@@ -282,6 +294,7 @@ static DWORD WINAPI display_main(void *p) {
     const int noactivate = getenv("HOS_WINDOW_NOACTIVATE") != NULL;
     hwnd = CreateWindowA("Hookshot", HOS_GAME_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                          CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    if (!hwnd) display_start_failed("CreateWindowA");
     if (window_dpi(hwnd) != 96) {
         const UINT dpi = window_dpi(hwnd);
         RECT s = {0, 0, (LONG)(win_w * dpi / 96), (LONG)(win_h * dpi / 96)};
@@ -322,5 +335,8 @@ void hos_display_start(void) {
         return;
     }
     renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);
-    CreateThread(NULL, 0, display_main, NULL, 0, NULL);
+    if (!renderer_up) display_start_failed("CreateEventA");
+    HANDLE thread = CreateThread(NULL, 0, display_main, NULL, 0, NULL);
+    if (!thread) display_start_failed("CreateThread");
+    CloseHandle(thread);
 }
