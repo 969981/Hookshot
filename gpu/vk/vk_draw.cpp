@@ -51,6 +51,12 @@
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+
+/// (vk_replay.cpp) The presents so far. Declared here, at this namespace's scope and not inside
+/// the anonymous one below, because a declaration in there is a *different* symbol: the link
+/// leaves it undefined and dlopen(RTLD_NOW) then refuses the whole renderer, which looks like
+/// "the renderer did not start" and nothing else.
+extern int64_t presents_now;
 // (EvilOOT, RX_VK_DRAW_STATS: the pointer table's regions, vk_bank.cpp)
 struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
@@ -2700,7 +2706,6 @@ uint32_t jitter_phases(uint32_t render_width, uint32_t display_width) {
 /// Advances once per present. Called from the viewport path, which is the first place in a frame
 /// that knows the scene's extent.
 void advance_scene_jitter(uint32_t render_width, uint32_t display_width) {
-    extern int64_t presents_now;   // (vk_replay.cpp)
     if (scene_jitter_state.frame == presents_now) return;
     scene_jitter_state.frame = presents_now;
     const uint32_t phases = jitter_phases(render_width, display_width);
