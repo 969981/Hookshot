@@ -23,6 +23,9 @@ struct SceneFrameInputs {
     uint32_t render_width = 0, render_height = 0;
     /// The view projection the scene's draws read, row major, as gpu/vk/vk_camera_motion.h takes it.
     float view_projection[16]{};
+    /// Its two halves, for a backend that wants them apart (frame generation does).
+    float view[16]{};
+    float projection[16]{};
     bool have_view_projection = false;
 };
 bool scene_frame_inputs(SceneFrameInputs* out);

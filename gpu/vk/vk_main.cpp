@@ -4,7 +4,8 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
-#include "vk_dlss.h"   // (the device extensions DLSS needs, asked of NGX before the device is made)
+#include "vk_dlss.h"    // (the device extensions DLSS needs, asked of NGX before the device is made)
+#include "vk_dlssg.h"   // (frame generation asks for its own set, which is not the same one)
 
 #include <cstdarg>
 #include <cstdio>
@@ -237,19 +238,26 @@ bool create_device() {
     // creates exactly the device it created before. An extension NGX names and this GPU does not
     // have is named in the log and left out: DLSS will then report itself unavailable, which is the
     // honest outcome, rather than vkCreateDevice failing and taking the whole renderer with it.
-    {
+    // Each feature is asked separately: super resolution's set is not frame generation's, and a
+    // device made for one and not the other is where NGX creates the feature and fails
+    // (FAIL_PlatformError) while still reporting it available.
+    for (int which = 0; which < 2; which++) {
+        const char* const name = which == 0 ? "dlss" : "dlssg";
         const char* dlss_want[16] = {};
-        const size_t dlss_n = dlss::device_extensions(dev.instance, dev.physical, dlss_want,
-                                                      sizeof dlss_want / sizeof *dlss_want);
+        const size_t dlss_n =
+            which == 0 ? dlss::device_extensions(dev.instance, dev.physical, dlss_want,
+                                                 sizeof dlss_want / sizeof *dlss_want)
+                       : dlssg::device_extensions(dev.instance, dev.physical, dlss_want,
+                                                  sizeof dlss_want / sizeof *dlss_want);
         for (size_t i = 0; i < dlss_n; i++) {
             if (!has_extension(exts, dlss_want[i])) {
-                logf("vk: dlss wants %s, which this GPU does not have: DLSS will be unavailable",
+                logf("vk: %s wants %s, which this GPU does not have: it will be unavailable", name,
                      dlss_want[i]);
                 continue;
             }
             bool already = false;
             for (const char* have : want) already = already || strcmp(have, dlss_want[i]) == 0;
-            if (!already) want.push_back(dlss_want[i]), logf("vk: dlss wants %s: enabled", dlss_want[i]);
+            if (!already) want.push_back(dlss_want[i]), logf("vk: %s wants %s: enabled", name, dlss_want[i]);
         }
     }
 

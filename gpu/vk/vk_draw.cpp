@@ -4534,6 +4534,12 @@ void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkInd
 /// submitted uniform data and not live guest memory.
 struct SceneViewProjection {
     float m[16]{};      ///< row major, projection times view
+    /// The two halves, kept as well as their product: frame generation is handed the projection and
+    /// its inverse separately (NGX's cameraViewToClip / clipToCameraView), and the camera's own
+    /// position and axes come out of the view. Deriving them back out of the product would mean
+    /// factorizing it, which is worse than keeping what we already had.
+    float view[16]{};   ///< row major, world -> camera (the game's 3x4, with 0,0,0,1 under it)
+    float proj[16]{};   ///< row major, camera -> clip
     bool have = false;
 };
 SceneViewProjection scene_vp;
@@ -4577,6 +4583,11 @@ static void capture_view_projection(const NvnState& s) {
                 }
             }
             memcpy(scene_vp.m, vp, sizeof vp);
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 4; c++) scene_vp.view[r * 4 + c] = v[r * 4 + c];
+            scene_vp.view[12] = scene_vp.view[13] = scene_vp.view[14] = 0.0f;
+            scene_vp.view[15] = 1.0f;
+            memcpy(scene_vp.proj, pr, sizeof scene_vp.proj);
             scene_vp.have = true;
             static std::atomic<int> told{0};
             if (told++ == 0)
@@ -5458,7 +5469,11 @@ bool scene_frame_inputs(SceneFrameInputs* out) {
     out->render_width = scene_depth.width;
     out->render_height = scene_depth.height;
     out->have_view_projection = scene_vp.have;
-    if (scene_vp.have) memcpy(out->view_projection, scene_vp.m, sizeof out->view_projection);
+    if (scene_vp.have) {
+        memcpy(out->view_projection, scene_vp.m, sizeof out->view_projection);
+        memcpy(out->view, scene_vp.view, sizeof out->view);
+        memcpy(out->projection, scene_vp.proj, sizeof out->projection);
+    }
     else if (hos_oot_view_projection) out->have_view_projection = hos_oot_view_projection(out->view_projection) != 0;
     return true;
 }

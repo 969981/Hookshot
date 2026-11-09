@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cfloat>
 #include <cstring>
 
 #if defined(RX_VK_DLSS_SDK)
@@ -198,7 +199,28 @@ bool ngx_generate(VkCommandBuffer cmd, const Inputs& in, Image& out) {
     if (in.have_matrices) {
         params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToPrevClip, (void*)in.clip_to_prev_clip);
         params->Set(NVSDK_NGX_DLSSG_Parameter_PrevClipToClip, (void*)in.prev_clip_to_clip);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraViewToClip, (void*)in.camera_view_to_clip);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToCameraView, (void*)in.clip_to_camera_view);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_ClipToLensClip, (void*)in.clip_to_lens_clip);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosX, in.camera_pos[0]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosY, in.camera_pos[1]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPosZ, in.camera_pos[2]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpX, in.camera_up[0]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpY, in.camera_up[1]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraUpZ, in.camera_up[2]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightX, in.camera_right[0]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightY, in.camera_right[1]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraRightZ, in.camera_right[2]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdX, in.camera_forward[0]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdY, in.camera_forward[1]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraFwdZ, in.camera_forward[2]);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetX, 0.0f);
+        params->Set(NVSDK_NGX_DLSSG_Parameter_CameraPinholeOffsetY, 0.0f);
     }
+    params->Set(NVSDK_NGX_DLSSG_Parameter_OrthoProjection, 0u);
+    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecDilated, 0u);
+    params->Set(NVSDK_NGX_DLSSG_Parameter_MvecInvalidValue, -FLT_MAX);
+    params->Set(NVSDK_NGX_DLSSG_Parameter_MinRelativeLinearDepthObjectSeparation, 40.0f);
     params->Set(NVSDK_NGX_DLSSG_Parameter_JitterOffsetX, in.jitter[0]);
     params->Set(NVSDK_NGX_DLSSG_Parameter_JitterOffsetY, in.jitter[1]);
     params->Set(NVSDK_NGX_DLSSG_Parameter_MvecScaleX, in.motion_scale[0]);
@@ -265,6 +287,16 @@ bool supported() {
         return true;
     }();
     return yes;
+}
+
+size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {
+#if defined(RX_VK_DLSS_SDK)
+    if (!asked()) return 0;   // (RX_VK_DLSSG: a run that did not ask gets the device it had)
+    return ngx::device_extensions(instance, gpu, NVSDK_NGX_Feature_FrameGeneration, out, max);
+#else
+    (void)instance, (void)gpu, (void)out, (void)max;
+    return 0;
+#endif
 }
 
 uint32_t frames_wanted() {

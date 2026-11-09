@@ -48,6 +48,16 @@ struct Inputs {
     float jitter[2]{};
     float clip_to_prev_clip[16]{};
     float prev_clip_to_clip[16]{};
+    /// The rest of the set NGX's own helper sets. An evaluation with only the two above is refused
+    /// with NVSDK_NGX_Result_FAIL_MissingInput, which is what a run saw, so these are not optional
+    /// however optional the struct they live in is called.
+    float camera_view_to_clip[16]{};   ///< the projection
+    float clip_to_camera_view[16]{};   ///< its inverse
+    float clip_to_lens_clip[16]{};     ///< identity here: this game has no lens distortion
+    float camera_pos[3]{};
+    float camera_up[3]{};
+    float camera_right[3]{};
+    float camera_forward[3]{};
     bool have_matrices = false;
 
     float near_plane = 0.1f;
@@ -73,6 +83,14 @@ struct Inputs {
 /// the NGX runtime loaded, and this driver and GPU reporting Frame Generation. Asked once; the one
 /// line saying why it is false is logged once.
 [[nodiscard]] bool supported();
+
+/// The device extensions frame generation needs here, asked of NGX itself before the device exists.
+/// Super resolution's set is not the same set: a device made for one and not the other is where
+/// `NVSDK_NGX_VULKAN_CreateFeature` answers FAIL_PlatformError with the feature still reporting
+/// itself available, which is exactly what a run saw. Returns how many names were written, at most
+/// `max`; zero where frame generation was not asked for, this build has no NGX SDK, or NGX does not
+/// answer. The names are NGX's own storage and last as long as the process.
+size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max);
 
 /// How many frames the run asks to be made between two of the game's: `RX_VK_DLSSG=<1-3>`, 1 by
 /// default. Zero where frame generation is not asked for at all.

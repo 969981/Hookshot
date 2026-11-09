@@ -427,6 +427,43 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     return fg.recorded->frame[0].image;
 }
 
+/// (hookshot) A 4x4 inverse and a 4x4 product, row major, in doubles. Frame generation needs the
+/// projection's inverse and the clip-to-previous-clip pair, and a float inverse of a projection with
+/// a far plane in the thousands loses the precision the reprojection depends on.
+bool invert4x4(const float* m, float* out) {
+    double a[16], inv[16];
+    for (int i = 0; i < 16; i++) a[i] = (double)m[i];
+    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+    const double det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+    if (det > -1e-12 && det < 1e-12) return false;
+    for (int i = 0; i < 16; i++) out[i] = (float)(inv[i] / det);
+    return true;
+}
+
+void multiply4x4(const float* a, const float* b, float* out) {
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double sum = 0;
+            for (int k = 0; k < 4; k++) sum += (double)a[r * 4 + k] * (double)b[k * 4 + c];
+            out[r * 4 + c] = (float)sum;
+        }
+}
+
 /// (hookshot) The made frames of one present, by DLSS Frame Generation: how many were made, 0 when
 /// it could not run. Each one is copied into the set the display thread shows, so the rest of this
 /// file does not care which of the two made them.
@@ -472,6 +509,40 @@ int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
             in.fov_y = 2.0f * std::atan(tan_half);
         }
     }
+    // The rest of the matrix set NGX wants, built from the two halves the draw path kept. The
+    // camera's own position and axes come out of the view: its 3x3 is world -> camera, so the rows
+    // are the camera's axes in world space and the position is -R transpose times the translation.
+    if (scene.have_view_projection) {
+        memcpy(in.camera_view_to_clip, scene.projection, sizeof in.camera_view_to_clip);
+        if (invert4x4(scene.projection, in.clip_to_camera_view)) {
+            for (int i = 0; i < 16; i++) in.clip_to_lens_clip[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+            const float* v = scene.view;
+            for (int c = 0; c < 3; c++) {
+                in.camera_right[c] = v[0 * 4 + c];
+                in.camera_up[c] = v[1 * 4 + c];
+                in.camera_forward[c] = v[2 * 4 + c];
+            }
+            for (int c = 0; c < 3; c++)
+                in.camera_pos[c] = -(v[0 * 4 + c] * v[0 * 4 + 3] + v[1 * 4 + c] * v[1 * 4 + 3] +
+                                     v[2 * 4 + c] * v[2 * 4 + 3]);
+            // clip -> previous clip, and back. The camera-motion pass keeps the previous view
+            // projection; here the pair is built from this frame's and the last one this function
+            // saw, which is the same frame boundary the made frame sits on.
+            static float previous[16];
+            static bool have_previous = false;
+            float inverse_vp[16];
+            if (have_previous && invert4x4(scene.view_projection, inverse_vp)) {
+                multiply4x4(previous, inverse_vp, in.clip_to_prev_clip);
+                float inverse_previous[16];
+                if (invert4x4(previous, inverse_previous))
+                    multiply4x4(scene.view_projection, inverse_previous, in.prev_clip_to_clip);
+                in.have_matrices = true;
+            }
+            memcpy(previous, scene.view_projection, sizeof previous);
+            have_previous = true;
+        }
+    }
+    if (!in.have_matrices) return 0;   // (the first frame after a cut has no pair to interpolate on)
     in.frames_made = (uint32_t)want;
     int made = 0;
     for (int k = 1; k <= want; k++) {
