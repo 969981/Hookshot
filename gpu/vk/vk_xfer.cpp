@@ -334,15 +334,18 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
             // texture_view takes a guest mip level and subtracts skip itself.
             lv.set_levels = 1, lv.base_level = (uint8_t)(s.level + s.tex->skip), lv.nlevels = 1;
             lv.set_layers = 1, lv.min_layer = (uint16_t)(s.layer + k), lv.nlayers = 1;
-            const VkImageView view = texture_view(s.tex, p.tex, &lv, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment);
+            VkFormat vf = VK_FORMAT_UNDEFINED;
+            const VkImageView view = texture_view(s.tex, p.tex, &lv, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment, &vf);
             if (!view) continue;
+            // (#1004: a block view of a compressed image, OoT's BC4 array cleared as RGBA16UI, is its blocks wide)
+            const uint32_t vw = view_texels(s.tex, vf, lw), vh = view_texels(s.tex, vf, lh);
             VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             a.imageView = view;
             a.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = {{0, 0}, {lw, lh}};
+            ri.renderArea = {{0, 0}, {vw, vh}};
             ri.layerCount = 1;
             const bool color = s.tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT;
             if (color) ri.colorAttachmentCount = 1, ri.pColorAttachments = &a;
@@ -353,7 +356,11 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
             ca.aspectMask = s.tex->aspect;
             if (color) std::memcpy(&ca.clearValue.color, &p.c, sizeof ca.clearValue.color);
             else ca.clearValue.depthStencil = {p.c.f[0], p.c.u[0]};
-            const VkClearRect rect{{{s.x, s.y}, {s.w, s.h}}, 0, 1};
+            // (inside the pass's area, as vkCmdClearAttachments wants)
+            const int32_t cx = std::clamp<int32_t>(s.x, 0, (int32_t)vw), cy = std::clamp<int32_t>(s.y, 0, (int32_t)vh);
+            const VkClearRect rect{{{cx, cy}, {std::min<uint32_t>(s.w, vw - (uint32_t)cx), std::min<uint32_t>(s.h, vh - (uint32_t)cy)}},
+                                   0, 1};
+            if (!rect.rect.extent.width || !rect.rect.extent.height) { vkCmdEndRendering(cmd); continue; }
             vkCmdClearAttachments(cmd, 1, &ca, 1, &rect);
             vkCmdEndRendering(cmd);
         }

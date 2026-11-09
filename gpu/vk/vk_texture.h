@@ -26,6 +26,7 @@ struct Texture {
     VkImageType type = VK_IMAGE_TYPE_2D;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageUsageFlags usage = 0;
+    VkImageCreateFlags create_flags = 0;   // (what the image was made with: the "not made" lines of its views)
     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
@@ -135,6 +136,8 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling);
 /// A view of it: the view's levels and layers (all when v is null), as view_type, in the view's format
 /// (attachment: one level, one layer; storage: one level, every layer, in a storage-capable format)
 enum class ViewUse { Sample, Attachment, Storage };
+/// A view's width or height in its own texels: in blocks (4 x 4 texels) for an uncompressed view of a compressed image
+uint32_t view_texels(const Texture* tex, VkFormat view_format, uint32_t image_texels);
 VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkImageViewType view_type, ViewUse use,
                          VkFormat* format_out = nullptr, VkFormat force_format = VK_FORMAT_UNDEFINED);
 /// The view format an NVN texture and view sample / render in

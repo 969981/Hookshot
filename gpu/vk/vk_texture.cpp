@@ -377,13 +377,23 @@ bool astc_ready() {
     return true;
 }
 
+// (why the last make_view() on this thread gave no view, for texture_view()'s "not made" line)
+thread_local char view_failure[96];
+
 VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAspectFlags aspect, uint32_t level0,
                       uint32_t nlevels, uint32_t layer0, uint32_t nlayers, const VkComponentMapping& cm,
                       VkImageUsageFlags usage) {
-    if (!usage || (usage & tex->usage) != usage) return VK_NULL_HANDLE;
+    view_failure[0] = 0;
+    if (!usage || (usage & tex->usage) != usage) {
+        snprintf(view_failure, sizeof view_failure, "usage %#x not in the image's %#x", usage, tex->usage);
+        return VK_NULL_HANDLE;
+    }
     // (block-texel views of a compressed image: one level; several layers where the driver takes them)
     const bool block_view = is_bc(tex->format) && !is_bc(f);
-    if (block_view && nlevels != 1) return VK_NULL_HANDLE;
+    if (block_view && nlevels != 1) {
+        snprintf(view_failure, sizeof view_failure, "block-texel view of %u levels", nlevels);
+        return VK_NULL_HANDLE;
+    }
     VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
     uci.usage = usage & tex->usage;
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -394,12 +404,19 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
     vi.components = cm;
     vi.subresourceRange = {aspect, level0, nlevels, layer0, nlayers};
     VkImageView v = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return v;
+    VkResult r = vkCreateImageView(dev.device, &vi, nullptr, &v);
+    if (r == VK_SUCCESS) return v;
+    snprintf(view_failure, sizeof view_failure, "vkCreateImageView %d (usage %#x, image flags %#x)", (int)r, uci.usage,
+             tex->create_flags);
     if (!block_view || nlayers == 1) return VK_NULL_HANDLE;
     // (Vulkan 1.1 says a block-texel view is of a single layer; some drivers hold to it)
     vi.subresourceRange.layerCount = 1;
     if (vi.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY) vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
+    r = vkCreateImageView(dev.device, &vi, nullptr, &v);
+    if (r != VK_SUCCESS) {
+        snprintf(view_failure, sizeof view_failure, "vkCreateImageView %d of one layer", (int)r);
+        return VK_NULL_HANDLE;
+    }
     return v;
 }
 
@@ -1486,6 +1503,35 @@ void forget_gpu(Texture* tex) {
         }
 }
 
+// (a compressed image refused with a usage of its block views and made again without: those views will not be made)
+bool logf_usage_dropped(const VkImageCreateInfo& ci, unsigned nvn_format, const char* usage) {
+    static int told;
+    if (told++ < 8)
+        logf("vk: image %ux%u x%u levels %u format %d (NVN %#x, flags %#x) refused with %s: made without",
+             ci.extent.width, ci.extent.height, ci.arrayLayers, ci.mipLevels, (int)ci.format, nvn_format, ci.flags, usage);
+    return true;
+}
+
+// (#1004) whether compressed images get COLOR_ATTACHMENT, for the game's draws and clears into their blocks through an
+// uncompressed view (RX_VK_BC_TARGETS=1 / 0: on / off on any driver)
+bool bc_color_targets() {
+    // (on by default with Mesa's RADV only, where it was tested (RX 7700S and 780M, Mesa 26.2): the other drivers as before)
+    static const bool on = [] {
+        VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &dp;
+        bool radv = false;
+        if (dev.physical) vkGetPhysicalDeviceProperties2(dev.physical, &p2), radv = dp.driverID == VK_DRIVER_ID_MESA_RADV;
+        const char* e = getenv("RX_VK_BC_TARGETS");
+        const bool v = e ? atoi(e) != 0 : radv;
+        logf("vk: draws and clears into compressed textures %s (RX_VK_BC_TARGETS%s)", v ? "on" : "off",
+             !e && radv ? ", on with RADV" : "");
+        return v;
+    }();
+    return on;
+}
+
+
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb) {
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
@@ -1653,10 +1699,25 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // (asked without STORAGE: AMD's driver checks that against the compressed format and says no, though it makes
         // the image and its raw views (RX 6600 XT, amdvlk); without them the game's BC encoders wrote nowhere and
         // Link's clothes showed stale blocks. If the image is then refused, it is made again without)
-        if ((format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
+        const bool raw_storage = format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        const VkResult q = raw_storage ? vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type,
+                                             VK_IMAGE_TILING_OPTIMAL, x.usage, flags, &limits)
+                                       : VK_ERROR_FORMAT_NOT_SUPPORTED;
+        if (q == VK_SUCCESS) x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        else {
+            static int told;
+            if (told++ < 8)
+                logf("vk: compressed image format %d (NVN %#x) %ux%u x%u: no raw storage views (raw format %d storage %d, "
+                     "image query %d)", (int)x.format, d.format, x.width, x.height, x.layers, (int)raw, raw_storage ? 1 : 0, (int)q);
+        }
+        // (#1004: the game also draws into its BC textures through an uncompressed view of their blocks, OoT's 16-layer
+        // BC4 array as RGBA16UI, and clears them so. Without COLOR_ATTACHMENT those views were "not made" and the draws
+        // and clears left out. Asked on its own, so that a refusal keeps STORAGE; bc_color_targets() says where)
+        if (!x.bc && x.samples == VK_SAMPLE_COUNT_1_BIT && bc_color_targets() &&
+            (format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
             vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
-                x.usage, flags, &limits) == VK_SUCCESS)
-            x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+                x.usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, flags, &limits) == VK_SUCCESS)
+            x.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
@@ -1666,6 +1727,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     }
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = flags;
+    x.create_flags = flags;
     ci.imageType = x.type;
     ci.format = x.format;
     ci.extent = {x.width, x.height, x.depth};
@@ -1710,8 +1772,14 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
     } else if (!create_image(ci, x.image, x.allocation) &&
+               // (a compressed image refused with the usages of its block views: made again without its targets, then
+               // without its storage)
+               !((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
+                 (logf_usage_dropped(ci, d.format, "COLOR_ATTACHMENT"), ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                  x.usage = ci.usage, create_image(ci, x.image, x.allocation))) &&
                !((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && (is_bc(x.format) || is_astc(x.format)) &&
-                 (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation)))) {
+                 (logf_usage_dropped(ci, d.format, "STORAGE"), ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage,
+                  create_image(ci, x.image, x.allocation)))) {
         static int logged;
         if (logged++ < 16)
             logf("vk: image %ux%ux%u x%u levels %u format %d (NVN %#x) not made", x.width, x.height, x.depth, x.layers,
@@ -2158,6 +2226,11 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     return tex;
 }
 
+uint32_t view_texels(const Texture* tex, VkFormat view_format, uint32_t image_texels) {
+    if (!tex || !is_bc(tex->format) || view_format == VK_FORMAT_UNDEFINED || is_bc(view_format)) return image_texels;
+    return std::max(1u, (image_texels + 3) / 4);
+}
+
 VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkImageViewType type, ViewUse use,
                          VkFormat* format_out, VkFormat force_format) {
     if (!tex) return VK_NULL_HANDLE;
@@ -2272,8 +2345,9 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     if (!view) {
         static int logged;
         if (logged++ < 16)
-            logf("vk: view of texture %#llx (vk %d) as vk %d type %d levels %u+%u layers %u+%u not made",
-                 (unsigned long long)tex->gpu, (int)tex->format, (int)f, (int)type, level0, nlevels, layer0, nlayers);
+            logf("vk: view of texture %#llx (vk %d) as vk %d type %d levels %u+%u layers %u+%u not made: %s",
+                 (unsigned long long)tex->gpu, (int)tex->format, (int)f, (int)type, level0, nlevels, layer0, nlayers,
+                 view_failure[0] ? view_failure : "?");
     }
     tex->views[key] = view;
     return view;
