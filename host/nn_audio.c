@@ -1,4 +1,4 @@
-/* nn::audio: an HLE of the audio renderer at the API level, and its output.
+/* nn::audio: an HLE of the audio renderer at the API level, its output, and the ocarina's input stream.
 
    The game builds its sound graph through nn::audio calls on objects it owns (VoiceType, SubMixType, FinalMixType,
    SplitterType, DeviceSinkType, MemoryPoolType, effect types): each gets our handle in its first 8 bytes (AU_MAGIC,
@@ -12,7 +12,9 @@
    The game's parameter changes take effect together at RequestUpdateAudioRenderer, and volume changes ramp over a
    frame, as the console's renderer does them (see "parameter updates").
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
-   HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs). */
+   HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs).
+   Input: HOS_AUDIO_IN selects an SDL capture device; 0 or - selects silence.
+   HOS_AUDIO_IN_GAIN scales captured samples (default 4). */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -37,7 +39,7 @@ void hos_system_event_signal(uint64_t key);
 #define MAX_WB 32            /* queued wave buffers per voice */
 #define MAX_REL 128
 
-enum { K_VOICE = 1, K_MIX, K_SPLITTER, K_SINK, K_POOL, K_EFFECT, K_CONFIG };
+enum { K_VOICE = 1, K_MIX, K_SPLITTER, K_SINK, K_POOL, K_EFFECT, K_CONFIG, K_INSTREAM };
 enum { FMT_INVALID, FMT_PCM8, FMT_PCM16, FMT_PCM24, FMT_PCM32, FMT_FLOAT, FMT_ADPCM };
 enum { PLAY_STARTED, PLAY_STOPPED, PLAY_PAUSED };
 enum { DEST_NONE, DEST_MIX, DEST_SPLITTER };
@@ -994,6 +996,360 @@ HLE(_ZN2nn5audio17GetSampleByteSizeENS0_12SampleFormatE) {
     const uint32_t f = (uint32_t)ARG(0);
     RET(f < 7 ? size[f] : 0);
 }
+
+/* ---- input stream (ocarina mic): SDL capture of the default device, or a clock of silence --------------------
+   StreamFormat is { SampleFormat, sampleRate, channelCount } as three s32, matching GetSampleByteSize.
+   InputStreamType holds our handle in its first word, like VoiceType. Open never fails: a missing mic still
+   produces silence so the song screen cannot wait forever on GetInputStreamFilledFrameCount. */
+#define IN_NAME "MainAudioIn"
+#define IN_RING_FRAMES 48000
+#define MAX_INSTREAMS 4
+enum { IN_STOPPED = 1, IN_STARTED = 0 };   /* nn::audio::AudioInState */
+typedef struct {
+    int freq;
+    uint16_t format;
+    uint8_t channels, silence;
+    uint16_t samples, padding;
+    uint32_t size;
+    void (*callback)(void *, uint8_t *, int);
+    void *userdata;
+} InSdlSpec;
+typedef struct {
+    int used, started, format, rate, channels, bps;
+    uint32_t dev;
+    uint8_t *ring;
+    int cap, rpos, wpos, filled;   /* cap/rpos/wpos bytes, filled frames */
+    int64_t start_ns, produced;
+    CRITICAL_SECTION mu;
+    int mu_ready;
+} InStream;
+static InStream instreams[MAX_INSTREAMS];
+static struct {
+    int ready, ok;
+    int (*init)(uint32_t);
+    uint32_t (*open_dev)(const char *, int, const InSdlSpec *, InSdlSpec *, int);
+    void (*pause)(uint32_t, int);
+    void (*close_dev)(uint32_t);
+    const char *(*err)(void);
+    int (*num)(int);
+    const char *(*name)(int, int);
+} in_sdl;
+
+static int in_sdl_load(void) {
+    if (in_sdl.ready) return in_sdl.ok;
+    in_sdl.ready = 1;
+    HMODULE m = LoadLibraryA("SDL2.dll");
+    if (!m) {
+        char p[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, p, sizeof p);
+        while (n && p[n - 1] != '\\' && p[n - 1] != '/') n--;
+        snprintf(p + n, sizeof p - n, "SDL2.dll");
+        m = LoadLibraryA(p);
+    }
+    if (!m) return 0;
+    in_sdl.init = (int (*)(uint32_t))GetProcAddress(m, "SDL_InitSubSystem");
+    in_sdl.open_dev = (uint32_t (*)(const char *, int, const InSdlSpec *, InSdlSpec *, int))GetProcAddress(m, "SDL_OpenAudioDevice");
+    in_sdl.pause = (void (*)(uint32_t, int))GetProcAddress(m, "SDL_PauseAudioDevice");
+    in_sdl.close_dev = (void (*)(uint32_t))GetProcAddress(m, "SDL_CloseAudioDevice");
+    in_sdl.err = (const char *(*)(void))GetProcAddress(m, "SDL_GetError");
+    in_sdl.num = (int (*)(int))GetProcAddress(m, "SDL_GetNumAudioDevices");
+    in_sdl.name = (const char *(*)(int, int))GetProcAddress(m, "SDL_GetAudioDeviceName");
+    if (!in_sdl.init || !in_sdl.open_dev || !in_sdl.pause || in_sdl.init(0x10)) return 0;
+    in_sdl.ok = 1;
+    return 1;
+}
+static void in_name_copy(uint64_t dst, const char *s) {
+    if (!dst) return;
+    memset(GP(dst), 0, 256);
+    if (s) {
+        size_t n = strlen(s);
+        if (n > 255) n = 255;
+        memcpy(GP(dst), s, n);
+    }
+}
+static int in_bps(int fmt) {
+    static const uint8_t size[7] = {0, 1, 2, 3, 4, 4, 0};
+    return fmt >= 0 && fmt < 7 ? size[fmt] : 0;
+}
+static uint16_t in_sdl_format(int fmt) {
+    if (fmt == FMT_PCM8) return 0x8008;
+    if (fmt == FMT_PCM32) return 0x8020;
+    if (fmt == FMT_FLOAT) return 0x8120;
+    return 0x8010;   /* PCM16, and PCM24 as 16 */
+}
+static InStream *in_of(uint64_t obj) {
+    const int i = get_handle(obj, K_INSTREAM);
+    return i >= 0 && i < MAX_INSTREAMS && instreams[i].used ? &instreams[i] : NULL;
+}
+static void in_lock(InStream *s) {
+    if (!s->mu_ready) { InitializeCriticalSection(&s->mu); s->mu_ready = 1; }
+    EnterCriticalSection(&s->mu);
+}
+static void in_unlock(InStream *s) { LeaveCriticalSection(&s->mu); }
+static void in_write_bytes(InStream *s, const uint8_t *data, int bytes) {
+    const int fs = s->channels * s->bps;
+    if (fs <= 0 || !s->ring || bytes <= 0) return;
+    bytes -= bytes % fs;
+    while (bytes > 0) {
+        if (s->filled * fs >= s->cap) {
+            s->rpos = (s->rpos + fs) % s->cap;
+            s->filled--;
+        }
+        int chunk = s->cap - s->wpos;
+        if (chunk > bytes) chunk = bytes;
+        if (chunk > s->cap - s->filled * fs) chunk = s->cap - s->filled * fs;
+        chunk -= chunk % fs;
+        if (chunk <= 0) break;
+        memcpy(s->ring + s->wpos, data, (size_t)chunk);
+        s->wpos = (s->wpos + chunk) % s->cap;
+        s->filled += chunk / fs;
+        data += chunk;
+        bytes -= chunk;
+    }
+}
+static float in_gain(void) {
+    static int once;
+    static float g = 4.f;
+    if (!once) {
+        once = 1;
+        const char *e = getenv("HOS_AUDIO_IN_GAIN");
+        if (e && e[0]) {
+            g = (float)atof(e);
+            if (g < 0.1f) g = 0.1f;
+            if (g > 32.f) g = 32.f;
+        }
+    }
+    return g;
+}
+static void in_apply_gain(InStream *s, uint8_t *data, int len) {
+    const float g = in_gain();
+    if (g == 1.f || len <= 0) return;
+    if (s->format == FMT_PCM16) {
+        int16_t *p = (int16_t *)data;
+        const int n = len / 2;
+        for (int i = 0; i < n; i++) {
+            int v = (int)(p[i] * g);
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            p[i] = (int16_t)v;
+        }
+    } else if (s->format == FMT_FLOAT) {
+        float *p = (float *)data;
+        const int n = len / 4;
+        for (int i = 0; i < n; i++) {
+            float v = p[i] * g;
+            if (v > 1.f) v = 1.f;
+            if (v < -1.f) v = -1.f;
+            p[i] = v;
+        }
+    }
+}
+static const char *in_pick_device(const char *env_name) {
+    if (env_name) return env_name;
+    if (!in_sdl.num || !in_sdl.name) return NULL;
+    const int nd = in_sdl.num(1);
+    const char *mic = NULL;
+    for (int i = 0; i < nd; i++) {
+        const char *nm = in_sdl.name(i, 1);
+        if (!nm) continue;
+        int is_mic = 0, is_line = 0;
+        for (const char *p = nm; *p; p++) {
+            char c = *p | 0x20;
+            if ((c == 'm' && (p[1] | 0x20) == 'i' && (p[2] | 0x20) == 'c') && !is_mic) is_mic = 1;
+            if ((c == 'l' && (p[1] | 0x20) == 'i' && (p[2] | 0x20) == 'n' && (p[3] | 0x20) == 'e') && !is_line) is_line = 1;
+        }
+        if (is_mic && !is_line) { mic = nm; break; }
+        if (is_mic && !mic) mic = nm;
+    }
+    return mic;
+}
+static void in_push(void *user, uint8_t *data, int len) {
+    InStream *s = (InStream *)user;
+    in_lock(s);
+    if (s->started) {
+        in_apply_gain(s, data, len);
+        in_write_bytes(s, data, len);
+    }
+    in_unlock(s);
+}
+static void in_silence_tick(InStream *s) {
+    const int fs = s->channels * s->bps;
+    if (s->dev || !s->started || s->rate <= 0 || fs <= 0) return;
+    const int64_t now = hos_now_ns();
+    int64_t want = (now - s->start_ns) * (int64_t)s->rate / 1000000000LL - s->produced;
+    if (want <= 0) return;
+    if (want > IN_RING_FRAMES) want = IN_RING_FRAMES;
+    uint8_t z[1024];
+    memset(z, 0, sizeof z);
+    const int max_frames = (int)sizeof z / fs;
+    while (want > 0 && s->filled < IN_RING_FRAMES) {
+        int frames = (int)want;
+        if (frames > max_frames) frames = max_frames;
+        in_write_bytes(s, z, frames * fs);
+        s->produced += frames;
+        want -= frames;
+    }
+}
+
+HLE(_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi) {
+    const int n = (int)ARG(1);
+    if (n > 0) in_name_copy(ARG(0), IN_NAME);
+    RET(n > 0 ? 1 : 0);
+}
+HLE(_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE) {
+    in_name_copy(ARG(0), IN_NAME);
+    RET(0);
+}
+HLE(_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi) {
+    (void)ARG(1);
+    (void)ARG(2);
+    int slot = -1;
+    for (int i = 0; i < MAX_INSTREAMS; i++)
+        if (!instreams[i].used) { slot = i; break; }
+    if (slot < 0 || !ARG(0) || !ARG(4)) { RET(0xE001); return; }
+    int fmt = FMT_PCM16, rate = RATE, ch = 1;
+    {
+        const int32_t *sf = (const int32_t *)GP(ARG(4));
+        const int32_t a = sf[0], b = sf[1], c = sf[2];
+        if (b >= 8000 && b <= 192000) fmt = a, rate = b, ch = c;
+        else if (a >= 8000 && a <= 192000) rate = a, ch = b, fmt = c;
+        if (ch < 1 || ch > 8) ch = 1;
+        if (in_bps(fmt) <= 0) fmt = FMT_PCM16;
+        if (rate < 8000 || rate > 192000) rate = RATE;
+    }
+    const char *want_name = NULL;
+    const char *env = getenv("HOS_AUDIO_IN");
+    int silent = env && (!strcmp(env, "0") || !strcmp(env, "-"));
+    if (env && !silent && env[0]) want_name = env;
+    InStream *s = &instreams[slot];
+    {
+        CRITICAL_SECTION mu = s->mu;
+        int mu_ready = s->mu_ready;
+        memset(s, 0, sizeof *s);
+        s->mu = mu;
+        s->mu_ready = mu_ready;
+    }
+    s->used = 1;
+    s->format = fmt;
+    s->rate = rate;
+    s->channels = ch;
+    s->bps = in_bps(fmt);
+    s->cap = IN_RING_FRAMES * s->channels * s->bps;
+    s->ring = (uint8_t *)calloc(1, (size_t)s->cap);
+    if (!s->ring) { s->used = 0; RET(0xE001); return; }
+    if (!silent && in_sdl_load()) {
+        static int listed;
+        if (!listed && in_sdl.num) {
+            listed = 1;
+            const int nd = in_sdl.num(1);
+            hos_log("audio: %d capture device%s (default unless HOS_AUDIO_IN names one)", nd, nd == 1 ? "" : "s");
+            for (int i = 0; i < nd && i < 8 && in_sdl.name; i++) {
+                const char *nm = in_sdl.name(i, 1);
+                if (nm) hos_log("audio:   capture %d: %s", i, nm);
+            }
+        }
+        InSdlSpec want, have;
+        memset(&want, 0, sizeof want);
+        want.freq = rate;
+        want.format = in_sdl_format(fmt);
+        want.channels = (uint8_t)ch;
+        want.samples = 512;
+        want.callback = in_push;
+        want.userdata = s;
+        const char *open_name = in_pick_device(want_name);
+        s->dev = in_sdl.open_dev(open_name, 1, &want, &have, 0);
+        if (!s->dev && open_name) s->dev = in_sdl.open_dev(NULL, 1, &want, &have, 0);
+        if (!s->dev && in_sdl.err)
+            hos_log("audio: capture open failed (%s): the ocarina stream is silence", in_sdl.err());
+        else if (s->dev)
+            hos_log("audio: capture %s gain %.1f %d Hz %d ch fmt %d (SDL %d Hz %u ch)",
+                    open_name ? open_name : "default", in_gain(), rate, ch, fmt, have.freq, have.channels);
+    } else {
+        hos_log("audio: ocarina input is silence (%s)", silent ? "HOS_AUDIO_IN" : "no SDL capture");
+    }
+    put_handle(ARG(0), K_INSTREAM, slot);
+    hos_log("audio: input stream %d opened (%s, extra %d)", slot, IN_NAME, (int)ARG(5));
+    RET(0);
+}
+HLE(_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    if (!s) return;
+    in_lock(s);
+    s->started = 1;
+    s->start_ns = hos_now_ns();
+    s->produced = 0;
+    in_unlock(s);
+    if (s->dev && in_sdl.pause) in_sdl.pause(s->dev, 0);
+    RET(0);
+}
+HLE(_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    if (!s) return;
+    if (s->dev && in_sdl.pause) in_sdl.pause(s->dev, 1);
+    in_lock(s);
+    s->started = 0;
+    in_unlock(s);
+    RET(0);
+}
+HLE(_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    if (!s) return;
+    if (s->dev && in_sdl.close_dev) in_sdl.close_dev(s->dev);
+    free(s->ring);
+    s->ring = NULL;
+    s->dev = 0;
+    s->used = 0;
+    if (ARG(0)) G64(ARG(0)) = 0;
+}
+HLE(_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    if (!s) return;
+    in_lock(s);
+    s->rpos = s->wpos = s->filled = 0;
+    in_unlock(s);
+    RET(0);
+}
+HLE(_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    int n = 0;
+    if (s) {
+        in_lock(s);
+        in_silence_tick(s);
+        n = s->filled;
+        in_unlock(s);
+    }
+    RET(n);
+}
+HLE(_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi) {
+    InStream *s = in_of(ARG(0));
+    int want = (int)ARG(2), got = 0;
+    if (!s || !ARG(1) || want <= 0) { RET(0); return; }
+    in_lock(s);
+    in_silence_tick(s);
+    const int fs = s->channels * s->bps;
+    if (fs > 0 && s->ring) {
+        if (want > s->filled) want = s->filled;
+        uint8_t *dst = (uint8_t *)GP(ARG(1));
+        int bytes = want * fs;
+        while (bytes > 0) {
+            int chunk = s->cap - s->rpos;
+            if (chunk > bytes) chunk = bytes;
+            memcpy(dst, s->ring + s->rpos, (size_t)chunk);
+            s->rpos = (s->rpos + chunk) % s->cap;
+            dst += chunk;
+            bytes -= chunk;
+        }
+        s->filled -= want;
+        got = want;
+    }
+    in_unlock(s);
+    RET(got);
+}
+HLE(_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE) {
+    InStream *s = in_of(ARG(0));
+    RET(s && s->started ? IN_STARTED : IN_STOPPED);
+}
+HLE(_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb) { RET(0); }
 
 /* ---- memory pools: bookkeeping only (all guest memory is readable) --------------------------------------------- */
 /* (mkw-recomp) a MemoryPoolType is one pointer in the SDK: the pool's address and size live here, the object holds
