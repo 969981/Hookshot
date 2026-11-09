@@ -520,8 +520,10 @@ frame generation and upscaling off. It applies only when there is no `hookshot_o
 the settings in the in-game menu.
 
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movies' neural upscale with the plain linear one. The default, `auto`, keeps
-the networks and falls back only when a movie frame takes the GPU more than 40 ms. It does not change the gameplay
-upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the movie networks.
+the networks and falls back only when a movie frame takes the GPU more than 40 ms. That is on NVIDIA cards: on other
+cards, or where the GPU cannot multiply the networks' matrices itself, the movies always get the linear upscale. It does
+not change the gameplay upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the
+movie networks.
 
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`
