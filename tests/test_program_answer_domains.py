@@ -36,6 +36,7 @@ FIXTURE = r'''
 namespace mkwvk {
 static uint32_t handles[3]{};
 static uint8_t answers[4]{0,2,2,2};
+thread_local const std::vector<Program::Answer>* answers_in = nullptr;
 uint32_t driver_bank_word(const NvnState&, int, int, uint32_t offset) { return handles[offset/8]; }
 uint32_t stage_handle(const NvnState&, const Stage&, uint32_t) { std::abort(); }
 uint8_t texture_answer(uint32_t h) { return h ? answers[h] : 0xff; }
@@ -55,6 +56,22 @@ static std::unique_ptr<Program> sampled(bool depth,bool integer=false){
 }
 }
 int main(int argc, char** argv){using namespace mkwvk;auto s=std::make_unique<NvnState>();
+ // Pipeline preparation supplies the translation's answers instead of querying the live bindings.
+ bind();auto pipeline=image(Shader::ImageFormat::R32_UINT);
+ pipeline->answers={{0,0,7,false}};pipeline->variant=7;
+ const std::vector<Program::Answer> supplied{{0,1,131,false},{0,0,2,true}};
+ answers_in=&supplied;record_answers(*pipeline,*s);answers_in=nullptr;
+ check(pipeline->answers.size()==2,"pipeline answers replace stale metadata");
+ if(pipeline->answers.size()==2){
+  const auto& a=pipeline->answers[0];const auto& b=pipeline->answers[1];
+  check(a.stage==0&&a.desc==1&&a.type==131&&!a.image&&b.stage==0&&b.desc==0&&b.type==2&&b.image,
+        "pipeline answers retain their supplied order and raw types");
+ }
+ // Packed answer words are 65798 and 5; their two-step FNV hash is fixed independently of answers_hash.
+ check(pipeline->variant==0x697a6902e61d8475ull,"pipeline variant hashes the supplied answers");
+ const std::vector<Program::Answer> empty;
+ answers_in=&empty;record_answers(*pipeline,*s);answers_in=nullptr;
+ check(pipeline->answers.empty()&&pipeline->variant==0,"empty pipeline answers clear prior metadata and hash");
  if(argc>1){
   unbind();auto p=image(Shader::ImageFormat::R32_UINT);record_answers(*p,*s);auto hash=p->variant;
   check(p->answers[2].type==128,"strict UINT prepared metadata unchanged");bind();
