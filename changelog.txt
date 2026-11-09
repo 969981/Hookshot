@@ -1,4 +1,30 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.2.0
+Date: 09. 11. 2026
+  Features:
+    - The upscalers and frame generation are the native settings, not new rows.
+    - Vk: Reland the mesh shader fallback for GPUs without mesh shaders (#640).
+  Bugfixes:
+    - Vk: Send the precompile compute worker through the guard.
+    - Vk: Say in the log when the guard drops a pipeline.
+    - Vk: Report a driver fault in a pipeline compile on Linux.
+    - Vk: Keep background shader threads out of the replay's uniform update list.
+    - Vk: Keep every large ASTC texture as BC3 on 8 GB cards too.
+    - Vk: Shorten the rendered-texture keep near the VRAM limit on AMD too.
+    - Vk: Let dead transient targets go after 3 frames, not 16.
+    - Builder: Linux builder from the Actions tab builds without updating to the release first.
+    - Vk: Let go of render targets drawn over from another start.
+    - Lower direct 1D surface atomic add.
+    - Video: A new decoder image pool holds black, not zeros (one green frame at each scene change that opens a movie).
+    - Build: Preserve compiler failures without stderr.
+    - Vk: Leave out task and mesh stages only for fallback programs.
+    - Keep register markers clear of native operands.
+    - Preserve the changelog when release generation fails.
+  Optimizations:
+    - Coalesce contiguous captured mirror copies.
+    - Nvn: QueueSubmitCommands gives up its virtual core for the inline replay, as Present and AcquireTexture do.
+    - Vk: Memory_collect_written takes the captured ranges once a submit, not a lock and a pool-list refresh per dirty page.
+---------------------------------------------------------------------------------------------------
 Version: 2.1.1
 Date: 09. 11. 2026
   Bugfixes:
