@@ -5,7 +5,7 @@
    Off unless HOS_CONTROL is set. Linux: a Unix domain socket at that path, made 0600 (the umask around bind too), never
    over an existing file that is not a socket, and a client of another user is turned away (SO_PEERCRED). Windows: a named
    pipe (\\.\pipe\<name>; a name without the prefix gets it), its DACL the current user's alone, remote clients refused.
-   There is no TCP, and nothing reads or writes the guest's memory.
+   There is no TCP. The guest's memory is read or written only with a second opt-in, HOS_CONTROL_MEM (ro, rw).
 
    Newline-delimited JSON: one request object a line ({"id": ..., "cmd": "status", ...}), one reply a line with the id
    given back, and the current frame (the game's presents so far) in every reply. A few clients at a time. A thread of its
@@ -14,8 +14,8 @@
    (gpu/vk/vk_replay.cpp shot_ask), the Insert menu's settings through its own setter. The game never waits for the
    bridge: the controller's read takes one short lock that the bridge never holds over I/O.
 
-   Commands: status, press, stick, sequence, release, shot, wait, option_get, option_set, subscribe, unsubscribe, quit
-   (mem_* and symbols answer that guest memory is not served).
+   Commands: status, press, stick, sequence, release, shot, wait, option_get, option_set, saves, subscribe, unsubscribe,
+   quit, and guest memory (mem_read, mem_read_many, mem_write) when HOS_CONTROL_MEM allows it.
    Inputs are timed in frames, from the first controller read after the request. The state (intro, menu, loading,
    play) is a guess from the draws a frame, as test scripts made it from the log: ~2 draws at the intro, 15-70 in menus,
    ~5 while loading, hundreds in play.
@@ -36,6 +36,7 @@
 #include <windows.h>
 #include <sddl.h>
 #else
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -1349,6 +1350,135 @@ static int mem_finished(Pending *p, Conn *c, int64_t now) {
     return 1;
 }
 
+/* ---- saves: the save folder the game uses, listed on the bridge's thread (a slot being written may show a size or time
+   between two writes: it is read as it is, never locked) ---- */
+typedef struct { char name[64]; int64_t size, mtime; } SaveFile;
+typedef struct { char name[16]; SaveFile files[8]; int nfiles; int64_t mtime; } SaveSlot;
+/* the entries of a folder: name, size, modification time (Unix seconds), whether a folder. -1 when it cannot be read */
+static int dir_list(const char *dir, void (*fn)(void *, const char *, int64_t, int64_t, int), void *arg) {
+#ifdef _WIN32
+    char pat[1200];
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    WIN32_FIND_DATAA f;
+    HANDLE h = FindFirstFileA(pat, &f);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    do {
+        if (!strcmp(f.cFileName, ".") || !strcmp(f.cFileName, "..")) continue;
+        const uint64_t ft = (uint64_t)f.ftLastWriteTime.dwHighDateTime << 32 | f.ftLastWriteTime.dwLowDateTime;
+        fn(arg, f.cFileName, (int64_t)((uint64_t)f.nFileSizeHigh << 32 | f.nFileSizeLow),
+           (int64_t)(ft / 10000000ULL) - 11644473600LL, (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    } while (FindNextFileA(h, &f));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    for (struct dirent *e; (e = readdir(d));) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char p[1300];
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st)) continue;   /* (gone meanwhile) */
+        fn(arg, e->d_name, (int64_t)st.st_size, (int64_t)st.st_mtime, S_ISDIR(st.st_mode));
+    }
+    closedir(d);
+#endif
+    return 0;
+}
+typedef struct { SaveSlot slots[16]; int nslots; int account, option; } SaveList;
+static void top_entry(void *arg, const char *name, int64_t size, int64_t mtime, int is_dir) {
+    SaveList *l = (SaveList *)arg;
+    (void)size, (void)mtime;
+    if (!is_dir) {
+        l->account |= !strcmp(name, "account.sav");
+        l->option |= !strcmp(name, "option.sav");
+    } else if (!strncmp(name, "slot_", 5) && strlen(name) < sizeof l->slots[0].name && l->nslots < 16) {
+        snprintf(l->slots[l->nslots++].name, sizeof l->slots[0].name, "%s", name);
+    }
+}
+static void slot_entry(void *arg, const char *name, int64_t size, int64_t mtime, int is_dir) {
+    SaveSlot *s = (SaveSlot *)arg;
+    if (is_dir || s->nfiles >= 8) return;
+    SaveFile *f = &s->files[s->nfiles++];
+    snprintf(f->name, sizeof f->name, "%s", name);
+    f->size = size, f->mtime = mtime;
+    if (mtime > s->mtime) s->mtime = mtime;
+}
+static int slot_newer(const void *a, const void *b) {
+    const int64_t x = ((const SaveSlot *)a)->mtime, y = ((const SaveSlot *)b)->mtime;
+    return x < y ? 1 : x > y ? -1 : strcmp(((const SaveSlot *)a)->name, ((const SaveSlot *)b)->name);
+}
+/* caption.sav (the file select's preview): its scene and map names and its thumbnail (a JPEG: offset and size), when the
+   file has the layout seen in this game's saves (magic 04 03 02 01; the names at 684 and 748, the JPEG's length at 1392
+   and the JPEG at 1396). Nothing is added when it does not */
+static void caption_json(Buf *b, const char *slot_dir) {
+    char p[1300];
+    snprintf(p, sizeof p, "%s%ccaption.sav", slot_dir, CTL_SEP);
+    FILE *f = fopen(p, "rb");
+    if (!f) return;
+    unsigned char h[1400];
+    const size_t n = fread(h, 1, sizeof h, f);
+    fseek(f, 0, SEEK_END);
+    const long total = ftell(f);
+    fclose(f);
+    if (n < sizeof h || memcmp(h, "\x04\x03\x02\x01", 4)) return;
+    char scene[65] = "", map[65] = "";
+    for (int which = 0; which < 2; which++) {
+        const unsigned char *q = h + (which ? 748 : 684);
+        char *out = which ? map : scene;
+        int k = 0;
+        for (; k < 64 && q[k]; k++) {
+            if (q[k] < 0x20 || q[k] > 0x7e) return;   /* (not text: another layout) */
+            out[k] = (char)q[k];
+        }
+        out[k] = 0;
+    }
+    const uint32_t jpeg = (uint32_t)h[1392] | (uint32_t)h[1393] << 8 | (uint32_t)h[1394] << 16 | (uint32_t)h[1395] << 24;
+    buf_puts(b, ",\"caption\":{\"scene\":");
+    buf_str(b, scene);
+    buf_puts(b, ",\"map\":");
+    buf_str(b, map);
+    if (h[1396] == 0xff && h[1397] == 0xd8 && (long)(1396 + jpeg) <= total)
+        buf_printf(b, ",\"thumbnail\":{\"format\":\"jpeg\",\"offset\":1396,\"size\":%u}", jpeg);
+    buf_puts(b, "}");
+}
+static void cmd_saves(int ci, const char *id) {
+    Conn *c = &G.conns[ci];
+    char root[1100];
+    if (!G.game->save_root || !G.game->save_root(root, sizeof root))
+        return reply_error(c, id, "unavailable", "the game has not opened its saves yet");
+    static SaveList l;
+    memset(&l, 0, sizeof l);
+    if (dir_list(root, top_entry, &l) < 0) return reply_error(c, id, "failed", "%.300s could not be read", root);
+    for (int i = 0; i < l.nslots; i++) {
+        char dir[1200];
+        snprintf(dir, sizeof dir, "%s%c%s", root, CTL_SEP, l.slots[i].name);
+        dir_list(dir, slot_entry, &l.slots[i]);
+    }
+    qsort(l.slots, (size_t)l.nslots, sizeof l.slots[0], slot_newer);
+    Buf b = {0};
+    reply_start(&b, id, 1);
+    buf_puts(&b, ",\"path\":");
+    buf_str(&b, root);
+    buf_printf(&b, ",\"account\":%s,\"option\":%s,\"slots\":[", l.account ? "true" : "false", l.option ? "true" : "false");
+    for (int i = 0; i < l.nslots; i++) {
+        const SaveSlot *s = &l.slots[i];
+        buf_printf(&b, "%s{\"slot\":\"%s\",\"mtime\":%lld,\"newest\":%s,\"files\":[", i ? "," : "", s->name + 5,
+                   (long long)s->mtime, i == 0 ? "true" : "false");
+        for (int k = 0; k < s->nfiles; k++) {
+            buf_puts(&b, k ? ",{\"name\":" : "{\"name\":");
+            buf_str(&b, s->files[k].name);
+            buf_printf(&b, ",\"size\":%lld,\"mtime\":%lld}", (long long)s->files[k].size, (long long)s->files[k].mtime);
+        }
+        buf_puts(&b, "]");
+        char dir[1200];
+        snprintf(dir, sizeof dir, "%s%c%s", root, CTL_SEP, s->name);
+        caption_json(&b, dir);
+        buf_puts(&b, "}");
+    }
+    buf_puts(&b, "]");
+    reply_end(c, &b);
+}
+
 /* ---- one request line ---- */
 static void request(int ci, const char *line, size_t len) {
     Conn *c = &G.conns[ci];
@@ -1377,6 +1507,7 @@ static void request(int ci, const char *line, size_t len) {
     if (!strcmp(cmd, "status")) cmd_status(ci, id);
     else if (!strcmp(cmd, "press") || !strcmp(cmd, "stick") || !strcmp(cmd, "sequence")) cmd_input(ci, &d, req, id, cmd);
     else if (!strcmp(cmd, "release")) cmd_release(ci, id);
+    else if (!strcmp(cmd, "saves")) cmd_saves(ci, id);
     else if (!strcmp(cmd, "shot")) cmd_shot(ci, &d, req, id);
     else if (!strcmp(cmd, "wait")) cmd_wait(ci, &d, req, id);
     else if (!strcmp(cmd, "option_get")) cmd_option_get(ci, &d, req, id);
@@ -1852,6 +1983,15 @@ static void game_mem_write(uint64_t addr, const void *src, uint64_t size) {
     memcpy(hos_guest_base() + addr, src, (size_t)size);
     hos_mark_written(hos_guest_base() + addr, size);   /* (the soft write watch: synced into the GPU mirror next frame) */
 }
+int hos_fs_save_root(char *out, size_t cap);   /* (nn_fs.c) */
+static int game_save_root(char *out, size_t cap) {
+    if (!hos_fs_save_root(out, cap)) return 0;
+#ifndef _WIN32
+    for (char *p = out; *p; p++)   /* (nn_fs.c writes Windows separators; the POSIX layer takes either) */
+        if (*p == '\\') *p = '/';
+#endif
+    return 1;
+}
 static int64_t game_frame(void) { return __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED); }
 static void game_log(const char *line) { hos_log("%s", line); }
 static void game_quit(void) {
@@ -1861,7 +2001,8 @@ static void game_quit(void) {
 }
 static const char *game_renderer(void) { return rx_describe(); }
 static HosControlGame game = {game_frame, rx_control_frame_info, rx_control_shot, rx_control_setting, rx_control_setting_set,
-                              game_mem_region, game_mem_read, game_mem_write, game_log, game_quit, game_renderer, NULL};
+                              game_mem_region, game_mem_read, game_mem_write, game_save_root, game_log, game_quit,
+                              game_renderer, NULL};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");

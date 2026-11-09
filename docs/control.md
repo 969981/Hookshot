@@ -210,6 +210,34 @@ The events carry `sub`, the subscribe request's `id`:
 **quit**: the reply, then the game exits as when its window is closed (the log flushed, exit code 0). The socket is
 removed.
 
+## Saves
+
+**saves** (no opt-in needed: it lists files, reads no game memory): the folder the game's saves are mounted from
+(`<data>/hookshot/save/<user id>` on Linux), read on the bridge's thread. A slot the game is writing at that moment may
+show a size or time between two writes. `unavailable` until the game has opened its saves.
+
+```
+> {"id":50,"cmd":"saves"}
+< {"id":50,"ok":true,"frame":900,"path":"/tmp/run/data/hookshot/save/5a3c9e1f0b7d24680000000000000001","account":true,
+   "option":true,"slots":[{"slot":"03","mtime":1762900000,"newest":true,"files":[{"name":"progress.sav","size":120724,
+   "mtime":1762900000},{"name":"caption.sav","size":42239,"mtime":1762900000}],"caption":{"scene":"KokiriForest",
+   "map":"KokiriForest/KokiriForest_Child","thumbnail":{"format":"jpeg","offset":1396,"size":40843}}}]}
+```
+
+Slots come newest first; `newest` marks the one the title's Continue loads. Times are Unix seconds. `caption` is there
+only when the slot's `caption.sav` has the layout seen in this game's saves (the file select's preview): its scene and
+map names, and where its picture (a 543x306 JPEG) is in the file. Those offsets were checked on Kokiri Forest saves
+only.
+
+The client:
+
+- `slots` prints one line a slot (last written, sizes, scene; `*` the newest). `slots --thumbs DIR` writes each slot's
+  picture as `DIR/slot_NN.jpg`, read from the save folder on this PC.
+- `launch --save FOLDER [--slot NN]` copies a save folder (`account.sav`, `option.sav`, `slot_NN/`) into the run's
+  data folder before the game starts: `--data`, or `data/` in the run folder. With `--slot` (`03` or `slot_03`) only
+  that slot is copied, so Continue loads it. The source is only read. A destination that already holds saves is
+  refused. Linux only (on Windows the game keeps its saves in its own folder).
+
 ## Guest memory
 
 Off unless `HOS_CONTROL_MEM` is set (apart from `HOS_CONTROL`):
@@ -265,7 +293,8 @@ write; this has not been checked against the GPU's output in a scene.
 
 TODO: named game values (scene and room id, Link's position, health, rupees, ...) through `mem get NAME` and a
 `symbols` command: planned, once addresses are located and verified for this build. `symbols` replies `unavailable` for
-now.
+now. Slot details from caption.sav or progress.sav beyond the scene and the picture (the player's name, hearts, play
+time): planned.
 
 ## The client
 

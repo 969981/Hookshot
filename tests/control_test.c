@@ -145,8 +145,15 @@ static void fake_quit(void) {
 #endif
 }
 static const char *fake_renderer(void) { return "fake"; }
+static char save_root[1100];   /* (a fake save folder, made by the saves case; empty: not opened yet) */
+static int fake_save_root(char *out, size_t cap) {
+    if (!save_root[0]) return 0;
+    snprintf(out, cap, "%s", save_root);
+    return 1;
+}
 static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set,
-                              fake_mem_region, fake_mem_read, fake_mem_write, fake_log, fake_quit, fake_renderer, "test"};
+                              fake_mem_region, fake_mem_read, fake_mem_write, fake_save_root, fake_log, fake_quit,
+                              fake_renderer, "test"};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -276,6 +283,18 @@ static int file_exists(const char *path) {
     FILE *f = fopen(path, "rb");
     if (f) fclose(f);
     return f != NULL;
+}
+static void make_dir(const char *p) {
+#ifdef _WIN32
+    CreateDirectoryA(p, NULL);
+#else
+    mkdir(p, 0700);
+#endif
+}
+static void write_file(const char *path, const void *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    CHECK(f && fwrite(data, 1, n, f) == n);
+    fclose(f);
 }
 static void wait_frames(int64_t n) { const int64_t to = fake_frame() + n; while (fake_frame() < to) sleep_ms(1); }
 
@@ -627,6 +646,45 @@ int main(int argc, char **argv) {
     ask(c, "{\"id\":25,\"cmd\":\"option_set\",\"name\":\"nope\",\"value\":1}\n", "25", line, sizeof line, 2000);
     CHECK(strstr(line, "\"error\":\"not_found\""));
     puts("PASS: option_get and option_set by key or name");
+
+    {   /* saves: none before the game opens them; then the folder, newest slot first, caption.sav's fields when its
+           layout is the game's */
+        ask(c, "{\"id\":40,\"cmd\":\"saves\"}\n", "40", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"unavailable\""));
+#ifdef _WIN32
+        const char sep = '\\';
+#else
+        const char sep = '/';
+#endif
+        char p[1300];
+        snprintf(save_root, sizeof save_root, "%s%csave_user", argv[1], sep);
+        make_dir(save_root);
+        snprintf(p, sizeof p, "%s%caccount.sav", save_root, sep), write_file(p, "acct", 4);
+        snprintf(p, sizeof p, "%s%cslot_00", save_root, sep), make_dir(p);
+        snprintf(p, sizeof p, "%s%cslot_00%cprogress.sav", save_root, sep, sep), write_file(p, "old progress", 12);
+        sleep_ms(1100);   /* (modification times in whole seconds) */
+        snprintf(p, sizeof p, "%s%cslot_03", save_root, sep), make_dir(p);
+        static unsigned char cap[1500];
+        memset(cap, 0, sizeof cap);
+        memcpy(cap, "\x04\x03\x02\x01", 4);
+        memcpy(cap + 684, "KokiriForest", 12);
+        memcpy(cap + 748, "KokiriForest/KokiriForest_Child", 31);
+        cap[1392] = 100;   /* (the JPEG's length, little-endian) */
+        cap[1396] = 0xff, cap[1397] = 0xd8;
+        snprintf(p, sizeof p, "%s%cslot_03%ccaption.sav", save_root, sep, sep), write_file(p, cap, sizeof cap);
+        snprintf(p, sizeof p, "%s%cslot_03%cprogress.sav", save_root, sep, sep), write_file(p, "new", 3);
+        ask(c, "{\"id\":41,\"cmd\":\"saves\"}\n", "41", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"account\":true") && strstr(line, "\"option\":false"));
+        const char *s03 = strstr(line, "\"slot\":\"03\""), *s00 = strstr(line, "\"slot\":\"00\"");
+        CHECK(s03 && s00 && s03 < s00);   /* (newest first) */
+        CHECK(strstr(s03, "\"newest\":true") && strstr(s00, "\"newest\":false"));
+        CHECK(strstr(s03, "\"name\":\"caption.sav\",\"size\":1500"));
+        CHECK(strstr(s03, "\"caption\":{\"scene\":\"KokiriForest\",\"map\":\"KokiriForest/KokiriForest_Child\","
+                          "\"thumbnail\":{\"format\":\"jpeg\",\"offset\":1396,\"size\":100}}"));
+        CHECK(!strstr(s00, "\"caption\""));   /* (no caption.sav: no fields) */
+        CHECK(strstr(s00, "\"name\":\"progress.sav\",\"size\":12"));
+        puts("PASS: saves: unavailable before the game opens them, then the folder, newest slot first, caption fields");
+    }
 
     ask(c, "{\"id\":26,\"cmd\":\"mem_read\",\"addr\":0,\"size\":4}\n", "26", line, sizeof line, 2000);
     CHECK(strstr(line, "\"error\":\"forbidden\""));   /* (this run has no HOS_CONTROL_MEM) */

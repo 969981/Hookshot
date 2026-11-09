@@ -21,6 +21,7 @@ FAKE = r'''
 import json, os, socket, sys, threading, time
 path = os.environ["HOS_CONTROL"]
 log = open(os.environ["FAKE_LOG"], "a", buffering=1)
+log.write(json.dumps({"cmd": "_start", "control": path, "xdg": os.environ.get("XDG_DATA_HOME")}) + "\n")
 frame = [100]
 if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a connection, read then write, never both at once
     import ctypes
@@ -116,6 +117,16 @@ def serve(f):
             f.flush_and_exit()
         elif cmd == "release":
             r.update(released=2)
+        elif cmd == "saves":
+            root = os.environ.get("FAKE_SAVES", "")
+            r.update(path=root, account=True, option=True, slots=[
+                {"slot": "03", "mtime": 1700000100, "newest": True,
+                 "files": [{"name": "progress.sav", "size": 120724, "mtime": 1700000100},
+                           {"name": "caption.sav", "size": 1500, "mtime": 1700000100}],
+                 "caption": {"scene": "KokiriForest", "map": "KokiriForest/KokiriForest_Child",
+                             "thumbnail": {"format": "jpeg", "offset": 1396, "size": 4}}},
+                {"slot": "00", "mtime": 1700000000, "newest": False,
+                 "files": [{"name": "progress.sav", "size": 120572, "mtime": 1700000000}]}])
         else:
             r = {"id": rid, "ok": False, "frame": frame[0], "error": "unknown_cmd", "message": "no command"}
         # (an event first: the client has to skip it)
@@ -145,6 +156,11 @@ class HookshotCtl(unittest.TestCase):
         cls.dir = cls.tmp.name
         cls.log = os.path.join(cls.dir, "requests.jsonl")
         os.environ["FAKE_LOG"] = cls.log   # (the stand-in's environment, through launch or directly)
+        cls.saves = os.path.join(cls.dir, "fake-saves")   # (what the stand-in's saves reply names: a caption.sav in slot_03)
+        os.makedirs(os.path.join(cls.saves, "slot_03"))
+        with open(os.path.join(cls.saves, "slot_03", "caption.sav"), "wb") as f:
+            f.write(b"\x04\x03\x02\x01" + bytes(1392) + b"\xff\xd8\xff\xd9")
+        os.environ["FAKE_SAVES"] = cls.saves
         if WINDOWS:
             # (launch starts a game folder's hookshot.exe, which a script cannot stand in for: the stand-in is started
             # here, on a pipe of its own; launch is tested on Linux)
@@ -264,6 +280,74 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual((req["events"], req["every"], req["log"]), (["log"], 30, "vk:"))
         ctl("watch", "--count", "1", "--events", "present", "--log", "x", env=self.env, check=0)
         self.assertEqual(self.last("subscribe")["events"], ["present", "log"])
+
+    def test_saves_and_slots(self):
+        r = ctl("saves", env=self.env, check=0)
+        self.assertIn("(account.sav yes, option.sav yes)", r.stdout)
+        self.assertRegex(r.stdout, r"slot_03  \S+ \S+  \(newest\)")
+        self.assertRegex(r.stdout, r"progress.sav\s+120724")
+        r = ctl("slots", env=self.env, check=0)
+        lines = r.stdout.splitlines()
+        self.assertRegex(lines[1], r"^\*  03 .* 120724\s+1500  KokiriForest$")
+        self.assertRegex(lines[2], r"^   00 .* 120572\s+-  $")
+        r = ctl("--json", "slots", env=self.env, check=0)
+        self.assertEqual([s["slot"] for s in json.loads(r.stdout)], ["03", "00"])
+        thumbs = os.path.join(self.dir, "thumbs")
+        ctl("slots", "--thumbs", thumbs, env=self.env, check=0)
+        with open(os.path.join(thumbs, "slot_03.jpg"), "rb") as f:
+            self.assertEqual(f.read(), b"\xff\xd8\xff\xd9")
+        self.assertFalse(os.path.exists(os.path.join(thumbs, "slot_00.jpg")))
+
+    def test_copy_save(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("hookshot_ctl", CTL)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        src = os.path.join(self.dir, "src-save")
+        for d in ("slot_00", "slot_03"):
+            os.makedirs(os.path.join(src, d))
+            for n in ("progress.sav", "caption.sav"):
+                with open(os.path.join(src, d, n), "w") as f:
+                    f.write(d + n)
+        for n in ("account.sav", "option.sav"):
+            with open(os.path.join(src, n), "w") as f:
+                f.write(n)
+        before = sorted((dp, fn, os.stat(os.path.join(dp, fn)).st_mtime_ns) for dp, _, fns in os.walk(src) for fn in fns)
+        dest = m.copy_save(src, os.path.join(self.dir, "d-all"))
+        self.assertTrue(dest.endswith(os.path.join("hookshot", "save", m.SAVE_USER)))
+        self.assertEqual(sorted(os.listdir(dest)), ["account.sav", "option.sav", "slot_00", "slot_03"])
+        for slot in ("03", "slot_03", "3"):
+            dest = m.copy_save(src, os.path.join(self.dir, "d-" + slot), slot)
+            self.assertEqual(sorted(os.listdir(dest)), ["account.sav", "option.sav", "slot_03"])
+            with open(os.path.join(dest, "slot_03", "progress.sav")) as f:
+                self.assertEqual(f.read(), "slot_03progress.sav")
+        with self.assertRaisesRegex(m.Failed, "has no slot_05"):
+            m.copy_save(src, os.path.join(self.dir, "d-x"), "05")
+        with self.assertRaisesRegex(m.Failed, "a slot number"):
+            m.copy_save(src, os.path.join(self.dir, "d-y"), "slot_x")
+        with self.assertRaisesRegex(m.Failed, "does not look like a save folder"):
+            m.copy_save(os.path.join(src, "slot_00"), os.path.join(self.dir, "d-z"))
+        with self.assertRaisesRegex(m.Failed, "not a folder"):
+            m.copy_save(os.path.join(self.dir, "nothing-here"), os.path.join(self.dir, "d-w"))
+        with self.assertRaisesRegex(m.Failed, "already holds saves"):
+            m.copy_save(src, os.path.join(self.dir, "d-all"))
+        after = sorted((dp, fn, os.stat(os.path.join(dp, fn)).st_mtime_ns) for dp, _, fns in os.walk(src) for fn in fns)
+        self.assertEqual(before, after)   # (the source only read)
+        if not WINDOWS:   # (launch --save: the copy in the run folder's own data folder, which the game is given)
+            run = os.path.join(self.dir, "run-save")
+            r = ctl("--json", "launch", self.game, "--run", run, "--headless", "--save", src, "--slot", "03",
+                    "--timeout", "20", check=0)
+            info = json.loads(r.stdout)
+            got = os.path.join(run, "data", "hookshot", "save", m.SAVE_USER)
+            self.assertEqual(sorted(os.listdir(got)), ["account.sav", "option.sav", "slot_03"])
+            with open(self.log) as f:
+                starts = [json.loads(line) for line in f if '"_start"' in line]
+            self.assertEqual([s["xdg"] for s in starts if s["control"] == info["socket"]], [os.path.join(run, "data")])
+            ctl("--sock", info["socket"], "quit", check=0)
+            r = ctl("launch", self.game, "--slot", "03", check=2)
+            self.assertIn("--slot goes with --save", r.stderr)
+        else:
+            r = ctl("launch", self.dir, "--save", src, check=2)
 
     def test_zz_quit(self):   # (last: the stand-in ends)
         r = ctl("quit", env=self.env, check=0)

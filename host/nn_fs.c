@@ -117,12 +117,27 @@ HLE(_ZN2nn2fs8MountRomEPKc) {
     RET(0);
 }
 
+/* (hookshot) the folder the game's saves are mounted from, for the control bridge's saves (host/control.c) */
+static char save_root[MAX_PATH];
+int hos_fs_save_root(char *out, size_t cap) {
+    AcquireSRWLockExclusive(&mount_lock);
+    const int have = save_root[0] != 0;
+    if (have) snprintf(out, cap, "%s", save_root);
+    ReleaseSRWLockExclusive(&mount_lock);
+    return have;
+}
+
 static void user_mount(const char *name, const char *sub) {
     char root[MAX_PATH];
     snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
     make_dirs(root);
     CreateDirectoryA(root, NULL);
     mount(name, root, 1);
+    if (!strncmp(sub, "save\\", 5)) {
+        AcquireSRWLockExclusive(&mount_lock);
+        snprintf(save_root, sizeof save_root, "%s", root);
+        ReleaseSRWLockExclusive(&mount_lock);
+    }
 }
 
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */

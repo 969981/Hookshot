@@ -2,6 +2,7 @@
    drive the running game over a local socket, one JSON request a line. Off unless that is set. */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,6 +40,8 @@ typedef struct HosControlGame {
     int (*mem_region)(uint64_t addr, uint64_t size);
     void (*mem_read)(uint64_t addr, void *dst, uint64_t size);
     void (*mem_write)(uint64_t addr, const void *src, uint64_t size);
+    /* the folder the game's saves are mounted from (<user>/save/<user id>): 0 before the game opened them */
+    int (*save_root)(char *out, size_t cap);
     void (*log)(const char *line);
     void (*quit)(void);   /* does not return */
     const char *(*renderer)(void);   /* the renderer's description, or NULL */

@@ -4,6 +4,7 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
     python -I scripts/hookshot_ctl.py [--sock S] [--json] COMMAND ...
 
     launch GAME_DIR [--data DIR] [--headless]   start the game with the bridge on; prints the socket's path
+           [--save FOLDER [--slot NN]]          a copy of a save folder (one slot of it) as the run's saves
     status                                      frame, fps, draws a frame, state, window, version
     press A+B [--frames 8] [--exclusive]        buttons held for some frames (the reply once they are let go)
     stick L 0 1 [--frames 60]                   a stick at x, y (-1 to 1)
@@ -13,6 +14,7 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
     wait in_play [--timeout 120]                also: present --frames N, frame --frame N, state --state S,
                                                 loading_start, loading_end, change
     option get [NAME]  /  option set NAME VALUE the Insert menu's settings
+    saves  /  slots [--thumbs DIR]              the save folder the game uses; its slots, newest first
     watch [--events present,state,log] [--every 60] [--log TEXT] [--count N]
     mem read ADDR SIZE [--format hex|u8|u16|u32|u64|f32]   read guest memory (HOS_CONTROL_MEM=ro or rw)
     mem write ADDR HEX                          write guest memory (HOS_CONTROL_MEM=rw); aliases: ro->r/read, rw->readwrite
@@ -138,6 +140,46 @@ class Bridge:
                 return msg
 
 
+def when(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) if t else "-"
+
+
+def saves_text(r):
+    lines = ["%s  (account.sav %s, option.sav %s)" % (r["path"], "yes" if r["account"] else "no",
+                                                        "yes" if r["option"] else "no")]
+    for sl in r["slots"]:
+        lines.append("slot_%s  %s%s" % (sl["slot"], when(sl["mtime"]), "  (newest)" if sl["newest"] else ""))
+        for f in sorted(sl["files"], key=lambda f: f["name"]):
+            lines.append("    %-14s %9d  %s" % (f["name"], f["size"], when(f["mtime"])))
+    return "\n".join(lines)
+
+
+def slots_text(r):
+    rows = ["   slot  last written          progress   caption  scene"]
+    for sl in r["slots"]:
+        size = {f["name"]: f["size"] for f in sl["files"]}
+        rows.append("%s  %-4s  %-19s %9s %9s  %s" % ("*" if sl["newest"] else " ", sl["slot"], when(sl["mtime"]),
+                                                   size.get("progress.sav", "-"), size.get("caption.sav", "-"),
+                                                   sl.get("caption", {}).get("scene", "")))
+    rows.append("(* the newest: the one Continue loads)")
+    return "\n".join(rows)
+
+
+def write_thumbs(r, folder):
+    """Each slot's file-select picture, as the JPEG caption.sav holds, read from the save folder (this PC's)"""
+    os.makedirs(folder, exist_ok=True)
+    for sl in r["slots"]:
+        th = sl.get("caption", {}).get("thumbnail")
+        if not th:
+            continue
+        with open(os.path.join(r["path"], "slot_" + sl["slot"], "caption.sav"), "rb") as f:
+            f.seek(th["offset"])
+            data = f.read(th["size"])
+        if data[:2] == b"\xff\xd8":
+            with open(os.path.join(folder, "slot_%s.jpg" % sl["slot"]), "wb") as out:
+                out.write(data)
+
+
 def addr_of(text):
     try:
         return int(text, 0)
@@ -252,6 +294,17 @@ def run(a):
                     raise Failed("HEX: an even number of hex digits", 2)
                 r = check(b.request("mem_write", addr=a.addr, hex=raw))
                 show(a, r, lambda r: "wrote %d bytes at %d" % (r["wrote"], r["addr"]))
+        elif a.command == "saves":
+            r = check(b.request("saves"))
+            show(a, r, lambda r: saves_text(r))
+        elif a.command == "slots":
+            r = check(b.request("saves"))
+            if a.thumbs:
+                write_thumbs(r, a.thumbs)
+            if a.json:
+                print(json.dumps(r["slots"]))
+            else:
+                print(slots_text(r))
         elif a.command == "quit":
             show(a, check(b.request("quit")), lambda r: "quitting")
         elif a.command == "raw":
@@ -295,6 +348,48 @@ def run(a):
         b.close()
 
 
+# (the one account the runtime has, host/nn_applet.c user_uid: its saves are <data>/hookshot/save/<this>)
+SAVE_USER = "5a3c9e1f0b7d24680000000000000001"
+
+
+def slot_name(text):
+    """03, 3 or slot_03 -> slot_03"""
+    t = text[5:] if text.lower().startswith("slot_") else text
+    if not t.isdigit() or len(t) > 2:
+        raise Failed("--slot: a slot number, 03 or slot_03", 2)
+    return "slot_%02d" % int(t)
+
+
+def copy_save(src, data, slot=None):
+    """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in the data folder; with slot,
+    that slot alone (so Continue loads it). The source is only read. Returns the destination"""
+    import shutil
+    src = os.path.abspath(src)
+    if not os.path.isdir(src):
+        raise Failed("--save: %s is not a folder" % src, 2)
+    names = os.listdir(src)
+    slots = sorted(n for n in names if n.startswith("slot_") and os.path.isdir(os.path.join(src, n)))
+    if not slots or not ({"account.sav", "option.sav"} & set(names)):
+        raise Failed("--save: %s does not look like a save folder (account.sav or option.sav, and slot_NN folders): "
+                     "it is <data>/hookshot/save/<user id>" % src, 2)
+    if slot is not None:
+        slot = slot_name(slot)
+        if slot not in slots:
+            raise Failed("--save: %s has no %s (it has %s)" % (src, slot, ", ".join(slots)), 2)
+    dest = os.path.join(os.path.abspath(data), "hookshot", "save", SAVE_USER)
+    if os.path.exists(dest) and os.listdir(dest):
+        raise Failed("--save: %s already holds saves: give an empty --data (or none: the run folder's own)" % dest, 2)
+    os.makedirs(dest, exist_ok=True)
+    for n in names:
+        p = os.path.join(src, n)
+        if n.startswith("slot_") and os.path.isdir(p):
+            if slot is None or n == slot:
+                shutil.copytree(p, os.path.join(dest, n))
+        elif os.path.isfile(p):
+            shutil.copy2(p, os.path.join(dest, n))
+    return dest
+
+
 def launch(a):
     """The game in GAME_DIR with HOS_CONTROL set, its socket in a run folder of its own; waits until it answers"""
     game = os.path.abspath(a.game_dir)
@@ -306,8 +401,15 @@ def launch(a):
     os.makedirs(run_dir, mode=0o700, exist_ok=True)
     sock = a.sock or ("hookshot-control-%d" % os.getpid() if WINDOWS else os.path.join(run_dir, "control.sock"))
     env = dict(os.environ, HOS_CONTROL=sock)
-    if a.data:
-        env["XDG_DATA_HOME"] = os.path.abspath(a.data)
+    if a.slot and not a.save:
+        raise Failed("--slot goes with --save", 2)
+    data = a.data or (os.path.join(run_dir, "data") if a.save else None)
+    if a.save:
+        if WINDOWS:
+            raise Failed("--save: Linux only (on Windows the game keeps its saves in its own folder)", 2)
+        copy_save(a.save, data, a.slot)
+    if data:
+        env["XDG_DATA_HOME"] = os.path.abspath(data)
     if a.headless:
         env["HOS_HEADLESS"] = "1"
     for kv in a.env:
@@ -355,6 +457,9 @@ def main(argv=None):
     q = sub.add_parser("launch", help="start a game folder with the bridge on")
     q.add_argument("game_dir")
     q.add_argument("--data", help="XDG_DATA_HOME for the run (its saves)")
+    q.add_argument("--save", help="a save folder (<data>/hookshot/save/<user id>) copied in first (Linux); the source is "
+                                  "only read")
+    q.add_argument("--slot", help="with --save: that slot alone (03 or slot_03), so Continue loads it")
     q.add_argument("--run", help="the run folder (socket, log, shots); default a new one")
     q.add_argument("--headless", action="store_true")
     q.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
@@ -401,6 +506,9 @@ def main(argv=None):
     q.add_argument("hex", nargs="?", help="write: the bytes as hex")
     q.add_argument("--format", default="hex", choices=["hex", "base64", "u8", "u16", "u32", "u64", "f32"],
                    help="read: how to print the bytes")
+    sub.add_parser("saves", help="the save folder the game uses: its files, newest slot first")
+    q = sub.add_parser("slots", help="the save slots: last written, sizes, scene; * the newest (Continue's)")
+    q.add_argument("--thumbs", metavar="DIR", help="each slot's file-select picture written there as slot_NN.jpg")
     sub.add_parser("quit")
     q = sub.add_parser("raw")
     q.add_argument("request", help="a JSON request object")
