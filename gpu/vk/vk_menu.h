@@ -31,6 +31,12 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    // (hookshot) Which network resolves the scene, and which one makes the frames between the
+    // game's. Both are read once, at the first frame that needs them, so a change applies after a
+    // restart -- as the GPU device row already does. The RX_VK_* switches still win where they are
+    // set, so a test run is not at the mercy of a saved ini.
+    int scene_upscaler = 0;   // 0 the game's own network, 1 FSR 3.1, 2 DLSS (gpu/vk/upscale_seam.h)
+    int framegen_by = 0;      // 0 the renderer's own interpolation, 1 DLSS frame generation
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more

@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -39,11 +40,23 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "upscale_format.h"
+#include "upscale_seam.h"
+#include "vk_camera_motion.h"
+#include "vk_dlss.h"
+#include "vk_menu.h"   // (the Insert menu's "Scene upscaler" row)
+#include "vk_fsr3.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+
+/// (vk_replay.cpp) The presents so far. Declared here, at this namespace's scope and not inside
+/// the anonymous one below, because a declaration in there is a *different* symbol: the link
+/// leaves it undefined and dlopen(RTLD_NOW) then refuses the whole renderer, which looks like
+/// "the renderer did not start" and nothing else.
+extern int64_t presents_now;
 // (EvilOOT, RX_VK_DRAW_STATS: the pointer table's regions, vk_bank.cpp)
 struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
@@ -1668,8 +1681,19 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
+    /// (hookshot) What each entry of `imgs` is a view of, pushed in lockstep so index i is the same binding in
+    /// both. A view is the whole of an input to a draw and to our own compute passes, but NGX is handed whole
+    /// resources (gpu/vk/vk_dlss.h: a view *and* its image, format and extent), so DLSS cannot be given a
+    /// dispatch's colour from `imgs` alone. Default-constructed where the binding fell back to a dummy, which is
+    /// what a backend has to refuse on.
+    struct Source {
+        VkImage image = VK_NULL_HANDLE;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        uint32_t width = 0, height = 0;
+    };
+    std::vector<Source> srcs;
     void reset() {
-        writes.clear(), bufs.clear(), imgs.clear(), views.clear();
+        writes.clear(), bufs.clear(), imgs.clear(), views.clear(), srcs.clear();
     }
 };
 thread_local DescWriter dw;
@@ -2134,6 +2158,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (view && tex && tex->gpu_written) draw_sampled.push_back(tex);
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
                 dw.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
+                dw.srcs.push_back(tex ? DescWriter::Source{tex->image, tex->format, tex->width, tex->height}
+                                      : DescWriter::Source{});
             }
             w.pImageInfo = &dw.imgs[first];
             dw.writes.push_back(w);
@@ -2169,6 +2195,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (dump_on()) dump_input(d.is_written ? 'W' : 'R', (uint32_t)dw.imgs.size(), handle, view ? tex : nullptr);
                 if (!view && !dev.null_descriptor) view = VK_NULL_HANDLE;
                 dw.imgs.push_back({VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL});
+                dw.srcs.push_back(tex ? DescWriter::Source{tex->image, tex->format, tex->width, tex->height}
+                                      : DescWriter::Source{});
             }
             w.pImageInfo = &dw.imgs[first];
             dw.writes.push_back(w);
@@ -2607,6 +2635,118 @@ struct IndexBind {
 thread_local IndexBind last_ib;
 int64_t st_desc_reused;
 
+/// (hookshot) The last depth target the game bound with a colour target, kept for an upscaler that
+/// has to derive motion from it. Ocarina hands its own upscaler no depth at all
+/// (docs/upscaling.md), so the scene's own depth buffer is the only one there is. Written where the
+/// targets are resolved, which is once per NOP_SET_RT rather than per draw.
+struct SceneDepth {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0, height = 0;
+};
+SceneDepth scene_depth;
+
+
+// (hookshot) The sub-pixel offset the scene is rasterized with, for a temporal upscaler.
+//
+// The game does not jitter: capture_view_projection below refuses any projection whose m02 is not
+// exactly zero, and it finds one, so the projection it hands its own network carries no sub-pixel
+// offset. Its network is single-image and has no use for one. FSR and DLSS do: without sample
+// diversity they reconstruct from motion alone, which is softer than either is meant to be.
+//
+// The offset is applied to the viewport, not to the projection. The projection lives in the game's
+// own memory and the GPU reads it there, so changing it would mean binding a patched copy to every
+// draw that reads it -- the kind of per-draw work that has already cost this renderer 300 ms a
+// frame once. A viewport offset moves rasterization by the same amount and costs two additions, and
+// it applies to colour, depth and motion together because they are the same pass.
+struct SceneJitter {
+    float x = 0.0f, y = 0.0f;   ///< render pixels
+    int64_t frame = -1;         ///< the present this was advanced for
+    uint32_t phase = 0;
+    /// What the scene is resolved to, once the seam has run once. The phase count depends on the
+    /// ratio, so until then the sequence is the 1:1 one, which is eight phases and not wrong -- just
+    /// shorter than it will be.
+    uint32_t display_width = 0;
+};
+SceneJitter scene_jitter_state;
+
+/// RX_VK_JITTER=0 turns it off with an upscaler still on, which is the A/B worth having; =1 turns it
+/// on with neither. Otherwise it follows whether a vendor upscaler is going to run at all, because
+/// jitter without a temporal resolve is just shimmer.
+bool jitter_wanted() {
+    static const bool yes = []() {
+        if (const char* e = getenv("RX_VK_JITTER")) return atoi(e) != 0;
+        if (const char* e = getenv("RX_VK_FSR"); e && atoi(e) != 0) return true;
+        if (const char* e = getenv("RX_VK_DLSS"); e && atoi(e) != 0) return true;
+        return opts.scene_upscaler != 0;
+    }();
+    return yes;
+}
+
+/// The radical inverse in a base: Halton, which is the sequence both vendors specify.
+float halton_at(uint32_t index, uint32_t base) {
+    float f = 1.0f, r = 0.0f;
+    for (uint32_t i = index; i; i /= base) {
+        f /= (float)base;
+        r += f * (float)(i % base);
+    }
+    return r;
+}
+
+/// How many phases before the sequence repeats. AMD's rule is 8 * ratio squared; NVIDIA's guidance
+/// is the same shape, so one rule serves both rather than each backend inventing its own.
+uint32_t jitter_phases(uint32_t render_width, uint32_t display_width) {
+    if (!render_width || display_width < render_width) return 8;
+    const float ratio = (float)display_width / (float)render_width;
+    const uint32_t n = (uint32_t)std::ceil(8.0f * ratio * ratio);
+    return std::clamp(n, 1u, 128u);
+}
+
+/// Advances once per present. Called from the viewport path, which is the first place in a frame
+/// that knows the scene's extent.
+void advance_scene_jitter(uint32_t render_width, uint32_t display_width) {
+    if (scene_jitter_state.frame == presents_now) return;
+    scene_jitter_state.frame = presents_now;
+    const uint32_t phases = jitter_phases(render_width, display_width);
+    scene_jitter_state.phase = (scene_jitter_state.phase + 1) % std::max(1u, phases);
+    // Centred on the pixel: Halton gives [0,1), and an offset that is never negative would move the
+    // whole image half a pixel rather than sampling around where it is.
+    scene_jitter_state.x = halton_at(scene_jitter_state.phase + 1, 2) - 0.5f;
+    scene_jitter_state.y = halton_at(scene_jitter_state.phase + 1, 3) - 0.5f;
+}
+
+
+/// (hookshot) Once per distinct render target set, with RX_VK_MRT_CENSUS=1: how many colour attachments the game
+/// binds at once, their formats and the extent. Off by default and free while off.
+///
+/// This is here to answer one question with evidence instead of assumption. A denoising upscaler -- NVIDIA's DLSS
+/// Ray Reconstruction, AMD's FSR Ray Regeneration -- does not take colour, motion and depth; it takes a ray-traced
+/// renderer's guide buffers, which means albedo, normals, roughness and specular hit distance. A deferred renderer
+/// writes those as several colour attachments of one extent in one pass. So if this game never binds more than one
+/// colour attachment, it has no G-buffer, there are no guides to hand such an upscaler, and the question is closed;
+/// if it binds three or four at one extent, there may be. docs/upscaling.md records what the census found.
+static void mrt_census(const Targets& at) {
+    static const bool on = getenv("RX_VK_MRT_CENSUS") != nullptr;
+    if (!on) return;
+    uint64_t key = (uint64_t)at.n | ((uint64_t)at.width << 8) | ((uint64_t)at.height << 32);
+    for (int i = 0; i < at.n && i < 8; i++) key = key * 1000003ull + (uint64_t)at.color_format[i];
+    key = key * 1000003ull + (at.depth ? (uint64_t)at.depth_format + 1 : 0);
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    {
+        std::lock_guard lk(mu);
+        if (seen.size() >= 512 || !seen.insert(key).second) return;
+    }
+    char line[400];
+    int k = snprintf(line, sizeof line, "vk: targets %d colour %ux%u:", at.n, at.width, at.height);
+    for (int i = 0; i < at.n && i < 8 && k < 340; i++)
+        k += snprintf(line + k, sizeof line - k, " %u", (unsigned)at.color_format[i]);
+    if (at.n == 0 && k < 340) k += snprintf(line + k, sizeof line - k, " (none)");
+    if (at.depth && k < 340) k += snprintf(line + k, sizeof line - k, ", depth %u", (unsigned)at.depth_format);
+    logf("%s", line);
+}
+
 thread_local uint64_t targets_serial = ~0ull;   // (the state's render targets resolved once per NOP_SET_RT)
 thread_local Targets cached_targets;
 
@@ -2656,6 +2796,13 @@ Targets targets(NvnState& s) {
                 if (!at.n) at.samples = tex->samples;
             }
         }
+    }
+    mrt_census(at);
+    // (the scene's depth, for an upscaler's reprojection: the largest one seen, so a shadow map or
+    // a quarter-resolution effect pass does not displace the one the scene was drawn with)
+    if (at.depth && at.depth_view && at.n >= 1 &&
+        (uint64_t)at.width * at.height >= (uint64_t)scene_depth.width * scene_depth.height) {
+        scene_depth = {at.depth->image, at.depth_view, at.depth_format, at.width, at.height};
     }
     targets_serial = s.rt_serial;
     cached_targets = at;
@@ -2843,7 +2990,20 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
-    d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+    // (hookshot) The scene's own passes are jittered for a temporal upscaler: the ones that draw
+    // into a depth target of the extent the upscaler is given. Everything else -- the HUD, the
+    // menus, the movie layer -- is left alone, because a jittered HUD is a shimmering HUD and
+    // nothing resolves it.
+    float jx = 0.0f, jy = 0.0f;
+    if (jitter_wanted() && at.depth && depth_aspect(at.depth_format) && scene_depth.width &&
+        at.width == scene_depth.width && at.height == scene_depth.height) {
+        advance_scene_jitter(scene_depth.width, scene_jitter_state.display_width
+                                                    ? scene_jitter_state.display_width
+                                                    : scene_depth.width);
+        jx = scene_jitter_state.x, jy = scene_jitter_state.y;
+    }
+    d.vp = {vx + jx, vy + vh + jy, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f),
+            std::clamp(s.depth_far, 0.0f, 1.0f)};
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
@@ -4454,7 +4614,132 @@ void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkInd
     last_ib = {b, (uint64_t)offset, (uint32_t)type, true};
 }
 
+/// (hookshot) The view projection a scene draw read, composed from the two matrices its uniform
+/// buffer carries. RX_VK_VP_HUNT found the layout and docs/upscaling.md records it: 192 bytes at
+/// stage 5 slot 0, a 3x4 row-major view at +0 (its last row implied 0,0,0,1), the 4x4 projection at
+/// +48, and the viewport with its reciprocals at +112.
+///
+/// Taken from the draw rather than from a game object, because this is the matrix the depth was
+/// actually rendered with, which is what a reprojection needs. Read through ub_read, so it is the
+/// submitted uniform data and not live guest memory.
+struct SceneViewProjection {
+    float m[16]{};      ///< row major, projection times view
+    /// The two halves, kept as well as their product: frame generation is handed the projection and
+    /// its inverse separately (NGX's cameraViewToClip / clipToCameraView), and the camera's own
+    /// position and axes come out of the view. Deriving them back out of the product would mean
+    /// factorizing it, which is worse than keeping what we already had.
+    float view[16]{};   ///< row major, world -> camera (the game's 3x4, with 0,0,0,1 under it)
+    float proj[16]{};   ///< row major, camera -> clip
+    bool have = false;
+};
+SceneViewProjection scene_vp;
+
+/// Recognizes the buffer by its own contents rather than by a program key: the projection's m11 is
+/// 1/tan(fovy/2) and its last row makes w = -z. A buffer that does not look like that is left alone.
+static void capture_view_projection(const NvnState& s) {
+    // Once per render target set, not once per draw. Called from draw() it ran 1106 times a frame
+    // and walked every stage and slot reading uniforms each time, which stuttered hard on a real
+    // display. The serial changes when the targets do, so the matrix still refreshes every frame.
+    static thread_local uint64_t done_for = ~0ull;
+    if (done_for == targets_serial) return;
+    // Looked at once per target set whether or not a matrix is found. Setting this only on success
+    // was the bug: most target sets -- shadow, UI, post -- hold no projection, so the guard never
+    // armed for them and the scan below ran on every draw of them instead. At 1800 draws a frame
+    // that was 30,000 reads of guest memory a frame, each one copying the 4 KB page it landed in
+    // out of the capture, and it cost the frame about 300 ms. It is what made a 57-60 fps scene run
+    // at 3, with FSR off as much as on, and it is why the frame-rate collapse looked like FSR's.
+    done_for = targets_serial;
+    for (int stage = 0; stage < kNvnStages; stage++) {
+        for (int slot = 0; slot < 16; slot++) {
+            const nvn_p_bind_buf& u = s.ubo[stage][slot];
+            if (!u.addr || u.size < 112) continue;
+            float f[28];
+            if (!ub_read(u.addr, f, sizeof f)) continue;
+            // (the projection at +48: f[12..27]. m11 = f[17], and f[26] = -1 with f[27] = 0 is w = -z)
+            if (!(f[17] > 0.5f && f[17] < 20.0f) || f[26] > -0.5f || f[27] != 0.0f) continue;
+            if (f[13] != 0.0f || f[14] != 0.0f || f[16] != 0.0f) continue;   // (a clean projection)
+            const float* v = f;          // the 3x4 view
+            const float* pr = f + 12;    // the 4x4 projection
+            float vp[16];
+            for (int r = 0; r < 4; r++) {
+                for (int c = 0; c < 4; c++) {
+                    float sum = 0;
+                    for (int k = 0; k < 4; k++) {
+                        // (the view's implied fourth row is 0,0,0,1)
+                        const float vk = k < 3 ? v[k * 4 + c] : (c == 3 ? 1.0f : 0.0f);
+                        sum += pr[r * 4 + k] * vk;
+                    }
+                    vp[r * 4 + c] = sum;
+                }
+            }
+            memcpy(scene_vp.m, vp, sizeof vp);
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 4; c++) scene_vp.view[r * 4 + c] = v[r * 4 + c];
+            scene_vp.view[12] = scene_vp.view[13] = scene_vp.view[14] = 0.0f;
+            scene_vp.view[15] = 1.0f;
+            memcpy(scene_vp.proj, pr, sizeof scene_vp.proj);
+            scene_vp.have = true;
+            static std::atomic<int> told{0};
+            if (told++ == 0)
+                logf("vk: the scene's view projection: stage %d slot %d, view at +0 and projection "
+                     "at +48 (m11 %.3f)", stage, slot, (double)f[17]);
+            return;
+        }
+    }
+}
+
+/// (hookshot) RX_VK_VP_HUNT=1: find the view projection a scene draw reads, by looking for a value
+/// only it can hold. The camera publishes tan(fovy/2) = 0.41421, so the projection's m11 is
+/// 1/0.41421 = 2.41421, and a row-major 4x4 keeps m11 five floats in. This scans each bound uniform
+/// buffer for that number and logs the stage, the slot, the byte offset and the sixteen floats
+/// starting five back, which is the candidate matrix. Off by default; stops after a few hits.
+///
+/// Better than guessing at another object's offsets: whatever this finds is the matrix the draw
+/// itself used, which is the one the depth was rendered with. docs/upscaling.md.
+static void vp_hunt(const NvnState& s) {
+    static const bool on = getenv("RX_VK_VP_HUNT") != nullptr;
+    if (!on) return;
+    static std::atomic<int> told{0};
+    if (told.load(std::memory_order_relaxed) >= 1) return;   // (one buffer dump is the point)
+    for (int stage = 0; stage < kNvnStages; stage++) {
+        for (int slot = 0; slot < 16; slot++) {
+            const nvn_p_bind_buf& u = s.ubo[stage][slot];
+            if (!u.addr || u.size < 24) continue;
+            const uint64_t bytes = u.size < 2048 ? u.size : 2048;
+            for (uint64_t off = 20; off + 4 <= bytes; off += 4) {
+                uint32_t word = 0;
+                if (!ub_read(u.addr + off, &word, 4)) break;
+                float v = 0;
+                memcpy(&v, &word, 4);
+                if (!(v > 2.4139f && v < 2.4145f)) continue;
+                // The matrix at the hit is the projection alone -- its upper-left 3x3 came back
+                // diagonal -- so the view, or a combined view projection, is elsewhere in the same
+                // buffer. Dump the whole buffer in rows of four, which is how a 4x4 reads, and look
+                // for a rotated 3x3.
+                logf("vk: vp hunt: stage %d slot %d, m11 at +%llu, buffer %llu bytes", stage, slot,
+                     (unsigned long long)off, (unsigned long long)u.size);
+                for (uint64_t row = 0; row * 16 < bytes; row++) {
+                    char line[160];
+                    int n = snprintf(line, sizeof line, "vk:   +%3llu:", (unsigned long long)(row * 16));
+                    for (int i = 0; i < 4 && n < 130; i++) {
+                        uint32_t w2 = 0;
+                        float f2 = 0;
+                        if (ub_read(u.addr + row * 16 + (uint64_t)i * 4, &w2, 4)) memcpy(&f2, &w2, 4);
+                        n += snprintf(line + n, sizeof line - n, " %11.4g", (double)f2);
+                    }
+                    logf("%s", line);
+                    if (row >= 23) break;   // (24 rows: six 4x4s is more than enough to find it)
+                }
+                if (told.fetch_add(1, std::memory_order_relaxed) + 1 >= 1) return;
+                break;   // (one hit per buffer is enough to name it)
+            }
+        }
+    }
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+    vp_hunt(s);
+    capture_view_projection(s);
     PROF(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
@@ -5252,6 +5537,87 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     return true;
 }
 
+/// (host/hos_oot_camera.c: tan(fovy/2) and the planes sead's projection published, 0 when nothing
+/// has, which leaves a backend on its own defaults)
+/// (host/hos_oot_camera.c) These live in the game executable, not in this library, so they are weak:
+/// the renderer is dlopen'd with RTLD_NOW, which resolves every symbol up front, and a plain extern
+/// to the host made this whole library fail to load with "undefined symbol". Weak and null-checked
+/// means the renderer loads either way and simply has no camera when the host does not export one.
+extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* far_plane);
+/// (the view projection the depth was rendered with, row major; false until something publishes it,
+/// which is what keeps camera motion from reprojecting through a guess)
+extern "C" __attribute__((weak)) int hos_oot_view_projection(float* row_major_4x4);
+
+void scene_jitter_display_width(uint32_t width) {
+    scene_jitter_state.display_width = width;
+}
+
+bool scene_jitter(float* x, float* y) {
+    if (!jitter_wanted() || scene_jitter_state.frame < 0) return false;
+    if (x) *x = scene_jitter_state.x;
+    if (y) *y = scene_jitter_state.y;
+    return true;
+}
+
+/// (hookshot) The scene's depth and matrix, for the present path (vk_draw.h).
+bool scene_frame_inputs(SceneFrameInputs* out) {
+    if (!out) return false;
+    if (!scene_depth.view || !scene_depth.image || !scene_depth.width || !scene_depth.height)
+        return false;
+    out->depth_image = scene_depth.image;
+    out->depth_view = scene_depth.view;
+    out->depth_format = scene_depth.format;
+    out->render_width = scene_depth.width;
+    out->render_height = scene_depth.height;
+    out->have_view_projection = scene_vp.have;
+    if (scene_vp.have) {
+        memcpy(out->view_projection, scene_vp.m, sizeof out->view_projection);
+        memcpy(out->view, scene_vp.view, sizeof out->view);
+        memcpy(out->projection, scene_vp.proj, sizeof out->projection);
+    }
+    else if (hos_oot_view_projection) out->have_view_projection = hos_oot_view_projection(out->view_projection) != 0;
+    return true;
+}
+
+
+/// (hookshot) Whether a program is one an upscaler backend may be given, by key prefix and
+/// independent of whether the stand-in wants it: RX_VK_UPSCALE_KEYS, default the gameplay TAAU
+/// network. taau_key's own default turns itself off where the card can run the real network, which
+/// is the wrong condition for a backend that is meant to replace it.
+static bool upscale_trace_key(uint64_t key) {
+    const char* keys = getenv("RX_VK_UPSCALE_KEYS") ? getenv("RX_VK_UPSCALE_KEYS") : "fd029a317a9a4b94";
+    char hex[24];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    for (const char* q = keys; *q;) {
+        const char* e = q;
+        while (*e && *e != ',') e++;
+        if (e > q && *q != '-' && !strncmp(hex, q, (size_t)(e - q))) return true;
+        q = *e ? e + 1 : e;
+    }
+    return false;
+}
+
+/// (hookshot) The dispatch's sampled textures in descriptor order, in the terms of the upscaler input contract
+/// (gpu/vk/upscale_contract.h). Resolved exactly as build_descriptors resolves them, including the storage-pointer
+/// guard, so index i here is dw.imgs[i] -- the descriptor a backend is actually handed.
+///
+/// draw_sampled cannot be used for this. It records a sampled texture only where the GPU has written it, and it
+/// records every storage image as well, so its indices are not descriptor slots and binding 0 of it is not
+/// dw.imgs[0]. An upscaler wired to that correspondence would read whichever texture happened to be bound first.
+static void upscale_bindings(const NvnState& s, const Stage& st, std::vector<upscale::Binding>& out) {
+    out.clear();
+    for (const auto& d : st.info.texture_descriptors) {
+        const VkImageViewType vt = view_type(d.type);
+        for (uint32_t k = 0; k < d.count; k++) {
+            const uint32_t handle = handle_is_storage_pointer(st.info, d, k) ? 0u : handle_of(s, st, d, k);
+            Texture* tex = nullptr;
+            if (handle) texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex);
+            out.push_back(tex ? upscale::Binding{upscale::kind_of(tex->format, tex->aspect), tex->width, tex->height}
+                              : upscale::Binding{});
+        }
+    }
+}
+
 /// (hookshot) OoT's gameplay TAAU network (fd029a317a9a4b94) stood in for: its input upscaled into its output
 /// (shaders/taau_upscale.comp). The network's translation loses the blue channel, the yellow cast over every
 /// scene; with this the picture is right, without the network's temporal anti-aliasing.
@@ -5392,9 +5758,36 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     if (temporal) probe_image(cmd, out, level, 0, key, 't');
     return true;
 }
+/// (hookshot) The seam of docs/upscaling.md: a recognized upscale dispatch is resolved once into an
+/// upscale::Request, a backend is chosen for it, and that backend runs it. The compute stand-in is the only backend
+/// today, and it is a spatial resolve that needs none of the input contract, so this is the same behaviour through
+/// one gate. What the seam adds is the gate a temporal backend has to pass, reported once per program.
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
-    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    upscale::Availability avail;
+    avail.push_descriptor = dev.push_descriptor && vkCmdPushDescriptorSetKHR != nullptr;
+    avail.stand_in_wanted = taau_key(p.key);
+    upscale::Request req;
+    req.program_key = p.key;
+    // (hookshot) A backend that is not the stand-in has to be reachable without it. On a card with
+    // hardware f16 matrix multiply taau_key defaults to "-", so the network runs as itself and the
+    // stand-in never does; gating everything on it would have made FSR unreachable on exactly the
+    // hardware that can run it. RX_VK_FSR=1 therefore brings us in here on its own.
+    // RX_VK_FSR wins where it is set, so a test run is not at the mercy of a saved ini; otherwise
+    // the Insert menu's "Scene upscaler" row decides. Read once: the backends cache what they are.
+    static const bool fsr_wanted = []() {
+        if (const char* e = getenv("RX_VK_FSR")) return atoi(e) != 0;
+        return opts.scene_upscaler == 1;
+    }();
+    // (hookshot) Both vendor backends ask their own question: FSR whether this device can run its
+    // passes, DLSS whether this is an NVIDIA driver reporting Super Resolution with an NGX runtime
+    // loaded. Each answers once and caches, so this costs nothing per dispatch. upscale::choose
+    // picks between them; this function does not.
+    avail.fsr3 = fsr_wanted && fsr3::supported();
+    avail.dlss = dlss::supported();
+    const bool fsr_here = (avail.fsr3 || avail.dlss) && avail.push_descriptor && upscale_trace_key(p.key);
+    if (p.stages.empty()) return false;
+    if (upscale::choose(avail, req) != upscale::Backend::StandIn && !fsr_here) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
@@ -5407,6 +5800,181 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    // (hookshot) what a temporal backend would be given here, said once per program. The bindings are in descriptor
+    // order, so the contract's colour is a descriptor slot: dw.imgs[req.colour_binding] is the view a backend reads,
+    // and the stand-in's own dw.imgs[0] is only that slot when the contract agrees it is.
+    std::vector<upscale::Binding> bindings;
+    upscale_bindings(s, st, bindings);
+    req.inputs = upscale::classify(bindings.data(), bindings.size());
+    req.colour_binding = req.inputs.colour;
+    req.output_width = std::max(1u, out->width >> level);
+    req.output_height = std::max(1u, out->height >> level);
+    req.output_writable = true;
+    {
+        static std::mutex mu;
+        static std::unordered_map<uint64_t, int> said;
+        std::lock_guard lk(mu);
+        if (said[p.key]++ == 0) {
+            const char* why = upscale::temporal_refusal(req);
+            float near_plane = 0.0f, far_plane = 0.0f;
+            const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+            logf("vk: upscale seam %016llx: %s, output %ux%u, inputs %ux%u; a temporal backend %s%s",
+                 (unsigned long long)p.key, upscale::backend_name(upscale::Backend::StandIn), req.output_width,
+                 req.output_height, req.inputs.render_width, req.inputs.render_height,
+                 why ? "could not be given this: " : "could be given this", why ? why : "");
+            // (what a backend would be given besides the dispatch: the camera the lifted code
+            // published and the scene depth the targets kept, neither of which is in this dispatch)
+            logf("vk: upscale seam %016llx: camera %s (near %.4f far %.1f fov %.1f deg), scene depth "
+                 "%ux%u format %d",
+                 (unsigned long long)p.key, tan_half > 0.0f ? "published" : "not published yet",
+                 near_plane, far_plane, tan_half > 0.0f ? 2.0f * std::atan(tan_half) * 57.29578f : 0.0f,
+                 scene_depth.width, scene_depth.height, (int)scene_depth.format);
+        }
+    }
+    // (hookshot) FSR 3.1 in the dispatch's place, opt-in with RX_VK_FSR=1 and only where the
+    // contract holds. Its own RGBA16F output is blitted into the game's target, which is the
+    // format conversion the game's network would have done itself.
+    // (hookshot) The two inputs this dispatch never carries, assembled: the scene's own depth, and
+    // motion reprojected from it. docs/upscaling.md says why they cannot be taken from here.
+    // (the dispatch's own input extent, which is what the network upscales from. req.inputs is the
+    //  contract's view of the bindings and leaves the render extent at 0 for this dispatch, because
+    //  it has no motion or depth among them -- gating on that meant FSR could never be reached)
+    uint32_t in_w = 0, in_h = 0;
+    if (!bindings.empty()) in_w = bindings[0].width, in_h = bindings[0].height;
+    if (in_w) scene_jitter_display_width(req.output_width);
+    if (fsr_here && scene_depth.view && fsr3::supported() && in_w && in_h &&
+        scene_depth.width == in_w && scene_depth.height == in_h) {
+        fsr3::note_frame();   // (the frame time at this seam, for every RX_VK_FSR_STAGE)
+        camera_motion::Matrix vp{};
+        bool have_vp = scene_vp.have;
+        if (have_vp) memcpy(vp.m, scene_vp.m, sizeof vp.m);
+        else if (hos_oot_view_projection) have_vp = hos_oot_view_projection(vp.m) != 0;
+        if (have_vp) {
+            const VkImageView motion = camera_motion::record(cmd, scene_depth.view, scene_depth.format,
+                                                             scene_depth.width, scene_depth.height, vp);
+            if (motion) {
+                req.inputs.motion = 0;   // (assembled, not a binding of this dispatch)
+                upscale::Request assembled = req;
+                assembled.inputs.inputs_complete = true;
+                assembled.inputs.render_width = scene_depth.width;
+                assembled.inputs.render_height = scene_depth.height;
+                assembled.inputs.colour = 0;   // (the dispatch's single sampled texture)
+                assembled.colour_binding = assembled.inputs.colour;
+                if (upscale::choose(avail, assembled) == upscale::Backend::Dlss) {
+                    // NGX is handed whole resources, not views: the colour's image and format come from the
+                    // lockstep DescWriter::Source, the depth's from the targets, and the motion's from the
+                    // module that just wrote it. A missing one is a refusal inside the backend.
+                    dlss::Inputs di;
+                    di.color = dw.imgs[0].imageView;
+                    di.depth = scene_depth.view;
+                    di.motion = motion;
+                    di.color_image = dw.srcs.empty() ? VK_NULL_HANDLE : dw.srcs[0].image;
+                    di.color_format = dw.srcs.empty() ? VK_FORMAT_UNDEFINED : dw.srcs[0].format;
+                    di.depth_image = scene_depth.image;
+                    di.depth_format = scene_depth.format;
+                    di.motion_image = camera_motion::motion_image();
+                    di.motion_format = camera_motion::motion_format();
+                    di.render_width = scene_depth.width, di.render_height = scene_depth.height;
+                    di.upscale_width = req.output_width, di.upscale_height = req.output_height;
+                    di.motion_scale[0] = 1.0f, di.motion_scale[1] = 1.0f;   // (already render pixels)
+                    scene_jitter(&di.jitter[0], &di.jitter[1]);
+                    float dnp = 0.0f, dfp = 0.0f;
+                    const float dth = hos_oot_camera ? hos_oot_camera(&dnp, &dfp) : 0.0f;
+                    if (dth > 0.0f && dnp > 0.0f) di.near_plane = dnp, di.fov_y = 2.0f * std::atan(dth);
+                    if (dlss::upscale(cmd, di)) {
+                        static std::atomic<int> said_dlss{0};
+                        if (said_dlss++ == 0)
+                            logf("vk: dlss %ux%u -> %ux%u with assembled depth and camera motion",
+                                 di.render_width, di.render_height, di.upscale_width, di.upscale_height);
+                        VkImageBlit b{};
+                        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+                        b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                        vkCmdBlitImage(cmd, dlss::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
+                                       VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                        return true;
+                    }
+                    // (DLSS refused this one, so FSR below where it is available rather than nothing. The
+                    //  backend logs its own refusal, once.)
+                }
+                if (upscale::temporal_possible(assembled)) {
+                    fsr3::Inputs ai;
+                    ai.color = dw.imgs[0].imageView;   // (its only sampled texture)
+                    ai.depth = scene_depth.view;
+                    ai.motion = motion;
+                    ai.render_width = scene_depth.width, ai.render_height = scene_depth.height;
+                    ai.upscale_width = req.output_width, ai.upscale_height = req.output_height;
+                    ai.motion_scale[0] = 1.0f, ai.motion_scale[1] = 1.0f;   // (already render pixels)
+                    // The offset this frame's scene was rasterized with, which the upscaler has to
+                    // undo. Zero where nothing is jittering, which is what that means.
+                    scene_jitter(&ai.jitter[0], &ai.jitter[1]);
+                    float np = 0.0f, fp = 0.0f;
+                    const float th = hos_oot_camera ? hos_oot_camera(&np, &fp) : 0.0f;
+                    if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
+                    if (fsr3::upscale(cmd, ai)) {
+                        // (how often this runs, with the log's own timestamps: nine passes a call
+                        //  is cheap once a frame and ruinous twenty times, and 3 fps said one of
+                        //  those was happening. Every 300 so the rate is readable from the gap)
+                        static std::atomic<int> said{0};
+                        const int n = said++;
+                        if (n == 0)
+                            logf("vk: fsr3 %ux%u -> %ux%u with assembled depth and camera motion",
+                                 ai.render_width, ai.render_height, ai.upscale_width, ai.upscale_height);
+                        if (n % 300 == 0) logf("vk: fsr3 evaluations: %d", n + 1);
+                        if (fsr3::fsr_stage() != 3) {   // (3: everything but this blit, so its cost shows)
+                            VkImageBlit b{};
+                            b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                            b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+                            b.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+                            vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL,
+                                           out->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+                                           VK_FILTER_NEAREST);
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    if (fsr_here && upscale::temporal_possible(req) && fsr3::supported()) {
+        fsr3::Inputs fi;
+        fi.color = dw.imgs[req.colour_binding].imageView;
+        fi.depth = dw.imgs[req.inputs.depth].imageView;
+        fi.motion = dw.imgs[req.inputs.motion].imageView;
+        fi.render_width = req.inputs.render_width, fi.render_height = req.inputs.render_height;
+        fi.upscale_width = req.output_width, fi.upscale_height = req.output_height;
+        fi.motion_scale[0] = (float)req.inputs.render_width;
+        fi.motion_scale[1] = (float)req.inputs.render_height;
+        {   // (the game's own camera where the patch published it: nx2/oot_camera.py. Without it
+            // the Inputs defaults stand, which only scales FSR's disocclusion thresholds)
+            float near_plane = 0.0f, far_plane = 0.0f;
+            const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+            if (tan_half > 0.0f && near_plane > 0.0f) {
+                fi.near_plane = near_plane;
+                fi.fov_y = 2.0f * std::atan(tan_half);
+            }
+        }
+        // (the jitter the game's own network used is not extracted yet, so this says no sub-pixel
+        // offset: the picture is a plumbing check, not FSR at its quality. Logged once so a report
+        // of a soft image is not mistaken for FSR behaving badly)
+        if (fsr3::upscale(cmd, fi)) {
+            static std::atomic<int> told{0};
+            if (told++ == 0)
+                logf("vk: fsr3 standing in for %016llx (jitter not extracted yet: the image is a "
+                     "plumbing check, not FSR's quality)", (unsigned long long)p.key);
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            blit.dstOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
+            vkCmdBlitImage(cmd, fsr3::output_image(), VK_IMAGE_LAYOUT_GENERAL, out->image,
+                           VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
+            return true;
+        }
+    }
+    if (!avail.stand_in_wanted) return false;   // (we came in for FSR, which did not take it)
     return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
@@ -5936,11 +6504,25 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         static std::unordered_map<uint64_t, int> seen;
         std::lock_guard lk(mu);
         if (seen[p.key]++ == 0) {
+            // (hookshot) with each one's role in the upscaler input contract, so this says whether a temporal
+            // upscaler could take this network's place rather than leaving it to be counted by hand later:
+            // docs/upscaling.md
+            std::vector<upscale::Binding> bindings;
+            upscale_bindings(s, p.stages[0], bindings);
+            std::vector<upscale::Role> roles(bindings.size(), upscale::Role::None);
+            const upscale::Verdict v = upscale::classify(bindings.data(), bindings.size(), roles.data());
             char line[900];
             int n = snprintf(line, sizeof line, "vk: network %016llx: dispatch %ux%ux%u, %zu textures %zu images:", (unsigned long long)p.key, x, y, z,
                              p.stages[0].info.texture_descriptors.size(), p.stages[0].info.image_descriptors.size());
-            for (const Texture* t : draw_sampled)
-                if (t && n < 860) n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+            for (size_t i = 0; i < bindings.size() && n < 840; ++i) {
+                n += snprintf(line + n, sizeof line - n, " %u:%ux%u", (unsigned)i, bindings[i].width, bindings[i].height);
+                if (roles[i] != upscale::Role::None && n < 840)
+                    n += snprintf(line + n, sizeof line - n, "=%s", upscale::role_name(roles[i]));
+            }
+            if (n < 860)
+                n += v.inputs_complete
+                         ? snprintf(line + n, sizeof line - n, "; upscaler inputs at %ux%u", v.render_width, v.render_height)
+                         : snprintf(line + n, sizeof line - n, "; no upscaler inputs");
             logf("%s", line);
         }
     }

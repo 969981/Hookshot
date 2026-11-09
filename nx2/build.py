@@ -29,6 +29,8 @@ import ctypes
 import hashlib
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import threading
@@ -58,6 +60,65 @@ POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
 VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
+
+
+def check_vk_symbols(so):
+    """(hookshot) The renderer is dlopened with RTLD_NOW, so one unresolved symbol stops the whole
+    thing loading -- and the only sign of that at run time is "the renderer did not start: the window
+    stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
+    leave symbols for its loader to supply, which is exactly what the host executable does for the
+    weak hos_* ones.
+
+    So: anything still undefined here that is not weak and not the C or C++ runtime's is a mistake,
+    and this says which. It has caught two, each of which had cost a run apiece to find by hand: a
+    host function referenced without __attribute__((weak)), and an `extern` of one of our own globals
+    written inside an anonymous namespace, which makes a different symbol that nothing defines.
+    """
+    nm = shutil.which("nm") or shutil.which("llvm-nm")
+    if not nm:
+        return True   # (not a reason to fail a build; the check is a guard, not a dependency)
+    try:
+        out = subprocess.run([nm, "-D", "--undefined-only", so], capture_output=True, text=True,
+                             check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return True
+    bad = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "U":   # ("w" is weak: the host supplies those, or does not)
+            continue
+        name = parts[1]
+        if "@GLIBC" in name or "@CXXABI" in name or "@GLIBCXX" in name or "@GCC" in name:
+            continue
+        bad.append(name)
+    if not bad:
+        return True
+    print("%s has %d unresolved symbol(s); it would not load:" % (os.path.basename(so), len(bad)))
+    for name in bad[:20]:
+        print("    " + name)
+    print("  a host function wants __attribute__((weak)); one of our own globals wants an extern at")
+    print("  namespace scope, not inside an anonymous namespace")
+    return False
+
+def dlss_sdk_link():
+    """(hookshot) What a build with RX_VK_DLSS_SDK=<path> links the DLSS backend against.
+
+    On Linux the driver's NGX core (libnvidia-ngx.so) exports none of the public NVSDK_NGX_* API:
+    those entry points live in the SDK's own static library, which calls into the core. Resolving
+    them by name from the core was tried first and found them missing, so a build that asked for
+    DLSS links the SDK's static library instead. Nothing of NVIDIA's is in this repository: the
+    library is the builder's own copy, under the path they named, and a build without that path
+    links exactly what it linked before.
+    """
+    sdk = os.environ.get("RX_VK_DLSS_SDK")
+    if not sdk or not LINUX:
+        return []
+    arch = "Linux_aarch64" if platform.machine() in ("aarch64", "arm64") else "Linux_x86_64"
+    lib = os.path.join(sdk, "lib", arch)
+    if not os.path.isdir(lib):
+        print("RX_VK_DLSS_SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
+        return []
+    return ["-L" + lib, "-lnvsdk_ngx"]
 
 
 def target():
@@ -702,6 +763,12 @@ def main():
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+            # (hookshot) RX_VK_DLSS_SDK=<path to an NGX SDK> compiles the DLSS backend's NGX half
+            # against that SDK's headers. Nothing of NVIDIA's is in this repository and nothing of
+            # NVIDIA's may be put in it (CONTRIBUTING.md): the SDK is the builder's own copy, named
+            # here, and a build without it leaves DLSS reporting itself unavailable.
+            *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(os.environ["RX_VK_DLSS_SDK"], "include")]
+              if os.environ.get("RX_VK_DLSS_SDK") else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
@@ -870,7 +937,8 @@ def main():
         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
                 "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"]
+                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"] + \
+                dlss_sdk_link()
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
                 ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])
@@ -879,6 +947,8 @@ def main():
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
             print("%s link FAILED, %d undefined symbols" % (VK_LIB, len(undefined)))
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
+            return 1
+        if LINUX and not check_vk_symbols(vdll):
             return 1
         print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
     if a.dll and not a.only:

@@ -1,5 +1,5 @@
 /* nn::vi for MKW (TOTKPort's nn_vi.c is bound to its renderer and TOTK's frame pacing): the default display, one
-   layer, and the display's vsync event, signaled at 60 Hz by a host thread. HDR and VRR are reported unsupported,
+   layer, and the display's vsync event, signaled at 60 Hz by a host thread (HOS_VSYNC_HZ over it). HDR and VRR are reported unsupported,
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
 #define WIN32_LEAN_AND_MEAN
@@ -16,9 +16,41 @@ static uint64_t vsync_events[8];
 static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
+/* (hookshot) HOS_VSYNC_HZ=<hz>: the rate the display's vsync event is signalled at, 60 by default.
+ *
+ * This is what paces the game. It waits on the event, so a hardcoded 60 here is a hard 60 fps
+ * however high the limiter is: on a 165 Hz monitor, with the limiter unlocked to 120 by
+ * HOS_DISPLAY_VRR, 298 of 300 frames still landed in the 15.5-17.8 ms window with no variance.
+ * Unset follows the display's own refresh rate, which is the right default: a hardcoded 60 paces a
+ * 165 Hz screen at 60. 0 turns the pacing off. Clamped to 15..1000: below 15 the game's own frame
+ * step treats a step as a hitch, and a rate the machine cannot render only spends the time sleeping
+ * less. */
+static int64_t vsync_period_ns(void) {
+    int hos_sdl_refresh_hz(void);
+    const char *e = getenv("HOS_VSYNC_HZ");
+    const int asked = e && *e ? atoi(e) : -1;
+    int hz;
+    const char *why;
+    if (asked == 0) {   /* (off: as fast as the clamp allows, so the game is not paced by this) */
+        hz = 1000, why = "HOS_VSYNC_HZ=0, not paced";
+    } else if (asked > 0) {
+        hz = asked, why = "HOS_VSYNC_HZ";
+    } else {
+        /* The display's own rate, which is the right default: a hardcoded 60 paces a 165 Hz screen
+           at 60 however high the game's limiter is. 0 from SDL means it could not say. */
+        const int screen = hos_sdl_refresh_hz();
+        hz = screen > 0 ? screen : 60;
+        why = screen > 0 ? "the display's rate" : "no rate from the display, 60";
+    }
+    if (hz < 15) hz = 15;
+    if (hz > 1000) hz = 1000;
+    hos_log("vi: the display's vsync event at %d Hz (%s)", hz, why);
+    return 1000000000LL / hz;
+}
+
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
-    const int64_t period = 1000000000LL / 60;
+    const int64_t period = vsync_period_ns();
     int64_t next = hos_now_ns() + period;
     for (;;) {
         const int64_t now = hos_now_ns();
@@ -70,12 +102,36 @@ HLE(_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE) {
     *(uint16_t *)GP(ARG(0)) = 203;
     RET(0);
 }
+/* (hookshot) HOS_DISPLAY_VRR=1: tell the game the display does variable refresh.
+ *
+ * This is what holds the frame rate at 60, and it took three experiments to find. The game's
+ * limiter at +0xfc is written by f_804fc0f0, which stores a rate only when a mode is 1, the rate is
+ * 40 or more, and the byte at +0x232 is set. That byte reads 0, and raising the limiter or the
+ * engine's controller words from outside does not stick: the game writes them back every frame,
+ * because it believes the display cannot do better. It believes that because this very function
+ * answered no, and because SetDisplay120HzRefreshRateCapability and
+ * QueryDisplayCurrentRefreshRate were unimplemented imports.
+ *
+ * Off by default: it changes what the game believes about the display, and on a 60 Hz screen a game
+ * that paces itself faster than the panel gains nothing and may tear. The real-time frame step
+ * keeps game speed honest at whatever rate comes out (main+0x6e6cc4, above). */
+static int display_vrr(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HOS_DISPLAY_VRR");
+        on = e && *e && *e != '0';
+    }
+    return on;
+}
 /* nn::vi::QueryDisplayVrrSupported(bool*, Display const*) -> Result */
 HLE(_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE) {
-    *(uint8_t *)GP(ARG(0)) = 0;
+    *(uint8_t *)GP(ARG(0)) = display_vrr() ? 1 : 0;
     RET(0);
 }
 HLE(_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb) { RET(0); }
+/* nn::vi::SetDisplay120HzRefreshRateCapability(Display*, bool) -> Result. An unimplemented import
+   before this: the game offers 120 Hz and nothing answered. Accepting is all it wants. */
+HLE(_ZN2nn2vi36SetDisplay120HzRefreshRateCapabilityEPNS0_7DisplayEb) { RET(0); }
 HLE(_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii) { RET(0); }
 HLE(_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE) { RET(0); }
 
@@ -195,6 +251,8 @@ static float text_scale(const char *env, int menu) {
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
+    void hos_oot_camera_dump(void);   /* (host/hos_oot_camera.c: once, with HOS_CAMERA_DUMP=1) */
+    hos_oot_camera_dump();
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
        unset and the 3D came out black. The dynamic path runs a few frames first, as when the menu turns it on in game) */
     hos_fixed_resolution = !rx_option(2, 1) && hos_dynres_runs >= 30;
@@ -247,6 +305,29 @@ static void realtime_step(int64_t now) {
                     *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58), *(int *)GP(mod + 0x270 + 0x28),
                     *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30));
         if (target && *limit > 0 && *limit < target) *limit = target;
+        /* (hookshot) EXPERIMENT, HOS_FPS_FORCE=1: raising +0xfc alone does not hold. With variable
+           refresh on the engine's adaptive controller writes it back every frame, so a run with
+           HOS_FPS_TARGET=120 logs "frame limiter 60" at every sample and presents a locked 60. This
+           also raises the three controller words that sample read as 60, and the nominal rate, to
+           see whether the rate the controller settles on is what caps the frame. Unknown engine
+           fields written every frame: opt-in, and off by default for that reason. */
+        if (target && getenv("HOS_FPS_FORCE")) {
+            /* f_804fc0f0 is what stores a rate into +0xfc, and it does so only when a mode is 1,
+               the rate is 40 or more, and the byte at +0x232 is set. The sample prints that pair as
+               "vrr %d %d": +0x231 is 1 here and +0x232 is 0, so the store never runs and +0xfc
+               keeps the 60 it has, whatever the controller words say. Setting it lets the game's
+               own code take a higher rate. */
+            uint8_t *const gate = (uint8_t *)GP(mod + 0x232);
+            if (!*gate) *gate = 1;
+            /* NOT +0x2c8. The real-time frame step above owns that word, and the engine steps
+               game time by 60 / it: forcing it to 165 while the game renders at 57 steps time by
+               0.36 a frame, which is slow motion on screen. Reported from a real run, and the
+               commit that added this block had already warned it changed two things at once. */
+            int *const words[] = {(int *)GP(mod + 0x270 + 0x58), (int *)GP(mod + 0x270 + 0x28),
+                                  (int *)GP(mod + 0x270 + 0x2c)};
+            for (size_t i = 0; i < sizeof words / sizeof words[0]; i++)
+                if (*words[i] > 0 && *words[i] < target) *words[i] = target;
+        }
     }
     if (!rx_option(0, 1)) {   /* (the Insert menu: per frame) */
         int *slot = (int *)GP(mod + 0x2c8);

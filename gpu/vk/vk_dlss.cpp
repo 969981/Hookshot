@@ -1,0 +1,444 @@
+// (hookshot) DLSS Super Resolution's output image, its refusals and its NGX evaluation. See
+// vk_dlss.h for the shape and docs/upscaling.md for where a backend plugs in.
+//
+// The file is in two halves on purpose. Everything that is not NVIDIA's -- the output image, the
+// extents, the layout transitions, the barriers, and every clause that refuses an evaluation --
+// is vendor-neutral and compiles in every build. The NGX half is five functions behind
+// `RX_VK_DLSS_SDK`, and with that gate off each of them refuses; that is what makes a tree with no
+// NVIDIA SDK compile and link, and a machine with no DLSS runtime run.
+//
+// Why the gate rather than a hand-written NGX ABI: NGX is not a handful of C entry points. Every
+// call goes through `NVSDK_NGX_Parameter`, which is a C++ class of pure-virtual Set/Get overloads
+// -- its vtable order is the ABI -- and the resources, the feature-common info and the create
+// parameters are struct layouts, and the ~20 parameter names are strings. None of that can be
+// derived from the function names, and none of it can be checked by anything here: a wrong vtable
+// slot or a shifted field is memory corruption inside NVIDIA's runtime on a user's machine, which
+// is a worse failure than "DLSS is unavailable". Behind the gate the SDK's own headers declare all
+// of it and the compiler checks every line of this file against them. docs/upscaling.md says the
+// same in the section this change appends.
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+
+#include "vk_dlss.h"
+#include "vk_menu.h"   // (the Insert menu's "Scene upscaler" row)
+#include "vk_paths.h"   // (game_module_path: where the model library sits, which NGX is told)
+
+#if defined(RX_VK_DLSS_SDK)
+// The one NGX session every DLSS backend shares (gpu/vk/vk_ngx.h), which is where NVIDIA's own
+// headers are reached from. They are not vendored here and must not be: CONTRIBUTING.md's licensing
+// rule and docs/upscaling.md.
+#include "vk_ngx.h"
+#endif
+
+namespace mkwvk::dlss {
+namespace {
+
+/// Whether this build has an NGX SDK to compile the NGX half against. A constant rather than an
+/// `#ifdef` at each use, so both arms of every decision below are compiled in every build.
+#if defined(RX_VK_DLSS_SDK)
+constexpr bool kHaveSdk = true;
+#else
+constexpr bool kHaveSdk = false;
+#endif
+
+/// `RX_VK_DLSS=1` asks for this backend. Off is the default and costs nothing: with it off nothing
+/// is loaded, nothing is made and `supported()` is false before it looks at anything else.
+bool wanted() {
+    // RX_VK_DLSS wins where it is set; otherwise the Insert menu's "Scene upscaler" row. Read once,
+    // and read early -- the device extensions are asked for before the device exists -- so a change
+    // applies after a restart, which the row says.
+    static const bool yes = []() {
+        if (const char* e = getenv("RX_VK_DLSS")) return atoi(e) != 0;
+        return opts.scene_upscaler == 2;
+    }();
+    return yes;
+}
+
+struct Image {
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation memory = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    uint32_t width = 0, height = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    bool in_general = false;   ///< the UNDEFINED -> GENERAL barrier has been recorded
+};
+
+struct State {
+    Image output;
+    uint32_t render_width = 0, render_height = 0, upscale_width = 0, upscale_height = 0;
+    bool first_evaluation = true;
+};
+
+State g;
+
+constexpr VkImageSubresourceRange ONE_LEVEL{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+/// A memory dependency over the whole queue, in the synchronization2 form this renderer loads
+/// (`vkCmdPipelineBarrier` is not in vk_loader.h).
+void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src,
+                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst) {
+    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = src_stage, b.srcAccessMask = src;
+    b.dstStageMask = dst_stage, b.dstAccessMask = dst;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
+
+void drop_image(Image& t) {
+    if (t.view) vkDestroyImageView(dev.device, t.view, nullptr);
+    if (t.image) mkwvk::destroy_image(t.image, t.memory);
+    t = Image{};
+}
+
+/// The image an evaluation resolves into: RGBA16F at the upscale size, GENERAL throughout, a
+/// storage image because DLSS writes it and a transfer source because the caller blits it into the
+/// game's own target, exactly as vk_fsr3.cpp's output does.
+bool make_output(Image& t, uint32_t width, uint32_t height) {
+    drop_image(t);
+    t.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    t.width = std::max(1u, width), t.height = std::max(1u, height);
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = t.format;
+    ci.extent = {t.width, t.height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!create_image(ci, t.image, t.memory, false)) {
+        logf("vk: dlss: a %ux%u output image was not made", t.width, t.height);
+        return false;
+    }
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = t.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = t.format;
+    vi.subresourceRange = ONE_LEVEL;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &t.view) != VK_SUCCESS) {
+        logf("vk: dlss: the output image's view was not made");
+        drop_image(t);
+        return false;
+    }
+    return true;
+}
+
+/// The output's first layout. Recorded once per image, and the flag is set only where the barrier
+/// really went into a command buffer, so a run that got this far and then refused does not leave
+/// the image remembered as GENERAL while it is still UNDEFINED.
+void output_to_general(VkCommandBuffer cmd, Image& t) {
+    if (t.in_general || !t.image) return;
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = t.image;
+    b.subresourceRange = ONE_LEVEL;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+    t.in_general = true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The NGX half. Five functions, two implementations, and the only part of this file that needs
+// anything of NVIDIA's.
+// ---------------------------------------------------------------------------------------------
+
+/// NGX started, and this driver and GPU reporting Super Resolution as available. Asked once by
+/// `supported()`, which logs the one line saying why not.
+bool ngx_available();
+/// The feature handle for these extents, made on first use because `CreateFeature` records into a
+/// command buffer. True when a handle is there afterwards.
+bool ngx_feature(VkCommandBuffer cmd);
+/// One evaluation, into `out`. False when NGX refused it.
+bool ngx_evaluate(VkCommandBuffer cmd, const Inputs& in, const Image& out);
+/// Lets the feature handle go: the extents changed, or we are shutting down.
+void ngx_drop_feature();
+/// Lets NGX itself go.
+void ngx_shutdown();
+
+#if defined(RX_VK_DLSS_SDK)
+
+/// The entry points this backend calls, resolved by name from the NGX core the NVIDIA driver ships
+/// (`libnvidia-ngx.so`), through the loader pattern the rest of the renderer uses for
+/// vulkan-1.dll (vk_main.cpp; on Linux host/posix/win32_posix.c makes that dlopen/dlsym).
+///
+/// They are resolved rather than linked for two reasons: the SDK's own library is then not a link
+/// requirement of a gated build, and a machine with the SDK-built binary but no NVIDIA driver has
+/// every pointer null here, so `supported()` is false instead of the process failing to start.
+///
+/// The two `NGX_VULKAN_*_DLSS_EXT*` helpers in nvsdk_ngx_helpers_vk.h are deliberately *not* used,
+/// which is the one place this backend departs from the obvious reading of NVIDIA's sample code.
+/// They are inline wrappers that call `NVSDK_NGX_VULKAN_CreateFeature` / `..._EvaluateFeature` by
+/// name, so using them puts those symbols in this object file and hands the link back to NVIDIA's
+/// library. What they do besides that is set the parameter keys below -- and those keys are the
+/// SDK's own macros here, so a wrong one is a compile error, the same check using the helper would
+/// have given. The risk this trades for is a key DLSS wants and this code does not set; the set is
+/// written out in docs/upscaling.md so that it can be reviewed against the SDK's helper.
+/// This backend's own NGX state: a parameter block and a feature handle, and nothing else. The
+/// session itself -- loading NGX, initializing it, the capability block, the discovery calls -- is
+/// shared with the other DLSS features and lives in gpu/vk/vk_ngx.cpp.
+struct Feature {
+    NVSDK_NGX_Parameter* params = nullptr;
+    NVSDK_NGX_Handle* feature = nullptr;
+};
+Feature ngx;
+
+bool ngx_available() {
+    if (!ngx::feature_available(NVSDK_NGX_Parameter_SuperSampling_Available,
+                                NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver,
+                                NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor,
+                                NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor,
+                                "Super Resolution"))
+        return false;
+    if (!ngx.params) ngx.params = ngx::allocate_params();
+    return ngx.params != nullptr;
+}
+
+bool ngx_feature(VkCommandBuffer cmd) {
+    if (ngx.feature) return true;
+    if (!ngx.params) return false;
+    // Quality: the extents are the seam's, not a preset's, so DLSS is told the ratio it is being
+    // given rather than being asked to pick one. Presets belong with the rest of the settings
+    // (docs/upscaling.md, row 5) and are not invented here.
+    ngx.params->Set(NVSDK_NGX_Parameter_Width, g.render_width);
+    ngx.params->Set(NVSDK_NGX_Parameter_Height, g.render_height);
+    ngx.params->Set(NVSDK_NGX_Parameter_OutWidth, g.upscale_width);
+    ngx.params->Set(NVSDK_NGX_Parameter_OutHeight, g.upscale_height);
+    ngx.params->Set(NVSDK_NGX_Parameter_PerfQualityValue,
+                    (int)NVSDK_NGX_PerfQuality_Value_MaxQuality);
+    // The three flags that are statements about this game's inputs rather than preferences: the
+    // colour is HDR, the motion is at the render extent, and the depth is reversed. The input
+    // contract in docs/upscaling.md is where each comes from; getting one wrong is a wrong picture.
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+                    (int)(NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
+                          NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                          NVSDK_NGX_DLSS_Feature_Flags_DepthInverted));
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
+    ngx.params->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
+    ngx.params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
+    const NVSDK_NGX_Result res =
+        ngx::create_feature(cmd, NVSDK_NGX_Feature_SuperSampling, ngx.params, &ngx.feature);
+    if (NVSDK_NGX_FAILED(res) || !ngx.feature) {
+        logf("vk: dlss: the feature was not created for %ux%u -> %ux%u (0x%08x)", g.render_width,
+             g.render_height, g.upscale_width, g.upscale_height, (unsigned)res);
+        ngx.feature = nullptr;
+        return false;
+    }
+    logf("vk: dlss: feature ready, %ux%u -> %ux%u", g.render_width, g.render_height,
+         g.upscale_width, g.upscale_height);
+    return true;
+}
+
+/// One input as NGX takes it. Nothing here is defaulted; `upscale()` has already refused inputs
+/// that cannot fill it.
+NVSDK_NGX_Resource_VK as_resource(VkImageView view, VkImage image, VkFormat format, uint32_t width,
+                                  uint32_t height, bool read_write) {
+    return ngx::resource(view, image, format, width, height, read_write);
+}
+
+bool ngx_evaluate(VkCommandBuffer cmd, const Inputs& in, const Image& out) {
+    if (!ngx.feature || !ngx.params) return false;
+    NVSDK_NGX_Resource_VK color = as_resource(in.color, in.color_image, in.color_format,
+                                              in.render_width, in.render_height, false);
+    NVSDK_NGX_Resource_VK depth = as_resource(in.depth, in.depth_image, in.depth_format,
+                                              in.render_width, in.render_height, false);
+    NVSDK_NGX_Resource_VK motion = as_resource(in.motion, in.motion_image, in.motion_format,
+                                               in.render_width, in.render_height, false);
+    NVSDK_NGX_Resource_VK target =
+        as_resource(out.view, out.image, out.format, out.width, out.height, true);
+    ngx.params->Set(NVSDK_NGX_Parameter_Color, &color);
+    ngx.params->Set(NVSDK_NGX_Parameter_Depth, &depth);
+    ngx.params->Set(NVSDK_NGX_Parameter_MotionVectors, &motion);
+    ngx.params->Set(NVSDK_NGX_Parameter_Output, &target);
+    ngx.params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, in.jitter[0]);
+    ngx.params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, in.jitter[1]);
+    ngx.params->Set(NVSDK_NGX_Parameter_MV_Scale_X, in.motion_scale[0]);
+    ngx.params->Set(NVSDK_NGX_Parameter_MV_Scale_Y, in.motion_scale[1]);
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, g.render_width);
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, g.render_height);
+    ngx.params->Set(NVSDK_NGX_Parameter_Reset, in.reset ? 1 : 0);
+    ngx.params->Set(NVSDK_NGX_Parameter_Sharpness, in.sharpen ? in.sharpness : 0.0f);
+    // The game does not expose an exposure, and the colour it hands over is already in the range
+    // its own resolve worked in, so both of these are the neutral value rather than a guess.
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+    ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+    const NVSDK_NGX_Result res = ngx::evaluate_feature(cmd, ngx.feature, ngx.params);
+    if (NVSDK_NGX_FAILED(res)) {
+        logf("vk: dlss: the evaluation was refused (0x%08x)", (unsigned)res);
+        return false;
+    }
+    return true;
+}
+
+void ngx_drop_feature() {
+    ngx::release_feature(ngx.feature);
+    ngx.feature = nullptr;
+}
+
+void ngx_shutdown() {
+    ngx_drop_feature();
+    ngx::destroy_params(ngx.params);
+    ngx.params = nullptr;
+    // (the session itself is ended by whoever ends the renderer, not by one of its features: the
+    // other DLSS backends may still be using it. gpu/vk/vk_ngx.h)
+    ngx::shutdown();
+}
+
+#else   // no NGX SDK: the gate is off, and each of the five refuses
+
+bool ngx_available() {
+    return false;
+}
+bool ngx_feature(VkCommandBuffer) {
+    return false;
+}
+bool ngx_evaluate(VkCommandBuffer, const Inputs&, const Image&) {
+    return false;
+}
+void ngx_drop_feature() {}
+void ngx_shutdown() {}
+
+#endif   // RX_VK_DLSS_SDK
+
+// ---- Windows and Streamline, deliberately not written ----
+//
+// On Windows the normal route to DLSS is Streamline (sl.dlss) rather than NGX directly, and
+// Streamline is also the only route to DLSS frame generation. It is not implemented here, and that
+// is a decision rather than an omission: it needs a second runtime, a second set of headers and a
+// Windows machine to try it on, and none of that is wanted in the same change as the Linux path.
+//
+// The shape it would take is already here. Streamline would be a third arm of the gate above --
+// `#elif defined(RX_VK_DLSS_SL)` -- implementing the same five `ngx_*` functions (named for the
+// job, not for NGX, for exactly this reason) with slInit / slSetFeatureLoaded /
+// slAllocateResources / slEvaluateFeature. Nothing outside those five would change: `Inputs`, the
+// output image, the layout transitions, the barriers and every refusal below are vendor-neutral.
+// Streamline has no Linux build, so the NGX arm stays the Linux one whatever happens on Windows.
+
+} // namespace
+
+bool supported() {
+    static const bool answer = [] {
+        if (!wanted()) return false;   // (RX_VK_DLSS=1: nothing below runs unless it is asked for)
+        if (!dev.device) {
+            logf("vk: dlss: no device yet");
+            return false;
+        }
+        if (!kHaveSdk) {
+            logf("vk: dlss: this build has no NGX SDK (RX_VK_DLSS_SDK), so DLSS is unavailable; "
+                 "docs/upscaling.md says what to point it at");
+            return false;
+        }
+        return ngx_available();
+    }();
+    return answer;
+}
+
+size_t instance_extensions(const char** out, size_t max) {
+#if defined(RX_VK_DLSS_SDK)
+    if (!wanted()) return 0;
+    return ngx::instance_extensions(NVSDK_NGX_Feature_SuperSampling, out, max);
+#else
+    (void)out, (void)max;
+    return 0;
+#endif
+}
+
+size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {
+#if defined(RX_VK_DLSS_SDK)
+    if (!wanted()) return 0;
+    return ngx::device_extensions(instance, gpu, NVSDK_NGX_Feature_SuperSampling, out, max);
+#else
+    (void)instance, (void)gpu, (void)out, (void)max;
+    return 0;
+#endif
+}
+
+bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_width,
+             uint32_t upscale_height) {
+    if (!supported()) return false;
+    const uint32_t rw = std::max(1u, render_width), rh = std::max(1u, render_height);
+    const uint32_t uw = std::max(1u, upscale_width), uh = std::max(1u, upscale_height);
+    if (g.output.image && g.render_width == rw && g.render_height == rh && g.upscale_width == uw &&
+        g.upscale_height == uh) {
+        return true;
+    }
+    // A feature is created for one pair of extents, so a change of either ends this one. The next
+    // evaluation makes another, because that is the first place there is a command buffer.
+    ngx_drop_feature();
+    if (!make_output(g.output, uw, uh)) {
+        shutdown();
+        return false;
+    }
+    g.render_width = rw, g.render_height = rh, g.upscale_width = uw, g.upscale_height = uh;
+    g.first_evaluation = true;
+    logf("vk: dlss: %ux%u -> %ux%u", rw, rh, uw, uh);
+    return true;
+}
+
+bool upscale(VkCommandBuffer cmd, const Inputs& in) {
+    // Every clause here is a refusal rather than a default, for the reason docs/upscaling.md gives:
+    // an upscaler running on inputs it has guessed produces ghosting that is reported as a renderer
+    // bug. The caller keeps whatever it would otherwise have done.
+    if (!in.color || !in.depth || !in.motion) return false;
+    // NGX is handed resources, not views (vk_dlss.h): without the images and their formats an
+    // evaluation would be describing something NVIDIA's runtime cannot see.
+    if (!in.color_image || !in.depth_image || !in.motion_image) return false;
+    if (in.color_format == VK_FORMAT_UNDEFINED || in.depth_format == VK_FORMAT_UNDEFINED ||
+        in.motion_format == VK_FORMAT_UNDEFINED) {
+        return false;
+    }
+    if (!in.render_width || !in.render_height || !in.upscale_width || !in.upscale_height) return false;
+    // An upscaler cannot resolve into something smaller than what it was given; equal is DLAA.
+    if (in.upscale_width < in.render_width || in.upscale_height < in.render_height) return false;
+    if (!(in.near_plane > 0.0f) || !(in.fov_y > 0.0f)) return false;   // (Inputs defaults them)
+    if (!prepare(in.render_width, in.render_height, in.upscale_width, in.upscale_height)) return false;
+
+    const bool first = g.first_evaluation;
+    output_to_general(cmd, g.output);
+    if (!ngx_feature(cmd)) return false;
+    g.first_evaluation = false;
+
+    // What the game's draws and the motion pass wrote has to be visible to NGX's own passes.
+    memory_barrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                       VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    Inputs evaluated = in;
+    evaluated.reset = in.reset || first;   // (the first evaluation has no history to carry)
+    if (!ngx_evaluate(cmd, evaluated, g.output)) return false;
+    // (what reads the output: the blit into the game's target, and anything sampling it after)
+    memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+    return true;
+}
+
+VkImage output_image() {
+    return g.output.image;
+}
+
+VkImageView output_view() {
+    return g.output.view;
+}
+
+void shutdown() {
+    ngx_shutdown();
+    drop_image(g.output);
+    g.render_width = g.render_height = g.upscale_width = g.upscale_height = 0;
+    g.first_evaluation = true;
+}
+
+} // namespace mkwvk::dlss
