@@ -2997,7 +2997,9 @@ Targets targets(NvnState& s) {
         at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
-        const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        // (a block view of a compressed image: its blocks)
+        const uint32_t w = view_texels(tex, f, std::max(1u, tex->width >> level));
+        const uint32_t h = view_texels(tex, f, std::max(1u, tex->height >> level));
         at.width = at.width ? std::min(at.width, w) : w;
         at.height = at.height ? std::min(at.height, h) : h;
         at.samples = tex->samples;
