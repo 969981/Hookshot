@@ -2641,6 +2641,77 @@ struct SceneDepth {
 };
 SceneDepth scene_depth;
 
+
+// (hookshot) The sub-pixel offset the scene is rasterized with, for a temporal upscaler.
+//
+// The game does not jitter: capture_view_projection below refuses any projection whose m02 is not
+// exactly zero, and it finds one, so the projection it hands its own network carries no sub-pixel
+// offset. Its network is single-image and has no use for one. FSR and DLSS do: without sample
+// diversity they reconstruct from motion alone, which is softer than either is meant to be.
+//
+// The offset is applied to the viewport, not to the projection. The projection lives in the game's
+// own memory and the GPU reads it there, so changing it would mean binding a patched copy to every
+// draw that reads it -- the kind of per-draw work that has already cost this renderer 300 ms a
+// frame once. A viewport offset moves rasterization by the same amount and costs two additions, and
+// it applies to colour, depth and motion together because they are the same pass.
+struct SceneJitter {
+    float x = 0.0f, y = 0.0f;   ///< render pixels
+    int64_t frame = -1;         ///< the present this was advanced for
+    uint32_t phase = 0;
+    /// What the scene is resolved to, once the seam has run once. The phase count depends on the
+    /// ratio, so until then the sequence is the 1:1 one, which is eight phases and not wrong -- just
+    /// shorter than it will be.
+    uint32_t display_width = 0;
+};
+SceneJitter scene_jitter_state;
+
+/// RX_VK_JITTER=0 turns it off with an upscaler still on, which is the A/B worth having; =1 turns it
+/// on with neither. Otherwise it follows whether a vendor upscaler is going to run at all, because
+/// jitter without a temporal resolve is just shimmer.
+bool jitter_wanted() {
+    static const bool yes = []() {
+        if (const char* e = getenv("RX_VK_JITTER")) return atoi(e) != 0;
+        if (const char* e = getenv("RX_VK_FSR"); e && atoi(e) != 0) return true;
+        if (const char* e = getenv("RX_VK_DLSS"); e && atoi(e) != 0) return true;
+        return opts.scene_upscaler != 0;
+    }();
+    return yes;
+}
+
+/// The radical inverse in a base: Halton, which is the sequence both vendors specify.
+float halton_at(uint32_t index, uint32_t base) {
+    float f = 1.0f, r = 0.0f;
+    for (uint32_t i = index; i; i /= base) {
+        f /= (float)base;
+        r += f * (float)(i % base);
+    }
+    return r;
+}
+
+/// How many phases before the sequence repeats. AMD's rule is 8 * ratio squared; NVIDIA's guidance
+/// is the same shape, so one rule serves both rather than each backend inventing its own.
+uint32_t jitter_phases(uint32_t render_width, uint32_t display_width) {
+    if (!render_width || display_width < render_width) return 8;
+    const float ratio = (float)display_width / (float)render_width;
+    const uint32_t n = (uint32_t)std::ceil(8.0f * ratio * ratio);
+    return std::clamp(n, 1u, 128u);
+}
+
+/// Advances once per present. Called from the viewport path, which is the first place in a frame
+/// that knows the scene's extent.
+void advance_scene_jitter(uint32_t render_width, uint32_t display_width) {
+    extern int64_t presents_now;   // (vk_replay.cpp)
+    if (scene_jitter_state.frame == presents_now) return;
+    scene_jitter_state.frame = presents_now;
+    const uint32_t phases = jitter_phases(render_width, display_width);
+    scene_jitter_state.phase = (scene_jitter_state.phase + 1) % std::max(1u, phases);
+    // Centred on the pixel: Halton gives [0,1), and an offset that is never negative would move the
+    // whole image half a pixel rather than sampling around where it is.
+    scene_jitter_state.x = halton_at(scene_jitter_state.phase + 1, 2) - 0.5f;
+    scene_jitter_state.y = halton_at(scene_jitter_state.phase + 1, 3) - 0.5f;
+}
+
+
 /// (hookshot) Once per distinct render target set, with RX_VK_MRT_CENSUS=1: how many colour attachments the game
 /// binds at once, their formats and the extent. Off by default and free while off.
 ///
@@ -2914,7 +2985,20 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
-    d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+    // (hookshot) The scene's own passes are jittered for a temporal upscaler: the ones that draw
+    // into a depth target of the extent the upscaler is given. Everything else -- the HUD, the
+    // menus, the movie layer -- is left alone, because a jittered HUD is a shimmering HUD and
+    // nothing resolves it.
+    float jx = 0.0f, jy = 0.0f;
+    if (jitter_wanted() && at.depth && depth_aspect(at.depth_format) && scene_depth.width &&
+        at.width == scene_depth.width && at.height == scene_depth.height) {
+        advance_scene_jitter(scene_depth.width, scene_jitter_state.display_width
+                                                    ? scene_jitter_state.display_width
+                                                    : scene_depth.width);
+        jx = scene_jitter_state.x, jy = scene_jitter_state.y;
+    }
+    d.vp = {vx + jx, vy + vh + jy, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f),
+            std::clamp(s.depth_far, 0.0f, 1.0f)};
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
@@ -5459,6 +5543,17 @@ extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* 
 /// which is what keeps camera motion from reprojecting through a guess)
 extern "C" __attribute__((weak)) int hos_oot_view_projection(float* row_major_4x4);
 
+void scene_jitter_display_width(uint32_t width) {
+    scene_jitter_state.display_width = width;
+}
+
+bool scene_jitter(float* x, float* y) {
+    if (!jitter_wanted() || scene_jitter_state.frame < 0) return false;
+    if (x) *x = scene_jitter_state.x;
+    if (y) *y = scene_jitter_state.y;
+    return true;
+}
+
 /// (hookshot) The scene's depth and matrix, for the present path (vk_draw.h).
 bool scene_frame_inputs(SceneFrameInputs* out) {
     if (!out) return false;
@@ -5741,6 +5836,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     //  it has no motion or depth among them -- gating on that meant FSR could never be reached)
     uint32_t in_w = 0, in_h = 0;
     if (!bindings.empty()) in_w = bindings[0].width, in_h = bindings[0].height;
+    if (in_w) scene_jitter_display_width(req.output_width);
     if (fsr_here && scene_depth.view && fsr3::supported() && in_w && in_h &&
         scene_depth.width == in_w && scene_depth.height == in_h) {
         fsr3::note_frame();   // (the frame time at this seam, for every RX_VK_FSR_STAGE)
@@ -5776,6 +5872,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     di.render_width = scene_depth.width, di.render_height = scene_depth.height;
                     di.upscale_width = req.output_width, di.upscale_height = req.output_height;
                     di.motion_scale[0] = 1.0f, di.motion_scale[1] = 1.0f;   // (already render pixels)
+                    scene_jitter(&di.jitter[0], &di.jitter[1]);
                     float dnp = 0.0f, dfp = 0.0f;
                     const float dth = hos_oot_camera ? hos_oot_camera(&dnp, &dfp) : 0.0f;
                     if (dth > 0.0f && dnp > 0.0f) di.near_plane = dnp, di.fov_y = 2.0f * std::atan(dth);
@@ -5804,6 +5901,9 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     ai.render_width = scene_depth.width, ai.render_height = scene_depth.height;
                     ai.upscale_width = req.output_width, ai.upscale_height = req.output_height;
                     ai.motion_scale[0] = 1.0f, ai.motion_scale[1] = 1.0f;   // (already render pixels)
+                    // The offset this frame's scene was rasterized with, which the upscaler has to
+                    // undo. Zero where nothing is jittering, which is what that means.
+                    scene_jitter(&ai.jitter[0], &ai.jitter[1]);
                     float np = 0.0f, fp = 0.0f;
                     const float th = hos_oot_camera ? hos_oot_camera(&np, &fp) : 0.0f;
                     if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);

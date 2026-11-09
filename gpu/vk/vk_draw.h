@@ -30,6 +30,11 @@ struct SceneFrameInputs {
 };
 bool scene_frame_inputs(SceneFrameInputs* out);
 
+/// (hookshot) The sub-pixel offset this frame's scene was rasterized with, in render pixels, for the
+/// backend that has to undo it. False when nothing is jittering, which a backend takes as "no
+/// offset" and not as "use the last one".
+bool scene_jitter(float* x, float* y);
+
 /// A graphics pipeline as hookshot_pipelines.bin keeps it (the precompile's notes): what built it
 struct PipeNote {
     uint64_t key, prog, variant;

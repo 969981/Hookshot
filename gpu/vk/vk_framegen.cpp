@@ -20,6 +20,7 @@
 
 #include "vk_camera_motion.h"
 #include "vk_dlssg.h"
+#include "vk_fsr3fi.h"
 #include "vk_draw.h"   // (scene_frame_inputs: the depth and matrix the draw path kept)
 
 #include <cmath>
@@ -473,6 +474,63 @@ void multiply4x4(const float* a, const float* b, float* out) {
 /// this runs at present time where neither is otherwise in reach. The motion is the same
 /// camera-only reprojection the upscalers use; asking for it twice in one frame is answered with
 /// the one already written (gpu/vk/vk_camera_motion.cpp).
+/// (hookshot) The same job by FSR 3 frame interpolation (gpu/vk/vk_fsr3fi.h), for the GPUs DLSS does
+/// not serve. The inputs it needs are the ones assembled above, so this is deliberately the same
+/// shape; what it adds is the presented colour's image, which it copies into its own previous
+/// source for the next frame.
+int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)fsr3fi::frames_wanted());
+    if (want <= 0) return 0;
+
+    fsr3fi::Inputs in;
+    in.color = fg.frames[cur].view;
+    in.color_image = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_view;
+    in.motion = motion;
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    scene_jitter(&in.jitter[0], &in.jitter[1]);
+    {
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    in.frames_made = (uint32_t)want;
+    int made = 0;
+    for (int k = 1; k <= want; k++) {
+        in.frame_index = (uint32_t)k;
+        if (!fsr3fi::generate(cmd, in)) break;
+        const VkImage from = fsr3fi::made_image((uint32_t)k);
+        if (!from) break;
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        made++;
+    }
+    if (made != want) {
+        static int told = 0;
+        if (told++ < 4)
+            logf("vk: fsr3 frame interpolation made %d of %d frames: the renderer's own takes this "
+                 "one", made, want);
+        return 0;   // (a half-made set would show one real frame and one stale image)
+    }
+    return made;
+}
+
 int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
     SceneFrameInputs scene;
     if (!scene_frame_inputs(&scene) || !scene.have_view_projection) return 0;
@@ -600,6 +658,8 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // does not report it, or a frame where the scene's depth and matrix are not both in hand -- and
     // then the interpolation below runs exactly as it did before this existed.
     if (blend && m > 1 && dlssg::supported()) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && fsr3fi::supported())
+        set->made = fsr3fi_frames(cmd, *set, cur, uw, uh, m);
     if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
