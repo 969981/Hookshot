@@ -1110,7 +1110,16 @@ void menu_init() {
     // nothing is worse than one that is not there. FSR needs nothing and is always offered.
     if (!dlss::built_with_sdk())
         for (Row& r : rows)
-            if (r.value == &opts.upscale) r.hi = 3;
+            if (r.value == &opts.upscale) {
+                r.hi = 3;
+                // Say so where the question is asked. A row that quietly stops one value short
+                // looks like DLSS is unsupported on the card, when what is missing is the SDK this
+                // build was made without -- and the player who wants it is the one building.
+                r.help = "What makes the picture bigger. Off, Catmull-Rom and Lanczos are filters over the finished "
+                         "frame. FSR 3.1 resolves the 3D scene itself from the game's render size, which is sharper. "
+                         "DLSS is not offered: this build was made without NVIDIA's NGX SDK (readme.md says how to "
+                         "build with it). Applies after a restart.";
+            }
     bool has_options = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");
     cheats_enabled = cheats && !strcmp(cheats, "1");

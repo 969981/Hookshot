@@ -180,6 +180,27 @@ you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or
 ## In-game menu
 
 Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home button (or Select and Start together).
+
+#### DLSS on an NVIDIA card
+
+The menu offers **FSR 3.1** everywhere, and **DLSS** only in a build made with NVIDIA's NGX SDK.
+Released builds are not: the SDK is NVIDIA's to license and none of it may be committed here, so the
+Upscaling row stops at FSR 3.1 and says why.
+
+You build the game yourself, so you can have DLSS:
+
+1. Get NVIDIA's DLSS SDK (`github.com/NVIDIA/DLSS`) and put it where the build will find it -- a
+   folder named `dlss-sdk` beside the Hookshot folder, or name it yourself with
+   `RX_VK_DLSS_SDK=<path>`.
+2. Build the game as usual. The Upscaling row then offers DLSS, and Frame generation will use DLSS
+   where it can and FSR 3 otherwise.
+3. Put NVIDIA's DLSS runtime beside the game: `nvngx_dlss.dll` on Windows (the SDK's
+   `lib/Windows_x86_64/rel/`), `libnvidia-ngx-dlss.so.*` on Linux. It is theirs to ship, not ours,
+   so the build will not copy it for you.
+
+There is no "neural rendering" row. NVIDIA's ray reconstruction denoises ray-traced lighting from a
+G-buffer, and this game is rasterized with neither -- so it is not a setting that was left out, it
+is one that has nothing to do here.
 The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it

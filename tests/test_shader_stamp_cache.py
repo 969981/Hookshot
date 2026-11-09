@@ -21,7 +21,8 @@ BUILD_SCRIPT = ROOT / "nx2" / "build.py"
 
 def production_code(path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    names = {"tree_headers", "vk_sources", "flag_text", "object_key"}
+    # dlss_sdk_path decides a compile flag, so the object key depends on it: it belongs here.
+    names = {"tree_headers", "vk_sources", "flag_text", "object_key", "dlss_sdk_path"}
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {n.name for n in functions} == names
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")

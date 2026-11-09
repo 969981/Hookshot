@@ -101,6 +101,30 @@ def check_vk_symbols(so):
     print("  namespace scope, not inside an anonymous namespace")
     return False
 
+def dlss_sdk_path():
+    """(hookshot) The NGX SDK this build compiles DLSS against, or None.
+
+    RX_VK_DLSS_SDK names it. Failing that, a folder called `dlss-sdk` beside the repository or in
+    the work folder is used, because the player who wants DLSS builds the game on their own PC and
+    telling them to set an environment variable through a double-clicked builder is telling them
+    no. Nothing of NVIDIA's is in this repository and nothing is downloaded on their behalf: the
+    SDK is their own copy, and a build without one is the build everyone gets today.
+    """
+    named = os.environ.get("RX_VK_DLSS_SDK")
+    root = os.path.normpath(os.path.join(kit.HERE, ".."))
+    places = [named] if named else [os.path.join(root, "dlss-sdk"),
+                                    os.path.join(os.path.dirname(root), "dlss-sdk"),
+                                    os.path.join(os.environ.get("OOT_WORK", ""), "dlss-sdk")]
+    for d in places:
+        if d and os.path.isfile(os.path.join(d, "include", "nvsdk_ngx.h")):
+            return d
+        if d and os.path.isfile(os.path.join(d, "DLSS", "include", "nvsdk_ngx.h")):
+            return os.path.join(d, "DLSS")   # (the SDK repository cloned whole)
+    if named:
+        print("RX_VK_DLSS_SDK=%s has no include/nvsdk_ngx.h; DLSS is left out" % named)
+    return None
+
+
 def dlss_sdk_link():
     """(hookshot) What a build with RX_VK_DLSS_SDK=<path> links the DLSS backend against.
 
@@ -111,15 +135,29 @@ def dlss_sdk_link():
     library is the builder's own copy, under the path they named, and a build without that path
     links exactly what it linked before.
     """
-    sdk = os.environ.get("RX_VK_DLSS_SDK")
-    if not sdk or not LINUX:
+    sdk = dlss_sdk_path()
+    if not sdk:
         return []
-    arch = "Linux_aarch64" if platform.machine() in ("aarch64", "arm64") else "Linux_x86_64"
-    lib = os.path.join(sdk, "lib", arch)
-    if not os.path.isdir(lib):
-        print("RX_VK_DLSS_SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
-        return []
-    return ["-L" + lib, "-lnvsdk_ngx"]
+    if LINUX:
+        arch = "Linux_aarch64" if platform.machine() in ("aarch64", "arm64") else "Linux_x86_64"
+        lib = os.path.join(sdk, "lib", arch)
+        if not os.path.isdir(lib):
+            print("DLSS SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
+            return []
+        return ["-L" + lib, "-lnvsdk_ngx"]
+    # Windows: the SDK ships an import/static library per configuration rather than a .so to -l.
+    # Named outright because the layout nests by architecture and the name differs by build, and a
+    # link that silently found nothing would leave every NVSDK_NGX_* symbol undefined at the end of
+    # a long compile. This was Linux-only before, so a Windows build asked for DLSS, compiled the
+    # NGX half and then failed to link -- which is exactly what a player on an NVIDIA card hits.
+    for root, _dirs, files in os.walk(os.path.join(sdk, "lib")):
+        if "Windows" not in root:
+            continue
+        for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
+            if name in files:
+                return [os.path.join(root, name)]
+    print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link" % os.path.join(sdk, "lib"))
+    return []
 
 
 def target():
@@ -776,8 +814,8 @@ def main():
             # against that SDK's headers. Nothing of NVIDIA's is in this repository and nothing of
             # NVIDIA's may be put in it (CONTRIBUTING.md): the SDK is the builder's own copy, named
             # here, and a build without it leaves DLSS reporting itself unavailable.
-            *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(os.environ["RX_VK_DLSS_SDK"], "include")]
-              if os.environ.get("RX_VK_DLSS_SDK") else []),
+            *(["-DRX_VK_DLSS_SDK=1", "-I" + os.path.join(dlss_sdk_path(), "include")]
+              if dlss_sdk_path() else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
