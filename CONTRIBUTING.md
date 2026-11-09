@@ -183,7 +183,8 @@ These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`
 | `powershell -File scripts/run-vk.ps1 -Window` | An in-game run: screenshots, the flash detector, frame dumps and the profiler. |
 
 For a graphics fix, look at the screenshots in `work/runs/<name>/shots` and delete them afterwards; they reach
-gigabytes and are derived from the game.
+gigabytes and are derived from the game. The switches for scripted input, screenshots, frame dumps and profiles are in
+the development guide's [reference](docs/development.md#switches-for-testing-and-debugging).
 
 ### When you add a fix or a check
 
