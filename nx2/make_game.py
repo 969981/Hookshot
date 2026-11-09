@@ -877,6 +877,8 @@ def parse_args():
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--no-prepare-shaders", action="store_true",
+                   help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     a = p.parse_args()
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
@@ -1133,7 +1135,7 @@ def main(a=None):
     # changed; the builder says how much stays and lets it go. Kept in a development checkout)
     if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
         shutil.rmtree(exefs, ignore_errors=True)
-    if not os.environ.get("HOOKSHOT_NO_PREPARE"):   # (=1: left to the first start, as before)
+    if not a.no_prepare_shaders and not os.environ.get("HOOKSHOT_NO_PREPARE"):   # (either: left to the first start, as before)
         prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"])
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],

@@ -255,6 +255,7 @@ public partial class MainWindow : Window
         public string? Nup { get; set; }
         public string? Romfs { get; set; }
         public string? Exefs { get; set; }
+        public bool PrepareLater { get; set; }   // ("Prepare shaders now" unticked)
     }
     static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
@@ -264,6 +265,7 @@ public partial class MainWindow : Window
         BuilderSettings? s = null;
         try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
         if (s == null) return;
+        PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
@@ -287,7 +289,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs };
+            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
+                                         PrepareLater = PrepareTick.IsChecked != true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -675,6 +678,7 @@ public partial class MainWindow : Window
         else if (chosenNup != null) args.AddRange(new[] { "--nup", chosenNup });
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
+        if (PrepareTick.IsChecked != true) args.Add("--no-prepare-shaders");
         Run(tools, args);
     }
 
@@ -1121,7 +1125,9 @@ public partial class MainWindow : Window
     {
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
-        Run(tools, new List<string> { "--update", folder }, keepRows: true);
+        var args = new List<string> { "--update", folder };
+        if (PrepareTick.IsChecked != true) args.Add("--no-prepare-shaders");   // (as the last build chose: ApplySettings)
+        Run(tools, args, keepRows: true);
     }
 
     // ================= the window =================
