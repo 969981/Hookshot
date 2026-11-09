@@ -24,8 +24,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUILD = ROOT / "nx2" / "build.py"
 
 
-def picker(linux):
-    """dlss_sdk_path and dlss_sdk_link, lifted out of build.py and run on their own."""
+def picker(linux, mingw=""):
+    """dlss_sdk_path and dlss_sdk_link, lifted out of build.py and run on their own.
+
+    `mingw` stands in for toolchain.mingw(): a non-empty string is an llvm-mingw Windows build,
+    which needs Microsoft's C++ default-libs suppressed.
+    """
     tree = ast.parse(io.open(BUILD, encoding="utf-8").read(), filename=str(BUILD))
     names = {"dlss_sdk_path", "dlss_sdk_link"}
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -33,6 +37,7 @@ def picker(linux):
     namespace = {
         "os": os, "platform": __import__("platform"), "LINUX": linux,
         "kit": type("Kit", (), {"HERE": str(ROOT / "nx2")})(),
+        "toolchain": type("Toolchain", (), {"mingw": staticmethod(lambda host=False: mingw)})(),
     }
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(BUILD), "exec"), namespace)
     return namespace["dlss_sdk_link"]
@@ -58,9 +63,25 @@ class DlssSdkLinkArch(unittest.TestCase):
 
     def test_windows_links_the_x64_library(self):
         got = picker(linux=False)()
-        self.assertEqual(len(got), 1, got)
-        self.assertIn("Windows_x86_64", got[0])
-        self.assertTrue(os.path.isfile(got[0]), got)
+        libs = [a for a in got if a.endswith(".lib")]
+        self.assertEqual(len(libs), 1, got)
+        self.assertIn("Windows_x86_64", libs[0])
+        self.assertTrue(os.path.isfile(libs[0]), got)
+
+    def test_mingw_suppresses_microsofts_cxx_default_libs(self):
+        """NGX's libraries ask in their objects for Microsoft's C++ runtime, which MinGW has not.
+
+        Without this a Windows build stopped at "could not open 'liblibcpmt.a'" -- lld
+        MinGW-ifying a name out of a /DEFAULTLIB directive -- after a two-minute compile.
+        """
+        got = " ".join(picker(linux=False, mingw="/opt/llvm-mingw")())
+        for lib in ("libcpmt", "msvcprt"):
+            self.assertIn("/nodefaultlib:" + lib, got, got)
+
+    def test_the_msvc_target_suppresses_nothing_extra(self):
+        """With Microsoft's own runtime present there is nothing to stand in for."""
+        got = " ".join(picker(linux=False, mingw="")())
+        self.assertNotIn("nodefaultlib", got, got)
 
     def test_windows_never_links_an_arm_library(self):
         got = picker(linux=False)()

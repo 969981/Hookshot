@@ -182,19 +182,29 @@ def dlss_sdk_link():
     # x64" five times. The name is the target's, not this PC's: a Windows build may be a cross build
     # from Linux (RX_TARGET=windows), where platform.machine() describes the wrong machine entirely.
     arch = "Windows_ARM64" if "arm" in (os.environ.get("RX_ARCH", "") or "").lower() else "Windows_x86_64"
+    # NGX's Windows libraries are built with Microsoft's compiler and ask in their objects for its
+    # runtime: nvsdk_ngx_s.lib wants LIBCMT, libcpmt, OLDNAMES and uuid, nvsdk_ngx_d.lib wants
+    # MSVCRT, msvcprt, OLDNAMES and uuid. toolchain.native_link already stands the MinGW runtime in
+    # for LIBCMT, OLDNAMES, msvcrt and libvcruntime (it has to, for the prebuilt FFmpeg), but not for
+    # Microsoft's *C++* runtime, so a Windows build stopped at
+    #     ld.lld: error: could not open 'liblibcpmt.a'
+    # which is lld MinGW-ifying the name "libcpmt" out of a /DEFAULTLIB directive. These two names
+    # finish that list. uuid is left alone: MinGW has a libuuid.a of its own.
+    suppress = ["-Wl,-Xlink=/nodefaultlib:" + l for l in ("libcpmt", "msvcprt")] \
+        if toolchain.mingw() else []
     for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
         # The SDK keeps the import libraries in lib/Windows_x86_64/x64/ and the *runtime* DLLs in
         # rel/ and dev/ beside it. x64 first, because that is where this actually is.
         for sub in ("x64", "rel", "dev", ""):
             lib = os.path.join(sdk, "lib", arch, sub, name) if sub else os.path.join(sdk, "lib", arch, name)
             if os.path.isfile(lib):
-                return [lib]
+                return [lib] + suppress
     # Not there under the name the SDK has used: fall back to a search, but only inside this
     # architecture's folder, so a wrong-machine library can no longer be picked.
     for root, _dirs, files in os.walk(os.path.join(sdk, "lib", arch)):
         for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
             if name in files:
-                return [os.path.join(root, name)]
+                return [os.path.join(root, name)] + suppress
     print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link"
           % os.path.join(sdk, "lib", arch))
     return []
