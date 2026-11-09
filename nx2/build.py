@@ -102,6 +102,45 @@ def check_vk_symbols(so):
     print("  namespace scope, not inside an anonymous namespace")
     return False
 
+def streamline_sdk_path():
+    """(hookshot) NVIDIA Streamline's public headers, for DLSS 5 neural rendering, or None.
+
+    DLSS-NR is not an NGX feature a program can create for itself: the only way in is Streamline's
+    sl.dlss_nr plugin, reached through sl.interposer.dll at run time. Only Streamline's headers are
+    compiled in -- they are MIT-licensed, and none of them is in this repository (CONTRIBUTING.md):
+    RX_VK_STREAMLINE_SDK names the builder's own copy, failing that a `streamline-sdk` folder
+    beside the repository or in the work folder.
+
+    Windows only, and that is Streamline's limit rather than ours: the interposer and every sl.*
+    plugin ship as DLLs and the headers pull in <windows.h>. A player on Linux gets DLSS-NR by
+    running the Windows build under Proton, which is where it was measured.
+    """
+    named = os.environ.get("RX_VK_STREAMLINE_SDK")
+    root = os.path.normpath(os.path.join(kit.HERE, ".."))
+    places = [named] if named else [os.path.join(root, "streamline-sdk"),
+                                    os.path.join(os.path.dirname(root), "streamline-sdk"),
+                                    os.path.join(os.environ.get("OOT_WORK", ""), "streamline-sdk")]
+    for d in places:
+        if d and os.path.isfile(os.path.join(d, "include", "sl.h")):
+            return d
+    if named:
+        print("RX_VK_STREAMLINE_SDK=%s has no include/sl.h; DLSS 5 neural rendering is left out" % named)
+    return None
+
+
+def streamline_link():
+    """(hookshot) What a Windows build with Streamline's headers links for the interposer check.
+
+    Nothing of Streamline's and nothing of NVIDIA's: sl.interposer.dll is loaded at run time. These
+    two are Windows' own, and they are what gpu/vk/vk_streamline.cpp's signed_by_nvidia calls --
+    WinVerifyTrust from wintrust and the certificate walk from crypt32. A build without Streamline's
+    headers does not compile that function and links neither.
+    """
+    if LINUX or not streamline_sdk_path():
+        return []
+    return ["-lwintrust", "-lcrypt32", "-ladvapi32"]   # (advapi32: the NGX signature override, read for the log)
+
+
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
     return toolchain.native_target() + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])
@@ -778,12 +817,32 @@ def main():
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
         shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
+        # (hookshot) Say what this back end is being built with: "is DLSS actually in this release?"
+        # has been asked of a build three times and guessed at twice, and the answer belongs in the
+        # build log and so in CI's.
+        #
+        # Inside this branch, deliberately. It was put just above it, as its own `if`, to keep it
+        # out of the region tests/test_shader_stamp_cache.py execs -- and that made it the head of
+        # this if/elif chain, so the whole Vulkan build was skipped and a Windows run reported
+        # "compiled in 0s" and produced no DLL. Two printed lines are not worth a branch.
+        print("vk: DLSS (NGX): %s" % (("compiled in, from " + NGX_SDK) if NGX_SDK
+                                      else "left out (no HOOKSHOT_NGX_SDK; see readme.md)"))
+        print("vk: DLSS 5 neural rendering (Streamline): %s"
+              % (("compiled in, from " + streamline_sdk_path())
+                 if (not LINUX and streamline_sdk_path())
+                 else ("left out: Windows only" if LINUX else
+                       "left out (no Streamline headers found; see readme.md)")))
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+            # (hookshot) RX_VK_STREAMLINE_SDK=<path to Streamline> compiles DLSS 5 neural rendering
+            # against Streamline's MIT-licensed headers. Nothing is linked: sl.interposer.dll is
+            # loaded from the player's own PC at run time. Windows only (streamline_sdk_path).
+            *((["-DRX_VK_STREAMLINE=1", "-I" + os.path.join(streamline_sdk_path(), "include")])
+              if (not LINUX and streamline_sdk_path()) else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
@@ -796,6 +855,9 @@ def main():
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
+        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution, and DLSS frame generation and DLSS 5 neural
+        # rendering over the same NGX session (vk_ngx.cpp, vk_dlssg.cpp, vk_dlssnr_ngx.cpp)
+        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssg.cpp", "vk_dlssnr_ngx.cpp")
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
@@ -810,7 +872,7 @@ def main():
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
-                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []),
+                            (ngx_flags if os.path.basename(src) in ngx_files else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
@@ -970,7 +1032,7 @@ def main():
                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
+                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw()) + streamline_link()
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

@@ -17,6 +17,20 @@
 #include <thread>
 
 #include "vk_framegen.h"
+
+#include "vk_camera_motion.h"
+#include "vk_dlssg.h"
+#include "vk_fsr3fi.h"
+#include "vk_ffx.h"   // (hookshot: AMD FSR 4 frame generation)
+#include "vk_draw.h"   // (scene_frame_inputs: the depth and matrix the draw path kept)
+
+#include <cmath>
+#include <cstring>
+
+/// (hookshot) The camera the lifted game publishes (host/hos_oot_camera.c). Weak because the
+/// renderer is dlopened with RTLD_NOW and a build of it without the game's host half must still
+/// load: a null here is "the game has not published a camera", not a missing symbol.
+extern "C" __attribute__((weak)) float hos_oot_camera(float* near_plane, float* far_plane);
 #include "vk_menu.h"
 #include "vk_texture.h"
 
@@ -366,7 +380,7 @@ bool framegen_on() {
 }
 
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
-    if (!opts.upscale && !opts.sharpness) return VK_NULL_HANDLE;
+    if (!window_filter() && !opts.sharpness) return VK_NULL_HANDLE;
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     if (crop && crop[2] > 0 && crop[3] > 0 &&
         (crop[0] < 0 || crop[1] < 0 || (uint32_t)crop[0] >= sw || (uint32_t)crop[1] >= sh)) return VK_NULL_HANDLE;
@@ -412,7 +426,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; } pc{opts.upscale, opts.sharpness / 100.0f};
+    const struct { int mode; float sharp; } pc{window_filter(), opts.sharpness / 100.0f};
     pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;
@@ -420,7 +434,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         reported = true;
         logf("vk: upscale dispatched: mode %d, sharpness %d%% (of RCAS's strongest, neighbours one source pixel apart), source %ux%u, "
              "crop request %d,%d %dx%d, destination %ux%u",
-             opts.upscale, opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
+             window_filter(), opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
              crop ? crop[2] : (int)sw, crop ? crop[3] : (int)sh, dw, dh);
     }
     return scale.scaled.image;
@@ -430,6 +444,249 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     if (!fg.recorded || !fg.recorded->made) return VK_NULL_HANDLE;
     *w = fg.w, *h = fg.h;
     return fg.recorded->frame[0].image;
+}
+
+/// (hookshot) A 4x4 inverse and a 4x4 product, row major, in doubles. Frame generation needs the
+/// projection's inverse and the clip-to-previous-clip pair, and a float inverse of a projection with
+/// a far plane in the thousands loses the precision the reprojection depends on.
+bool invert4x4(const float* m, float* out) {
+    double a[16], inv[16];
+    for (int i = 0; i < 16; i++) a[i] = (double)m[i];
+    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+    const double det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+    if (det > -1e-12 && det < 1e-12) return false;
+    for (int i = 0; i < 16; i++) out[i] = (float)(inv[i] / det);
+    return true;
+}
+
+void multiply4x4(const float* a, const float* b, float* out) {
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double sum = 0;
+            for (int k = 0; k < 4; k++) sum += (double)a[r * 4 + k] * (double)b[k * 4 + c];
+            out[r * 4 + c] = (float)sum;
+        }
+}
+
+/// (hookshot) The made frames of one present, by DLSS Frame Generation: how many were made, 0 when
+/// it could not run. Each one is copied into the set the display thread shows, so the rest of this
+/// file does not care which of the two made them.
+///
+/// The inputs it needs that colour interpolation does not -- the scene's depth, and the matrix its
+/// draws were rendered with -- are kept by the draw path and read back here (vk_draw.h), because
+/// this runs at present time where neither is otherwise in reach. The motion is the same
+/// camera-only reprojection the upscalers use; asking for it twice in one frame is answered with
+/// the one already written (gpu/vk/vk_camera_motion.cpp).
+/// (hookshot) The same job by FSR 3 frame interpolation (gpu/vk/vk_fsr3fi.h), for the GPUs DLSS does
+/// not serve. The inputs it needs are the ones assembled above, so this is deliberately the same
+/// shape; what it adds is the presented colour's image, which it copies into its own previous
+/// source for the next frame.
+int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)fsr3fi::frames_wanted());
+    if (want <= 0) return 0;
+
+    fsr3fi::Inputs in;
+    in.color = fg.frames[cur].view;
+    in.color_image = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_view;
+    in.motion = motion;
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    scene_jitter(&in.jitter[0], &in.jitter[1]);
+    {
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    in.frames_made = (uint32_t)want;
+    int made = 0;
+    for (int k = 1; k <= want; k++) {
+        in.frame_index = (uint32_t)k;
+        if (!fsr3fi::generate(cmd, in)) break;
+        const VkImage from = fsr3fi::made_image((uint32_t)k);
+        if (!from) break;
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        made++;
+    }
+    if (made != want) {
+        static int told = 0;
+        if (told++ < 4)
+            logf("vk: fsr3 frame interpolation made %d of %d frames: the renderer's own takes this "
+                 "one", made, want);
+        return 0;   // (a half-made set would show one real frame and one stale image)
+    }
+    return made;
+}
+
+int dlssg_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)dlssg::frames_wanted());
+    if (want <= 0) return 0;
+
+    dlssg::Inputs in;
+    in.color = fg.frames[cur].view;
+    in.color_image = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_view;
+    in.depth_image = scene.depth_image;
+    in.depth_format = scene.depth_format;
+    in.motion = motion;
+    in.motion_image = camera_motion::motion_image();
+    in.motion_format = camera_motion::motion_format();
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    // The colour here is the window's R8G8B8A8, which is not HDR whatever the scene was resolved in.
+    in.colour_hdr = false;
+    in.aspect = uh ? (float)uw / (float)uh : 16.0f / 9.0f;
+    {   // (the game's own camera where the patch published it; without it the defaults stand)
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    // The rest of the matrix set NGX wants, built from the two halves the draw path kept. The
+    // camera's own position and axes come out of the view: its 3x3 is world -> camera, so the rows
+    // are the camera's axes in world space and the position is -R transpose times the translation.
+    if (scene.have_view_projection) {
+        memcpy(in.camera_view_to_clip, scene.projection, sizeof in.camera_view_to_clip);
+        if (invert4x4(scene.projection, in.clip_to_camera_view)) {
+            for (int i = 0; i < 16; i++) in.clip_to_lens_clip[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+            const float* v = scene.view;
+            for (int c = 0; c < 3; c++) {
+                in.camera_right[c] = v[0 * 4 + c];
+                in.camera_up[c] = v[1 * 4 + c];
+                in.camera_forward[c] = v[2 * 4 + c];
+            }
+            for (int c = 0; c < 3; c++)
+                in.camera_pos[c] = -(v[0 * 4 + c] * v[0 * 4 + 3] + v[1 * 4 + c] * v[1 * 4 + 3] +
+                                     v[2 * 4 + c] * v[2 * 4 + 3]);
+            // clip -> previous clip, and back. The camera-motion pass keeps the previous view
+            // projection; here the pair is built from this frame's and the last one this function
+            // saw, which is the same frame boundary the made frame sits on.
+            static float previous[16];
+            static bool have_previous = false;
+            float inverse_vp[16];
+            if (have_previous && invert4x4(scene.view_projection, inverse_vp)) {
+                multiply4x4(previous, inverse_vp, in.clip_to_prev_clip);
+                float inverse_previous[16];
+                if (invert4x4(previous, inverse_previous))
+                    multiply4x4(scene.view_projection, inverse_previous, in.prev_clip_to_clip);
+                in.have_matrices = true;
+            }
+            memcpy(previous, scene.view_projection, sizeof previous);
+            have_previous = true;
+        }
+    }
+    if (!in.have_matrices) return 0;   // (the first frame after a cut has no pair to interpolate on)
+    in.frames_made = (uint32_t)want;
+    int made = 0;
+    for (int k = 1; k <= want; k++) {
+        in.frame_index = (uint32_t)k;
+        if (!dlssg::generate(cmd, in)) break;
+        const VkImage from = dlssg::made_image((uint32_t)k);
+        if (!from) break;
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        made++;
+    }
+    if (made != want) {
+        static int told = 0;
+        if (told++ < 4)
+            logf("vk: dlssg made %d of %d frames: the renderer's own interpolation takes this one",
+                 made, want);
+        return 0;   // (a half-made set would show one real frame and one stale image)
+    }
+    return made;
+}
+
+/// (hookshot) AMD FSR 4's frame generation through AMD's runtime (gpu/vk/vk_ffx.h), between DLSS frame generation and
+/// FSR 3.1's: the same assembled inputs, handed over as images, and every made frame in one dispatch. A refusal returns
+/// 0, which leaves the set to the next backend in the chain.
+int ffx_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int m) {
+    SceneFrameInputs scene;
+    if (!scene_frame_inputs(&scene) || !scene.have_view_projection || !scene.depth_image) return 0;
+    camera_motion::Matrix vp{};
+    memcpy(vp.m, scene.view_projection, sizeof vp.m);
+    const VkImageView motion = camera_motion::record(cmd, scene.depth_view, scene.depth_format,
+                                                     scene.render_width, scene.render_height, vp);
+    if (!motion) return 0;
+    const int want = std::min(m - 1, (int)ffx::frames_wanted());
+    if (want <= 0) return 0;
+    ffx::FrameInputs in;
+    in.color = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (make_img above, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = scene.depth_image, in.depth_format = scene.depth_format;
+    in.motion = camera_motion::motion_image(), in.motion_format = camera_motion::motion_format();
+    in.render_width = scene.render_width, in.render_height = scene.render_height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels)
+    scene_jitter(&in.jitter[0], &in.jitter[1]);
+    {
+        float near_plane = 0.0f, far_plane = 0.0f;
+        const float tan_half = hos_oot_camera ? hos_oot_camera(&near_plane, &far_plane) : 0.0f;
+        if (tan_half > 0.0f && near_plane > 0.0f) {
+            in.near_plane = near_plane;
+            if (far_plane > near_plane) in.far_plane = far_plane;
+            in.fov_y = 2.0f * std::atan(tan_half);
+        }
+    }
+    memcpy(in.view, scene.view, sizeof in.view);
+    in.have_view = true;
+    in.frames = (uint32_t)want;
+    if (!ffx::generate(cmd, in)) return 0;
+    for (int k = 1; k <= want; k++) {
+        const VkImage from = ffx::made_image((uint32_t)k);
+        if (!from) return 0;   // (a half-made set would show one real frame and one stale image)
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, from, VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
+    static std::atomic<int> said{0};
+    if (said++ == 0) logf("vk: amd fsr 4 frame generation: %d made frames a frame at %ux%u", want, uw, uh);
+    return want;
 }
 
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
@@ -454,6 +711,17 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     const int cur = fg.cur, prev = cur ^ 1, m = multiplier();
     const bool blend = fg.have_prev && !gap;
+    // (hookshot) A gap is a loading screen or a cut, and the renderer's own interpolator already
+    // refuses to blend across one. Everything else with a history has to be told as well: the
+    // camera motion would otherwise reproject through a matrix from before the cut, and either
+    // frame-generation backend would interpolate between two frames taken in different places.
+    // Each of these had a reset() that nothing ever called.
+    if (gap) {
+        camera_motion::reset();
+        dlssg::reset();
+        ffx::reset();
+        fsr3fi::reset();
+    }
     const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
     const uint32_t qw = (uw + 3) / 4, qh = (uh + 3) / 4, cw = (qw + 3) / 4, ch = (qh + 3) / 4;
     full_barrier(cmd);
@@ -461,7 +729,15 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     pass(cmd, fg.copy, {{src, fg.nearest}, {fg.frames[cur].view, VK_NULL_HANDLE}}, uw, uh, pc, sizeof pc);
     pass(cmd, fg.luma, {{fg.frames[cur].view, fg.nearest}, {fg.lumas[cur].view, VK_NULL_HANDLE}}, qw, qh);
     set->made = 0;
-    if (blend && m > 1) {
+    // (hookshot) DLSS Frame Generation where it is available, which is the same job with the game's
+    // own motion and depth instead of colour alone. It refuses -- no NGX, no runtime, a GPU that
+    // does not report it, or a frame where the scene's depth and matrix are not both in hand -- and
+    // then the interpolation below runs exactly as it did before this existed.
+    if (blend && m > 1 && dlssg::supported()) set->made = dlssg_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && ffx::frames_supported()) set->made = ffx_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1 && fsr3fi::supported())
+        set->made = fsr3fi_frames(cmd, *set, cur, uw, uh, m);
+    if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
         pass(cmd, fg.median, {{fg.flows[0].view, fg.nearest}, {fg.flows[1].view, VK_NULL_HANDLE}}, cw, ch);

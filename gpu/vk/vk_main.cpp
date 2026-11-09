@@ -6,6 +6,10 @@
 
 #include <atomic>
 #include <chrono>
+
+#include "vk_dlss.h"    // (the device extensions DLSS needs, asked of NGX before the device is made)
+#include "vk_dlssg.h"   // (frame generation asks for its own set, which is not the same one)
+#include "vk_dlssnr_ngx.h"   // (and DLSS 5 neural rendering through NGX for its own)
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +24,7 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_streamline.h"
 #include "vk_dlss.h"
 #include "vk_reflex.h"
 #include "vk_progress.h"
@@ -108,21 +113,45 @@ bool create_instance() {
             if (has_extension(all, want)) exts[n_exts++] = want;
     }
 #endif
+    // (hookshot) DLSS 5 neural rendering comes through NVIDIA Streamline, and Streamline has to be
+    // started before the instance exists: what it loads decides which instance and device
+    // extensions this instance and device must be created with. It answers "no" on a build without
+    // its headers, on a PC without sl.interposer.dll, and whenever the player has it switched off,
+    // and then nothing below changes. gpu/vk/vk_streamline.h says why it is a second NVIDIA path.
+    std::vector<const char*> inst_exts(exts, exts + n_exts);
+    if (streamline::start()) {
+        const char* sl_want[16] = {};
+        const size_t sl_n = streamline::instance_extensions(sl_want, 16);
+        uint32_t n_all = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n_all, nullptr);
+        std::vector<VkExtensionProperties> all(n_all);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n_all, all.data());
+        for (size_t i = 0; i < sl_n; i++) {
+            if (!has_extension(all, sl_want[i])) {
+                logf("vk: streamline wants the instance extension %s, which this loader does not "
+                     "have: DLSS 5 neural rendering will be unavailable", sl_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : inst_exts) already = already || strcmp(have, sl_want[i]) == 0;
+            if (!already) inst_exts.push_back(sl_want[i]),
+                logf("vk: streamline wants the instance extension %s: enabled", sl_want[i]);
+        }
+    }
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mkw-recomp";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    std::vector<const char*> ext_list(exts, exts + n_exts);
     {   // (hookshot) what NVIDIA DLSS needs (vk_dlss.cpp; nothing in a build without it)
         uint32_t n = 0;
         vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
         std::vector<VkExtensionProperties> all(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
-        dlss_instance_extensions(ext_list, all);
+        dlss_instance_extensions(inst_exts, all);
     }
-    ci.enabledExtensionCount = (uint32_t)ext_list.size();
-    ci.ppEnabledExtensionNames = ext_list.data();
+    ci.enabledExtensionCount = (uint32_t)inst_exts.size();
+    ci.ppEnabledExtensionNames = inst_exts.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (getenv("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -248,6 +277,62 @@ bool create_device() {
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
+    // (hookshot) What DLSS frame generation needs on this driver, asked of NGX rather than written out
+    // here: the set is the driver's to state. Super resolution's own are dlss_device_extensions'
+    // above; frame generation's are asked separately, because a device made for one and not the
+    // other is where NGX creates the feature and fails (FAIL_PlatformError) while still reporting
+    // it available. An extension this GPU does not have is named in the log and left out, so DLSS-G
+    // reports itself unavailable rather than vkCreateDevice failing.
+    {
+        const char* dlss_want[16] = {};
+        const size_t dlss_n = dlssg::device_extensions(dev.instance, dev.physical, dlss_want,
+                                                       sizeof dlss_want / sizeof *dlss_want);
+        for (size_t i = 0; i < dlss_n; i++) {
+            if (!has_extension(exts, dlss_want[i])) {
+                logf("vk: dlssg wants %s, which this GPU does not have: it will be unavailable", dlss_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, dlss_want[i]) == 0;
+            if (!already) want.push_back(dlss_want[i]), logf("vk: dlssg wants %s: enabled", dlss_want[i]);
+        }
+    }
+
+    // (hookshot) DLSS 5 neural rendering through NGX directly (vk_dlssnr_ngx.h) asks NGX for feature 18's set, for the same
+    // reason and with the same handling as frame generation's above.
+    {
+        const char* nr_want[16] = {};
+        const size_t nr_n = dlssnr_ngx::device_extensions(dev.instance, dev.physical, nr_want, sizeof nr_want / sizeof *nr_want);
+        for (size_t i = 0; i < nr_n; i++) {
+            if (!has_extension(exts, nr_want[i])) {
+                logf("vk: dlss-nr wants %s, which this GPU does not have: NGX direct will be unavailable", nr_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, nr_want[i]) == 0;
+            if (!already) want.push_back(nr_want[i]), logf("vk: dlss-nr wants %s: enabled", nr_want[i]);
+        }
+    }
+
+    // (hookshot) And what Streamline's neural rendering plugin needs, asked of Streamline for the
+    // same reason: the set is the plugin's to state. Same handling as the NGX features above -- an
+    // extension this GPU does not have is named in the log and left out, and the feature then
+    // reports itself unavailable rather than taking vkCreateDevice down with it.
+    {
+        const char* sl_want[16] = {};
+        const size_t sl_n = streamline::device_extensions(sl_want, 16);
+        for (size_t i = 0; i < sl_n; i++) {
+            if (!has_extension(exts, sl_want[i])) {
+                logf("vk: streamline wants %s, which this GPU does not have: DLSS 5 neural "
+                     "rendering will be unavailable", sl_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, sl_want[i]) == 0;
+            if (!already) want.push_back(sl_want[i]), logf("vk: streamline wants %s: enabled", sl_want[i]);
+        }
+    }
+
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
     std::vector<VkQueueFamilyProperties> families(n);
@@ -258,11 +343,22 @@ bool create_device() {
             (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
             dev.queue_family = i;
     if (dev.queue_family == UINT32_MAX) return false;
-    const float priority = 1.0f;
+    // (hookshot) Streamline's own queues follow the renderer's in the graphics family. It asks for
+    // none for neural rendering today, but it is asked rather than assumed: a plugin that wants one
+    // and does not get it fails inside a frame, which is the worst place to find out. Whatever the
+    // family cannot give is reported to streamline::attach_device, which turns the feature off
+    // cleanly instead.
+    const uint32_t sl_queues_wanted = streamline::extra_queues();
+    const uint32_t sl_queues =
+        std::min(sl_queues_wanted, families[dev.queue_family].queueCount - 1);
+    if (sl_queues != sl_queues_wanted)
+        logf("vk: streamline wants %u queues of the graphics family and it has room for %u",
+             sl_queues_wanted, sl_queues);
+    const float priority[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     q.queueFamilyIndex = dev.queue_family;
-    q.queueCount = 1;
-    q.pQueuePriorities = &priority;
+    q.queueCount = 1 + std::min(sl_queues, 7u);
+    q.pQueuePriorities = priority;
     // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
     // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
     // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
@@ -291,7 +387,7 @@ bool create_device() {
     VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
     qs[1].queueFamilyIndex = compute_family;
     qs[1].queueCount = 1;
-    qs[1].pQueuePriorities = &priority;
+    qs[1].pQueuePriorities = priority;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -426,6 +522,12 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
+    // (hookshot) The device goes to Streamline before anything is recorded with it: this is where
+    // it says whether DLSS 5 neural rendering can really run here. It is deliberately after the
+    // queues are fetched, because it reports how many of the queues it asked for actually exist.
+    // A false here is not an error -- it is the ordinary case on every card that is not NVIDIA's,
+    // and the renderer carries on without the feature.
+    streamline::attach_device(dev.instance, dev.physical, dev.device, dev.queue_family, sl_queues);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();

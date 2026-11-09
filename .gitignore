@@ -35,5 +35,9 @@ __pycache__/
 build-linux/
 *.so
 
+# NVIDIA's DLSS SDK, fetched at build time and never committed (docs/upscaling.md)
+/streamline-sdk/
+# the release tooling's packages (package.json is release-only; npm install makes this)
+/node_modules/
 # ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
 ngx-sdk/

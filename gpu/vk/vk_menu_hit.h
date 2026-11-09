@@ -57,7 +57,10 @@ inline void origin(int img_w, int img_h, int menu_w, int menu_h, int* x0, int* y
     *y0 = (img_h - menu_h) / 2;
 }
 inline int rows_top(int s) { return (kTabY + kTabH + kRowGap) * s; }
-inline int tab_slot_w(int s, int w) { return (w - 2 * kTabSide * s) / 3; }
+// (hookshot) The tab titles share the width between the [Q / LB] and [E / RB] hints. `tabs`
+// was 3 outright until DLSS 5 neural rendering brought a fourth tab; it defaults to 3 so the
+// older callers and their tests mean what they meant.
+inline int tab_slot_w(int s, int w, int tabs = 3) { return (w - 2 * kTabSide * s) / (tabs > 0 ? tabs : 1); }
 /// A slider's value for a point along its track (lo to hi in steps of step), nearest step, held to its ends
 inline int slider_value(int permille, int lo, int hi, int step) {
     if (step <= 0 || hi <= lo) return lo;
@@ -79,7 +82,7 @@ inline Hit options(int x, int y, int s, int w, int h, int tabs, int rows, const 
     Hit hit;
     if (x < 0 || y < 0 || x >= w || y >= h) return hit.part = kOutside, hit;
     if (y >= kTabY * s && y < (kTabY + kTabH) * s) {
-        const int side = kTabSide * s, slot = tab_slot_w(s, w);
+        const int side = kTabSide * s, slot = tab_slot_w(s, w, tabs);
         if (x < side) hit.part = kTabPrev;
         else if (x >= w - side) hit.part = kTabNext;
         else if (slot > 0) {

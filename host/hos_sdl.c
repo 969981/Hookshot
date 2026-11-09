@@ -154,6 +154,23 @@ void hos_sdl_relative_mouse(void *window, int on) {
     if (version == 3) CALL(_Bool (*)(void *, _Bool), SetRelativeMouseMode)(window, on != 0);
     else CALL(int (*)(int), SetRelativeMouseMode)(on);
 }
+/* (hookshot) The desktop display's refresh rate in Hz, or 0 when SDL cannot say. Read from the same
+   SDL_DisplayMode the size comes from: SDL3 keeps refresh_rate as a float at offset 20, after
+   pixel_density; SDL2 keeps it as an int after w and h. */
+int hos_sdl_refresh_hz(void) {
+    if (!version) return 0;
+    if (version == 3) {
+        const uint8_t *m = CALL(const uint8_t *(*)(uint32_t), GetDesktopDisplayMode)(CALL(uint32_t (*)(void), GetPrimaryDisplay)());
+        if (!m) return 0;
+        float hz = 0;
+        memcpy(&hz, m + 20, 4);
+        return hz > 0 ? (int)(hz + 0.5f) : 0;
+    }
+    struct { uint32_t format; int w, h, refresh_rate; void *driverdata; } m;
+    if (CALL(int (*)(int, void *), GetDesktopDisplayMode)(0, &m)) return 0;
+    return m.refresh_rate > 0 ? m.refresh_rate : 0;
+}
+
 int hos_sdl_desktop_size(int *width, int *height) {
     if (version == 3) {   /* (SDL_DisplayMode: displayID, format, w and h at 8 and 12 in screen units, pixel_density at
                              16: in pixels, as SDL2 gave them) */

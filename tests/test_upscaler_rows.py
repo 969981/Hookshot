@@ -47,7 +47,7 @@ def main():
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
     uses = {
         "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()", "ur::model_fixed("),
-        "row_shown": ("ur::upscaler_shown(dlss_built())", "ur::model_shown(dlss_built())"),
+        "row_shown": ("ur::upscaler_shown(dlss_built(), ", "ur::model_shown(dlss_built())"),
         "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
     }
     for name, calls in uses.items():

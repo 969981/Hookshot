@@ -93,7 +93,10 @@ DlssWhy dlss_why() {
 int dlss_mode() {
     if (dlss_why() != DLSS_OK) return 0;
     static const int env = env_switch("RX_VK_DLSS");
-    return std::clamp(env >= 0 ? env : opts.dlss, 0, 2);
+    // (the Upscaler row has values past DLAA, FSR's (upscaler_rows.h): those are not DLSS, so the game's own as far as this is
+    // concerned, never clamped onto DLAA)
+    const int v = env >= 0 ? env : opts.dlss;
+    return v == 1 || v == 2 ? v : 0;
 }
 bool dlss_wanted() { return dlss_mode() != 0; }
 bool dlss_full_scale() { return dlss_mode() == 2; }
@@ -123,6 +126,7 @@ struct Camera {
 struct State {
     std::mutex mu;
     bool ngx_tried = false, ngx_ok = false;
+    bool ngx_started = false;   // (NVSDK_NGX_VULKAN_Init succeeded, whether or not super resolution is available)
     std::atomic<bool> failed{false};   // (atomic: dlss_jitter_size reads it on the game's thread, without the lock)
     NVSDK_NGX_Parameter* caps = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
@@ -318,12 +322,10 @@ constexpr const char* kRuntime = "libnvidia-ngx-dlss.so";
 constexpr const fs::path::value_type* kRuntimeName = "libnvidia-ngx-dlss.so";
 #endif
 
-/// NGX on this device, once: false when DLSS cannot run here (the reason logged)
-bool ngx_init() {
-    State& s = st();
-    if (s.ngx_tried) return s.ngx_ok;
-    s.ngx_tried = true;
-    // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
+/// Where NGX is told to look for its features' runtimes (kRuntime, and every other feature's: NGX takes the newest it finds
+/// of each), in that order. (hookshot) One list, so that DLSS 5 neural rendering's NGX path (vk_dlssnr_ngx.cpp) names the
+/// same folders in its log as NGX was given here
+std::vector<fs::path> ngx_dirs() {
     std::vector<fs::path> dirs;
 #ifdef _WIN32
     if (fs::path e = env_path(L"RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
@@ -335,6 +337,16 @@ bool ngx_init() {
     if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
     else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
 #endif
+    return dirs;
+}
+
+/// NGX on this device, once: false when DLSS cannot run here (the reason logged)
+bool ngx_init() {
+    State& s = st();
+    if (s.ngx_tried) return s.ngx_ok;
+    s.ngx_tried = true;
+    // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
+    const std::vector<fs::path> dirs = ngx_dirs();
     std::vector<std::wstring> wdirs;
     for (const auto& d : dirs) wdirs.push_back(wide(d));
     std::vector<const wchar_t*> paths;
@@ -360,6 +372,7 @@ bool ngx_init() {
         g_why = DLSS_NEEDS_RTX;
         return false;
     }
+    s.ngx_started = true;
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&s.caps)) || !s.caps) {
         logf("vk: NVIDIA DLSS: NGX has no capabilities for this device");
         g_why = DLSS_NEEDS_RTX;
@@ -787,6 +800,37 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     if (!both) g_why = DLSS_NEEDS_RTX;
 }
 
+bool dlss_ngx_session() {
+    if (!dlss_built() || dlss_why() == DLSS_ENV_OFF || !dev.device) return false;
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    ngx_init();
+    return s.ngx_started;
+}
+
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    bool have = false;
+    std::error_code ec;
+    // (and the game folder itself, after them: NGX looks there too, which its own log shows with RX_VK_DLSS_LOG=1, and
+    // it is where the DLSS SDK's runtimes are usually put)
+    std::vector<fs::path> dirs = ngx_dirs();
+    dirs.push_back(game_dir());
+    for (const fs::path& d : dirs) {
+        if (where) *where += (where->empty() ? "" : ", ") + shown(d);
+        if (have) continue;
+        for (const auto& f : fs::directory_iterator(d, ec)) {
+            const std::string file = shown(f.path().filename());
+            if (file.rfind(name, 0) != 0) continue;
+            have = true;
+            if (found) *found = shown(f.path());
+            break;
+        }
+    }
+    return have;
+}
+
 void dlss_probe() {
     if (dlss_why() != DLSS_OK || g_why.load(std::memory_order_relaxed) >= 0 || !dev.device) return;
     State& s = st();
@@ -1145,6 +1189,12 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 #else  // (no NGX SDK in this build: DLSS is not there)
 
 bool dlss_built() { return false; }
+bool dlss_ngx_session() { return false; }
+bool dlss_ngx_runtime(const char*, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    return false;
+}
 void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}

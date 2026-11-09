@@ -76,8 +76,18 @@ jobs:
             { echo "the profile did not download: built without it"; exit 0; }
           ls -la work work/image
 
+      # (the back end this AppImage carries is built with DLSS compiled in: NVIDIA's SDK fetched here by scripts/ngx_sdk.py
+      #  (headers and libnvsdk_ngx.a, under NVIDIA's license), never committed. The DLSS *runtime*
+      #  (libnvidia-ngx-dlss.so) is NVIDIA's to ship and is still not included -- a player who wants DLSS puts it in the
+      #  game's ngx folder, and readme.md says so. Without this the released build offers FSR and nothing else.)
+      - name: NVIDIA's DLSS SDK (headers and libnvsdk_ngx.a)
+        run: python3 -I scripts/ngx_sdk.py --platform linux --build-only --accept-nvidia-license "$RUNNER_TEMP/ngx-sdk"
+
       - name: AppImage
+        env:
+          HOOKSHOT_NGX_SDK: ${{ runner.temp }}/ngx-sdk
         run: scripts/linux/appimage.sh
+
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

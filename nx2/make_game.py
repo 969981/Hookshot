@@ -906,6 +906,47 @@ def ngx_built():
     return bool(sdk) and os.path.isfile(ngx_script().library(sdk, ngx_platform()))
 
 
+def prebuilt_renderer():
+    """(hookshot, Windows) The renderer this release's CI built, with NVIDIA DLSS, DLSS 5 neural rendering and AMD FSR 4 compiled
+    in: tools/prebuilt/hookshot_vk.dll (scripts/release_parts.py package --vk). A player's PC has none of NVIDIA's SDKs, so a
+    renderer compiled there leaves those out and the Insert menu does not offer them. Used unless HOOKSHOT_VK_PREBUILT names
+    another or HOOKSHOT_VK_LOCAL=1 asks for the local compile. None when the package has none (a build from a source checkout)"""
+    if LINUX or os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("HOOKSHOT_VK_LOCAL") == "1":
+        return None
+    dll = os.path.join(ROOT, "prebuilt", "hookshot_vk.dll")
+    return dll if os.path.isfile(dll) else None
+
+
+def place_prebuilt_runtime(game_dir):
+    """(hookshot, Windows) The runtimes that go beside the game's exe with the prebuilt renderer: AMD's FSR runtime
+    (amd_fidelityfx_*_vk.dll, MIT, signed by AMD; gpu/vk/vk_ffx.cpp loads it from there). Nothing of NVIDIA's: their runtimes
+    are the player's own (readme.md). Returns the names placed"""
+    src = os.path.join(ROOT, "amd-fsr")
+    if LINUX or not os.path.isdir(src):
+        return []
+    placed = []
+    for f in sorted(os.listdir(src)):
+        if f.lower().endswith(".dll"):
+            dst = os.path.join(game_dir, f)
+            if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(os.path.join(src, f)):
+                shutil.copyfile(os.path.join(src, f), dst)
+            placed.append(f)
+    if placed:
+        print("beside the game: %s" % ", ".join(placed), flush=True)
+    return placed
+
+
+def prebuilt_has_dlss():
+    """(hookshot) The renderer this build installs instead of compiling one (HOOKSHOT_VK_PREBUILT: the AppImage's, or a Windows
+    release's tools/prebuilt) has NVIDIA DLSS in it. Its NGX start line is a string only a renderer built with the SDK has
+    (gpu/vk/vk_dlss.cpp ngx_init), so the bytes say it without loading the library"""
+    vk = os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    if not vk or not os.path.isfile(vk):
+        return False
+    with open(vk, "rb") as f:
+        return b"NVIDIA DLSS: NGX started" in f.read()
+
+
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
@@ -975,6 +1016,9 @@ def main(a=None):
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)
+    if prebuilt_renderer():   # (hookshot: the release's renderer, with DLSS, neural rendering and FSR 4 in it)
+        os.environ["HOOKSHOT_VK_PREBUILT"] = prebuilt_renderer()
+        print("the Vulkan back end: this release's, built with NVIDIA DLSS, DLSS 5 neural rendering and AMD FSR 4", flush=True)
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
@@ -1049,7 +1093,9 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
-    if ngx_built():   # (NVIDIA DLSS's camera jitter: only in a build with it, nx2/oot_jitter.py)
+    # (NVIDIA DLSS's camera jitter: only in a build with it, nx2/oot_jitter.py. A prebuilt renderer with DLSS in it counts: the
+    # release's Windows one and the AppImage's are built with NVIDIA's SDK, which the player's PC does not have)
+    if ngx_built() or prebuilt_has_dlss():
         env["OOT_DLSS_JITTER"] = "1"
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
@@ -1197,6 +1243,7 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
+    place_prebuilt_runtime(game_dir)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):

@@ -25,6 +25,10 @@ import zipfile
 SKIP_EXT = {".ps1", ".psm1", ".bat", ".cmd", ".js", ".vbs", ".html", ".htm", ".hta", ".wsf", ".pyc"}
 SKIP_DIRS = {"__pycache__"}
 TOOLS_PARTS = ("python", "emsdk", "cpm", "third_party", "wgpu-native")   # (tools/<name>: each its own part)
+# (hookshot) parts a package may have or not: AMD's FSR runtime (tools/amd-fsr, scripts/release_parts.py package --amd-fsr),
+# about 70 MB that changes only with AMD's SDK, so a part of its own the setup keeps in its cache. Without the folder it is
+# taken from --reuse when that list has it, and left out otherwise (the game then runs FSR 3.1 and not FSR 4)
+OPTIONAL_PARTS = ("amd-fsr",)
 LLVM = ("552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f", 191037046,
         "llvm-mingw-20261104-ucrt-x86_64",
         "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip")
@@ -82,11 +86,11 @@ def main():
     runtime_dirs = [n for n in top if os.path.isdir(os.path.join(root, n)) and n != "tools"]
     tools = sorted(os.listdir(os.path.join(root, "tools")))
     parts = {
-        "app": builder_files + [n for t in tools if t not in TOOLS_PARTS and t != "llvm-mingw"
+        "app": builder_files + [n for t in tools if t not in TOOLS_PARTS + OPTIONAL_PARTS and t != "llvm-mingw"
                                 for n in (["tools/" + t] if os.path.isfile(os.path.join(root, "tools", t)) else files_under(root, "tools/" + t))],
         "dotnet": runtime_files + [n for d in runtime_dirs for n in files_under(root, d)],
     }
-    for t in TOOLS_PARTS:
+    for t in TOOLS_PARTS + OPTIONAL_PARTS:
         if os.path.isdir(os.path.join(root, "tools", t)):
             parts[t] = files_under(root, "tools/" + t)
     reuse = {}
@@ -97,8 +101,13 @@ def main():
                 if len(w) == 7 and w[0] == "part" and w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-"):
                     reuse[w[6].rsplit("/", 1)[-1][len("HookshotBuilder-"):].rsplit("-", 1)[0]] = line
     lines = ["tag %s" % a.tag]
-    for name in ("app", "dotnet") + TOOLS_PARTS:
+    for name in ("app", "dotnet") + TOOLS_PARTS + OPTIONAL_PARTS:
         if not parts.get(name):
+            if name in OPTIONAL_PARTS:
+                if name in reuse:
+                    lines.append(reuse[name])
+                    print("%-12s (as in %s)" % (name, os.path.basename(a.reuse)), flush=True)
+                continue
             if a.reuse and name in TOOLS_PARTS:
                 if name not in reuse:
                     sys.exit("no tools/%s in the package and no %s part in %s" % (name, name, a.reuse))

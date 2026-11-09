@@ -161,6 +161,8 @@ def main():
     if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
+        import oot_camera   # (after oot_wide: it appends to the same site)
+        oot_camera.install(L, img)
         import oot_jitter   # (NVIDIA DLSS's camera jitter in a build with it, none unless DLSS runs: host/rx_backend.c)
         if oot_jitter.wanted():
             oot_jitter.install(L, img)

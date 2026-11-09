@@ -29,6 +29,12 @@
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "vk_startup_paint.h"
+
+#include "vk_dlssnr.h"   // (whether this build can offer DLSS 5 neural rendering at all)
+#include "vk_streamline.h"   // (nr_why: why neural rendering is not available here)
+#include "vk_dlssnr_ngx.h"   // (nr::why, nr::built: whichever backend the Backend row runs)
+#include "vk_fsr3.h"     // (the Upscaler row: whether FSR 3.1 runs on this device)
+#include "vk_ffx.h"      // (and FSR 4, AMD's runtime)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
 #include "vk_reflex.h"
@@ -49,7 +55,10 @@ enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_GAMEPLAY = 1,
     TAB_CONTROLS = 2,
-    TAB_COUNT = 3
+    // (hookshot) DLSS 5 neural rendering's own tab. Its ten rows are the model's own knobs, which
+    // belong together and would have doubled the Graphics tab on their own.
+    TAB_NEURAL = 3,
+    TAB_COUNT = 4
 };
 
 struct Row {
@@ -103,9 +112,45 @@ bool filter_needed() {
                                         (unsigned)v & 0xffff);
 }
 const char* tx_upscale(int v) {
-    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
+    // (hookshot) The first three scale the finished picture to the window; the last two resolve the
+    // 3D scene itself, in the game's own upscaler's place. One row because to a player it is one
+    // question -- what makes the picture bigger -- and because a second row asking it again is how
+    // you end up with two settings that can disagree.
+    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos", "FSR 3.1", "DLSS"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
+}
+// (hookshot) DLSS 5 neural rendering's rows. The model names are the quality modes DLSS-NR takes
+// (an sl::DLSSMode: performance, balanced, quality, DLAA). The three styles are the plugin's own and
+// these are its names for them; the presets are DLSS presets A to G, where Default lets the plugin
+// pick -- which is 0, not 1: a preset of 1 silently pins A. A style or preset this plugin does not
+// have is refused by Streamline, which turns the row back rather than the feature off
+// (vk_dlssnr.cpp).
+const char* tx_nr_model(int v) {
+    static const char* t[] = {"Performance", "Balanced", "Quality", "DLAA"};
+    return t[std::min(std::max(v, 0), 3)];
+}
+const char* tx_nr_style(int v) {
+    static const char* t[] = {"Default", "Natural", "Cinematic"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+// (hookshot) Which path NVIDIA's model is reached by (vk_dlssnr_ngx.h): the same model and the same rows either way.
+const char* tx_nr_backend(int v) {
+    static const char* t[] = {"Auto", "Streamline", "NGX direct"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+const char* hn_nr_backend(int v, int variant) {
+    static char b[96];
+    if (variant >= 0) return variant == 0 ? "Auto: running through NGX directly." : nullptr;   // (the longest)
+    if (v != nr::AUTO) return nullptr;
+    snprintf(b, sizeof b, "Auto: running through %s.", nr::running_backend() == nr::NGX ? "NGX directly" : "Streamline");
+    return b;
+}
+const char* tx_nr_preset(int v) {
+    static char b[16];
+    if (v <= 0) return "Default";
+    snprintf(b, sizeof b, "Preset %c", 'A' + (v - 1));
+    return b;
 }
 /// The Window scaling filter row's value: its filter, or that none is needed (the saved value stays, for another window size)
 const char* tx_filter(int v) { return filter_needed() ? tx_upscale(v) : "Not needed (window = output)"; }
@@ -121,13 +166,25 @@ const char* hn_reflex(int v, int variant) {
     if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
 }
-// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run; the menu
-// shows (and steps from) what runs, dlss_mode(), and keeps the saved choice for a PC where it can
+// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
+// and FSR 4 only where their backends say they do; the menu shows (and steps from) what runs, and keeps the saved choice for a
+// PC where it can
 namespace ur = upscaler_rows;
-int upscaler() { return dlss_mode(); }
+/// One bit per upscaler that runs here (upscaler_rows.h bit). Each backend caches its own answer, so this costs nothing
+unsigned upscalers_available() {
+    unsigned m = ur::bit(ur::GAME) | ur::dlss_bits(dlss_why() == DLSS_OK);
+    if (fsr3::supported()) m |= ur::bit(ur::FSR3);
+    if (ffx::upscale_supported()) m |= ur::bit(ur::FSR4);
+    return m;
+}
+int upscaler() {
+    const int v = opts.dlss;
+    if ((v == ur::FSR3 || v == ur::FSR4) && (upscalers_available() & ur::bit(v))) return v;
+    return dlss_mode();
+}
 const char* tx_upscaler(int) {
-    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA"};
-    return t[std::clamp(upscaler(), 0, 2)];
+    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4"};
+    return t[std::clamp(upscaler(), 0, ur::kUpscalers - 1)];
 }
 /// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and DLAA are not offered
 const char* hn_upscaler(int v, int variant) {
@@ -137,6 +194,9 @@ const char* hn_upscaler(int v, int variant) {
         "themselves can trail for now.",
         "NVIDIA's, the 3D at full size with its edges smoothed; the slowest. Softer than the game's own: set Sharpness to "
         "around 80%. Things that move by themselves can trail for now.",
+        "AMD's, from a smaller 3D, on any GPU: built from AMD's own shaders. Things that move by themselves can trail.",
+        "AMD's machine-learning upscaler, from a smaller 3D: Windows, with AMD's runtime beside the game. On an RX 9000 it "
+        "is FSR 4; elsewhere AMD's runtime picks what that GPU runs.",
     };
     static const char* const why[DLSS_WHY_COUNT] = {
         nullptr,
@@ -148,10 +208,10 @@ const char* hn_upscaler(int v, int variant) {
     };
     // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
     int w = 0;
-    if (variant < 0) v = std::clamp(upscaler(), 0, 2), w = (int)dlss_why();
+    if (variant < 0) v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), w = (int)dlss_why();
     else if (v == ur::GAME) w = variant;
     else if (variant > 0) return nullptr;
-    v = std::clamp(v, 0, 2);
+    v = std::clamp(v, 0, ur::kUpscalers - 1);
     if (w >= DLSS_WHY_COUNT) return nullptr;
     if (v != ur::GAME || !why[w]) return t[v];
     static char b[DLSS_WHY_COUNT][256];
@@ -189,6 +249,17 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 1) return unused;
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
+}
+/// Neural rendering: the value, or why it is not available here (vk_streamline.cpp explain_refusal; the log has more)
+const char* hn_nr(int v, int variant) {
+    static const char* const t[] = {"Off.", "On: NVIDIA's model goes over every finished frame."};
+    static const char* const longest =
+        "Not available: NVIDIA's model is RTX 50 only. RTX 20-40: a patched nvngx_dlssnr.dll (readme).";
+    if (variant < 0) {
+        const char* w = nr::why();
+        return *w ? w : t[std::clamp(v, 0, 1)];
+    }
+    return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? longest : nullptr;
 }
 const char* tx_percent(int v) {
     static char b[8];
@@ -228,7 +299,7 @@ const char* tx_resolution(int v) {
     const int up = upscaler();
     if (up == ur::DLAA) return "Native (DLAA)";
     if (!ur::percent(v)) return "Auto (dynamic)";
-    if (const char* mode = up == ur::DLSS ? ur::dlss_mode_name(v) : nullptr) {
+    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
         return b;
     }
@@ -239,8 +310,8 @@ const char* tx_resolution(int v) {
 }
 /// The Render resolution: the value chosen, for the Upscaler shown (every one: each value with each Upscaler)
 const char* hn_resolution(int v, int variant) {
-    const int up = variant < 0 ? std::clamp(upscaler(), 0, 2) : variant;
-    if (up > 2) return nullptr;
+    const int up = variant < 0 ? std::clamp(upscaler(), 0, ur::kUpscalers - 1) : variant;
+    if (up >= ur::kUpscalers) return nullptr;
     if (up == ur::DLAA)
         return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
                "smaller.";
@@ -255,13 +326,23 @@ const char* hn_resolution(int v, int variant) {
         default: return nullptr;   // (not one of DLSS's steps: the row moves to one)
         }
     }
+    if (up == ur::FSR3 || up == ur::FSR4) {
+        switch (p) {
+        case 0: return "The game lowers it when the GPU is busy, and FSR follows.";
+        case 67: return "FSR's Quality mode, 1.5x: its sharpest.";
+        case 58: return "FSR's Balanced mode, 1.7x.";
+        case 50: return "FSR's Performance mode, 2x: faster, and softer.";
+        case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
+        default: return nullptr;   // (not one of FSR's steps: the row moves to one)
+        }
+    }
     if (!p) return "The game lowers it when the GPU is busy.";
     if (p == 100) return "The 3D at the output's full size: the sharpest, and the slowest.";
     return "A steady size: lower is faster, and softer.";
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(dlss_why() == DLSS_OK)) ||
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -459,7 +540,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
     {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
@@ -522,6 +603,44 @@ Row rows[] = {
      "Which gamepad button and which keys press each of the Switch's buttons."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
+
+    // Neural rendering (11 rows). Every row here takes effect on the next frame: the backend reads
+    // them live rather than caching them at start-up, which is the bug that made the upscaling rows
+    // look dead for a whole release (docs/upscaling.md).
+    {TAB_NEURAL, "Neural rendering", &opts.nr, 0, 1, 1, tx_onoff,
+     "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
+     "Needs an NVIDIA RTX card and NVIDIA's model file (readme.md; Backend says how it is reached); the rows below are the model's own "
+     "settings and do nothing while this is Off.", hn_nr},
+    {TAB_NEURAL, "Backend", &opts.nr_backend, 0, 2, 1, tx_nr_backend,
+     "How the game reaches NVIDIA's model. Auto uses Streamline where its files are beside the game and it accepts this "
+     "GPU, and NGX directly otherwise -- always, on Linux. NGX direct needs nvngx_dlssnr.dll in the game folder's ngx "
+     "folder (readme.md). The rows below apply to whichever runs.", hn_nr_backend},
+    {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
+     "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
+     "own default. Streamline 2.14's plugin ignores this one -- it is sent correctly and a later NVIDIA release is "
+     "expected to act on it."},
+    {TAB_NEURAL, "Style", &opts.nr_style, 0, 2, 1, tx_nr_style,
+     "Which look the model aims for. Natural keeps close to what the game drew; Cinematic is the stronger, graded look. "
+     "A style this version of the plugin does not have is refused and the row goes back."},
+    {TAB_NEURAL, "Preset", &opts.nr_preset, 0, 7, 1, tx_nr_preset,
+     "Which trained network the model uses, as DLSS presets A to G. Default lets the plugin pick, which is usually the "
+     "newest it has."},
+    {TAB_NEURAL, "Intensity", &opts.nr_intensity, 0, 100, 10, tx_percent,
+     "How much of the model's result is mixed into the frame. 0% leaves the picture as the game drew it; 100% is the "
+     "model's full effect."},
+    {TAB_NEURAL, "Local tone", &opts.nr_local_tone, 0, 100, 10, tx_percent,
+     "How far the model may move brightness and colour within a small area. Lower keeps the game's own shading."},
+    {TAB_NEURAL, "Local structure", &opts.nr_local_structure, 0, 100, 10, tx_percent,
+     "How much fine detail the model adds back -- texture, edges, small shapes. Too much looks etched."},
+    {TAB_NEURAL, "Global tone", &opts.nr_global_tone, 0, 100, 10, tx_percent,
+     "How far the model may move the whole frame's brightness and contrast. Like Model, Streamline 2.14's plugin ignores "
+     "this and a later one is expected to use it."},
+    {TAB_NEURAL, "Skin structure", &opts.nr_skin, 0, 100, 10, tx_percent,
+     "How much detail the model adds to faces and skin, separately from everything else. It only does anything with Auto "
+     "mask on, which is how the model knows which pixels are a character."},
+    {TAB_NEURAL, "Auto mask", &opts.nr_auto_mask, 0, 1, 1, tx_onoff,
+     "Lets the model find the characters in the frame by itself, which is what Skin structure needs. Also helps it leave "
+     "the HUD and text alone, which it has no reason to rebuild."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
 bool cheats_enabled = false;
@@ -612,7 +731,7 @@ constexpr int kRows = sizeof rows / sizeof rows[0];
 constexpr int kMenuWidth = menu_hit::kWidth;   // (at a scale of 1: 720 lines)
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_COUNT] = {0, 0, 0};
+int tab_selected[TAB_COUNT] = {0, 0, 0, 0};
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
 namespace mr = menu_restart;
@@ -669,7 +788,7 @@ std::string restart_line(HDC dc, int width) {
 
 /// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS
 bool row_shown(int i) {
-    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built())) &&
+    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built(), (upscalers_available() & ~ur::bit(ur::GAME) & ~ur::dlss_bits(true)) != 0)) &&
            (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
@@ -730,6 +849,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.nr_backend) return "nr_backend";   // (hookshot: "backend" alone says nothing in the file)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -852,7 +972,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
-    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, true);
+    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
     if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
         v = step_output_choice(*r.value, dir);
@@ -1313,9 +1433,9 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     TextOutA(dc, (int)w - 16 * s - rbsz.cx, tab_y + 8 * s, rb_hint, (int)strlen(rb_hint));
     HFONT tab_font = font(13 * s, FW_BOLD);
     SelectObject(dc, tab_font);
-    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS"};
+    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS", "NEURAL"};
     const int center_start = menu_hit::kTabSide * s;
-    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w);
+    const int tab_slot_w = menu_hit::tab_slot_w(s, (int)w, TAB_COUNT);
     for (int t = 0; t < TAB_COUNT; t++) {
         const bool active = (t == cur_tab);
         int slot_x = center_start + t * tab_slot_w;
@@ -1592,6 +1712,17 @@ void menu_init() {
     if (done) return;
     done = true;
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
+    // (hookshot) DLSS 5 neural rendering: its rows are the model's own and none of them can do
+    // anything in a build with neither Streamline's headers (Windows) nor an NGX SDK (either
+    // platform: vk_dlssnr_ngx.h). The switch is left in place and says why, because a missing tab
+    // is a bug report and a tab that explains itself is not.
+    if (!nr::built())
+        for (Row& r : rows)
+            if (r.value == &opts.nr) {
+                r.hi = 0;
+                r.help = "DLSS 5 neural rendering is not offered by this build. It needs NVIDIA's NGX SDK, or on "
+                         "Windows NVIDIA Streamline's headers, at build time (readme.md says how to build with them).";
+            }
     bool has_options = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");
     cheats_enabled = cheats && !strcmp(cheats, "1");
@@ -1605,6 +1736,8 @@ void menu_init() {
         bool has_resolution = false;
         bool v2 = false;
         int old_dynres = -1;   // (the row before Resolution: 0, the full scale, is its 100%; 1 is Auto)
+        int old_upscaling = -1;   // (the fork's Upscaling row before the Upscaler had a row of its own: 3 FSR 3.1, 4 DLSS)
+        bool has_dlss = false;
         while (fgets(line, sizeof line, f)) {
             char* eq = strchr(line, '=');
             if (!eq) continue;
@@ -1617,6 +1750,8 @@ void menu_init() {
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
+            if (!strcmp(line, "upscaling")) old_upscaling = atoi(eq + 1);
+            has_dlss |= !strcmp(line, "dlss");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
@@ -1631,6 +1766,11 @@ void menu_init() {
             mic_tell_host();
         }
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        // (a scene upscaler saved on the old Upscaling row: to the Upscaler, and the filter back to the plain copy)
+        if (old_upscaling == 3 || old_upscaling == 4) {
+            if (!has_dlss) opts.dlss = old_upscaling == 3 ? ur::FSR3 : ur::DLSS;
+            opts.upscale = 0;
+        }
         opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
