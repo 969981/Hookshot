@@ -187,10 +187,12 @@ gigabytes and are derived from the game.
 
 - Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
   under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Wire the test into `.github/workflows/source-regressions.yml`: add a `run:` step, and add the test file and every
-  source file it reads to both the `push` and `pull_request` `paths` lists. Without the paths, the check does not run
-  when the code changes.
-- Keep the test fast enough for the 10-minute CI job, and make it pass on both Ubuntu and Windows where it can.
+- Name it `tests/test_*.py` or `nx2/test_*.py`: `tests/run_all.py` picks it up by itself and CI runs it on every pull
+  request, so there is no workflow to edit. A test that takes a compiler, headers or `spirv-val` as arguments gets an
+  entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI (a GPU, the game, one OS only) gets an
+  entry in `SKIP`, with the reason.
+- Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
+  where it can.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 
