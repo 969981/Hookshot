@@ -34,3 +34,10 @@ __pycache__/
 # ---- Linux builds ----
 build-linux/
 *.so
+
+# ---- macOS ----
+# (the game folder a local build writes, the dependencies scripts/macos/deps.sh builds, the helpers built at a build's start)
+game/
+build-macos/
+*.dylib
+.DS_Store

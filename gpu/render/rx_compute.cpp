@@ -2,6 +2,7 @@
 // Storage buffers are bound from the buffer cache, read-write: what a dispatch writes stays on the GPU, where the
 // draws and dispatches after it read it (the guest's copy of that memory is not updated).
 #include <algorithm>
+#include <unordered_set>
 
 #include "common/div_ceil.h"
 
@@ -324,6 +325,208 @@ void dispatch(const ComputeLaunch& l) {
     }
 }
 
+/// (macOS port, as the Vulkan back end's upscale_stub, gpu/vk/vk_draw.cpp) A compute program that does not translate here
+/// (OoT's movie upscaler networks: HMMA matrix multiplies, whose emulation takes Metal minutes to compile) is replaced by
+/// what the network's last pass makes: its input sampled linearly into its output, the picture a little softer. The
+/// output is the largest 2D image the dispatch has bound; the input the largest texture it samples that is no image of
+/// it and smaller than the output (an earlier pass of the network: none, and nothing is done). RX_NO_UPSCALE_STUB=1:
+/// left out, as before. The first decision for each program is logged.
+bool nvn_upscale_stub(const NvnState& s) {
+    static const bool off = getenv("RX_NO_UPSCALE_STUB") != nullptr;
+    // (only a network's pass: other programs that do not translate keep image bindings an earlier pass left, and the
+    // stand-in copied the scene over the game's final picture with them: the white 3D after the opening)
+    if (off || !nvn_cs_matrix(s)) return false;
+    struct Pick {
+        uint64_t handle = 0, area = 0;
+        nvn_tex t{};
+        nvn_view v{};
+        bool has_view = false;
+        uint32_t format() const { return has_view && v.set_format ? v.format : t.d.format; }   // (as the shader sees it)
+    };
+    Pick out, in;
+    uint64_t img_gpu[32];
+    int nimg = 0;
+    for (int i = 0; i < 32; i++) {
+        Pick p;
+        if (!s.img[5][i] || !nvn_texture_of((int)(s.img[5][i] & 0xFFFFF), &p.t, &p.v, &p.has_view)) continue;
+        img_gpu[nimg++] = p.t.gpu;
+        if (p.t.d.depth > 1) continue;
+        p.handle = s.img[5][i], p.area = (uint64_t)p.t.d.width * p.t.d.height;
+        if (p.area > out.area) out = p;
+    }
+    // (as gpu/vk/vk_draw.cpp taau_stand_in) OoT's gameplay TAAU network: its output R11G11B10F, its first texture the scene
+    // colour in RGB9E5 that its first passes made, as the square root (the network's perceptual encoding, which its output
+    // undoes). That texture upscaled and squared; the scene's HDR colour beside it (same format as the output) upscaled as
+    // it was came out all white
+    bool squared = false;
+    if (out.area && out.format() == NVN_FORMAT_R11G11B10F && s.tex[5][0]) {
+        Pick p;
+        if (nvn_texture_of((int)(s.tex[5][0] & 0xFFFFF), &p.t, &p.v, &p.has_view) && p.format() == NVN_FORMAT_RGB9E5F &&
+            p.t.d.depth <= 1 && p.t.d.width >= 64 && p.t.d.height >= 64) {
+            p.handle = s.tex[5][0], p.area = (uint64_t)p.t.d.width * p.t.d.height;
+            in = p, squared = true;
+        }
+    }
+    // (the network's own pass wrote that colour as packed RGB9E5 bits through an R32UI image at the same memory: WebGPU
+    // cannot view one as the other, and the texture came out as the gray placeholder. That image read as words, decoded)
+    Image* packed = nullptr;
+    if (squared)
+        for (int i = 0; i < 32 && !packed; i++) {
+            Pick p;
+            if (!s.img[5][i] || !nvn_texture_of((int)(s.img[5][i] & 0xFFFFF), &p.t, &p.v, &p.has_view)) continue;
+            if (p.t.gpu != in.t.gpu || p.t.d.depth > 1) continue;
+            Image* im = nvn_target(&p.t, p.has_view ? &p.v : nullptr);
+            if (im && im->format == WGPUTextureFormat_R32Uint && im->rendered) packed = im;
+        }
+    if (out.area && !squared)
+        for (int i = 0; i < 128; i++) {
+            Pick p;
+            if (!s.tex[5][i] || !nvn_texture_of((int)(s.tex[5][i] & 0xFFFFF), &p.t, &p.v, &p.has_view)) continue;
+            if (p.t.d.depth > 1 || p.t.d.target != out.t.d.target) continue;
+            // (the network's colour input, as its output: OoT's earlier passes sample the movie's chroma plane, RG8,
+            // which upscaled into the output gave junk until the last pass)
+            // (and a picture: the network's 4x4 placeholders are not one)
+            if (p.format() != out.format() || p.t.d.width < 64 || p.t.d.height < 64) continue;
+            if (std::find(img_gpu, img_gpu + nimg, p.t.gpu) != img_gpu + nimg) continue;   // (the network's own buffers)
+            p.handle = s.tex[5][i], p.area = (uint64_t)p.t.d.width * p.t.d.height;
+            if (p.area > in.area) in = p;
+        }
+    Image* dst = out.area ? nvn_target(&out.t, out.has_view ? &out.v : nullptr) : nullptr;
+    const char* store = dst ? wgsl_storage_format(dst->format) : nullptr;
+    BoundTexture src;
+    if (dst && store && in.area && in.area < out.area && !packed) {
+        Shader::TextureDescriptor d{};
+        d.type = Shader::TextureType::Color2D;
+        d.count = 1;
+        src = nvn_texture(s, in.handle, 0, d);
+    }
+    const bool ok = dst && store && in.area && in.area < out.area &&
+                    (packed ? true : src.view && src.kind == TexKind::Float);
+    {
+        static std::unordered_set<uint64_t> logged;
+        if (logged.size() < 64 && logged.insert(s.prog.serial).second)
+            hos_log("rx: compute program (serial %llu) does not run here (grid %u,%u,%u): %s %ux%u (NVN format %#x) -> %ux%u "
+                    "(NVN format %#x, GPU %llx, guest %llx, image GPU %llx guest %llx)", (unsigned long long)s.prog.serial,
+                    s.grid[0], s.grid[1], s.grid[2],
+                    ok ? (squared ? "its scene colour (squared) upscaled into its output instead, as gameplay's TAAU network:"
+                                  : "its input upscaled linearly into its output instead,") : "left out, no upscale for it:",
+                    in.t.d.width, in.t.d.height, in.format(), out.t.d.width, out.t.d.height, out.format(),
+                    (unsigned long long)out.t.gpu, (unsigned long long)nvn_gpu_guest(out.t.gpu),
+                    (unsigned long long)(dst ? dst->gpu_va : 0), (unsigned long long)(dst ? dst->guest : 0));
+    }
+    if (!ok) return false;
+    struct Stub {
+        WGPUComputePipeline pipeline = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+    };
+    static std::unordered_map<uint32_t, Stub> stubs;   // (per output format, and squared or not)
+    static WGPUSampler linear = [] {
+        WGPUSamplerDescriptor sd{};
+        sd.addressModeU = sd.addressModeV = sd.addressModeW = WGPUAddressMode_ClampToEdge;
+        sd.magFilter = sd.minFilter = WGPUFilterMode_Linear;
+        sd.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+        sd.lodMaxClamp = 0.25f;
+        sd.maxAnisotropy = 1;
+        return wgpuDeviceCreateSampler(dev.device, &sd);
+    }();
+    const uint32_t mode = packed ? 2u : squared ? 1u : 0u;   // (0 plain, 1 squared, 2 packed RGB9E5 words, squared)
+    Stub& st = stubs[(uint32_t)dst->format << 2 | mode];
+    if (!st.pipeline) {
+        std::string wgsl = packed ? "@group(0) @binding(0) var src: texture_2d<u32>;\n" : "@group(0) @binding(0) var src: texture_2d<f32>;\n";
+        wgsl += "@group(0) @binding(1) var samp: sampler;\n"
+                           "@group(0) @binding(2) var dst: texture_storage_2d<";
+        wgsl += store;
+        wgsl += ", write>;\n"
+                "@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) g: vec3<u32>) {\n"
+                "  let size = textureDimensions(dst);\n"
+                "  if (g.x >= size.x || g.y >= size.y) { return; }\n"
+                "  let uv = (vec2<f32>(g.xy) + 0.5) / vec2<f32>(size);\n"
+                "";
+        if (packed)   // (RGB9E5: three 9-bit mantissas and a shared exponent, bias 15; bilinear by hand, as words do not filter)
+            wgsl += "  let n = vec2<i32>(textureDimensions(src));\n"
+                    "  let q = uv * vec2<f32>(n) - 0.5;\n"
+                    "  let i0 = vec2<i32>(floor(q));\n"
+                    "  let f = q - floor(q);\n"
+                    "  let a = e5_(src, clamp(i0, vec2<i32>(0), n - 1));\n"
+                    "  let b = e5_(src, clamp(i0 + vec2<i32>(1, 0), vec2<i32>(0), n - 1));\n"
+                    "  let c0 = e5_(src, clamp(i0 + vec2<i32>(0, 1), vec2<i32>(0), n - 1));\n"
+                    "  let d = e5_(src, clamp(i0 + vec2<i32>(1, 1), vec2<i32>(0), n - 1));\n"
+                    "  let c = mix(mix(a, b, f.x), mix(c0, d, f.x), f.y);\n"
+                    "  textureStore(dst, vec2<i32>(g.xy), vec4<f32>(c * c, 1.0));\n}\n"
+                    "fn e5_(t: texture_2d<u32>, p: vec2<i32>) -> vec3<f32> {\n"
+                    "  let v = textureLoad(t, p, 0).x;\n"
+                    "  let m = vec3<f32>(f32(v & 511u), f32((v >> 9u) & 511u), f32((v >> 18u) & 511u));\n"
+                    "  return m * exp2(f32(v >> 27u) - 24.0);\n}\n";
+        else
+            wgsl += "  let c = textureSampleLevel(src, samp, uv, 0.0);\n" +
+                    std::string(squared ? "  textureStore(dst, vec2<i32>(g.xy), vec4<f32>(c.rgb * c.rgb, 1.0));\n}\n"
+                                        : "  textureStore(dst, vec2<i32>(g.xy), c);\n}\n");
+        WGPUShaderSourceWGSL code{};
+        code.chain.sType = WGPUSType_ShaderSourceWGSL;
+        code.code = sv(wgsl.c_str());
+        WGPUShaderModuleDescriptor md{};
+        md.nextInChain = &code.chain;
+        WGPUBindGroupLayoutEntry e[3]{};
+        e[0].binding = 0, e[0].visibility = WGPUShaderStage_Compute;
+        e[0].texture.sampleType = packed ? WGPUTextureSampleType_Uint : WGPUTextureSampleType_Float;
+        e[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+        e[1].binding = 1, e[1].visibility = WGPUShaderStage_Compute;
+        e[1].sampler.type = WGPUSamplerBindingType_Filtering;
+        e[2].binding = 2, e[2].visibility = WGPUShaderStage_Compute;
+        e[2].storageTexture.access = WGPUStorageTextureAccess_WriteOnly;
+        e[2].storageTexture.format = dst->format;
+        e[2].storageTexture.viewDimension = WGPUTextureViewDimension_2D;
+        WGPUBindGroupLayoutDescriptor ld{};
+        ld.entryCount = 3, ld.entries = e;
+        scope_push();
+        WGPUShaderModule mod = wgpuDeviceCreateShaderModule(dev.device, &md);
+        st.layout = wgpuDeviceCreateBindGroupLayout(dev.device, &ld);
+        WGPUPipelineLayoutDescriptor pld{};
+        pld.bindGroupLayoutCount = 1, pld.bindGroupLayouts = &st.layout;
+        WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(dev.device, &pld);
+        WGPUComputePipelineDescriptor cd{};
+        cd.layout = pl;
+        cd.compute.module = mod;
+        cd.compute.entryPoint = sv("main");
+        st.pipeline = wgpuDeviceCreateComputePipeline(dev.device, &cd);
+        const std::string error = scope_pop();
+        wgpuPipelineLayoutRelease(pl);
+        wgpuShaderModuleRelease(mod);
+        if (!error.empty()) {
+            log_limited("cs_upscale_stub", 4, "rx: the upscale stand-in's pipeline was not created: %s", error.c_str());
+            if (st.pipeline) wgpuComputePipelineRelease(st.pipeline);
+            st.pipeline = nullptr;
+            return false;
+        }
+    }
+    WGPUBindGroupEntry g[3]{};
+    g[0].binding = 0, g[0].textureView = packed ? packed->attachment : src.view;
+    g[1].binding = 1, g[1].sampler = linear;
+    g[2].binding = 2, g[2].textureView = dst->attachment;
+    WGPUBindGroupDescriptor bd{};
+    bd.layout = st.layout, bd.entryCount = 3, bd.entries = g;
+    WGPUBindGroup group = checked_bind_group(bd, "upscale stub");
+    if (!group) return false;
+    end_render_pass("pe_compute");
+    WGPUComputePassEncoder pass = ce_begin_compute_pass(encoder());
+    cp_set_pipeline(pass, st.pipeline);
+    cp_set_bind_group(pass, 0, group, 0, nullptr);
+    cp_dispatch(pass, (dst->width + 7) / 8, (dst->height + 7) / 8, 1);
+    cp_end(pass);
+    wgpuBindGroupRelease(group);
+    dst->rendered = true, dst->version++;
+    if (frame_dump_active()) {   // (RX_DUMP_SAMPLED=1: both pictures saved with the frame)
+        char line[160];
+        std::snprintf(line, sizeof line, "upscale stand-in: %ux%u (%c) -> %ux%u", packed ? packed->width : src.width,
+                      packed ? packed->height : src.height, packed ? 'p' : src.source, dst->width, dst->height);
+        dump_draw(line);
+        dump_sampled(dst);
+        if (packed) dump_sampled(packed);
+        else if (src.image) dump_sampled(src.image);
+    }
+    return true;
+}
+
 } // namespace
 
 // ---- the native NVN layer's dispatches: the bound program's compute stage, its banks from NVN state (c0: the
@@ -342,7 +545,25 @@ void nvn_dispatch(NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indi
     s.grid[0] = x, s.grid[1] = y, s.grid[2] = z;
     if (!x || !y || !z) return count("cs_empty");
     ShaderModule* m = nvn_compute_module(s);
-    if (!m) return count("cs_skipped");
+    if (frame_dump_active()) {   // (macOS port) the dispatch's bound images and textures: which pass of a network reads what
+        char line[1600];
+        int n = std::snprintf(line, sizeof line, "nvn dispatch program serial %llu key %016llx %s grid %u,%u,%u | img:",
+                              (unsigned long long)s.prog.serial, (unsigned long long)nvn_cs_key(s),
+                              m ? "translated" : "NOT translated", x, y, z);
+        const auto add = [&](const char* kind, int i, uint64_t h) {
+            nvn_tex t{};
+            nvn_view v{};
+            bool hv = false;
+            if (!h || n > 1500 || !nvn_texture_of((int)(h & 0xFFFFF), &t, &v, &hv)) return;
+            n += std::snprintf(line + n, sizeof line - n, " %s%d=%llx:%ux%ux%u/f%#x", kind, i, (unsigned long long)t.gpu,
+                               t.d.width, t.d.height, t.d.depth, hv && v.set_format ? v.format : t.d.format);
+        };
+        for (int i = 0; i < 32; i++) add("i", i, s.img[5][i]);
+        n += std::snprintf(line + n, sizeof line - n, " | tex:");
+        for (int i = 0; i < 128; i++) add("t", i, s.tex[5][i]);
+        dump_draw(line);
+    }
+    if (!m) return count(nvn_upscale_stub(s) ? "cs_upscale_stub" : "cs_skipped");
     const Shader::Info& info = m->info;
     if (!info.image_buffer_descriptors.empty() || !info.texture_buffer_descriptors.empty()) {
         log_limited("nvn_cs_images", 8, "rx: an NVN compute program uses image or texture buffers: not dispatched yet");
@@ -487,7 +708,10 @@ void nvn_dispatch(NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indi
             buffer_entry(storage[j].first, WGPUBufferBindingType_Storage, storage[j].second.buffer,
                          storage[j].second.offset, end[j] - storage[j].second.offset);
     uint32_t t_index = 0;
+    uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)   // (RX_SHARE_SAMPLERS: from the 17th texture on, the sampler of an earlier one, as the WGSL)
     for (const auto& d : info.texture_descriptors) {
+        const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
+        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
         uint32_t primary = 0, secondary = 0;
         banks.read(s, 5, d.cbuf_index, d.cbuf_offset, &primary, 4);
         if (d.has_secondary) banks.read(s, 5, d.secondary_cbuf_index, d.secondary_cbuf_offset, &secondary, 4);
@@ -512,7 +736,7 @@ void nvn_dispatch(NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indi
         sl.sampler.type = t.kind == TexKind::Depth             ? WGPUSamplerBindingType_Comparison
                           : t.kind == TexKind::UnfilterableFloat ? WGPUSamplerBindingType_NonFiltering
                                                                  : WGPUSamplerBindingType_Filtering;
-        layout.push_back(sl);
+        if (!shared_sampler) layout.push_back(sl);
         WGPUBindGroupEntry te{};
         te.binding = b;
         te.textureView = t.view;
@@ -520,7 +744,7 @@ void nvn_dispatch(NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indi
         WGPUBindGroupEntry se{};
         se.binding = b + 1;
         se.sampler = t.sampler;
-        entries.push_back(se);
+        if (!shared_sampler) entries.push_back(se);
         key.push_back((uint32_t)t.kind);
         b += 2;
     }

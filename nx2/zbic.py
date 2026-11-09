@@ -26,6 +26,7 @@ def _build():
         return
     srcs = [os.path.join(SRC, "zstd.c"), os.path.join(SRC, "zbic_api.c")]
     cmd = [toolchain.need(toolchain.find("clang", host=True)), *toolchain.native_target(host=True), *toolchain.native_link(host=True),
+           *(toolchain.macos_sysroot_flags() if MACOS else []),   # (clang called by its full path finds no SDK headers on its own)
            "-O2", *(["-dynamiclib"] if MACOS else ["-shared"]),
            *([] if WINDOWS or MACOS else ["-fPIC"]), "-DZSTD_ZBIC_SUPPORT=1", "-I", SRC, "-o", DLL, *srcs]
     print("building", os.path.basename(DLL), file=sys.stderr)

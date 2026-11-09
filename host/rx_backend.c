@@ -375,7 +375,22 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
     return r;
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
-int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
+int rx_option(int id, int otherwise) {
+    if (vk && vk->option) return vk->option(id);
+    /* (macOS port) no Insert menu with the WebGPU renderer: the menu's graphics and gameplay choices from the environment
+       (hookshot_env.txt beside the game; HOS_QUALITY, hos_main.c, sets them as a preset). 0: real-time game speed
+       (HOS_REALTIME_STEP, on); 2: the game's dynamic resolution (HOS_DYNRES, on unless HOS_RES_SCALE fixes a scale);
+       3: the fixed resolution's percent (HOS_RES_SCALE as a fraction) */
+    const char *e;
+    switch (id) {
+    case 0: return (e = getenv("HOS_REALTIME_STEP")) ? atoi(e) != 0 : otherwise;
+    case 2:
+        if ((e = getenv("HOS_DYNRES"))) return atoi(e) != 0;
+        return getenv("HOS_RES_SCALE") ? 0 : otherwise;
+    case 3: return (e = getenv("HOS_RES_SCALE")) ? (int)(atof(e) * 100 + 0.5) : otherwise;
+    default: return otherwise;
+    }
+}
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);

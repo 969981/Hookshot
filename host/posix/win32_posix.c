@@ -108,8 +108,41 @@ static struct timespec rel_ms(DWORD ms) {
     return ts;
 }
 
-/* ---- address waits: futexes on Linux, condition buckets on macOS ---- */
+/* ---- address waits: futexes on Linux, os_sync_wait_on_address on macOS (condition buckets before macOS 14.4) ---- */
 #ifdef __APPLE__
+#include <os/os_sync_wait_on_address.h>
+/* (macOS port) The kernel's address waits are futexes as Linux has them: a wake reaches the threads waiting on that
+   address and no other. The condition buckets below shared 64 condition variables among every waiter: a
+   WakeConditionVariable signalled one thread of its bucket, often one waiting on another address, which slept on, and
+   the woken one's own waiter waited for its timeout (frames of 50-250 ms in the opening; the game's worker queues
+   contending on the buckets' mutexes). HOS_WAIT_BUCKETS=1: the buckets, as before. */
+static int os_sync_ok(void) {
+    static int ok = -1;
+    if (ok < 0) {
+        ok = 0;
+        if (!getenv("HOS_WAIT_BUCKETS")) {
+            if (__builtin_available(macOS 14.4, *)) ok = 1;
+        }
+    }
+    return ok;
+}
+/* sleep while the 32-bit word at a holds v: 0 when woken (or it changed), ETIMEDOUT */
+static int os_sync_wait(volatile uint32_t *a, uint32_t v, DWORD ms) {
+    if (__builtin_available(macOS 14.4, *)) {
+        const int r = ms == INFINITE
+                          ? os_sync_wait_on_address((void *)a, v, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE)
+                          : os_sync_wait_on_address_with_timeout((void *)a, v, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE,
+                                                                 OS_CLOCK_MACH_ABSOLUTE_TIME, (uint64_t)(ms ? ms : 1) * 1000000ull);
+        if (r < 0 && errno == ETIMEDOUT) return ETIMEDOUT;
+    }
+    return 0;
+}
+static void os_sync_wake(volatile void *a, int all) {
+    if (__builtin_available(macOS 14.4, *)) {
+        if (all) os_sync_wake_by_address_all((void *)a, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+        else os_sync_wake_by_address_any((void *)a, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+    }
+}
 typedef struct { pthread_mutex_t mu; pthread_cond_t cv; } WaitBucket;
 static WaitBucket wait_buckets[64];
 static pthread_once_t wait_buckets_once = PTHREAD_ONCE_INIT;
@@ -140,15 +173,27 @@ static int cv_changed(void *p) {
     return __atomic_load_n(&w->cv->seq, __ATOMIC_SEQ_CST) != w->seq;
 }
 static void wake_cv(CONDITION_VARIABLE *cv, int all) {
-    WaitBucket *b = wait_bucket(cv);
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
+    if (os_sync_ok()) {
+        os_sync_wake(&cv->seq, all);
+        return;
+    }
+    WaitBucket *b = wait_bucket(cv);
     pthread_mutex_lock(&b->mu);
-    if (all) pthread_cond_broadcast(&b->cv); else pthread_cond_signal(&b->cv);
+    pthread_cond_broadcast(&b->cv);   /* (a bucket's waiters wait on other addresses too: all of them look) */
     pthread_mutex_unlock(&b->mu);
 }
 void WakeConditionVariable(CONDITION_VARIABLE *cv) { wake_cv(cv, 0); }
 void WakeAllConditionVariable(CONDITION_VARIABLE *cv) { wake_cv(cv, 1); }
 static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*relock)(void *, ULONG), void *l, ULONG flags) {
+    if (os_sync_ok()) {   /* (as the Linux futex wait below) */
+        const uint32_t seq = __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST);
+        unlock(l);
+        const int r = os_sync_wait(&cv->seq, seq, ms);
+        relock(l, flags);
+        if (r == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
+        return TRUE;
+    }
     WaitBucket *b = wait_bucket(cv);
     CvWait wait = {cv, __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST)};
     pthread_mutex_lock(&b->mu);
@@ -164,6 +209,13 @@ static int address_changed(void *p) {
     return memcmp((const void *)w->addr, w->compare, w->size) != 0;
 }
 BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
+    if (os_sync_ok()) {   /* (as the Linux one: the aligned 32-bit word holding the address, woken by any change near it) */
+        volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
+        const uint32_t seen = *w;
+        if (memcmp((const void *)addr, compare, size)) return TRUE;
+        if (os_sync_wait(w, seen, ms) == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
+        return TRUE;
+    }
     WaitBucket *b = wait_bucket(addr);
     AddressWait wait = {addr, compare, size};
     pthread_mutex_lock(&b->mu);
@@ -173,6 +225,10 @@ BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
     return result;
 }
 static void wake_address(void *addr) {
+    if (os_sync_ok()) {
+        os_sync_wake((volatile void *)((uintptr_t)addr & ~(uintptr_t)3), 1);
+        return;
+    }
     WaitBucket *b = wait_bucket(addr);
     pthread_mutex_lock(&b->mu);
     pthread_cond_broadcast(&b->cv);
@@ -202,6 +258,20 @@ static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), vo
     if (timed_out) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
 }
+/* (any size: the futex is the aligned 32-bit word holding the address, woken by any change near it) */
+BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
+    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
+    const uint32_t seen = *w;
+    if (memcmp((const void *)addr, compare, size)) return TRUE;
+    struct timespec ts = rel_ms(ms);
+    const long r = futex(w, FUTEX_WAIT_PRIVATE, seen, ms == INFINITE ? NULL : &ts);
+    if (r == -1 && errno == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
+    return TRUE;
+}
+void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
+#endif
+/* (both systems: cv_wait above is the futex one on Linux, the condition buckets on macOS) */
 static void srw_unlock(void *l) { pthread_rwlock_unlock((pthread_rwlock_t *)l); }
 static void srw_relock(void *l, ULONG flags) {
     if (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) pthread_rwlock_rdlock((pthread_rwlock_t *)l);
@@ -222,19 +292,6 @@ void InitializeCriticalSection(CRITICAL_SECTION *cs) {
     pthread_mutex_init(cs, &a);
     pthread_mutexattr_destroy(&a);
 }
-/* (any size: the futex is the aligned 32-bit word holding the address, woken by any change near it) */
-BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms) {
-    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3);
-    const uint32_t seen = *w;
-    if (memcmp((const void *)addr, compare, size)) return TRUE;
-    struct timespec ts = rel_ms(ms);
-    const long r = futex(w, FUTEX_WAIT_PRIVATE, seen, ms == INFINITE ? NULL : &ts);
-    if (r == -1 && errno == ETIMEDOUT) { last_error = ERROR_TIMEOUT; return FALSE; }
-    return TRUE;
-}
-void WakeByAddressSingle(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
-void WakeByAddressAll(void *addr) { futex((volatile uint32_t *)((uintptr_t)addr & ~(uintptr_t)3), FUTEX_WAKE_PRIVATE, INT_MAX, NULL); }
-#endif
 
 /* ---- time ---- */
 void Sleep(DWORD ms) {
@@ -316,8 +373,28 @@ static void thread_finish(DWORD code) {
     self_thread = NULL;
     thread_unref(t);
 }
+#ifdef __APPLE__
+#include <pthread/qos.h>
+/* (macOS port) the game's threads as interactive work: with the default class Apple Silicon's scheduler may run them on
+   the efficiency cores, where the game's six virtual cores starved its movie threads (12-15 fps in the opening).
+   HOS_QOS=default keeps the system's choice; =initiated, =utility for less. */
+void hos_posix_thread_qos(void) {
+    static int qos = -1;
+    if (qos < 0) {
+        const char *e = getenv("HOS_QOS");
+        qos = !e || !strcmp(e, "interactive") ? QOS_CLASS_USER_INTERACTIVE
+              : !strcmp(e, "initiated")       ? QOS_CLASS_USER_INITIATED
+              : !strcmp(e, "utility")         ? QOS_CLASS_UTILITY
+                                              : QOS_CLASS_DEFAULT;
+    }
+    if (qos != QOS_CLASS_DEFAULT) pthread_set_qos_class_self_np((qos_class_t)qos, 0);
+}
+#endif
 static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
+#ifdef __APPLE__
+    hos_posix_thread_qos();
+#endif
     self_thread = t;
     t->tid = (pid_t)current_tid();
     thread_finish(t->fn(t->arg));
@@ -668,7 +745,9 @@ void *CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, LPFIBER_START_RO
     size = (size + 0xFFFF) & ~(size_t)0xFFFF;
     void *stack = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
     if (stack == MAP_FAILED) { last_error = ERROR_NOT_ENOUGH_MEMORY; return NULL; }
+#ifndef __APPLE__
     mprotect(stack, 4096, PROT_NONE);   /* (a guard page at the bottom) */
+#endif
     Fiber *f = (Fiber *)calloc(1, sizeof *f);
     f->param = param, f->fn = fn, f->stack = stack, f->stack_size = size;
     getcontext(&f->uc);
@@ -677,6 +756,10 @@ void *CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, LPFIBER_START_RO
     f->uc.uc_link = NULL;
     const uint64_t p = (uint64_t)(uintptr_t)f;
     makecontext(&f->uc, (void (*)(void))fiber_start, 2, (unsigned)p, (unsigned)(p >> 32));
+#ifdef __APPLE__
+    /* (macOS's makecontext writes over the whole stack, so the guard goes on after it; pages are 16 KB on Apple Silicon) */
+    mprotect(stack, (size_t)getpagesize(), PROT_NONE);
+#endif
     return f;
 }
 void *CreateFiber(SIZE_T stack, LPFIBER_START_ROUTINE fn, void *param) { return CreateFiberEx(stack, stack, 0, fn, param); }

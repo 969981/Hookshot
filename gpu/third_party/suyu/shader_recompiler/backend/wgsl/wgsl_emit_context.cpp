@@ -298,17 +298,18 @@ void EmitContext::SetupTextures(Bindings& bindings) {
     // Browsers allow 16 samplers a stage (wgpu more): from the 17th texture on, a texture samples with the sampler of
     // the last earlier texture of its kind that has one (gpu/render/rx_draw.cpp binds the same way)
     u32 last_own[2] = {0, 0};   // the last texture with a sampler of its own, by is_depth (binding + 1; 0: none)
+    u32 own = 0;   // (macOS port) samplers declared: 15, and a 16th only for the first texture of the other kind
     for (const auto& desc : info.texture_descriptors) {
         if (desc.count > 1) {
             throw NotImplementedException("WGSL texture arrays");
         }
         const u32 binding{bindings.unified};
         u32 shared{0};
-#ifdef __EMSCRIPTEN__
-        if (textures.size() >= 16) shared = last_own[desc.is_depth ? 1 : 0];   // (binding + 1)
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__)   // (macOS port: Metal allows 16 too; gpu/render RX_SHARE_SAMPLERS)
+        if (own >= 15) shared = last_own[desc.is_depth ? 1 : 0];   // (binding + 1; 0: none of its kind yet, its own)
 #endif
         textures.push_back({binding, desc.count, shared});
-        if (!shared) last_own[desc.is_depth ? 1 : 0] = binding + 1;
+        if (!shared) last_own[desc.is_depth ? 1 : 0] = binding + 1, own++;
         const auto type{desc.is_depth ? DepthTextureType(desc.type)
                                       : ColorTextureType(desc.type, desc.is_multisample)};
         header += fmt::format("@group({}) @binding({}) var tex{}: {};\n", group, binding, binding, type);

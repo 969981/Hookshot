@@ -93,7 +93,7 @@ def HOT_ORDER():
     return [toolchain.link_opt("/order:@" + p.replace("\\", "/")), toolchain.link_opt("/ignore:4037")]
 
 
-HOST_LIBS = (["-lpthread", "-ldl", "-lm"] if LINUX else ["-pthread", "-lm"] if MACOS else
+HOST_LIBS = (["-lpthread", "-ldl", "-lm"] if LINUX else ["-pthread", "-lm", "-lc++"] if MACOS else
              ["-lwinhttp", "-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"])
 GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
@@ -840,6 +840,9 @@ def main():
             import shutil
             name = "libSDL2-2.0.0.dylib" if MACOS else "libSDL2-2.0.so.0"
             shutil.copyfile(sdl, os.path.join(out, name))
+        if MACOS:   # (the Metal renderer, loaded from beside the game through its @executable_path rpath)
+            import shutil
+            shutil.copyfile(os.path.join(WGPU, "lib", "libwgpu_native.dylib"), os.path.join(out, "libwgpu_native.dylib"))
     elif a.standalone and not a.only and not vk_only:
         exe = os.path.join(out, "hookshot.exe")   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()

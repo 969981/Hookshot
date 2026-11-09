@@ -85,6 +85,9 @@ static void *metal_view, *metal_layer;
 static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
+/* (macOS port) the WebGPU renderer's picture hotkeys (gpu/render/rx_present_fx.cpp: F7 frame interpolation, F8 FSR, F9
+   sharpness, F10 fit / stretch), weak: a build without that renderer has none */
+extern const char *rx_present_hotkey(int key) __attribute__((weak));
 
 #ifndef __APPLE__
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
@@ -164,10 +167,12 @@ int hos_display_init(void) {
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate
        present then drops vblank for every output. Wayland has mailbox. SDL_VIDEODRIVER (SDL3: SDL_VIDEO_DRIVER) still wins.
        Under gamescope (XDG_CURRENT_DESKTOP names it: Steam Deck game mode) SDL keeps its own order.) */
+#ifndef __APPLE__   /* (macOS: SDL's cocoa driver, the only one there) */
     const char* desktop = getenv("XDG_CURRENT_DESKTOP");
     const int gamescope = desktop && strstr(desktop, "gamescope");
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+#endif
     if (!hos_sdl_init(HOS_SDL_VIDEO | HOS_SDL_EVENTS)) {
         hos_log("display: SDL_Init: %s: no window", hos_sdl_error());
         return 0;
@@ -260,6 +265,10 @@ void hos_display_loop(void) {
                     const int scancode = e.scancode, mod = e.mod;
                     if (e.scancode == 41) mouse_capture(0);   /* Esc */
                     if (!e.repeat && (scancode == 68 || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
+                    if (!e.repeat && scancode >= 64 && scancode <= 67 && rx_present_hotkey) {   /* F7..F10 (SDL scancodes 64..67) */
+                        const char *what = rx_present_hotkey(scancode - 57);
+                        if (what && *what) hos_log("display: %s", what);
+                    }
                     break;
                 }
                 case HOS_SDL_EV_MOUSE_DOWN:

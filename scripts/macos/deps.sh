@@ -16,6 +16,7 @@ PY_TAG=20261026
 PY_VER=3.12.16
 SDL_VER=2.32.10
 FFMPEG_VER=9.0.2
+DAV1D_VER=1.5.4
 WGPU_VER=v29.0.1.1
 MIN_MACOS=13.3
 
@@ -37,6 +38,18 @@ if [ ! -x "$DEPS/python/bin/python3" ]; then
     find "$DEPS/python" -name __pycache__ -prune -exec rm -rf {} +
 fi
 
+# ---- build tools (cmake, meson, ninja, pkg-config) when the Mac has none (no Homebrew needed) ----
+BT=$DEPS/buildtools
+if ! command -v cmake >/dev/null || ! command -v meson >/dev/null || ! command -v ninja >/dev/null \
+        || ! command -v pkg-config >/dev/null; then
+    if [ ! -x "$BT/bin/meson" ]; then
+        rm -rf "$BT" && /usr/bin/python3 -m venv "$BT"
+        "$BT/bin/python3" -m pip install --disable-pip-version-check -q --only-binary :all: cmake ninja meson pkgconf
+    fi
+    [ -x "$BT/bin/pkg-config" ] || ln -sf pkgconf "$BT/bin/pkg-config"
+    export PATH="$BT/bin:$PATH"
+fi
+
 # ---- SDL2, built as a native arm64 dylib ----
 if [ ! -f "$DEPS/sdl2/lib/libSDL2-2.0.0.dylib" ]; then
     fetch "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-$SDL_VER.tar.gz" sdl2.tar.gz
@@ -52,10 +65,21 @@ if [ ! -f "$DEPS/sdl2/lib/libSDL2-2.0.0.dylib" ]; then
     rm -rf "$DEPS/src-sdl2"
 fi
 
-# ---- FFmpeg, static and position-independent for the game executable ----
+# ---- dav1d and FFmpeg, static and position-independent for the game executable ----
+# (FFmpeg's own "av1" decoder only drives hardware decoders: without dav1d the game's AV1 movies are black)
 P=$DEPS/ffmpeg
-if [ ! -f "$P/lib/libavcodec.a" ]; then
-    rm -rf "$P" "$DEPS/src-ffmpeg"
+if [ ! -f "$P/lib/libavcodec.a" ] || [ ! -f "$P/lib/libdav1d.a" ]; then
+    rm -rf "$P" "$DEPS/src-ffmpeg" "$DEPS/src-dav1d"
+    fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz" dav1d.tar.gz
+    mkdir -p "$DEPS/src-dav1d"
+    tar -xzf "$DL/dav1d.tar.gz" -C "$DEPS/src-dav1d" --strip-components=1
+    (
+        cd "$DEPS/src-dav1d"
+        CFLAGS="-mmacosx-version-min=$MIN_MACOS" LDFLAGS="-mmacosx-version-min=$MIN_MACOS" \
+            meson setup build --prefix="$P" --libdir=lib --buildtype=release --default-library=static \
+            -Db_staticpic=true -Denable_tools=false -Denable_tests=false -Denable_examples=false
+        ninja -C build install
+    )
     fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz" ffmpeg.tar.xz
     mkdir -p "$DEPS/src-ffmpeg"
     tar -xJf "$DL/ffmpeg.tar.xz" -C "$DEPS/src-ffmpeg" --strip-components=1
@@ -63,17 +87,18 @@ if [ ! -f "$P/lib/libavcodec.a" ]; then
         cd "$DEPS/src-ffmpeg"
         CFLAGS="-arch arm64 -mcpu=apple-m1 -mmacosx-version-min=$MIN_MACOS -fPIC" \
             LDFLAGS="-arch arm64 -mmacosx-version-min=$MIN_MACOS" \
+            PKG_CONFIG_PATH="$P/lib/pkgconfig" \
             ./configure --prefix="$P" --arch=aarch64 --cpu=apple-m1 --target-os=darwin \
-            --cc=clang --enable-static --disable-shared --enable-pic \
+            --cc=clang --enable-static --disable-shared --enable-pic --pkg-config-flags=--static \
             --disable-programs --disable-doc --disable-network --disable-autodetect \
             --disable-everything --disable-avformat --disable-avfilter --disable-avdevice \
             --enable-avcodec --enable-swscale --enable-swresample --enable-avutil \
-            --enable-decoder=vp8,vp9,av1 --enable-parser=vp8,vp9,av1
+            --enable-libdav1d --enable-decoder=vp8,vp9,libdav1d --enable-parser=vp8,vp9,av1
         make -j"$JOBS"
         make install
     )
-    rm -rf "$DEPS/src-ffmpeg" "$P/share"
-    for lib in libavcodec.a libswscale.a libswresample.a libavutil.a; do
+    rm -rf "$DEPS/src-ffmpeg" "$DEPS/src-dav1d" "$P/share"
+    for lib in libavcodec.a libswscale.a libswresample.a libavutil.a libdav1d.a; do
         lipo "$P/lib/$lib" -verify_arch arm64
     done
 fi

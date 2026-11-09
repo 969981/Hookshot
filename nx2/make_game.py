@@ -1170,6 +1170,11 @@ def main(a=None):
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    # (macOS port) the player's settings file, with the quality presets (host/hos_main.c HOS_QUALITY): there is no Insert
+    # menu with the Metal renderer. Only when the folder has none: the player's own choices stay
+    env_template = os.path.join(ROOT, "scripts", "macos", "hookshot_env.txt")
+    if MACOS and os.path.exists(env_template) and not os.path.exists(os.path.join(out, "hookshot_env.txt")):
+        shutil.copy2(env_template, os.path.join(out, "hookshot_env.txt"))
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         shutil.copy2(icon, os.path.join(out, "hookshot.png"))

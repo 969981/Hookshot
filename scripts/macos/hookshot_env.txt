@@ -1,0 +1,22 @@
+# Configurações do Hookshot para Mac (este arquivo é lido quando o jogo abre).
+# Linhas que começam com # são comentários. Depois de mudar, feche e abra o jogo de novo.
+
+# ---- Qualidade ----
+# HOS_QUALITY escolhe um preset. Troque a palavra depois do = por uma destas:
+#   alta    - o padrão do jogo no modo TV: resolução dinâmica e upscale FSR (a mais bonita)
+#   media   - resolução fixa em 75% (mais leve para a GPU)
+#   baixa   - perfil portátil do Switch 2: as resoluções mais leves do próprio jogo
+#   minima  - perfil portátil em 50%, sem FSR (o mais leve; a imagem fica mais suave)
+HOS_QUALITY=alta
+
+# ---- Ajustes finos (opcionais: tire o # do começo da linha para usar) ----
+# Resolução fixa, de 0.5 a 1.0 (vale mais que o preset):
+#HOS_RES_SCALE=0.75
+# Perfil portátil (1) ou TV (0):
+#HOS_HANDHELD=1
+# Upscale FSR na janela: 1 ligado, 0 desligado:
+#RX_FSR=1
+# Velocidade do texto dos diálogos: 0 normal, 1 2x, 2 4x, 3 instantâneo:
+#HOS_TEXT_SPEED=0
+
+# Teclas durante o jogo (no Mac, segure fn junto): F8 liga/desliga o FSR, F9 muda a nitidez, F10 ajusta/estica a imagem, F11 tela cheia.

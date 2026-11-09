@@ -390,6 +390,30 @@ static void load_hookshot_env(void) {
     fclose(f);
 }
 
+/* (macOS port) HOS_QUALITY=<preset> (hookshot_env.txt): the Insert menu's quality presets, for the WebGPU renderer, which
+   has no menu. Each sets only what the player did not set: high/alta, the game's own (docked, dynamic resolution, FSR);
+   medium/media, a fixed 75% resolution; low/baixa, the handheld profile (the game's lighter resolutions); minimum/minima,
+   handheld at a fixed 50%, the plain upscale. */
+#ifndef _WIN32   /* (Windows has the Insert menu) */
+static void apply_quality_preset(void) {
+    const char *q = getenv("HOS_QUALITY");
+    if (!q || !*q) return;
+    const int medium = !strcmp(q, "medium") || !strcmp(q, "media") || !strcmp(q, "média");
+    const int low = !strcmp(q, "low") || !strcmp(q, "baixa");
+    const int minimum = !strcmp(q, "minimum") || !strcmp(q, "minima") || !strcmp(q, "mínima");
+    const int high = !strcmp(q, "high") || !strcmp(q, "alta");
+    if (!medium && !low && !minimum && !high) {
+        hos_log("quality: HOS_QUALITY=%s is none of high (alta), medium (media), low (baixa), minimum (minima): ignored", q);
+        return;
+    }
+    if (medium) setenv("HOS_RES_SCALE", "0.75", 0);
+    if (low || minimum) setenv("HOS_HANDHELD", "1", 0);
+    if (minimum) setenv("HOS_RES_SCALE", "0.5", 0), setenv("RX_FSR", "0", 0);
+    hos_log("quality: %s (handheld %s, resolution %s, FSR %s)", q, getenv("HOS_HANDHELD") ? getenv("HOS_HANDHELD") : "0",
+            getenv("HOS_RES_SCALE") ? getenv("HOS_RES_SCALE") : "dynamic", getenv("RX_FSR") ? getenv("RX_FSR") : "1");
+}
+#endif
+
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
@@ -623,6 +647,7 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_hookshot_env();
+    apply_quality_preset();
     game_argc = argc, game_argv = argv;
     const int window = hos_display_init();
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);

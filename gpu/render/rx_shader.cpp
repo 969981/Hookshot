@@ -1008,6 +1008,7 @@ struct NvnCode {
     uint32_t local[3]{};
     uint32_t shared = 0, local_memory = 0;   // compute: workgroup shared memory, local memory bytes
     bool ok = false;
+    bool matrix = false;   // (macOS port) it has native matrix multiplies (HMMA, opcode 0x23c): an upscaler network's pass
 };
 
 constexpr uint32_t kNvn2ControlMagic = 0x98761234;
@@ -1044,6 +1045,7 @@ NvnCode read_nvn_code(const nvn_stage_data& sd) {
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
+        if (insn.Bits(0, 12) == 0x23c) c.matrix = true;
         const auto r = capture.Observe(insn, i);
         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
             log_limited("nvn_capture", 8, "rx: NVN2 program %016llx: branch outside the program at +%#x",
@@ -1276,6 +1278,7 @@ const NvnCode* nvn_cs_code(const NvnState& s) {
         c = std::make_unique<NvnCode>();
         for (uint32_t i = 0; i < s.prog.nstage && i < 6; i++) {
             NvnCode k = read_nvn_code(s.prog.sd[i]);
+            if (k.stage == 5 && k.matrix) c->matrix = true;   // (kept when it does not lower too: nvn_cs_matrix)
             if (k.ok && k.stage == 5) {
                 *c = std::move(k);
                 break;
@@ -1290,6 +1293,14 @@ const NvnCode* nvn_cs_code(const NvnState& s) {
 uint64_t nvn_cs_key(const NvnState& s) {
     const NvnCode* code = s.has_prog ? nvn_cs_code(s) : nullptr;
     return code ? code->key : 0;
+}
+
+/// (macOS port) whether the bound compute program has native matrix multiplies, translated or not (nvn_upscale_stub)
+bool nvn_cs_matrix(const NvnState& s) {
+    if (!s.has_prog) return false;
+    nvn_cs_code(s);   // (read and kept, failed or not)
+    const auto it = nvn_cs_codes.find(s.prog.serial);
+    return it != nvn_cs_codes.end() && it->second && it->second->matrix;
 }
 
 ShaderModule* nvn_compute_module(const NvnState& s, const std::array<uint8_t, 64>* ssbo_alias,
