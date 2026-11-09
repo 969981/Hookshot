@@ -172,18 +172,31 @@ def dlss_sdk_link():
             print("DLSS SDK: no %s in %s; DLSS will not link" % (arch, os.path.join(sdk, "lib")))
             return []
         return ["-L" + lib, "-lnvsdk_ngx"]
-    # Windows: the SDK ships an import/static library per configuration rather than a .so to -l.
-    # Named outright because the layout nests by architecture and the name differs by build, and a
-    # link that silently found nothing would leave every NVSDK_NGX_* symbol undefined at the end of
-    # a long compile. This was Linux-only before, so a Windows build asked for DLSS, compiled the
-    # NGX half and then failed to link -- which is exactly what a player on an NVIDIA card hits.
-    for root, _dirs, files in os.walk(os.path.join(sdk, "lib")):
-        if "Windows" not in root:
-            continue
+    # Windows: the SDK ships a static library per architecture and configuration rather than a .so
+    # to -l, so it is named outright -- a link that silently found nothing would leave every
+    # NVSDK_NGX_* symbol undefined at the end of a long compile.
+    #
+    # The architecture is chosen, not searched for. Walking lib/ for the first Windows folder with
+    # an nvsdk_ngx_s.lib in it is what this did, and on the real SDK that folder is Windows_ARM64 --
+    # so the link got an ARM64 library for an x64 build and said "machine type arm64 conflicts with
+    # x64" five times. The name is the target's, not this PC's: a Windows build may be a cross build
+    # from Linux (RX_TARGET=windows), where platform.machine() describes the wrong machine entirely.
+    arch = "Windows_ARM64" if "arm" in (os.environ.get("RX_ARCH", "") or "").lower() else "Windows_x86_64"
+    for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
+        # The SDK keeps the import libraries in lib/Windows_x86_64/x64/ and the *runtime* DLLs in
+        # rel/ and dev/ beside it. x64 first, because that is where this actually is.
+        for sub in ("x64", "rel", "dev", ""):
+            lib = os.path.join(sdk, "lib", arch, sub, name) if sub else os.path.join(sdk, "lib", arch, name)
+            if os.path.isfile(lib):
+                return [lib]
+    # Not there under the name the SDK has used: fall back to a search, but only inside this
+    # architecture's folder, so a wrong-machine library can no longer be picked.
+    for root, _dirs, files in os.walk(os.path.join(sdk, "lib", arch)):
         for name in ("nvsdk_ngx_s.lib", "nvsdk_ngx_d.lib"):
             if name in files:
                 return [os.path.join(root, name)]
-    print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link" % os.path.join(sdk, "lib"))
+    print("DLSS SDK: no nvsdk_ngx_s.lib under %s; DLSS will not link"
+          % os.path.join(sdk, "lib", arch))
     return []
 
 
