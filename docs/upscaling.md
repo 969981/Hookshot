@@ -310,6 +310,44 @@ What *is* deliverable, and is what "the newest upscaling" means in practice on e
 | AMD | FSR 4's machine-learning upscaler, reached through the FSR 3.1 API that row 4 below targets. Radeon RX 9000/7000/6000; AMD's own API falls back to FSR 3.1.6 elsewhere |
 | Everyone | FSR 3.1 compiled from the SDK sources in this tree, which needs no runtime and no particular vendor |
 
+## Correction: FSR was not what cost the frame rate
+
+For several rounds of work the record here said that engaging FSR 3.1 dropped the game from about
+60 fps to 3. It did not. The cost was a bug in this project's own `capture_view_projection`, and
+every hypothesis chased before that -- the pass count, the shared SPD counter, a system-memory
+fallback, repeated evaluation -- was chasing a cost that was not there.
+
+What settled it was a controlled pair rather than another hypothesis. Both arms ran headless, with
+the pad driven by a frame-clocked `HOS_INPUT_SCRIPT` so that a slow arm and a fast one reach the
+same place in the game, and both reached the same scene (same draw, dispatch and pass counts):
+
+| | frame rate | note |
+|---|---|---|
+| `RX_VK_FSR=0` | 2.7, 2.9 fps | |
+| `RX_VK_FSR=1` | 2.7, 3.0 fps | FSR running, `1536x864 -> 2048x1152`, its own log line present |
+
+Identical. Two GPU measurements already agreed and had been read wrongly: the nine passes together
+measured **0.03 ms a frame, 0.7% of GPU time, 102 us a span**, which is about a millisecond of GPU
+work per evaluation. A backend costing a millisecond cannot take 300 off a frame.
+
+The 300 ms was `capture_view_projection`, which walks five stages and sixteen slots reading a
+uniform buffer from each to find the scene's view projection. It is meant to run once per render
+target set, and it set its `done_for` guard **only when it found a matrix**. Most target sets --
+shadow, UI, post -- hold no projection, so for those the guard never armed and the whole scan ran
+again on every draw of them. At 1800 draws a frame that came to roughly 30,000 reads of guest
+memory a frame; each read that lands in a captured page copies that whole 4 KB page out of the
+capture, which is about 67 MB of memcpy a frame. It ran with FSR off exactly as with FSR on, which
+is why both arms were slow and why the earlier comparison -- a heavy scene with FSR against a title
+screen without it -- looked like FSR's doing.
+
+Two things worth keeping from this:
+
+- **A guard that is armed only on the path that succeeds is not a guard.** The failing path is the
+  common one, and it is the one that repeats.
+- **Compare two arms in the same place in the game, or do not compare.** The frame-clocked input
+  script exists for that: without it, "before" and "after" are two different scenes and the
+  difference between them is whatever you want it to be.
+
 ## FSR 3 and FSR 4 are two backends, not two versions
 
 FSR 4 is not source-available: it ships as prebuilt signed libraries inside AMD's SDK releases, so it cannot come out
@@ -337,14 +375,32 @@ has by construction, and #755 should be read before any of it is wired to the In
 
 Row 4 of the order of work now has a backend: `gpu/vk/vk_dlss.h` and `gpu/vk/vk_dlss.cpp`, the same
 shape as the FSR one (`supported()`, `prepare()`, `upscale()`, `output_image()`/`output_view()`,
-`shutdown()`) so the seam can hold either. **It has never been run.** It compiles, it links, and
-nothing more than that has been established; read the rest of this section before assuming
-otherwise.
+`shutdown()`) so the seam can hold either.
+
+It is now built against a real NGX SDK (`NVSDK_NGX_VERSION_API_MACRO` 0x15, the SDK whose Linux
+feature libraries are `libnvidia-ngx-dlss.so.310.9.16` and its `dlssd`/`dlssg` companions), and the
+whole renderer compiles with the NGX half enabled. What has *not* happened yet is an evaluation
+against a running game; until that line is in this document, treat the backend as plumbing.
+
+Two things the backend needs that the upscaler half does not, both added with the seam wiring:
+
+- **The device has to be created for it.** `dlss::device_extensions()` asks NGX itself
+  (`NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements`) what Super Resolution needs on this
+  driver, and `vk_main.cpp` enables what the GPU has. A list written out in our own source would be
+  wrong on the next driver, and an extension missing at device creation is the one DLSS failure that
+  cannot be recovered at evaluation time. Where the GPU lacks something NGX names, it is logged and
+  left out: DLSS then reports itself unavailable, rather than `vkCreateDevice` failing and taking
+  the renderer down with it.
+- **NGX is handed resources, not views.** An `NVSDK_NGX_Resource_VK` is a view *and* its image,
+  format and extent, so `DescWriter::Source` now records what each sampled binding is a view of,
+  pushed in lockstep with the descriptor infos, and `camera_motion` publishes its target's image and
+  format. Without those, a dispatch's colour cannot be given to DLSS at all.
 
 Two switches, both off by default, both neutral while off:
 
 | | |
 |---|---|
+| `RX_VK_FSR_STAGE=<0-3>` | diagnostics, and wrong output on purpose above 0: how far down the upscale path a run goes. 1 stops before the backend, 2 records every barrier, clear and descriptor but none of the nine dispatches, 3 keeps the dispatches and drops the blit into the game's target. It exists because three hypotheses about a frame-rate cost were each disproved by a measurement that a stage switch would have given in one run |
 | `RX_VK_DLSS=1` | asks for the backend at run time. Without it nothing is loaded, nothing is looked at and nothing is logged |
 | `RX_VK_DLSS_SDK` | a **build-time** gate. Off, the NGX half of the backend is not compiled and `supported()` is false. On, the build needs an NGX SDK's `include/` on the include path |
 

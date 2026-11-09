@@ -4546,6 +4546,13 @@ static void capture_view_projection(const NvnState& s) {
     // display. The serial changes when the targets do, so the matrix still refreshes every frame.
     static thread_local uint64_t done_for = ~0ull;
     if (done_for == targets_serial) return;
+    // Looked at once per target set whether or not a matrix is found. Setting this only on success
+    // was the bug: most target sets -- shadow, UI, post -- hold no projection, so the guard never
+    // armed for them and the scan below ran on every draw of them instead. At 1800 draws a frame
+    // that was 30,000 reads of guest memory a frame, each one copying the 4 KB page it landed in
+    // out of the capture, and it cost the frame about 300 ms. It is what made a 57-60 fps scene run
+    // at 3, with FSR off as much as on, and it is why the frame-rate collapse looked like FSR's.
+    done_for = targets_serial;
     for (int stage = 0; stage < kNvnStages; stage++) {
         for (int slot = 0; slot < 16; slot++) {
             const nvn_p_bind_buf& u = s.ubo[stage][slot];
@@ -4571,7 +4578,6 @@ static void capture_view_projection(const NvnState& s) {
             }
             memcpy(scene_vp.m, vp, sizeof vp);
             scene_vp.have = true;
-            done_for = targets_serial;
             static std::atomic<int> told{0};
             if (told++ == 0)
                 logf("vk: the scene's view projection: stage %d slot %d, view at +0 and projection "

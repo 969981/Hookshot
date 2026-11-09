@@ -25,14 +25,10 @@
 #include "vk_paths.h"   // (game_module_path: where the model library sits, which NGX is told)
 
 #if defined(RX_VK_DLSS_SDK)
-// NVIDIA's own headers, from the SDK this build was pointed at (`-I<sdk>/include
-// -DRX_VK_DLSS_SDK=1`). They are not vendored here and must not be: CONTRIBUTING.md's licensing
-// rule and docs/upscaling.md. Vulkan is already included by vk_dlss.h, which is what
-// nvsdk_ngx_vk.h wants to find.
-#include <nvsdk_ngx.h>
-#include <nvsdk_ngx_defs.h>
-#include <nvsdk_ngx_vk.h>
-#include <nvsdk_ngx_helpers_vk.h>
+// The one NGX session every DLSS backend shares (gpu/vk/vk_ngx.h), which is where NVIDIA's own
+// headers are reached from. They are not vendored here and must not be: CONTRIBUTING.md's licensing
+// rule and docs/upscaling.md.
+#include "vk_ngx.h"
 #endif
 
 namespace mkwvk::dlss {
@@ -182,156 +178,23 @@ void ngx_shutdown();
 /// SDK's own macros here, so a wrong one is a compile error, the same check using the helper would
 /// have given. The risk this trades for is a key DLSS wants and this code does not set; the set is
 /// written out in docs/upscaling.md so that it can be reviewed against the SDK's helper.
-struct Ngx {
-    HMODULE module = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_Init_with_ProjectID) init = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_Shutdown1) shutdown = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_GetCapabilityParameters) capability = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_AllocateParameters) allocate = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_DestroyParameters) destroy = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_CreateFeature) create = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_EvaluateFeature) evaluate = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_ReleaseFeature) release = nullptr;
-    /// The two discovery calls, which answer before a device exists. Optional: an NGX without them
-    /// is an NGX whose DLSS needs nothing beyond the core, and refusing to load over a missing
-    /// discovery call would turn a working configuration into an unavailable one.
-    decltype(&NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements) instance_exts = nullptr;
-    decltype(&NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements) device_exts = nullptr;
-    bool started = false;
-    NVSDK_NGX_Parameter* params = nullptr;    ///< the evaluation's own parameters
+/// This backend's own NGX state: a parameter block and a feature handle, and nothing else. The
+/// session itself -- loading NGX, initializing it, the capability block, the discovery calls -- is
+/// shared with the other DLSS features and lives in gpu/vk/vk_ngx.cpp.
+struct Feature {
+    NVSDK_NGX_Parameter* params = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
 };
-Ngx ngx;
-
-/// A project id of our own. NVIDIA's analytics key one is for licensed titles; the project-id form
-/// exists exactly so a project without one can initialize.
-constexpr const char* kProjectId = "a6b7c0de-7a1f-4f1e-9d2a-hookshot-dlss";
-constexpr const char* kEngineVersion = "1.0";
-
-bool ngx_load() {
-    if (ngx.module) return true;
-    // The core ships with the driver and is found on the usual search path; the model library
-    // (libnvidia-ngx-dlss.so.*) sits beside the binary and is NGX's to find, which is what the
-    // application data path below is for.
-#ifdef _WIN32
-    static const char* const names[]{"nvngx.dll", "_nvngx.dll"};
-#else
-    static const char* const names[]{"libnvidia-ngx.so.1", "libnvidia-ngx.so"};
-#endif
-    for (const char* name : names) {
-        ngx.module = LoadLibraryA(name);
-        if (ngx.module) {
-            logf("vk: dlss: NGX loaded from %s", name);
-            break;
-        }
-    }
-    if (!ngx.module) {
-        logf("vk: dlss: no NGX runtime here (%s), so DLSS is unavailable", names[0]);
-        return false;
-    }
-#define NGX_RESOLVE(field, name)                                                                   \
-    ngx.field = (decltype(ngx.field))(void*)GetProcAddress(ngx.module, name);                      \
-    if (!ngx.field) {                                                                              \
-        logf("vk: dlss: the NGX runtime has no %s", name);                                         \
-        return false;                                                                              \
-    }
-    NGX_RESOLVE(init, "NVSDK_NGX_VULKAN_Init_with_ProjectID")
-    NGX_RESOLVE(shutdown, "NVSDK_NGX_VULKAN_Shutdown1")
-    NGX_RESOLVE(capability, "NVSDK_NGX_VULKAN_GetCapabilityParameters")
-    NGX_RESOLVE(allocate, "NVSDK_NGX_VULKAN_AllocateParameters")
-    NGX_RESOLVE(destroy, "NVSDK_NGX_VULKAN_DestroyParameters")
-    NGX_RESOLVE(create, "NVSDK_NGX_VULKAN_CreateFeature")
-    NGX_RESOLVE(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature")
-    NGX_RESOLVE(release, "NVSDK_NGX_VULKAN_ReleaseFeature")
-#undef NGX_RESOLVE
-    ngx.instance_exts = (decltype(ngx.instance_exts))(void*)GetProcAddress(
-        ngx.module, "NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements");
-    ngx.device_exts = (decltype(ngx.device_exts))(void*)GetProcAddress(
-        ngx.module, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
-    return true;
-}
-
-const wchar_t* data_path();   // (defined below: the folder NGX keeps its own files in)
-
-/// What a discovery call is asked about: Super Resolution, this SDK's version, our project id.
-NVSDK_NGX_FeatureDiscoveryInfo discovery_info() {
-    NVSDK_NGX_FeatureDiscoveryInfo info{};
-    info.SDKVersion = NVSDK_NGX_Version_API;
-    info.FeatureID = NVSDK_NGX_Feature_SuperSampling;
-    info.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
-    info.Identifier.v.ProjectDesc.ProjectId = kProjectId;
-    info.Identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
-    info.Identifier.v.ProjectDesc.EngineVersion = kEngineVersion;
-    info.ApplicationDataPath = data_path();
-    return info;
-}
-
-/// The game folder, wide, for NGX's application data path: where it writes what it keeps and where
-/// the model library beside the binary is looked for.
-const wchar_t* data_path() {
-    static wchar_t wide[MAX_PATH + 1];
-    static const bool once = [] {
-        char path[MAX_PATH + 1]{};
-        const DWORD n = game_module_path(path, (DWORD)sizeof path);
-        if (!n || n >= sizeof path) {
-            wide[0] = L'.', wide[1] = 0;
-            return true;
-        }
-        char* name = path + n;
-        while (name > path && name[-1] != '\\' && name[-1] != '/') name--;
-        *name = 0;
-        size_t i = 0;
-        for (; path[i] && i < MAX_PATH; i++) wide[i] = (wchar_t)(unsigned char)path[i];
-        wide[i] = 0;
-        if (!i) wide[0] = L'.', wide[1] = 0;
-        return true;
-    }();
-    (void)once;
-    return wide;
-}
+Feature ngx;
 
 bool ngx_available() {
-    if (!ngx_load()) return false;
-    if (!ngx.started) {
-        NVSDK_NGX_FeatureCommonInfo common{};
-        const wchar_t* paths[]{data_path()};
-        common.PathListInfo.Path = paths;
-        common.PathListInfo.Length = 1;
-        const NVSDK_NGX_Result res =
-            ngx.init(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kEngineVersion, data_path(),
-                     dev.instance, dev.physical, dev.device, instance_proc(), vkGetDeviceProcAddr,
-                     &common, NVSDK_NGX_Version_API);
-        if (NVSDK_NGX_FAILED(res)) {
-            logf("vk: dlss: NGX did not initialize (0x%08x)", (unsigned)res);
-            return false;
-        }
-        ngx.started = true;
-    }
-    NVSDK_NGX_Parameter* caps = nullptr;
-    if (NVSDK_NGX_FAILED(ngx.capability(&caps)) || !caps) {
-        logf("vk: dlss: NGX gave no capability parameters");
+    if (!ngx::feature_available(NVSDK_NGX_Parameter_SuperSampling_Available,
+                                NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver,
+                                NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor,
+                                NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor,
+                                "Super Resolution"))
         return false;
-    }
-    int available = 0;
-    if (NVSDK_NGX_FAILED(caps->Get(NVSDK_NGX_Parameter_SuperSampling_Available, &available)) ||
-        !available) {
-        // (what NGX says about it: an old driver and a feature that failed to initialize are
-        // different reports, and a user with the first can act on it)
-        int needs_driver = 0, major = 0, minor = 0;
-        caps->Get(NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
-        caps->Get(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &major);
-        caps->Get(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
-        if (needs_driver)
-            logf("vk: dlss: this driver is too old for DLSS (%d.%d or newer wanted)", major, minor);
-        else
-            logf("vk: dlss: this GPU and driver do not report Super Resolution");
-        return false;
-    }
-    if (!ngx.params && NVSDK_NGX_FAILED(ngx.allocate(&ngx.params))) {
-        logf("vk: dlss: NGX gave no parameters to evaluate with");
-        ngx.params = nullptr;
-        return false;
-    }
+    if (!ngx.params) ngx.params = ngx::allocate_params();
     return ngx.params != nullptr;
 }
 
@@ -358,7 +221,7 @@ bool ngx_feature(VkCommandBuffer cmd) {
     ngx.params->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
     ngx.params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
     const NVSDK_NGX_Result res =
-        ngx.create(cmd, NVSDK_NGX_Feature_SuperSampling, ngx.params, &ngx.feature);
+        ngx::create_feature(cmd, NVSDK_NGX_Feature_SuperSampling, ngx.params, &ngx.feature);
     if (NVSDK_NGX_FAILED(res) || !ngx.feature) {
         logf("vk: dlss: the feature was not created for %ux%u -> %ux%u (0x%08x)", g.render_width,
              g.render_height, g.upscale_width, g.upscale_height, (unsigned)res);
@@ -370,17 +233,11 @@ bool ngx_feature(VkCommandBuffer cmd) {
     return true;
 }
 
-/// One input as NGX takes it: the view, its image, its range, its format and the extent it is read
-/// at. Nothing here is defaulted; `upscale()` has already refused inputs that cannot fill it.
+/// One input as NGX takes it. Nothing here is defaulted; `upscale()` has already refused inputs
+/// that cannot fill it.
 NVSDK_NGX_Resource_VK as_resource(VkImageView view, VkImage image, VkFormat format, uint32_t width,
                                   uint32_t height, bool read_write) {
-    VkImageSubresourceRange range{};
-    range.aspectMask =
-        is_depth_format(format) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    range.baseMipLevel = 0, range.levelCount = 1;
-    range.baseArrayLayer = 0, range.layerCount = 1;
-    return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, range, format, width, height,
-                                                  read_write);
+    return ngx::resource(view, image, format, width, height, read_write);
 }
 
 bool ngx_evaluate(VkCommandBuffer cmd, const Inputs& in, const Image& out) {
@@ -409,7 +266,7 @@ bool ngx_evaluate(VkCommandBuffer cmd, const Inputs& in, const Image& out) {
     // its own resolve worked in, so both of these are the neutral value rather than a guess.
     ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
     ngx.params->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
-    const NVSDK_NGX_Result res = ngx.evaluate(cmd, ngx.feature, ngx.params, nullptr);
+    const NVSDK_NGX_Result res = ngx::evaluate_feature(cmd, ngx.feature, ngx.params);
     if (NVSDK_NGX_FAILED(res)) {
         logf("vk: dlss: the evaluation was refused (0x%08x)", (unsigned)res);
         return false;
@@ -418,18 +275,17 @@ bool ngx_evaluate(VkCommandBuffer cmd, const Inputs& in, const Image& out) {
 }
 
 void ngx_drop_feature() {
-    if (ngx.feature && ngx.release) ngx.release(ngx.feature);
+    ngx::release_feature(ngx.feature);
     ngx.feature = nullptr;
 }
 
 void ngx_shutdown() {
     ngx_drop_feature();
-    if (ngx.params && ngx.destroy) ngx.destroy(ngx.params);
+    ngx::destroy_params(ngx.params);
     ngx.params = nullptr;
-    if (ngx.started && ngx.shutdown) ngx.shutdown(dev.device);
-    ngx.started = false;
-    // (the module is left loaded: the driver's own libraries are not ours to unload under a device
-    // that may still be alive)
+    // (the session itself is ended by whoever ends the renderer, not by one of its features: the
+    // other DLSS backends may still be using it. gpu/vk/vk_ngx.h)
+    ngx::shutdown();
 }
 
 #else   // no NGX SDK: the gate is off, and each of the five refuses
@@ -483,14 +339,8 @@ bool supported() {
 
 size_t instance_extensions(const char** out, size_t max) {
 #if defined(RX_VK_DLSS_SDK)
-    if (!wanted() || !ngx_load() || !ngx.instance_exts) return 0;
-    const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info();
-    uint32_t n = 0;
-    VkExtensionProperties* props = nullptr;
-    if (NVSDK_NGX_FAILED(ngx.instance_exts(&info, &n, &props)) || !props) return 0;
-    size_t kept = 0;
-    for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
-    return kept;
+    if (!wanted()) return 0;
+    return ngx::instance_extensions(NVSDK_NGX_Feature_SuperSampling, out, max);
 #else
     (void)out, (void)max;
     return 0;
@@ -499,14 +349,8 @@ size_t instance_extensions(const char** out, size_t max) {
 
 size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {
 #if defined(RX_VK_DLSS_SDK)
-    if (!wanted() || !instance || !gpu || !ngx_load() || !ngx.device_exts) return 0;
-    const NVSDK_NGX_FeatureDiscoveryInfo info = discovery_info();
-    uint32_t n = 0;
-    VkExtensionProperties* props = nullptr;
-    if (NVSDK_NGX_FAILED(ngx.device_exts(instance, gpu, &info, &n, &props)) || !props) return 0;
-    size_t kept = 0;
-    for (uint32_t i = 0; i < n && kept < max; i++) out[kept++] = props[i].extensionName;
-    return kept;
+    if (!wanted()) return 0;
+    return ngx::device_extensions(instance, gpu, NVSDK_NGX_Feature_SuperSampling, out, max);
 #else
     (void)instance, (void)gpu, (void)out, (void)max;
     return 0;
