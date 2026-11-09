@@ -5704,10 +5704,15 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
                     const float th = hos_oot_camera ? hos_oot_camera(&np, &fp) : 0.0f;
                     if (th > 0.0f && np > 0.0f) ai.near_plane = np, ai.fov_y = 2.0f * std::atan(th);
                     if (fsr3::upscale(cmd, ai)) {
+                        // (how often this runs, with the log's own timestamps: nine passes a call
+                        //  is cheap once a frame and ruinous twenty times, and 3 fps said one of
+                        //  those was happening. Every 300 so the rate is readable from the gap)
                         static std::atomic<int> said{0};
-                        if (said++ == 0)
+                        const int n = said++;
+                        if (n == 0)
                             logf("vk: fsr3 %ux%u -> %ux%u with assembled depth and camera motion",
                                  ai.render_width, ai.render_height, ai.upscale_width, ai.upscale_height);
+                        if (n % 300 == 0) logf("vk: fsr3 evaluations: %d", n + 1);
                         VkImageBlit b{};
                         b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                         b.srcOffsets[1] = {(int32_t)req.output_width, (int32_t)req.output_height, 1};
