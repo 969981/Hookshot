@@ -16,7 +16,7 @@ This page explains how it behaves, why it was broken, and how each problem was f
 | Lighting and bloom on AMD | Working on the test laptop |
 | GPUs **with** mesh shaders (the #640 device loss) | Fixed in the code, **not tested** on such a GPU |
 | Texture noise after alt-tab on low-VRAM cards | **Working, but further testing needed** |
-| Glowing stems and flowers in Kokiri Forest | **Known issue, not fixed:** traced to the programs that cause it (see item 11) |
+| Glowing stems and flowers in Kokiri Forest | **Fixed by upstream PR #759** (a shader translator bug on every GPU, not the fallback; see item 11) |
 
 ### The test laptop: low VRAM
 
@@ -238,7 +238,7 @@ tried again 30 frames later, with the cause logged. **It worked on the test lapt
 alt-tabbing, but was only tested briefly.** It needs more play, and testing on other low-VRAM
 cards. A texture can still show noise for a moment between a failed upload and its retry.
 
-### 11. Glowing stems and flowers in Kokiri Forest (known issue, not fixed)
+### 11. Glowing stems and flowers in Kokiri Forest (fixed: an upstream translator bug, PR #759)
 
 Some plants in Kokiri Forest look "radioactive". Flower petals bloom out bright yellow or white, stems glow cyan or white,
 and coloured specks and streaks shine in the bushes.
@@ -273,8 +273,25 @@ preparation.
 - **The stem programs share their fragment stage and record layout with programs that look right.** So the difference
   is in the values their mesh stage writes, not in how the fragment stage reads them.
 
-**Next step:** read back one of these programs' records from the GPU, and look at each value's range, NaNs and
-infinities. That should show which value is wrong.
+**The cause, found with the readback and the draw-state log** (`read` and `info` in the live switch):
+
+- **The 10 "stem" programs are depth passes, not overlays.** Three are full-resolution depth prepasses (colour write
+  mask 0), six draw the shadow map, and one is a half-resolution depth pass. 5ba7cf23 is the stems' prepass. Hiding it
+  took away the stems' depth, so their colour pass, which draws only where depth is equal, drew nothing. The glow went
+  with the stems.
+- **The geometry was right.** Read back in the same frame, the prepass and the stems' colour pass (89ca750f) have
+  bit-identical positions and triangles, and no record holds a NaN or infinity.
+- **The colour pass's lighting was wrong.** 89ca750f lights each stem from spherical-harmonics light-probe data
+  (0.2820948 is the zeroth-order coefficient). About a third of the stems came out with that light in the hundreds or
+  thousands, mostly green and blue, and some negative: the cyan glow.
+- **It is not the fallback.** Upstream had the same report on GPUs with mesh shaders (#757 on an RTX 5080, #874, #986).
+  Upstream PR #759 fixed it on 2026-11-09. The translator renames high registers through markers, and a marker could
+  take the number of an operand the same instruction still read. That FFMA then read the wrong value.
+- **Fixed in game:** with #759, the stems and flowers look right on the RX 5500M. Its test fails on this branch's code
+  without the fix and passes with it.
+
+The flower programs' first draws went to a 128x128 target, which looks like a light-probe capture. Hiding those draws
+did not change the glow; #759 fixed the flowers too.
 
 ## Known limits
 
@@ -286,7 +303,11 @@ infinities. That should show which value is wrong.
   GTX 10 series) should behave the same, but have not been tried.
 - **No GPU with mesh shaders tested** since the fix in item 9.
 - **The texture fix** (item 10) needs more testing.
-- **Glowing stems and flowers** (item 11): not fixed.
+- **Glowing stems and flowers** (item 11): fixed by #759 on the `fallback_readback_debug` branch, not yet on
+  `working_fallback_mesh_shaders_RDNA1`. That branch is 170 commits behind upstream `main`.
+- **Garbled HUD textures on 4 GB cards.** After the shaders were prepared again, the hearts were black glyphs until
+  the next area change. That is upstream's open issue #993 (GPU-drawn textures evicted when VRAM is over budget), not
+  the fallback.
 
 ## Testing and tools
 
@@ -311,6 +332,11 @@ infinities. That should show which value is wrong.
   no shader preparation.
   - `off` hides every fallback draw.
   - `list` logs each fallback program drawn (`vk: fallback debug: draws <key> ...`).
+  - `read <prefix>` copies the records of each program named to the CPU, all in the frame after the file changes (up to
+    16 programs). Each record word's range, NaNs and infinities are logged (`vk: fallback read: ...`), and the records
+    are written to `hookshot_fallback_read_<key>.bin` in the game folder.
+  - `info <prefix>` logs the next draw of each program named: its targets and their formats, each target's write mask,
+    blending, and the depth test (`vk: fallback info ...`).
   - Any other line is a program key's hex prefix, and hides that program.
   - Lines starting with `#` are comments.
 
