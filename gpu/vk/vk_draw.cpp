@@ -2679,7 +2679,7 @@ bool jitter_wanted() {
         if (const char* e = getenv("RX_VK_JITTER")) return atoi(e) != 0;
         if (const char* e = getenv("RX_VK_FSR"); e && atoi(e) != 0) return true;
         if (const char* e = getenv("RX_VK_DLSS"); e && atoi(e) != 0) return true;
-        return opts.scene_upscaler != 0;
+        return scene_upscaler() != 0;
     }();
     return yes;
 }
@@ -5799,7 +5799,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // the Insert menu's "Scene upscaler" row decides. Read once: the backends cache what they are.
     static const bool fsr_wanted = []() {
         if (const char* e = getenv("RX_VK_FSR")) return atoi(e) != 0;
-        return opts.scene_upscaler == 1;
+        return scene_upscaler() == 1;
     }();
     // (hookshot) Both vendor backends ask their own question: FSR whether this device can run its
     // passes, DLSS whether this is an NVIDIA driver reporting Super Resolution with an NGX runtime

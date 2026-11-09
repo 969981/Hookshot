@@ -14,6 +14,8 @@
 
 #include "vk_paths.h"
 #include "vk_menu.h"
+
+#include "vk_dlss.h"   // (built_with_sdk: whether this build can offer DLSS at all)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -46,14 +48,6 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
-const char* tx_scene_upscaler(int v) {
-    static const char* t[] = {"The game's own", "FSR 3.1", "DLSS"};
-    return t[v];
-}
-const char* tx_framegen_by(int v) {
-    static const char* t[] = {"Renderer", "DLSS"};
-    return t[v];
-}
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
@@ -61,7 +55,11 @@ const char* tx_sens(int v) {
     return b;
 }
 const char* tx_upscale(int v) {
-    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
+    // (hookshot) The first three scale the finished picture to the window; the last two resolve the
+    // 3D scene itself, in the game's own upscaler's place. One row because to a player it is one
+    // question -- what makes the picture bigger -- and because a second row asking it again is how
+    // you end up with two settings that can disagree.
+    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos", "FSR 3.1", "DLSS"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
@@ -176,15 +174,10 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11."},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
-    {TAB_GRAPHICS, "Scene upscaler", &opts.scene_upscaler, 0, 2, 1, tx_scene_upscaler,
-     "Which network resolves the 3D scene to its full size. The game's own is what it shipped with. FSR 3.1 runs anywhere; "
-     "DLSS needs an NVIDIA card, its runtime beside the game, and a build made with the NGX SDK. Applies after a restart."},
-    {TAB_GRAPHICS, "Made frames by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
-     "What makes the frames between the game's own. Renderer blends the last two. DLSS uses the scene's depth and motion and "
-     "the same requirements as DLSS upscaling; where it cannot run, the renderer's own takes over. Applies after a restart."},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
-     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
-     "can show artifacts."},
+     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Uses DLSS or FSR 3 where the card and "
+     "the build allow it, and the renderer's own blend otherwise -- you do not pick. Adds a little input delay, and fast "
+     "motion or camera cuts can show artifacts."},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
      "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
     {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
@@ -193,8 +186,10 @@ Row rows[] = {
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 2, 1, tx_output_res,
      "The size the game draws its whole frame at, HUD included, before it is scaled to your window. The 3D is drawn at the "
      "Resolution percentage of it. Docked only. Applies after a restart."},
-    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
-     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
+    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 4, 1, tx_upscale,
+     "What makes the picture bigger. Off, Catmull-Rom and Lanczos are filters over the finished frame. FSR 3.1 and DLSS "
+     "resolve the 3D scene itself from the game's own render size, which is sharper; DLSS needs an NVIDIA card and its "
+     "runtime beside the game. Applies after a restart."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
@@ -825,6 +820,13 @@ void menu_init() {
     static bool done;
     if (done) return;
     done = true;
+    // (hookshot) A build with no NGX SDK cannot do DLSS at all -- the half that calls it is not
+    // compiled in -- so the row must not offer it. Every released build is such a build: CI has no
+    // NVIDIA SDK and none may be committed (CONTRIBUTING.md), and a setting that silently does
+    // nothing is worse than one that is not there. FSR needs nothing and is always offered.
+    if (!dlss::built_with_sdk())
+        for (Row& r : rows)
+            if (r.value == &opts.upscale) r.hi = 3;
     bool has_options = false;
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         has_options = true;

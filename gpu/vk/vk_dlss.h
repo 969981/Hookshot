@@ -60,6 +60,12 @@ struct Inputs {
 /// Whether DLSS can run here at all: asked for (`RX_VK_DLSS=1`), built with an NGX SDK, the NGX
 /// runtime loaded, and this driver and GPU reporting Super Resolution as available. Asked once; the
 /// answer is cached, and the one line saying why it is false is logged once.
+/// Whether this build has the NGX SDK compiled in at all. A compile-time fact, not a device one: it
+/// asks nothing of the driver and loads nothing, so the menu can use it to decide whether offering
+/// DLSS would be offering something this binary can never do. Every released build answers false,
+/// because CI has no NVIDIA SDK and none may be committed.
+[[nodiscard]] bool built_with_sdk();
+
 [[nodiscard]] bool supported();
 
 /// Makes the image an evaluation resolves into and remembers these extents, re-making them when the

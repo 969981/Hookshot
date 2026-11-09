@@ -51,7 +51,7 @@ bool wanted() {
     // applies after a restart, which the row says.
     static const bool yes = []() {
         if (const char* e = getenv("RX_VK_DLSS")) return atoi(e) != 0;
-        return opts.scene_upscaler == 2;
+        return scene_upscaler() == 2;
     }();
     return yes;
 }
@@ -325,6 +325,10 @@ void ngx_shutdown() {}
 // Streamline has no Linux build, so the NGX arm stays the Linux one whatever happens on Windows.
 
 } // namespace
+
+bool built_with_sdk() {
+    return kHaveSdk;
+}
 
 bool supported() {
     static const bool answer = [] {

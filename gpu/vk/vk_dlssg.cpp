@@ -40,7 +40,7 @@ uint32_t asked() {
         // Otherwise the Insert menu: "Made frames by" picks DLSS, and "Frame generation" says how
         // many frames there are to make -- one fewer than the multiplier, since the last of each
         // set is the game's own frame.
-        if (opts.framegen_by != 1) return 0;
+        // The native "Frame generation" row: how many frames, not which library (vk_fsr3fi.cpp).
         const int made = std::clamp(opts.framegen - 1, 0, (int)kMaxMade);
         return (uint32_t)made;
     }();

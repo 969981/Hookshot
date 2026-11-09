@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "vk_fsr3fi.h"
+#include "vk_menu.h"   // (the Insert menu's "Made frames by" row)
 #include "vk_gprof.h"   // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 
 #include "shaders/fsr3_fi_disocclusion_mask_comp_spv.h"
@@ -317,10 +318,17 @@ constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_RE
 /// game's. Off is the default and costs nothing: nothing below runs and nothing is logged.
 uint32_t asked() {
     static const uint32_t n = []() -> uint32_t {
-        const char* e = getenv("RX_VK_FSR_FG");
-        if (!e || !*e) return 0;
-        const int v = atoi(e);
-        return v <= 0 ? 0u : (uint32_t)std::min(v, (int)kMaxMade);
+        if (const char* e = getenv("RX_VK_FSR_FG"); e && *e) {
+            const int v = atoi(e);
+            return v <= 0 ? 0u : (uint32_t)std::min(v, (int)kMaxMade);
+        }
+        // Otherwise the Insert menu: "Made frames by" picks FSR, and "Frame generation" says how
+        // many frames there are to make -- one fewer than the multiplier, since the last of each
+        // set is the game's own frame. The same shape dlssg uses, so the two rows mean one thing.
+        // The native "Frame generation" row is the whole setting: a player says how many frames
+        // to make, not which library makes them. Both backends are asked, and vk_framegen.cpp
+        // tries DLSS first, this second, and keeps its own blend for what neither takes.
+        return (uint32_t)std::clamp(opts.framegen - 1, 0, (int)kMaxMade);
     }();
     return n;
 }
