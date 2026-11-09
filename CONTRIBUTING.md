@@ -64,13 +64,15 @@ about 10 GB of RAM.
    folder. Without it the build falls back to emsdk's clang at `C:\emsdk` with Visual Studio's C++ tools and the
    Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
 
-3. Copy the pieces a clone does not carry from the `tools` folder of the latest `HookshotBuilder.zip`:
+3. Copy the pieces a clone does not carry from the `tools` folder Hookshot Builder installs. Run `HookshotBuilder.exe`
+   from the latest release once (releases no longer carry a `HookshotBuilder.zip`): the folder is
+   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`.
 
-   | From the zip | To | Variable |
+   | From `tools` | To | Variable |
    |---|---|---|
    | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the Vulkan renderer is left out) |
-   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it |
-   | `tools\third_party\sdl2\SDL2.dll` | `third_party\sdl2\` | |
+   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
+   | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
 
 4. Run everything with `python -I` from the repository root.
