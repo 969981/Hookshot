@@ -10,6 +10,7 @@
 // (frames over 100 ms apart) are not interpolated.
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -22,6 +23,7 @@
 
 #include "shaders/fg_copy_comp_spv.h"
 #include "shaders/fg_flow_comp_spv.h"
+#include "shaders/fg_fsr_comp_spv.h"
 #include "shaders/fg_luma_comp_spv.h"
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
@@ -78,9 +80,10 @@ struct State {
 struct ScaleState {
     bool init = false, failed = false;
     Pipe pipe;
+    Pipe fsr;   // (Upscaling FSR 1: EASU into mid, then RCAS into scaled; none when it was not made: Lanczos instead)
     VkSampler linear = VK_NULL_HANDLE;
-    Img cropped, scaled;
-    uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0;
+    Img cropped, scaled, mid;
+    uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0, mid_w = 0, mid_h = 0;
 } scale;
 
 int64_t now_ns() {
@@ -161,6 +164,13 @@ bool init_scale() {
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
         if (vkCreateSampler(dev.device, &si, nullptr, &scale.linear) == VK_SUCCESS) {
             scale.failed = false;
+            if (!make_pipe(scale.fsr, FG_FSR_COMP_SPV, sizeof FG_FSR_COMP_SPV, {S, I}, 8)) {
+                if (scale.fsr.pipe) vkDestroyPipeline(dev.device, scale.fsr.pipe, nullptr);
+                if (scale.fsr.layout) vkDestroyPipelineLayout(dev.device, scale.fsr.layout, nullptr);
+                if (scale.fsr.set) vkDestroyDescriptorSetLayout(dev.device, scale.fsr.set, nullptr);
+                scale.fsr = {};
+                logf("vk: the FSR 1 upscale was not made: Lanczos in its place");
+            }
             return true;
         }
     }
@@ -396,8 +406,33 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; } pc{opts.upscale, opts.sharpness / 100.0f};
-    pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
+    // (Upscaling FSR 1: AMD's EASU to the window's size into mid, then RCAS from mid. Sharpness 100% is FSR's strongest
+    // (0 stops), 0% two stops down, as FSR's own sharpness range)
+    bool fsr = opts.upscale == 3 && scale.fsr.pipe;
+    if (fsr && (scale.mid_w != dw || scale.mid_h != dh)) {
+        {
+            std::lock_guard qk(dev.present_mu);
+            queue_flush_locked();
+            vkDeviceWaitIdle(dev.device);
+        }
+        drop_img(scale.mid);
+        scale.mid_w = scale.mid_h = 0;
+        if (make_img(scale.mid, dw, dh, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+            scale.mid_w = dw, scale.mid_h = dh;
+            to_general(cmd, scale.mid.image);
+        } else {
+            drop_img(scale.mid);
+            fsr = false;
+        }
+    }
+    if (fsr) {
+        const struct { int pass; float sharp; } easu{0, 0.0f}, rcas{1, exp2f(-2.0f * (1.0f - opts.sharpness / 100.0f))};
+        pass(cmd, scale.fsr, {{src, scale.linear}, {scale.mid.view, VK_NULL_HANDLE}}, dw, dh, &easu, sizeof easu);
+        pass(cmd, scale.fsr, {{scale.mid.view, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &rcas, sizeof rcas);
+    } else {
+        const struct { int mode; float sharp; } pc{std::min(opts.upscale, 2), opts.sharpness / 100.0f};
+        pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
+    }
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;
     if (report && !reported) {

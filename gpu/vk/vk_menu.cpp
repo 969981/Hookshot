@@ -53,7 +53,7 @@ const char* tx_sens(int v) {
     return b;
 }
 const char* tx_upscale(int v) {
-    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
+    static const char* t[] = {"Off", "Catmull-Rom", "Lanczos", "FSR 1"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
@@ -149,8 +149,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
      "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
      "faster."},
-    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
-     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
+    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 3, 1, tx_upscale,
+     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still. "
+     "FSR 1 is AMD's edge-adaptive upscale with its contrast-adaptive sharpening (the Sharpness below sets how strong)."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,

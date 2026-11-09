@@ -333,6 +333,124 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
     return v;
 }
 
+// ---- (amd-fix) render targets that are compressed textures: an uncompressed shadow (vk_texture.h, Texture::rt_shadow) ----
+// OoT draws two 3D BC4 textures (64 x 64 x 64, noise volumes) slice by slice through RGBA16UI views, one block a texel.
+// Vulkan renders into no compressed image (no colour-attachment usage, which the views asked for: every slice's view was
+// "not made" and nothing was drawn into them). The passes render into the shadow instead, and its blocks are copied into
+// the texture after each:
+// a copy between a compressed image and an uncompressed one whose texels are its blocks' size, which Vulkan allows (as
+// Eden's texture cache does). RX_VK_BC_RT_SHADOW=0: off; =1: on for every vendor (default: AMD's)
+namespace {
+bool rt_shadow_on() {
+    static const int e = getenv("RX_VK_BC_RT_SHADOW") ? atoi(getenv("RX_VK_BC_RT_SHADOW")) : -1;
+    return e == 1 || (e != 0 && dev.props.vendorID == 0x1002);
+}
+uint32_t raw_texel_bytes(VkFormat f) {   // (the uncompressed formats a compressed block reads as)
+    switch (f) {
+    case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SNORM: case VK_FORMAT_R16G16B16A16_UINT:
+    case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R32G32_SFLOAT:
+        return 8;
+    case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return 16;
+    default:
+        return 0;
+    }
+}
+/// The shadow's view of `level`, `layer` (made with the shadow on first use; null when it cannot be)
+VkImageView rt_shadow_view(Texture* tex, VkFormat f, uint32_t level, uint32_t layer) {
+    if (tex->sparse || !tex->image || raw_texel_bytes(f) == 0 || raw_texel_bytes(f) != (uint32_t)tex->bpb) return VK_NULL_HANDLE;
+    const uint32_t bw = tex->block_w > 1 ? (uint32_t)tex->block_w : 4, bh = tex->block_h > 1 ? (uint32_t)tex->block_h : 4;
+    if (!tex->rt_shadow) {
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = f;
+        ci.extent = {(tex->width + bw - 1) / bw, (tex->height + bh - 1) / bh, 1};
+        ci.mipLevels = tex->levels;
+        ci.arrayLayers = tex->type == VK_IMAGE_TYPE_3D ? tex->depth : tex->layers;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                   VK_IMAGE_USAGE_SAMPLED_BIT;
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!create_image(ci, tex->rt_shadow, tex->rt_shadow_alloc)) {
+            tex->rt_shadow = VK_NULL_HANDLE, tex->rt_shadow_alloc = nullptr;
+            static int failed;
+            if (failed++ < 4) logf("vk: (amd-fix) the render shadow of compressed texture %#llx was not made", (unsigned long long)tex->gpu);
+            return VK_NULL_HANDLE;
+        }
+        tex->rt_shadow_format = f;
+        tex->rt_shadow_w = ci.extent.width, tex->rt_shadow_h = ci.extent.height, tex->rt_shadow_layers = ci.arrayLayers;
+        // (its layout, and zeros, in the upload command buffer, which runs before the recording)
+        const VkCommandBuffer up = upload_command_buffer();
+        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = tex->rt_shadow;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.imageMemoryBarrierCount = 1;
+        di.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(up, &di);
+        const VkClearColorValue zero{};
+        vkCmdClearColorImage(up, tex->rt_shadow, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &b.subresourceRange);
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier2(up, &di);
+        static int told;
+        if (told++ < 8)
+            logf("vk: (amd-fix) compressed texture %#llx %ux%ux%u x%u (vk %d) is rendered into: a %ux%u x%u shadow (vk %d) "
+                 "copied into it after each pass", (unsigned long long)tex->gpu, tex->width, tex->height, tex->depth, tex->layers,
+                 (int)tex->format, ci.extent.width, ci.extent.height, ci.arrayLayers, (int)f);
+    }
+    if (tex->rt_shadow_format != f || level >= tex->levels || layer >= tex->rt_shadow_layers) return VK_NULL_HANDLE;
+    const uint64_t key = (uint64_t)level << 32 | layer;
+    if (auto it = tex->rt_shadow_views.find(key); it != tex->rt_shadow_views.end()) return it->second;
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = tex->rt_shadow;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = f;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
+    VkImageView v = VK_NULL_HANDLE;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &v) != VK_SUCCESS) v = VK_NULL_HANDLE;
+    tex->rt_shadow_views[key] = v;
+    return v;
+}
+} // namespace
+}  // namespace (the file's: these two are the module's, vk_texture.h)
+
+bool texture_rt_shadow_extent(const Texture* tex, uint32_t level, uint32_t* w, uint32_t* h) {
+    if (!tex || !tex->rt_shadow) return false;
+    *w = std::max(1u, tex->rt_shadow_w >> level), *h = std::max(1u, tex->rt_shadow_h >> level);
+    return true;
+}
+
+void texture_rt_shadow_flush(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer) {
+    if (!tex || !tex->rt_shadow || level >= tex->levels || layer >= tex->rt_shadow_layers) return;
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1;
+    di.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(cmd, &di);
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+    if (tex->type == VK_IMAGE_TYPE_3D) r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1}, r.dstOffset = {0, 0, (int32_t)layer};
+    else r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+    // (between a compressed image and one of its blocks' size: the extent in the source's texels, the shadow's blocks)
+    r.extent = {std::max(1u, tex->rt_shadow_w >> level), std::max(1u, tex->rt_shadow_h >> level), 1};
+    vkCmdCopyImage(cmd, tex->rt_shadow, VK_IMAGE_LAYOUT_GENERAL, tex->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
+namespace {   // (the file's again)
+
 // ---- big ASTC textures kept as BC3 (8 bits a texel, a quarter of RGBA8): decoded into a scratch image a few
 // layers at a time, re-encoded by Eden's encoder (host_shaders/bc_encoder.comp: bounding box along the colours'
 // covariance, inset; GPL, as the decoder) into a buffer, copied into the image. Decoded RGBA8 took 6 GB of VRAM at
@@ -1392,6 +1510,12 @@ void destroy_later(Texture& tex) {
         if (kv.second) d.views.push_back(kv.second);
     d.memory = tex.sparse_chunks;
     dead.push_back(std::move(d));
+    if (tex.rt_shadow) {   // (amd-fix: its render shadow with it)
+        Dead s{tex.last_value, tex.rt_shadow, tex.rt_shadow_alloc, {}, {}};
+        for (auto& kv : tex.rt_shadow_views)
+            if (kv.second) s.views.push_back(kv.second);
+        dead.push_back(std::move(s));
+    }
     total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
 }
 
@@ -1553,6 +1677,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     x.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) x.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImageCreateFlags flags = 0;
+    bool bc_storage_forced = false;   // (amd-fix, below: storage on a compressed image the driver's query refused)
     if (depth) {
         x.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     } else if (!is_bc(x.format) && !is_astc(x.format)) {
@@ -1566,10 +1691,24 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                  VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         const VkFormat raw = bpb == 8 ? VK_FORMAT_R32G32_UINT : VK_FORMAT_R32G32B32A32_UINT;
         VkImageFormatProperties limits{};
-        if ((format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
-            vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
-                x.usage | VK_IMAGE_USAGE_STORAGE_BIT, flags, &limits) == VK_SUCCESS)
+        const bool raw_storage = (format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+        if (raw_storage && vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
+                               x.usage | VK_IMAGE_USAGE_STORAGE_BIT, flags, &limits) == VK_SUCCESS) {
             x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        } else if (raw_storage && dev.props.vendorID == 0x1002 && !getenv("RX_VK_BC_STORAGE_QUERY")) {
+            // (amd-fix) AMD's driver answers the query for the compressed format itself, which is no storage format, though
+            // the extended-usage and block-texel flags make its raw views (one block a texel) storage images. Left without
+            // storage, the views a compute program writes compressed blocks through could not be made (an RX 9070 XT
+            // refused it for BC4, BC5 and BC6H textures in OoT). Storage as Fritchii gives it (any compatible view format
+            // that has it); create_image below falls back to the image without it if the driver refuses.
+            // RX_VK_BC_STORAGE_QUERY=1: the query alone, as before
+            x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+            bc_storage_forced = true;
+            static int told;
+            if (told++ < 8)
+                logf("vk: (amd-fix) compressed texture %ux%u x%u (vk %d): storage for its raw block views, which the driver's "
+                     "query refused", x.width, x.height, x.layers, (int)x.format);
+        }
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
@@ -1622,7 +1761,9 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.formatProperties.imageGranularity.width, x.sparse_req.formatProperties.imageGranularity.height,
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
-    } else if (!create_image(ci, x.image, x.allocation)) {
+    } else if (!create_image(ci, x.image, x.allocation) &&
+               !(bc_storage_forced && (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT,
+                                       create_image(ci, x.image, x.allocation)))) {
         static int logged;
         if (logged++ < 16)
             logf("vk: image %ux%ux%u x%u levels %u format %d (NVN %#x) not made", x.width, x.height, x.depth, x.layers,
@@ -2087,6 +2228,11 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
         type = tex->type == VK_IMAGE_TYPE_1D ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
         // (a slice of a 3D target: a 2D view of it, 2D_ARRAY_COMPATIBLE, the slice as its layer)
         if (tex->type == VK_IMAGE_TYPE_3D) layer0 = std::min(view_layer(v), std::max(1u, tex->depth >> level0) - 1);
+        // (amd-fix) a compressed texture rendered into through a view of its blocks' size: its uncompressed shadow
+        if (is_bc(tex->format) && !is_bc(f) && !tex->bc && rt_shadow_on()) {
+            if (format_out) *format_out = f;
+            return rt_shadow_view(tex, f, level0, layer0);
+        }
     } else if (use == ViewUse::Storage) {
         nlevels = 1;
         if (tex->type == VK_IMAGE_TYPE_3D) type = VK_IMAGE_VIEW_TYPE_3D, layer0 = 0, nlayers = 1;

@@ -81,7 +81,23 @@ struct Texture {
     uint32_t key_layout = 0, key_cls = 0;   // (the key's storage layout and format class)
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
     std::unordered_map<uint64_t, VkImageView> views;
+    // (amd-fix) A compressed texture the game renders into, one block a texel through an uncompressed view (OoT's 3D BC4
+    // noise volumes, drawn slice by slice as RGBA16UI): Vulkan cannot render into a compressed image, so the passes
+    // render into this uncompressed shadow (blocks wide and high, a layer per layer or slice, every level) and
+    // texture_rt_shadow_flush copies what a pass drew into the texture. vk_texture.cpp
+    VkImage rt_shadow = VK_NULL_HANDLE;
+    VmaAllocation rt_shadow_alloc = nullptr;
+    VkFormat rt_shadow_format = VK_FORMAT_UNDEFINED;
+    uint32_t rt_shadow_w = 0, rt_shadow_h = 0, rt_shadow_layers = 0;
+    std::unordered_map<uint64_t, VkImageView> rt_shadow_views;
 };
+
+/// (amd-fix) The size in texels (the texture's blocks) of a compressed texture's render shadow at `level`; false when it
+/// has none
+bool texture_rt_shadow_extent(const Texture* tex, uint32_t level, uint32_t* w, uint32_t* h);
+/// (amd-fix) After a pass that rendered into a compressed texture's shadow at `level`, `layer` (a 3D texture's slice): its
+/// blocks copied into the texture (barriers before and after)
+void texture_rt_shadow_flush(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer);
 
 /// Makes texels [x, x + w) x [y, y + h) of level `level`, layers [first, first + count), of a sparse texture resident
 /// (device memory bound to the sparse blocks they fall in) before anything writes them; true when they are (always,

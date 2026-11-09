@@ -2627,7 +2627,8 @@ Targets targets(NvnState& s) {
         at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
-        const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        texture_rt_shadow_extent(tex, level, &w, &h);   // (amd-fix: a compressed texture's shadow is its blocks wide)
         at.width = at.width ? std::min(at.width, w) : w;
         at.height = at.height ? std::min(at.height, h) : h;
         at.samples = tex->samples;
@@ -3538,6 +3539,9 @@ void end_pass(VkCommandBuffer cmd) {
     if (!pass.open) return;
     vkCmdEndRendering(cmd);
     pass.open = false;
+    for (int i = 0; i < pass.n; i++)   // (amd-fix: what the pass drew into a compressed texture's shadow, into the texture)
+        if (pass.color[i] && pass.tex[i] && pass.tex[i]->rt_shadow)
+            texture_rt_shadow_flush(cmd, pass.tex[i], pass.level[i], pass.layer[i]);
     if (dump_on() && !dump_mesh_indirect.empty()) {
         for (const auto& [key, addr] : dump_mesh_indirect) {
             const BufferRef r = gpu_buffer_bind(addr, 16, false);
