@@ -7,7 +7,9 @@ namespace mkwvk::menu_hit {
 // ---- the options page, at a scale of 1 (the window 720 pixels high; 1440 and up: 2, and so on) ----
 constexpr int kWidth = 480;
 constexpr int kTabY = 44, kTabH = 32;     // the tab strip
-constexpr int kTabSide = 85;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+constexpr int kTabSide = 70;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+                                          // (their text ~50 from 16 in; 70 leaves the four tabs slots of 85, room for GAMEPLAY's
+                                          // and CONTROLS' highlight at 13 px bold)
 constexpr int kRowGap = 8, kRowH = 28;    // the rows, from kTabY + kTabH + kRowGap
 constexpr int kRowX = 8;                  // a row's band, kRowX in from either side
 constexpr int kValueRight = 18;           // a value ends kValueRight from the right
@@ -57,7 +59,7 @@ inline void origin(int img_w, int img_h, int menu_w, int menu_h, int* x0, int* y
     *y0 = (img_h - menu_h) / 2;
 }
 inline int rows_top(int s) { return (kTabY + kTabH + kRowGap) * s; }
-inline int tab_slot_w(int s, int w) { return (w - 2 * kTabSide * s) / 3; }
+inline int tab_slot_w(int s, int w, int tabs) { return tabs > 0 ? (w - 2 * kTabSide * s) / tabs : 0; }
 /// A slider's value for a point along its track (lo to hi in steps of step), nearest step, held to its ends
 inline int slider_value(int permille, int lo, int hi, int step) {
     if (step <= 0 || hi <= lo) return lo;
@@ -79,7 +81,7 @@ inline Hit options(int x, int y, int s, int w, int h, int tabs, int rows, const 
     Hit hit;
     if (x < 0 || y < 0 || x >= w || y >= h) return hit.part = kOutside, hit;
     if (y >= kTabY * s && y < (kTabY + kTabH) * s) {
-        const int side = kTabSide * s, slot = tab_slot_w(s, w);
+        const int side = kTabSide * s, slot = tab_slot_w(s, w, tabs);
         if (x < side) hit.part = kTabPrev;
         else if (x >= w - side) hit.part = kTabNext;
         else if (slot > 0) {
