@@ -25,6 +25,7 @@ HEAD = r"""
 #include <mutex>
 #include <setjmp.h>
 #include <signal.h>
+#include <unistd.h>
 using VkResult = int;
 using VkPipeline = uintptr_t;
 using VkPipelineCache = uintptr_t;
@@ -34,17 +35,32 @@ constexpr uintptr_t VK_NULL_HANDLE = 0;
 struct VkComputePipelineCreateInfo { int sType = 0; };
 struct VkGraphicsPipelineCreateInfo { int sType = 0; };
 struct { uintptr_t device = 0x1234; } dev;
-static int mode;        /* (0: compile, 1 and 2: the driver faults) */
+static int mode;        /* (0: compile, 1 to 4: the driver faults) */
 static int calls;
 static constexpr VkResult DRIVER_FAULT = -77;
 static int logged;
 void logf(const char *, ...) { ++logged; }
 static void fault_now() { *(volatile int *)0x40 = 1; }
+static void previous_handler(int, siginfo_t *, void *) {
+    static const char line[] = "previous handler ran\n";
+    (void)!::write(1, line, sizeof line - 1);
+    _exit(42);
+}
+static void install_previous() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = previous_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, nullptr);
+}
 VkResult vkCreateComputePipelines(uintptr_t device, VkPipelineCache cache, unsigned count,
                                   const VkComputePipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
     if (device != dev.device || cache != 0 || count != 1 || !ci || allocator || !out) return -1;
     ++calls;
     if (mode == 1) fault_now();
+    if (mode == 3) raise(SIGILL);
+    if (mode == 4) raise(SIGFPE);
     *out = 0xcafe;
     return VK_SUCCESS;
 }
@@ -61,10 +77,17 @@ VkResult vkCreateGraphicsPipelines(uintptr_t device, VkPipelineCache cache, unsi
 MAIN = r"""
 int main(int argc, char **argv) {
     const char *what = argc > 1 ? argv[1] : "ok";
-    if (!std::strcmp(what, "fault-outside")) { fault_now(); std::printf("fail: the fault returned\n"); return 8; }
     VkComputePipelineCreateInfo ci;
     VkGraphicsPipelineCreateInfo gci;
     VkPipeline pl = 0, gpl = 0;
+    if (!std::strcmp(what, "fault-outside")) { fault_now(); std::printf("fail: the fault returned\n"); return 8; }
+    if (!std::strcmp(what, "fault-outside-after-guard")) {
+        install_previous();
+        if (guarded_compute(0, &ci, &pl) != VK_SUCCESS || pl != 0xcafe) { std::printf("fail: the compile before the fault\n"); return 10; }
+        fault_now();
+        std::printf("fail: the fault returned\n");
+        return 8;
+    }
     if (!std::strcmp(what, "ok")) {
         if (guarded_compute(0, &ci, &pl) != VK_SUCCESS || pl != 0xcafe) { std::printf("fail: compute\n"); return 3; }
         if (guarded_graphics(0, &gci, &gpl) != VK_SUCCESS || gpl != 0xbeef) { std::printf("fail: graphics\n"); return 4; }
@@ -79,6 +102,14 @@ int main(int argc, char **argv) {
         mode = 2;
         if (guarded_graphics(0, &gci, &gpl) != VK_ERROR_UNKNOWN) { std::printf("fail: the fault was not reported\n"); return 5; }
         if (gpl != VK_NULL_HANDLE) { std::printf("fail: a pipeline was published\n"); return 6; }
+    } else if (!std::strcmp(what, "fault-signals")) {
+        for (mode = 3; mode <= 4; mode++) {
+            pl = 0;
+            if (guarded_compute(0, &ci, &pl) != DRIVER_FAULT || pl != VK_NULL_HANDLE) {
+                std::printf("fail: the signal that mode %d raised was not reported\n", mode);
+                return 5;
+            }
+        }
     } else {
         std::printf("fail: unknown case %s\n", what);
         return 9;
@@ -120,11 +151,15 @@ def main():
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if build.returncode:
             raise SystemExit("the guard did not compile:\n" + build.stdout)
-        for case in ("ok", "fault", "fault-graphics", "fault-outside"):
+        for case in ("ok", "fault", "fault-graphics", "fault-signals", "fault-outside", "fault-outside-after-guard"):
             run = subprocess.run([str(binary), case], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            killed = run.returncode == -signal.SIGSEGV
-            guarded_case = case in ("fault", "fault-graphics")
-            if case == "fault-outside" or (args.expect_fault and guarded_case):
+            killed = run.returncode in (-signal.SIGSEGV, -signal.SIGBUS, -signal.SIGILL, -signal.SIGFPE)
+            guarded_case = case in ("fault", "fault-graphics", "fault-signals")
+            if case == "fault-outside-after-guard":
+                if run.returncode != 42 or "previous handler ran" not in run.stdout:
+                    failures.append(case + ": the fault outside the window did not reach the handler it found: "
+                                    + run.stdout.strip() + " (exit " + str(run.returncode) + ")")
+            elif case == "fault-outside" or (args.expect_fault and guarded_case):
                 if not killed:
                     failures.append(case + ": the fault did not end the process: " + run.stdout.strip())
             elif run.returncode != 0:
