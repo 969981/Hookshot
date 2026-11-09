@@ -530,6 +530,9 @@ task shader (a culling pass) until the kernel resets it ([#817](https://github.c
 It is a workaround, not a fix: those are task + mesh programs, so the geometry they draw goes with them, and key models
 are missing while it is set. Off unless set.
 
+The switches for scripted test runs, screenshots, frame dumps and profiles are in the
+[development guide](docs/development.md#switches-for-testing-and-debugging).
+
 </details>
 
 ## How it works
