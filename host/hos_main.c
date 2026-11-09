@@ -1399,6 +1399,10 @@ int main(int argc, char **argv) {
     load_hookshot_env();
     game_argc = argc, game_argv = argv;
     const int window = hos_display_init();
+    if (window < 0) {
+        hos_log_flush();
+        return 1;
+    }
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
     if (!t) {
         fprintf(stderr, "cannot start the game's thread\n");
