@@ -6106,8 +6106,11 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
     const VkImageView out_view = texture_view(dst, out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, &out_format,
                                               VK_FORMAT_B10G11R11_UFLOAT_PACK32);
-    // (the gameplay networks' own formats; the movies' (RGB9E5 bits in a shared R11 image, RGBA8) are not the scene)
-    if (!in_view || !out_view || in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+    // (the gameplay networks' own formats: their input is the square root of the scene colour, which the fixed shares' networks
+    // sample as RGB9E5 from the B10G11R11 image it is kept in (shaders/taau_upscale.comp), the 3/4 one as B10G11R11. Decoded,
+    // both are what the temporal upscaler's prep pass takes. The movies' (RGBA8) are not the scene)
+    if (!in_view || !out_view || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+        (in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && in_format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32))
         return false;
     const bool done = temporal_upscale(cmd, key, false, src, in_view, dst, out_view, 0);
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
