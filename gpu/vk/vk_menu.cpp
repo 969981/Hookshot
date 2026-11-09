@@ -31,6 +31,7 @@
 #include "vk_startup_paint.h"
 
 #include "vk_dlssnr.h"   // (whether this build can offer DLSS 5 neural rendering at all)
+#include "vk_streamline.h"   // (nr_why: why neural rendering is not available here)
 #include "vk_fsr3.h"     // (the Upscaler row: whether FSR 3.1 runs on this device)
 #include "vk_ffx.h"      // (and FSR 4, AMD's runtime)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -235,6 +236,17 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 1) return unused;
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
+}
+/// Neural rendering: the value, or why it is not available here (vk_streamline.cpp explain_refusal; the log has more)
+const char* hn_nr(int v, int variant) {
+    static const char* const t[] = {"Off.", "On: NVIDIA's model goes over every finished frame."};
+    static const char* const longest =
+        "Not available: NVIDIA's model is RTX 50 only. RTX 20-40: a patched nvngx_dlssnr.dll (readme).";
+    if (variant < 0) {
+        const char* w = streamline::nr_why();
+        return *w ? w : t[std::clamp(v, 0, 1)];
+    }
+    return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? longest : nullptr;
 }
 const char* tx_percent(int v) {
     static char b[8];
@@ -585,7 +597,7 @@ Row rows[] = {
     {TAB_NEURAL, "Neural rendering", &opts.nr, 0, 1, 1, tx_onoff,
      "DLSS 5 neural rendering: NVIDIA's model goes over the finished frame and rebuilds detail, tone and structure in it. "
      "Needs an NVIDIA RTX card and NVIDIA's Streamline files beside the game (readme.md); the rows below are the model's own "
-     "settings and do nothing while this is Off."},
+     "settings and do nothing while this is Off.", hn_nr},
     {TAB_NEURAL, "Model", &opts.nr_model, 0, 3, 1, tx_nr_model,
      "How much work the model does per frame: Performance is the cheapest, DLAA the most expensive, Quality the model's "
      "own default. Streamline 2.14's plugin ignores this one -- it is sent correctly and a later NVIDIA release is "

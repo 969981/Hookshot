@@ -108,12 +108,42 @@ Floor: **Streamline 2.14.1**, the first public tag carrying `kFeatureDLSS_NR` at
 introduced the plugin; v2.12.0 and earlier have neither the feature nor the uplift tags). CI builds
 against v2.14.16.
 
-**GPU**: NVIDIA's shipped `nvngx_dlssnr.dll` appears to be **Blackwell-only** (SM120). A measured
-probe on an RTX 4070 SUPER with the official signed 2.13 plugin got `AdapterUnsupported` and
-Streamline then ignored the plugin outright; claims of RTX 20-series support trace to openNR's
-*recompiled* DLL on its NGX-direct path, which does not claim Vulkan support. So: an RTX 50-series
-card is the expectation here, and anything older reporting the feature unavailable is the honest
-answer rather than a bug.
+**GPU**: NVIDIA's shipped `nvngx_dlssnr.dll` is **Blackwell-only** (its kernels are SM120). On an RTX 20, 30 or 40
+NGX refuses it with `0xbad00001` (`FAIL_FeatureNotSupported`), and a probe on an RTX 4070 SUPER got
+`AdapterUnsupported` from Streamline. The arch gate and the kernels are both inside that one file, which is why the
+community route works: [dlssnr-patcher](https://github.com/dev-camo/dlssnr-patcher) (GPL-2.0) recompiles its PTX for
+`sm_75`/`sm_86`/`sm_89`, rewrites the FP8 instructions older cards lack and widens the architecture the file declares,
+and [openNR](https://github.com/clshortfuse/openNR) (MIT) reconstructs a pinned 310.9.16 compatibility DLL, an FP16 one
+reported at about 3.5 ms on an RTX 4070 against 6 ms for the FP8 port. Both work from the player's own copy and ship
+nothing of NVIDIA's.
+
+Hookshot needs nothing special for them -- it loads whatever `nvngx_dlssnr.dll` sits beside `sl.dlss_nr.dll`, and
+signature-checks only `sl.interposer.dll` -- but **a patched file has no NVIDIA signature, and NGX loads an unsigned
+feature only with its signature override** (`HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`, DWORD
+`EnableSignatureOverride` = 1), the same switch DLSS wrappers have always needed. That is the player's to set:
+`vk_streamline.cpp explain_refusal` reads it for the log and never writes it. When Streamline refuses the feature, that
+function logs the GPU's generation, whether the `nvngx_dlssnr.dll` there is NVIDIA's (signed) or a patched one, and the
+override's state, says which of them is missing, and gives the Neural tab a one-line reason.
+
+Not measured here: the patched DLLs through *Streamline* on *Vulkan*. Every report found used NGX directly from D3D12
+(RenoDX's add-on, OptiScaler). If Streamline's own plugin turns out to gate on the architecture as well, the log line will
+say `AdapterUnsupported` with a signed-off DLL and the override on, and the answer is an NGX-direct path for feature 18
+beside the DLSS-G one (`gpu/vk/vk_ngx.h`) -- which would also bring NR to Linux.
+
+## On AMD
+
+What exists for neural rendering on an AMD card, as of November 2026, and what of it can be used here:
+
+- **[DLSS-NR on AMD](https://github.com/danielblnc/DLSS-NR-on-AMD)** (NeuralHub) reimplements the model in HIP and hooks
+  D3D12 games. Its licence forbids redistribution, bundling and reverse engineering, and it is D3D12 only -- Vulkan is
+  "planned". Hookshot is Vulkan, so it cannot hook it, and may not ship it.
+- **[OpenDLSS-NR](https://github.com/maanHimself/OpenDLSS-NR)** (MIT) is a Vulkan reimplementation of the 310.8.0
+  network, bit-exact block by block. Its kernels need `VK_NV_cooperative_matrix2` and `VK_NV_cuda_kernel_launch` (the
+  fast path is PTX), so it is NVIDIA-only as it stands, and it reads the weights from a model directory that "nothing in
+  this repository produces". An AMD port means rewriting its GEMMs for `VK_KHR_cooperative_matrix` with
+  `VK_EXT_shader_float8` (RDNA 4) or an FP16 fallback (RDNA 3), and a way for the player to get the weights out of their
+  own `nvngx_dlssnr.dll`. That is a project of its own, and it is the most promising one.
+- **AMD's own machine-learning upscaler is now here**: FSR 4, on the Upscaler row (`docs/upscaling.md`).
 
 ## What is still unproven
 

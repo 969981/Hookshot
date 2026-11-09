@@ -69,6 +69,9 @@ bool attach_device(VkInstance instance, VkPhysicalDevice gpu, VkDevice device,
 /// Whether DLSS 5 neural rendering can run: Streamline started, the device is attached, and both
 /// Streamline and the driver report the feature as supported here.
 [[nodiscard]] bool nr_available();
+/// Why neural rendering is not available, in a line the menu can show: "" while it is, or before the device is
+/// attached. The log has the long form (vk_streamline.cpp explain_refusal).
+[[nodiscard]] const char* nr_why();
 
 /// Ends the session. Safe when nothing was started; call before the device is destroyed.
 void stop();

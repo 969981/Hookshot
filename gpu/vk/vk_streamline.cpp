@@ -8,6 +8,8 @@
 
 #include <windows.h>
 
+#include <cctype>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@ struct State {
     std::vector<const char*> device_names;
     uint32_t extra_graphics{};
     uint32_t extra_compute{};
+    std::string why;   ///< nr_why(): the short reason neural rendering is not available, for the menu
 
     Api api{};
 };
@@ -177,6 +180,83 @@ bool load(State& s, const std::wstring& path) {
     s.module = nullptr;
     s.api = {};
     return false;
+}
+
+/// Whether Windows trusts the file's signature, whoever's it is: no signature at all is what a community-patched
+/// nvngx_dlssnr.dll has (patching it invalidates NVIDIA's, and the patchers strip it).
+bool trusted_signature(const std::wstring& path) {
+    WINTRUST_FILE_INFO file{};
+    file.cbStruct = sizeof file;
+    file.pcwszFilePath = path.c_str();
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    WINTRUST_DATA data{};
+    data.cbStruct = sizeof data;
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_NONE;
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    data.pFile = &file;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    const LONG status = WinVerifyTrust(nullptr, &action, &data);
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &action, &data);
+    return status == ERROR_SUCCESS;
+}
+
+/// NVIDIA's NGX signature override, as the player set it (read only: changing it is theirs to do):
+/// HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore EnableSignatureOverride. -1 when it is not there.
+int signature_override() {
+    DWORD value = 0, size = sizeof value;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore",
+                     L"EnableSignatureOverride", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
+        return -1;
+    return (int)value;
+}
+
+/// The RTX generation from the device's name: 50 Blackwell, 40 Ada, 30 Ampere, 20 Turing; 0 for one it does not
+/// recognize (a workstation card, a name it has not seen). Only for what the log and the menu say.
+int rtx_series(VkPhysicalDevice gpu) {
+    VkPhysicalDeviceProperties p{};
+    vkGetPhysicalDeviceProperties(gpu, &p);
+    const char* n = strstr(p.deviceName, "RTX ");
+    if (!n || !isdigit((unsigned char)n[4]) || !isdigit((unsigned char)n[5])) return 0;
+    const int series = (n[4] - '0') * 10;
+    return series >= 20 && series <= 50 ? series : 0;
+}
+
+/// Why Streamline said no, in the log in full and for the menu in short. The usual case on an RTX 20, 30 or 40 is
+/// NVIDIA's own model, which runs on RTX 50 only: NGX refuses it on older cards (FAIL_FeatureNotSupported, 0xbad00001,
+/// and Streamline answers eErrorAdapterNotSupported or eErrorFeatureNotSupported). Community builds of
+/// nvngx_dlssnr.dll recompile the model for Turing, Ampere and Ada (dlssnr-patcher; openNR's 310.9.16 compatibility
+/// build): those carry no NVIDIA signature, so NGX loads them only with its signature override set.
+void explain_refusal(State& s, VkPhysicalDevice gpu, sl::Result r) {
+    const int series = rtx_series(gpu);
+    const std::wstring dll = s.plugin_dir + L"\\nvngx_dlssnr.dll";
+    const bool have = GetFileAttributesW(dll.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool signed_dll = have && trusted_signature(dll);
+    const int override_value = signature_override();
+    logf("vk: DLSS 5 neural rendering is not supported here (Streamline result %u). GPU: %s; nvngx_dlssnr.dll: %s; "
+         "NGX signature override: %s",
+         (unsigned)r, series ? (series == 50 ? "RTX 50" : series == 40 ? "RTX 40" : series == 30 ? "RTX 30" : "RTX 20")
+                             : "not recognized as RTX 20 to 50",
+         !have ? "not beside sl.interposer.dll" : signed_dll ? "NVIDIA's (signed)" : "unsigned (a patched build)",
+         override_value < 0 ? "not set" : override_value ? "on" : "off");
+    if (!have) {
+        logf("vk:   put nvngx_dlssnr.dll beside sl.dlss_nr.dll (readme.md: DLSS 5 neural rendering)");
+        s.why = "Not available: nvngx_dlssnr.dll is not beside the game's Streamline files.";
+    } else if (series && series < 50 && signed_dll) {
+        logf("vk:   NVIDIA's own nvngx_dlssnr.dll runs on RTX 50 only. On an RTX %d, a community build of it that "
+             "adds Turing, Ampere and Ada is needed instead (readme.md says which, and how)", series);
+        s.why = "Not available: NVIDIA's model is RTX 50 only. RTX 20-40: a patched nvngx_dlssnr.dll (readme).";
+    } else if (!signed_dll && override_value <= 0) {
+        logf("vk:   this nvngx_dlssnr.dll is unsigned, and NGX loads an unsigned one only with its signature "
+             "override on: HKLM\\SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore, DWORD EnableSignatureOverride = 1 "
+             "(readme.md). Hookshot does not change it for you");
+        s.why = "Not available: the patched nvngx_dlssnr.dll needs NGX's signature override (readme).";
+    } else if (r == sl::Result::eErrorDriverOutOfDate) {
+        s.why = "Not available: NVIDIA's driver is too old for DLSS 5 neural rendering.";
+    } else {
+        s.why = "Not available on this GPU or driver (the log says what Streamline answered).";
+    }
 }
 
 void add_names(std::vector<std::string>& list, uint32_t count, const char** names) {
@@ -336,8 +416,7 @@ bool attach_device(VkInstance instance, VkPhysicalDevice gpu, VkDevice device,
     adapter.vkPhysicalDevice = gpu;
     if (const sl::Result r = s.api.is_feature_supported(sl::kFeatureDLSS_NR, adapter);
         r != sl::Result::eOk) {
-        logf("vk: DLSS 5 neural rendering is not supported on this GPU or driver (Streamline "
-             "result 0x%x)", (unsigned)r);
+        explain_refusal(s, gpu, r);
         s.nr = false;
         stop();
         return false;
@@ -351,6 +430,8 @@ bool nr_available() {
     State& s = state();
     return s.started && s.attached && s.nr;
 }
+
+const char* nr_why() { return state().why.c_str(); }
 
 void stop() {
     State& s = state();
@@ -373,6 +454,7 @@ size_t device_extensions(const char**, size_t) { return 0; }
 uint32_t extra_queues() { return 0; }
 bool attach_device(VkInstance, VkPhysicalDevice, VkDevice, uint32_t, uint32_t) { return false; }
 bool nr_available() { return false; }
+const char* nr_why() { return ""; }
 void stop() {}
 
 } // namespace mkwvk::streamline

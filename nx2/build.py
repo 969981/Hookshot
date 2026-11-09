@@ -138,7 +138,7 @@ def streamline_link():
     """
     if LINUX or not streamline_sdk_path():
         return []
-    return ["-lwintrust", "-lcrypt32"]
+    return ["-lwintrust", "-lcrypt32", "-ladvapi32"]   # (advapi32: the NGX signature override, read for the log)
 
 
 def target():
