@@ -570,8 +570,13 @@ VkFormat supported_vertex_format(VkFormat f) {
 }
 
 // ---- pipeline layouts and pipelines ----
-// (+ the guest page table's address, a task draw's first, and the fallback's two buffer addresses)
-constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
+// (+ the guest page table's address and a task draw's first; and, on a GPU that runs the mesh fallback, its two buffer
+// addresses. Without the fallback the size it was before #640, so every pipeline layout is as on main there)
+constexpr uint32_t kPushMax = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
+uint32_t push_size() {
+    static const uint32_t n = dev.mesh_fallback ? kPushMax : Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET + 8;
+    return n;
+}
 
 void ensure_layout(Program& p) {
     if (p.layout) return;
@@ -600,7 +605,7 @@ void ensure_layout(Program& p) {
     vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &p.set_layout);
     VkShaderStageFlags stages = 0;
     for (const Stage& st : p.stages) stages |= st.vk_stage;
-    const VkPushConstantRange range{stages, 0, kPushSize};
+    const VkPushConstantRange range{stages, 0, push_size()};
     VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pi.setLayoutCount = 1;
     pi.pSetLayouts = &p.set_layout;
@@ -944,6 +949,7 @@ thread_local PipeFast pipe_fast[2];
 
 /// (hookshot) the stage a graphics pipeline's vertex input comes from (a fallback program's first stage is a compute one)
 const Shader::Info* vertex_info(const Program& p) {
+    if (!p.fallback) return &p.stages[0].info;   // (as before #640, for every other program)
     for (const Stage& st : p.stages)
         if (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT) return &st.info;
     return p.stages.empty() ? nullptr : &p.stages[0].info;
@@ -1057,8 +1063,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     for (const Stage& st : p.stages) {
-        if (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT))
-            continue;   // (hookshot: the fallback's dispatches are not graphics stages)
+        // (hookshot: the fallback's dispatches are not graphics stages. Only a fallback program's compute stages: #640 left out
+        // every task and mesh stage too, so on a GPU with mesh shaders a native mesh pipeline was made with no stage before
+        // its fragment one (the RTX 4060 Ti's device loss that had #640 reverted, 806c566)
+        if (p.fallback && st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) continue;
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = st.vk_stage;
         si.module = st.module;
@@ -2392,7 +2400,7 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at) {
     checkpoint(cmd, p, at ? 'd' : 'c');
     if (!p.uses_push) return;   // (most programs read none: a push a draw was ~5% of the replay's commands)
     FINE_N(FC_PUSHC, 1);
-    uint8_t data[kPushSize]{};
+    uint8_t data[kPushMax]{};
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
     {   // (guest memory's page table, for the pointers compute, task and mesh stages follow)
@@ -2415,7 +2423,7 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at) {
         const float ra[4] = {(float)at->width, (float)at->height, 0.0f, 0.0f};
         std::memcpy(data + Shader::Backend::SPIRV::RENDERAREA_LAYOUT_OFFSET, ra, sizeof ra);
     }
-    vkCmdPushConstants(cmd, p.layout, p.push_stages, 0, kPushSize, data);
+    vkCmdPushConstants(cmd, p.layout, p.push_stages, 0, push_size(), data);
 }
 
 } // namespace
