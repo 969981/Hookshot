@@ -258,7 +258,8 @@ choices and starts the game again, so progress since your last save is lost.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
-  show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
+  show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  the frames that frame generation shows, so it has no effect while Frame generation is Off.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
