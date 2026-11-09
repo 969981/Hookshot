@@ -14,7 +14,7 @@ namespace mkwvk {
 
 struct Texture;
 
-/// What the Upscaler row runs now (upscaler_rows.h: GAME, DLSS, DLAA, FSR, FSR_AA): the row's choice (opts.upscaler), or
+/// What the Upscaler row runs now (upscaler_rows.h: GAME, DLSS, DLAA, FSR, FSR_AA): the row's choice (opts.dlss), or
 /// RX_VK_DLSS=1 / 2 or RX_VK_FSR=1 / 2 over it; GAME when the chosen engine cannot run here
 int temporal_mode();
 bool temporal_wanted();       // (temporal_mode() != GAME)

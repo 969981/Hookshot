@@ -123,7 +123,7 @@ const char* hn_reflex(int v, int variant) {
     if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
 }
-// The Upscaler (opts.upscaler): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 4
+// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 4
 // and its native AA only where fsr4_why() does; the menu shows (and steps from) what runs, temporal_mode(), and keeps the
 // saved choice for a PC where it can
 namespace ur = upscaler_rows;
@@ -299,7 +299,7 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.upscaler && ur::upscaler_fixed(dlss_ok(), fsr_ok())) ||
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(dlss_ok(), fsr_ok())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -509,7 +509,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.upscaler, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
     {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
@@ -734,7 +734,7 @@ std::string restart_line(HDC dc, int width) {
 /// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS or FSR
 bool row_shown(int i) {
     return (i != kCheatsRow || cheats_enabled) &&
-           (rows[i].value != &opts.upscaler || ur::upscaler_shown(dlss_built() || fsr4_built())) &&
+           (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built() || fsr4_built())) &&
            (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
@@ -794,7 +794,7 @@ const char* ini_key(const Row& r) {
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
-    if (r.value == &opts.upscaler) return "dlss";   // (its name from before FSR, as RX_VK_DLSS)
+    if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -917,7 +917,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
-    if (r.value == &opts.upscaler) v = ur::step_upscaler(upscaler(), dir, dlss_ok(), fsr_ok());
+    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, dlss_ok(), fsr_ok());
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
     if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
         v = step_output_choice(*r.value, dir);
@@ -935,7 +935,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
-        if (r.value == &opts.upscaler) opts.resolution = ur::snap(upscaler(), opts.resolution);
+        if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);

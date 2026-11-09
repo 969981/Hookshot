@@ -25,7 +25,7 @@
 // Anything unexpected (no camera this frame, other sizes, the engine not there or failing) leaves the network to run, the
 // reason in the log when it changes.
 //
-// The Insert menu's Upscaler row (opts.upscaler, upscaler_rows.h) chooses the engine; RX_VK_DLSS=1 / 2 (DLSS, DLAA) or
+// The Insert menu's Upscaler row (opts.dlss, upscaler_rows.h) chooses the engine; RX_VK_DLSS=1 / 2 (DLSS, DLAA) or
 // RX_VK_FSR=1 / 2 (FSR 4, its native anti-aliasing) over it, and =0 takes that engine out for the run.
 // RX_VK_DLSS_DEBUG=motion: the motion vectors shown instead of the picture (|x|, |y| over 16 px as red and green, the actors'
 // in it); =alternate: every other frame the game's own upscale (a test's reference beside the engine's). (The names are
@@ -73,7 +73,7 @@ int env_switch(const char* name) {   // (-1: unset)
 
 int temporal_mode() {
     static const int env_dlss = env_switch("RX_VK_DLSS"), env_fsr = env_switch("RX_VK_FSR");
-    int v = opts.upscaler;
+    int v = opts.dlss;
     if (env_dlss > 0) v = env_dlss >= 2 ? ur::DLAA : ur::DLSS;   // (2 and up: DLAA, as RX_VK_DLSS was clamped before)
     else if (env_fsr > 0) v = env_fsr >= 2 ? ur::FSR_AA : ur::FSR;
     if (v < 0 || v >= ur::kUpscalers) return ur::GAME;

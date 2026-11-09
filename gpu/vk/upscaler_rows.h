@@ -4,7 +4,7 @@
 
 namespace mkwvk::upscaler_rows {
 
-/// The Upscaler row (opts.upscaler, saved as dlss; RX_VK_DLSS and RX_VK_FSR over it): the game's own network, NVIDIA DLSS,
+/// The Upscaler row (opts.dlss, saved as dlss; RX_VK_DLSS and RX_VK_FSR over it): the game's own network, NVIDIA DLSS,
 /// NVIDIA DLAA, AMD FSR 4, AMD FSR 4's native anti-aliasing (FSR_AA). Each engine has two: one from a smaller 3D, and one
 /// with the 3D at full scale (anti-aliasing alone)
 enum { GAME = 0, DLSS = 1, DLAA = 2, FSR = 3, FSR_AA = 4, kUpscalers = 5 };

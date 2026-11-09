@@ -1,4 +1,4 @@
-"""The Insert menu's scaling rows: the Upscaler (opts.upscaler: the game's own, NVIDIA DLSS and DLAA, AMD FSR 4 and its native
+"""The Insert menu's scaling rows: the Upscaler (opts.dlss: the game's own, NVIDIA DLSS and DLAA, AMD FSR 4 and its native
 AA) and the Render resolution's steps for it (gpu/vk/upscaler_rows.h), their order on the Graphics tab, options files from
 before still loading, and their help (why DLSS or FSR is not offered, the Sharpness DLSS wants). No game or GPU required.
 
@@ -29,7 +29,7 @@ def main():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     # the picture's way, top to bottom; Reflex with the frame rows
     order = ['"Frame generation", &opts.framegen', '"Frame pacing", &opts.pace', '"NVIDIA Reflex", &opts.reflex',
-             '"Output resolution", &opts.output_res', '"Upscaler", &opts.upscaler', '"DLSS model", &opts.dlss_model',
+             '"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"DLSS model", &opts.dlss_model',
              '"Render resolution", &opts.resolution',
              '"Window scaling filter", &opts.upscale', '"Sharpness", &opts.sharpness']
     at = [menu.find(row) for row in order]
@@ -41,7 +41,7 @@ def main():
         raise SystemExit("vk_menu.cpp: DLSS or FSR has a row of its own beside the Upscaler")
     # saved options: the renamed rows keep their keys (data, so read from the source)
     key = function(menu, "const char* ini_key(const Row& r) {")
-    for value, name in (("opts.resolution", "resolution"), ("opts.upscale", "upscaling"), ("opts.upscaler", "dlss")):
+    for value, name in (("opts.resolution", "resolution"), ("opts.upscale", "upscaling"), ("opts.dlss", "dlss")):
         if not re.search(r"&%s\)\s*return\s*\"%s\"" % (re.escape(value), name), key):
             raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
@@ -70,7 +70,7 @@ def main():
     measure = function(menu, "int measure_help(int s) {")
     if "r.hint(v, k)" not in measure:
         raise SystemExit("measure_help leaves the values' lines out: the help's room would jump as a value changes")
-    for row, hint in (('"Upscaler", &opts.upscaler', "hn_upscaler"), ('"DLSS model", &opts.dlss_model', "hn_dlss_model"), ('"Render resolution", &opts.resolution', "hn_resolution"),
+    for row, hint in (('"Upscaler", &opts.dlss', "hn_upscaler"), ('"DLSS model", &opts.dlss_model', "hn_dlss_model"), ('"Render resolution", &opts.resolution', "hn_resolution"),
                       ('"NVIDIA Reflex", &opts.reflex', "hn_reflex"), ('"Window scaling filter", &opts.upscale', "hn_filter")):
         entry = menu[menu.index(row):]
         if hint not in entry[:entry.index("},")]:
