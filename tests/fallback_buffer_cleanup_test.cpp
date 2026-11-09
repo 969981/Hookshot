@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using VkBuffer = uint64_t;
 using VkBufferUsageFlags = uint32_t;
@@ -75,7 +76,7 @@ static void no_retry(const Program& p, FallbackBuffers*& out) {
 static void cleaned(const Program& p, unsigned expected_destroyed) {
     require(live.empty(), "failed initialization retained a successfully created buffer");
     require(destroy_calls == expected_destroyed, "wrong confirmed-allocation cleanup count");
-    const auto& f = fallback_buffers.at(&p);
+    const auto& f = fallback_buffers().at(&p);
     require(f.tried && !f.ok, "failure changed existing tried/ok behavior");
     require(!f.records && !f.payload && !f.records_mem && !f.payload_mem &&
             !f.records_address && !f.payload_address, "failed entry retained stale handles or addresses");

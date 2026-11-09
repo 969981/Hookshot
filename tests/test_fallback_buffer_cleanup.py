@@ -40,8 +40,11 @@ def main():
     if not cxx:
         raise SystemExit("C++ compiler not found: " + args.cxx)
     source = args.source.read_text(encoding="utf-8")
-    actual = "\n\n".join((block(source, "struct FallbackBuffers {", True),
-        next(line for line in source.splitlines() if line.startswith("thread_local std::unordered_map<const Program*, FallbackBuffers> fallback_buffers;")),
+    tls_start = source.index("struct TlsOwned {")
+    tls_macro = source.index("#define TLS_OBJECT(", tls_start)
+    tls_end = source.index("\n\n", tls_macro)
+    actual = "\n\n".join((source[tls_start:tls_end], block(source, "struct FallbackBuffers {", True),
+        next(line for line in source.splitlines() if line.startswith("TLS_OBJECT(fallback_buffers,")),
         block(source, "uint64_t fallback_buffer_address("), block(source, "bool fallback_buffers_of(")))
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     env = dict(os.environ)
