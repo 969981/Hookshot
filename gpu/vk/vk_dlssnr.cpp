@@ -347,12 +347,17 @@ VkImage apply(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh,
         sl::Resource motion = resource(s.motion, kMotionFormat,
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, sw, sh,
                                        VK_IMAGE_USAGE_SAMPLED_BIT);
+        // The uplift colour pair is tagged as a whole resource, with no extent, and depth and
+        // motion with one. That asymmetry is how the shipping integration does it: the colour
+        // buffers are the full frame by definition, and an extent on them is one more thing that
+        // can disagree with the resource it describes. Ours are exactly sw x sh either way, so this
+        // is fidelity to a measured integration rather than a fix for a bug we have seen.
         const sl::Extent area{0, 0, sw, sh};
         const sl::ResourceTag tags[] = {
             sl::ResourceTag{&color_in, sl::kBufferTypeUpliftInputColor,
-                            sl::ResourceLifecycle::eValidUntilEvaluate, &area},
+                            sl::ResourceLifecycle::eValidUntilEvaluate, nullptr},
             sl::ResourceTag{&color_out, sl::kBufferTypeUpliftOutputColor,
-                            sl::ResourceLifecycle::eValidUntilEvaluate, &area},
+                            sl::ResourceLifecycle::eValidUntilEvaluate, nullptr},
             sl::ResourceTag{&depth, sl::kBufferTypeDepth,
                             sl::ResourceLifecycle::eValidUntilEvaluate, &area},
             sl::ResourceTag{&motion, sl::kBufferTypeMotionVectors,
