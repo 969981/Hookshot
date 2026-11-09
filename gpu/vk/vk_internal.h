@@ -160,6 +160,9 @@ struct ParLock {
     ParLock(const ParLock&) = delete;
     ParLock& operator=(const ParLock&) = delete;
 };
+/// (diagnostics) Why bindings had to take ParLock in the pool lookup, and reset: a written binding,
+/// a thread-cache miss, or the mirror state. Each wants a different fix, so they are counted apart.
+void memory_pool_lock_reasons(int64_t* written, int64_t* cache_miss, int64_t* mirror);
 void memory_pool_created(uint64_t gpu, uint64_t size);
 /// Whether guest memory in [lo, hi) is in an imported pool, live or retired (the GPU may read or write it)
 int memory_guest_imported(uint64_t lo, uint64_t hi);
