@@ -23,6 +23,7 @@
 #include "vk_dlss.h"
 #include "vk_reflex.h"
 #include "vk_progress.h"
+#include "vk_fallback_repair.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -67,6 +68,36 @@ const MkwVkHost* host;
 int64_t prof_ns[PROF_COUNT];
 Device dev;
 PFN_vkGetInstanceProcAddr instance_proc() { return vkx::instance_proc_addr(); }
+
+static PFN_vkCreateShaderModule driver_create_shader_module = nullptr;
+static VKAPI_ATTR VkResult VKAPI_CALL create_repaired_shader_module(
+    VkDevice device, const VkShaderModuleCreateInfo* info,
+    const VkAllocationCallbacks* allocator, VkShaderModule* module) {
+    try {
+        auto repaired = fallback_repair::repair(info->pCode, info->codeSize / sizeof(uint32_t));
+        if (repaired.fallback && !repaired.words.empty()) {
+            const bool changed = repaired.words.size() * sizeof(uint32_t) != info->codeSize ||
+                std::memcmp(repaired.words.data(), info->pCode, info->codeSize) != 0;
+            if (changed) {
+                static std::atomic<unsigned> repaired_modules{0};
+                const unsigned n = ++repaired_modules;
+                if (n <= 12 || n % 100 == 0)
+                    logf("vk: diagnostic: fallback module repaired #%u: member_indices=%u aligned_accesses=%u boolean_stores=%u words=%zu",
+                         n, repaired.indices, repaired.alignments, repaired.boolean_stores, repaired.words.size());
+                VkShaderModuleCreateInfo fixed = *info;
+                fixed.codeSize = repaired.words.size() * sizeof(uint32_t);
+                fixed.pCode = repaired.words.data();
+                return driver_create_shader_module(device, &fixed, allocator, module);
+            }
+        }
+        return driver_create_shader_module(device, info, allocator, module);
+    } catch (const std::exception& e) {
+        logf("vk: diagnostic: fallback module repair failed: %s", e.what());
+        *module = VK_NULL_HANDLE;
+        return VK_ERROR_UNKNOWN;
+    }
+}
+
 
 void logf(const char* fmt, ...) {
     char b[1024];
@@ -422,6 +453,11 @@ bool create_device() {
 
 
     load_device(dev.device);
+    if (dev.mesh_fallback) {
+        driver_create_shader_module = vkx::vkCreateShaderModule;
+        vkx::vkCreateShaderModule = create_repaired_shader_module;
+        logf("vk: diagnostic: general fallback shader repair enabled for cached and newly generated modules");
+    }
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
