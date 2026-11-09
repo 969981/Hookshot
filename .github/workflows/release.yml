@@ -60,4 +60,4 @@ jobs:
         if: steps.first.outputs.released == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: npx semantic-release --repository-url "${{ github.server_url }}/${{ github.repository }}.git"
