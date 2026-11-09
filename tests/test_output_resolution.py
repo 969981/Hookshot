@@ -29,6 +29,11 @@ constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
 struct { int handheld, output_res; } opts;
+/* host/hos_main.c's, which hos_rt_pool_size reads as an extern: the output's size at the screen's
+   shape, or 0 for an ordinary 16:9 one. Zero here, so the pool size is the output's own -- without
+   this definition the fixture did not link at all ("undefined reference to hos_wide_out") and the
+   whole test failed for a reason that had nothing to do with output resolutions. */
+volatile uint64_t hos_wide_out;
 ''' + host[host.index("static int ini_option("):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + menu[
         menu.index("struct Out {"):menu.index("const char* tx_speed(")] + r'''
 int main(int argc, char **argv) {
