@@ -145,6 +145,9 @@ id (`hos_game_is_mkw`); OoT gets its own once its pacer is found, never by addre
 - **The production build** (`nx2/test_dll.py`, when a `hookshot_game.dll` is built).
 - **In the game**: `scripts/run-vk.ps1` screenshots, the flash detector, frame dumps (`RX_VK_DUMP*`), the sampled
   profiler (`HOS_SAMPLE` + `scripts/prof.py`), and Eglantine as the A/B reference for what a frame should look like.
+- **Scripted in-game tests** (`scripts/hookshot_mcp.py`, `docs/mcp.md`): an MCP agent launches a run, sends timed pad
+  input through `HOS_INPUT_LIVE` / `HOS_INPUT_SCRIPT_ONLY`, and gets on-demand PNGs through `RX_VK_SHOT_FILE`
+  (`RX_SCREENSHOT_FILE` on the WebGPU fallback).
 
 ## 8. Rules
 
@@ -156,6 +159,13 @@ id (`hos_game_is_mkw`); OoT gets its own once its pacer is found, never by addre
 - One game run at a time on this PC (mkw-recomp's runs take ~10 GB): `run-vk.ps1` refuses while `mkw.exe` or
   another `hookshot.exe` runs, and while Rainbow Six Siege is open; no heavy builds while Siege is open either. Runs are
   muted (`HOS_AUDIO=0`), at below-normal priority, and screenshot folders are deleted once looked at.
+- **Every action a player can take is executable through the MCP server.** A setting, a cheat, a teleport, a menu choice,
+  anything the Insert menu or a controller shortcut offers: it comes with a live command and an MCP tool that do the same
+  thing without the window (`host/nn_hid.c`'s `!` commands, `scripts/hookshot_mcp.py`, [docs/mcp.md](mcp.md)). An action
+  only a person at the keyboard can take is a test that cannot be rerun, and it is the part missing when a regression has
+  to be found by playing. Where the action goes through the menu, the command calls the menu's own setter rather than a
+  copy, so both clamp, apply presets and write the options file the same way. A new action is not finished until its tool
+  is documented and covered by `tests/test_mcp_server.py` or the game-free fixture it belongs to.
 - The lifted C and every build are GPL (suyu's translator is GPL-2.0-or-later; Eden's code is GPL-3.0).
 
 ## 9. Status

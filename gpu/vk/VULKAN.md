@@ -139,5 +139,7 @@ Designed after totk-pc-recomp's runtime/vk_*.c (MIT) and Eden's renderer_vulkan,
 - **Frame interpolation** (`vk_framegen.cpp`, `RX_VK_FRAMEGEN=1`): the WebGPU renderer's, ported to GLSL
   (`shaders/`, compiled with glslang): made frames between the game's, shown evenly by a display thread.
 - **Headless**: without a window presents render offscreen; `RX_VK_SHOTS=<dir>` writes every `RX_VK_SHOT_EVERY`-th
-  as a PNG. `work/run-vk.ps1` runs it (refuses while Siege runs, stops past `-MaxGB` of working set);
-  `work/vksum.py <run>` summarises the log.
+  as a PNG. `RX_VK_SHOT_FILE=<request file>` writes the next present to the path the file names, then deletes the
+  request (the MCP server and scripted tests use this; `tests/test_shot_request.py` compiles the request parser from
+  `vk_replay.cpp` and checks the trimming, one-shot and buffer-edge rules). `work/run-vk.ps1` runs it (refuses while
+  Siege runs, stops past `-MaxGB` of working set); `work/vksum.py <run>` summarises the log.

@@ -430,6 +430,10 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
+/* (hookshot, tests) the Insert menu's settings and cheats, for the MCP server's live commands (host/nn_hid.c) */
+int rx_settings_dump(char *out, int cap) { return vk && vk->settings_dump ? vk->settings_dump(out, cap) : 0; }
+int rx_setting_set(const char *key, int value) { return vk && vk->setting_set ? vk->setting_set(key, value) : -1; }
+int rx_cheat(const char *name, int value, int extra) { return vk && vk->cheat ? vk->cheat(name, value, extra) : -1; }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }

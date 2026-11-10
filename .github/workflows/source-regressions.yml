@@ -51,9 +51,10 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      # (the one package a test imports: nx2/test_nup_codec.py's zstandard. The runner itself needs none)
+      # (the packages the tests import: nx2/test_nup_codec.py's zstandard and tests/test_mcp_server.py's MCP SDK;
+      # the runner itself needs none)
       - name: Python packages for the tests
-        run: python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0
+        run: python -m pip install --disable-pip-version-check zstandard==0.25.0 mcp==2.3.0
       - name: Compilers and the SPIR-V validator
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools

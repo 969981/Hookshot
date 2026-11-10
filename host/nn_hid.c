@@ -20,7 +20,9 @@
 
    HOS_INPUT_SCRIPT (test runs): timed presses added to the input, "<seconds>:<button>[+<button>...][/<ms held>],..."
    with buttons A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN and the stick directions LUP LDOWN LLEFT
-   LRIGHT RUP RDOWN RLEFT RRIGHT; held 200 ms unless given. Example: "50:A,52:A,80:LUP/4000".
+   LRIGHT RUP RDOWN RLEFT RRIGHT; held 200 ms unless given. Analog stick values are tokens too: LX=, LY=, RX= and
+   RY= with a value from -32767 to 32767 (positive y is up). Example: "50:A,52:A,80:LUP/4000,90:LX=16384+LY=-32767/500".
+   HOS_INPUT_SCRIPT_ONLY=1: only the script (and HOS_INPUT_LIVE); no physical pad, keyboard or mouse.
 
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
@@ -303,7 +305,54 @@ static void live_input(void) {
                 void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
-                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                int rx_settings_dump(char *out, int cap);   /* host/rx_backend.c: the Insert menu's rows (gpu/vk/vk_menu.cpp) */
+                int rx_setting_set(const char *key, int value);
+                int rx_cheat(const char *name, int value, int extra);
+                if (!strncmp(line, "!settings", 9)) {   /* the MCP server reads the menu's rows back from the log */
+                    static char dump[65536];
+                    const int bytes = rx_settings_dump(dump, (int)sizeof dump);
+                    if (bytes > 0) {
+                        for (char *p = dump; *p;) {
+                            char *end = strchr(p, '\n');
+                            if (end) *end = 0;
+                            hos_log("%s", p);
+                            if (!end) break;
+                            p = end + 1;
+                        }
+                    } else {
+                        hos_log("mcp: settings none");   /* (the WebGPU back end has no Insert menu) */
+                    }
+                } else if (!strncmp(line, "!setting ", 9)) {
+                    char key[64] = {0};
+                    int value = 0, used = 0;
+                    if (sscanf(line + 9, "%63s %d %n", key, &value, &used) >= 2 && key[0] && used > 0) {
+                        const int applied = rx_setting_set(key, value);
+                        if (applied < 0) hos_log("mcp: setting error|%s|unknown", key);
+                        else hos_log("mcp: setting ok|%s|%d", key, applied);
+                    } else {
+                        hos_log("mcp: setting error||usage: !setting <key> <value>");
+                    }
+                } else if (!strncmp(line, "!cheat ", 7)) {
+                    char name[64] = {0};
+                    int value = 0, extra = 0;
+                    const int used = sscanf(line + 7, "%63s %d %d", name, &value, &extra);
+                    const int named = used >= 1 && name[0] && !(name[0] == '-' || (name[0] >= '0' && name[0] <= '9'));
+                    if (named) {   /* "!cheat <name> [value] [extra]": the cheat menu's own rows, for the MCP server */
+                        const int applied = rx_cheat(name, value, extra);
+                        if (applied == -2) hos_log("mcp: cheat error|%s|disabled", name);
+                        else if (applied == -3) hos_log("mcp: cheat error|%s|range", name);
+                        else if (applied < 0) hos_log("mcp: cheat error|%s|unknown", name);
+                        else hos_log("mcp: cheat ok|%s|%d", name, applied);
+                    } else {
+                        __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                    }
+                }
+                if (!strncmp(line, "!quit", 5)) {   /* a test run's clean stop: the MCP server writes this */
+                    hos_log("hid: live command at %.1f s: !quit", at / 1000.0);
+                    hos_log("hid: quit requested (live input)");
+                    hos_log_flush();
+                    exit(0);
+                }
                 hos_log("hid: live command at %.1f s: %.*s", at / 1000.0, (int)(n > 1 ? n - 1 : 0), line);
                 continue;
             }
@@ -333,11 +382,23 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
         int64_t hold = 200;
         for (;;) {
             size_t n = strcspn(s, "+/,\r\n");
+            int matched = 0;
             for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
                 if (strlen(names[i].name) == n && !strncmp(s, names[i].name, n)) {
                     if (names[i].b >= 0) p.buttons |= 1ULL << names[i].b;
                     else p.stick[names[i].axis] = names[i].dir * 32767;
+                    matched = 1;
                 }
+            /* Analog sticks: LX=<value>, LY=<value>, RX=<value>, RY=<value> (-32767..32767, positive y is up). */
+            if (!matched && n >= 4 && (s[0] == 'L' || s[0] == 'R') && (s[1] == 'X' || s[1] == 'Y') && s[2] == '=') {
+                char *end;
+                long v = strtol(s + 3, &end, 10);
+                if (end == s + n) {
+                    if (v < -32767) v = -32767;
+                    if (v > 32767) v = 32767;
+                    p.stick[(s[0] == 'L' ? 0 : 2) + (s[1] == 'X' ? 0 : 1)] = (int32_t)v;
+                }
+            }
             s += n;
             if (*s != '+') break;
             s++;
@@ -666,6 +727,14 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
+    /* (hookshot) HOS_INPUT_SCRIPT_ONLY=1: an automated test sees only its own presses. Physical pads, keyboards and
+       mice stay out even when the game's window is in front, so a connected controller cannot move the game. */
+    static int script_only = -1;
+    if (script_only < 0) {
+        script_only = getenv("HOS_INPUT_SCRIPT_ONLY") != NULL;
+        if (script_only) hos_log("hid: only scripted input (HOS_INPUT_SCRIPT_ONLY)");
+    }
+    if (script_only) return;
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background

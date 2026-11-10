@@ -40,6 +40,7 @@ ARGS = {
     "tests/test_vulkan_copy_span_gpu_compile.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
+    "tests/test_shot_request.py": ["--cxx", "g++"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
@@ -94,6 +95,9 @@ ARGS = {
 MODULES = {
     "nx2/test_nup_codec.py": ["zstandard"],
     "nx2/test_nup_verify.py": ["zstandard"],
+    "tests/test_mcp_server.py": ["mcp"],
+    "tests/test_mcp_scenario.py": ["mcp"],
+    "tests/test_docs.py": ["mcp"],
 }
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).

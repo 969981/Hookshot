@@ -142,6 +142,9 @@ window, including one started to update a game, uses Automatic again.
 | `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `python -I scripts/hookshot_mcp.py --check` | The MCP server for automated in-game tests (needs the `mcp` package; see [docs/mcp.md](docs/mcp.md)). |
+| `python -I scripts/mcp_scenario.py scenario.json --game-dir <folder>` | A scripted run of a built folder from a JSON scenario (`--build` rebuilds it first; needs `mcp`; see [docs/mcp.md](docs/mcp.md)). |
+| `python -I -B scripts/pr_check.py --base main` | A read-only pre-PR check: game-derived paths, LF endings, commit format and the full test suite. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
@@ -163,7 +166,8 @@ failure's output. Name a check to run only the ones whose path contains it (`pyt
 
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
-cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
+cache in `RX_CPM` or `build-linux/deps/cpm`), or a Python package (`zstandard`, and `mcp` for the MCP server's test).
+A check whose tool is missing is skipped and
 says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
 that cannot run in CI (a GPU, the game, a Visual Studio prompt) and the few that run on Linux only; `--no-skip` runs
 them anyway.
@@ -186,11 +190,13 @@ gigabytes and are derived from the game.
 ### When you add a fix or a check
 
 - Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
-  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Wire the test into `.github/workflows/source-regressions.yml`: add a `run:` step, and add the test file and every
-  source file it reads to both the `push` and `pull_request` `paths` lists. Without the paths, the check does not run
-  when the code changes.
+  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture. A new `test_*.py` file
+  is picked up by itself; no workflow or `paths:` list has to be edited.
+- If the test needs a compiler, headers or a Python package, add it to `ARGS` or `MODULES` in `tests/run_all.py`; the
+  runner skips a missing tool, and CI's `--strict` makes that a failure.
 - Keep the test fast enough for the 10-minute CI job, and make it pass on both Ubuntu and Windows where it can.
+- Before opening a pull request, run `python -I -B scripts/pr_check.py --base main`. It is read-only and checks the
+  changed paths, line endings, commit subjects and trailers, then runs the game-free suite.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 
@@ -207,6 +213,10 @@ gigabytes and are derived from the game.
   them.
 - New switches use the `RX_` prefix in the renderer and `HOS_` in the runtime. They are off, or neutral, unless
   asked for, and they do not cost anything while off. Document them where the surrounding switches are documented.
+- Every action a player can take needs an MCP tool that does it ([design notes, section 8](docs/design.md#8-rules)):
+  a setting, cheat or menu choice only the window can reach cannot be tested or reproduced. Go through the menu's own
+  setter, and cover the tool in the tests. A new player-facing action is not finished until its tool is documented in
+  [docs/mcp.md](docs/mcp.md).
 - The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
   suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture
   and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
@@ -226,8 +236,11 @@ gigabytes and are derived from the game.
    (GPU, driver, game area, fps before and after), and links the issue it fixes. Before/after screenshots help for
    graphics.
 4. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-5. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-6. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+5. If the repository's automatic checks (Actions) run on the pull request, wait for them to finish and push fixes for
+   anything that failed. A red run is not left for a maintainer to explain: read the failed job's log, fix it, or say
+   which environment failure it is (and that it fails the same way on `main`), then push again.
+6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
 `BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
