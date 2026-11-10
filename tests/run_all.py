@@ -96,6 +96,7 @@ MODULES = {
     "nx2/test_nup_codec.py": ["zstandard"],
     "nx2/test_nup_verify.py": ["zstandard"],
     "tests/test_mcp_server.py": ["mcp"],
+    "tests/test_mcp_scenario.py": ["mcp"],
     "tests/test_docs.py": ["mcp"],
 }
 

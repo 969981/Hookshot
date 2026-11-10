@@ -126,6 +126,66 @@ where screenshots are wanted in the middle, pass `wait=false`, then call `wait` 
 | `force` | Start even if another `hookshot` process is detected. |
 | `wait_ready` | Wait for the first screenshot before `launch` returns. |
 
+## Driving the game
+
+What a run looks like in practice, and what the game's own UI does with the input.
+
+### Start-up
+
+- `wait_ready` returns on the first *presented* frame, not on a playable game: on a cold cache that frame is black while
+  the shaders are prepared (38,809 programs, tens of seconds). Wait for the title before asserting on the picture: the
+  intro camera pan runs first, then the title fades in.
+- With saves in the save folder the title offers **Continue**; Continue opens a **Load / Cancel** dialog that takes one
+  more `A`, then the map loads (about a minute, with a Triforce loading frame). With a fresh save folder there is no
+  Continue: `A` starts New Game and the intro cutscene.
+- The fast, repeatable setup is a copied save folder plus the game folder's own shader and pipeline caches as
+  `cache_dir`. A second game instance runs, but at roughly half the frame rate and with slower loads.
+
+### The controls it injects
+
+These are the remake's own controller inputs; `press`/`stick`/`sequence` write them to the live input file, and the
+game's `hid: live input at …` log line is the proof they arrived. A loading screen or an open pause menu delays the
+game's next read.
+
+| Input | Button |
+|---|---|
+| Use item | `ZR` |
+| Quick select items | `L`, `R` |
+| Pause menu | `PLUS` |
+| Map | `MINUS` |
+| Actions, dash (hold) | `A` |
+| Put away | `B` |
+| Jump | `X` |
+| Attack | `Y` |
+| Target | `ZL` |
+| Rotate the camera | `RS` (press the right stick) |
+| Move | the left stick (`stick`), the camera the right stick |
+
+### The pause menu
+
+- It opens on the last tab: Collection, Equipment, Items, System.
+- The D-pad moves between cells, and at a row's edge it changes tab. `ZR` also changes tab inside the menu. A gold cell
+  marks the equipped item (Equipment) or the quick-slot item (Items).
+- `A` acts on the cell: on Equipment it equips (verified by swapping shields and watching the model), while selecting an
+  item on Items was not found to assign it.
+- The menu **pauses the player update**, which is where the game takes cheat actions: they wait until it closes. Live
+  commands still arrive, because controller input is still polled.
+
+### What persists
+
+The pause menu refreshes its item grid from the game's saved state (GameData) when it opens, so an in-memory write to
+the selection or to an item shows for a moment and is then replaced. A change meant to last goes through the game's own
+setter or its UI, not a poke at a field. [actions.md](actions.md) records where the equipment ids and the item grid live
+for build `e0f3ccfa`, and what is still unmapped.
+
+### The loop
+
+- Build once, then iterate: `HOOKSHOT_KEEP_BUILD_FILES=1` keeps the lifted C and the objects, so the next build of the
+  same tree is a compile (about 15 seconds) instead of a lift and a full compile (15 to 20 minutes).
+- Keep saves and caches out of the repository, copy a save folder per test, write screenshots to files (`inline=false`;
+  each is 1280x720 and about 2.7 MB inline) and use `logs(pattern=…)` for acknowledgements.
+- A whole sequence of these steps is one command with [a scenario file](#scenario-file).
+
 ## Settings and cheats
 
 `settings()` reads the Insert menu: every row of its Graphics, Gameplay and Controls tabs (the row's key, its label, the
@@ -174,6 +234,38 @@ no player to give hearts or a destination to travel to yet.
 
 The game-side mechanisms behind player actions that are not menu settings (equipment, the item button, the ocarina) are
 mapped in [actions.md](actions.md).
+
+## Scenario file
+
+`scripts/mcp_scenario.py` runs a JSON scenario against a built game through the same session code the tools use, so a
+repeated check is one command instead of a sequence of tool calls:
+
+```powershell
+python -I scripts/mcp_scenario.py scenario.json --game-dir I:\Hookshot --build
+```
+
+`launch` takes the launch options above; a step is one of `press`, `stick`, `sequence`, `wait`, `screenshot`,
+`settings`, `set_setting`, `cheat` or `expect_log`.
+
+```json
+{
+  "name": "title",
+  "launch": {"wait_ready": true},
+  "steps": [
+    {"press": {"buttons": ["A"], "hold_ms": 200}},
+    {"wait": {"ms": 2000}},
+    {"screenshot": {"path": "title.png"}},
+    {"expect_log": {"pattern": "hid: live input"}}
+  ]
+}
+```
+
+The run fails on the first press or sequence the game does not acknowledge, on a screenshot that never arrives and on
+an `expect_log` that does not match. Everything it makes goes to `work/mcp/scenarios/<name>/` (`transcript.txt` and the
+screenshots). `--build` rebuilds the folder first with `nx2/make_game.py --update` and `HOOKSHOT_KEEP_BUILD_FILES=1`,
+which keeps the build files for the next run, so later iterations are a compile rather than a full build; the toolchain
+the builder uses must be in the environment. `tests/test_mcp_scenario.py` runs the runner against
+`tests/fake_game.py`, so it is covered without a game.
 
 ## How it works
 

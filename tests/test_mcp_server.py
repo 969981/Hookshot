@@ -6,7 +6,6 @@ lines the real host does. No game build, GPU or game files are involved.
     python -I -B tests/test_mcp_server.py
 """
 import asyncio
-import base64
 import json
 import subprocess
 import sys
@@ -22,75 +21,6 @@ try:
 except ModuleNotFoundError as exc:   # (the runner reports the missing package unless --strict; direct runs say so)
     raise SystemExit(f"SKIP: {exc}")
 import hookshot_mcp as hookshot
-
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
-
-FAKE_GAME = r'''
-import os, sys, time
-from pathlib import Path
-
-live = Path(os.environ["HOS_INPUT_LIVE"])
-request = Path(os.environ.get("RX_VK_SHOT_FILE") or os.environ["RX_SCREENSHOT_FILE"])
-png = bytes.fromhex("__PNG__")
-print("[hos fake] started", file=sys.stderr, flush=True)
-offset = 0
-while True:
-    try:
-        data = live.read_bytes()
-    except OSError:
-        data = b""
-    if len(data) > offset:
-        chunk = data[offset:]
-        offset = len(data)
-        for line in chunk.decode("ascii", "replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            print(f"[hos fake] hid: live input at 0.1 s: {line}", file=sys.stderr, flush=True)
-            if line.startswith("!"):
-                print(f"[hos fake] hid: live command at 0.1 s: {line}", file=sys.stderr, flush=True)
-            if line == "!settings":
-                for text in ("mcp: settings begin",
-                             "mcp: value|frame_generation|Frame generation|graphics|2|0|8|1|2x",
-                             "mcp: value|text_speed|Text speed|gameplay|0|0|3|1|Normal",
-                             "mcp: settings end",
-                             "mcp: cheats on",
-                             "mcp: cheats begin",
-                             "mcp: cheatrow|heart_protection|Heart protection|toggle|0|Off",
-                             "mcp: cheatrow|teleport|Teleport|choice|0|Kokiri Forest",
-                             "mcp: cheatrow|inventory|Inventory|action|0|",
-                             "mcp: cheats end",
-                             "mcp: pouch begin", "mcp: pouch|0|Deku Seeds", "mcp: pouch end",
-                             "mcp: teleports begin", "mcp: teleport|0|Kokiri Forest",
-                             "mcp: teleport|1|Hyrule Field", "mcp: teleports end",
-                             "mcp: items begin", "mcp: item|0|Kokiri Sword|0|1", "mcp: items end",
-                             "mcp: dump end"):
-                    print(f"[hos fake] {text}", file=sys.stderr, flush=True)
-            if line.startswith("!setting "):
-                parts = line.split()
-                key = parts[1] if len(parts) > 1 else ""
-                value = parts[2] if len(parts) > 2 else "0"
-                print(f"[hos fake] mcp: setting ok|{key}|{value}", file=sys.stderr, flush=True)
-            if line.startswith("!cheat "):
-                parts = line.split()
-                name = parts[1] if len(parts) > 1 else ""
-                value = parts[2] if len(parts) > 2 else "0"
-                print(f"[hos fake] mcp: cheat ok|{name}|{value}", file=sys.stderr, flush=True)
-            if line.startswith("!quit"):
-                raise SystemExit(0)
-    if request.exists():
-        try:
-            out = Path(request.read_text(encoding="utf-8").strip())
-            request.unlink()
-            out.write_bytes(png)
-            print(f"[hos fake] vk: present 7 written to {out}", file=sys.stderr, flush=True)
-        except FileNotFoundError:
-            pass
-    time.sleep(0.01)
-'''
-
 
 def run_async(coro):
     return asyncio.run(coro)
@@ -270,8 +200,7 @@ def game_dir_checks():
 def fake_game_checks():
     with tempfile.TemporaryDirectory(prefix="hookshot-mcp-run-") as tmp:
         folder = Path(tmp)
-        fake = folder / "fake_game.py"
-        fake.write_text(FAKE_GAME.replace("__PNG__", PNG.hex()), encoding="utf-8")
+        fake = ROOT / "tests" / "fake_game.py"
         romfs = folder / "romfs"
         romfs.mkdir()
         cfg = hookshot.Config(work_dir=folder / "mcp", exe=Path(sys.executable), image=fake, romfs=romfs,

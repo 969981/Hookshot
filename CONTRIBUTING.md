@@ -143,6 +143,7 @@ window, including one started to update a game, uses Automatic again.
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 | `python -I scripts/hookshot_mcp.py --check` | The MCP server for automated in-game tests (needs the `mcp` package; see [docs/mcp.md](docs/mcp.md)). |
+| `python -I scripts/mcp_scenario.py scenario.json --game-dir <folder>` | A scripted run of a built folder from a JSON scenario (`--build` rebuilds it first; needs `mcp`; see [docs/mcp.md](docs/mcp.md)). |
 | `python -I -B scripts/pr_check.py --base main` | A read-only pre-PR check: game-derived paths, LF endings, commit format and the full test suite. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
