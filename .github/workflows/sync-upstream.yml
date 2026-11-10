@@ -3,6 +3,11 @@
 name: Sync upstream and publish
 
 on:
+  # Bootstrap immediately when this synchronization workflow is installed or updated.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-upstream.yml'
   schedule:
     - cron: '23 */4 * * *'
   workflow_dispatch:
