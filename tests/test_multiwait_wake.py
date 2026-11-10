@@ -60,7 +60,7 @@ static CONDITION_VARIABLE mw_cv = CONDITION_VARIABLE_INIT;
 static volatile LONG mw_waiting;
 FUNCTIONS
 static int bad;
-static int count(uint64_t k) { int i = watched_at_locked(k); return i < 0 ? 0 : watched[i].n; }
+static int count(uint64_t k) { int i = mw_watched_at_locked(k); return i < 0 ? 0 : mw_watched[i].n; }
 static void expect(const char *step, int e1, int e2) {
     if (count(1) != e1 || count(2) != e2) {
         printf("FAIL after %s: event1 watched by %d (want %d), event2 by %d (want %d)\n", step, count(1), e1, count(2), e2);
@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
     expect("link again, unlink all of the other", 1, 0);
     call(UNLINK, h1, 0);
     expect("unlink the last", 0, 0);
-    if (nwatched) { printf("FAIL: %d addresses still watched\n", nwatched); bad = 1; }
+    if (mw_nwatched) { printf("FAIL: %d addresses still watched\n", mw_nwatched); bad = 1; }
     if (target_lookups) { printf("FAIL: %d lookups of a watched object (link, unlink, poke look up none)\n", target_lookups); bad = 1; }
     if (lookups_locked) { printf("FAIL: %d lookups (scheduling points) under mw_lock\n", lookups_locked); bad = 1; }
     puts(bad ? "FAILED" : "ok");
@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
 
 
 def fixture(source):
-    table = source[source.index("typedef struct { uint64_t key; int n; } Watched;"):source.index("/* o: the object that changed")]
+    table = source[source.index("typedef struct { uint64_t key; int n; } MwWatched;"):source.index("/* o: the object that changed")]
     parts = [table, block(source, "static void poke_multiwait("), block(source, "static uint64_t holder_watch(")]
     defines = []
     for alias, name in (("LINK", "LinkMultiWaitHolder"), ("UNLINK", "UnlinkMultiWaitHolder"),

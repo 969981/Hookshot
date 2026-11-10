@@ -283,29 +283,29 @@ static volatile LONG mw_waiting;
 /* The guest addresses linked holders watch (events, timers, semaphores, queues), each with how many holders watch it.
    Kept by address under mw_lock, not on the Obj: objects are re-initialized and their memory reused by address (fresh,
    the tombstone path in obj_lookup) while holders still link them, and Link/Unlink never look the target up. */
-typedef struct { uint64_t key; int n; } Watched;
-static Watched *watched;
-static int nwatched, capwatched;
-static int watched_at_locked(uint64_t key) {
-    for (int i = 0; i < nwatched; i++)
-        if (watched[i].key == key) return i;
+typedef struct { uint64_t key; int n; } MwWatched;
+static MwWatched *mw_watched;
+static int mw_nwatched, mw_capwatched;
+static int mw_watched_at_locked(uint64_t key) {
+    for (int i = 0; i < mw_nwatched; i++)
+        if (mw_watched[i].key == key) return i;
     return -1;
 }
-static void watch_add_locked(uint64_t key) {
-    const int i = watched_at_locked(key);
-    if (i >= 0) { watched[i].n++; return; }
-    if (nwatched == capwatched) {
-        Watched *w = (Watched *)realloc(watched, (capwatched ? capwatched * 2 : 16) * sizeof *w);
+static void mw_watch_add_locked(uint64_t key) {
+    const int i = mw_watched_at_locked(key);
+    if (i >= 0) { mw_watched[i].n++; return; }
+    if (mw_nwatched == mw_capwatched) {
+        MwWatched *w = (MwWatched *)realloc(mw_watched, (mw_capwatched ? mw_capwatched * 2 : 16) * sizeof *w);
         if (!w) return;   /* (not counted: its changes wake no WaitAny early, the 5 ms re-check still sees them) */
-        watched = w;
-        capwatched = capwatched ? capwatched * 2 : 16;
+        mw_watched = w;
+        mw_capwatched = mw_capwatched ? mw_capwatched * 2 : 16;
     }
-    watched[nwatched].key = key, watched[nwatched].n = 1;
-    nwatched++;
+    mw_watched[mw_nwatched].key = key, mw_watched[mw_nwatched].n = 1;
+    mw_nwatched++;
 }
-static void watch_remove_locked(uint64_t key) {
-    const int i = watched_at_locked(key);
-    if (i >= 0 && --watched[i].n <= 0) watched[i] = watched[--nwatched];
+static void mw_watch_remove_locked(uint64_t key) {
+    const int i = mw_watched_at_locked(key);
+    if (i >= 0 && --mw_watched[i].n <= 0) mw_watched[i] = mw_watched[--mw_nwatched];
 }
 /* o: the object that changed. Only an object some holder links into a multi-wait can make a WaitAny ready, so the
    others no longer wake every WaitAny: each event, semaphore or queue change anywhere woke them all, and OoT's three
@@ -317,7 +317,7 @@ static void poke_multiwait(Obj *o) {
     if (all < 0) all = getenv("HOS_MW_WAKE") && !strcmp(getenv("HOS_MW_WAKE"), "all");
     if (!InterlockedCompareExchange(&mw_waiting, 0, 0)) return;
     AcquireSRWLockExclusive(&mw_lock);
-    const int wake = all || !o || watched_at_locked(o->key) >= 0;
+    const int wake = all || !o || mw_watched_at_locked(o->key) >= 0;
     ReleaseSRWLockExclusive(&mw_lock);
     if (wake) WakeAllConditionVariable(&mw_cv);
 }
@@ -1097,7 +1097,7 @@ HLE(_ZN2nn2os19LinkMultiWaitHolderEPNS0_13MultiWaitTypeEPNS0_19MultiWaitHolderTy
     }
     mw->links[mw->nlinks++] = h;
     h->mw = mw;
-    if (holder_watch(h)) watch_add_locked(holder_watch(h));
+    if (holder_watch(h)) mw_watch_add_locked(holder_watch(h));
     ReleaseSRWLockExclusive(&mw_lock);
 }
 HLE(_ZN2nn2os21UnlinkMultiWaitHolderEPNS0_19MultiWaitHolderTypeE) {
@@ -1106,7 +1106,7 @@ HLE(_ZN2nn2os21UnlinkMultiWaitHolderEPNS0_19MultiWaitHolderTypeE) {
     if (mw) {
         for (int i = 0; i < mw->nlinks; i++)
             if (mw->links[i] == h) { mw->links[i] = mw->links[--mw->nlinks]; break; }
-        if (holder_watch(h)) watch_remove_locked(holder_watch(h));
+        if (holder_watch(h)) mw_watch_remove_locked(holder_watch(h));
     }
     h->mw = NULL;
     ReleaseSRWLockExclusive(&mw_lock);
@@ -1145,7 +1145,7 @@ HLE(_ZN2nn2os24UnlinkAllMultiWaitHolderEPNS0_13MultiWaitTypeE) {
     Obj *mw = obj(ARG(0), K_MULTIWAIT);
     AcquireSRWLockExclusive(&mw_lock);
     for (int i = 0; i < mw->nlinks; i++) {
-        if (holder_watch(mw->links[i])) watch_remove_locked(holder_watch(mw->links[i]));
+        if (holder_watch(mw->links[i])) mw_watch_remove_locked(holder_watch(mw->links[i]));
         mw->links[i]->mw = NULL;
     }
     mw->nlinks = 0;
