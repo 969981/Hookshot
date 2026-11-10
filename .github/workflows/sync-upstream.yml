@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out local main and tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,7 +96,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch tag builders (new commits, or manual retry)
-        if: steps.tag.outputs.created == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.tag.outputs.created == 'true' || github.event_name != 'schedule'
         shell: bash
         run: |
           set -euo pipefail
