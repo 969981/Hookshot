@@ -6115,22 +6115,47 @@ std::string prepared_path() {
 // seed grows apart from it (4221050d: networks, the movie upscaler, the particle sets, 19 compute programs more) the seed it went
 // through (hookshot_shaders.bin), by a hash of its contents. By the translator alone, a folder prepared before such an update never
 // prepared the new programs: each was translated in play when first met, 200-400 ms apiece. The seed is 500 MB and more: its hash is
-// taken again only when its size or write time is not the recorded one, and a hash that is still the same records the new time
+// taken again only when its size or write time is not the recorded one, and a hash that is still the same records the new time.
+// A write time says nothing of a write that came within its resolution of the one recorded (whole seconds from libstdc++'s
+// std::filesystem on Windows, 2 s on FAT, a timer tick at best): as git does for its index, the shortcut is only taken for a seed
+// written well before the record was (2 s); one written closer to it is hashed
 namespace {
 struct PreparedFor {
     uint64_t stamp = 0, seed_hash = 0, seed_size = 0;
-    int64_t seed_time = 0;
+    int64_t seed_time = 0, recorded_at = 0;   // (nanoseconds, of the file system's clock: libstdc++'s counts from 2174, below 0)
+    bool timed = false;   // (recorded_at read: records of four words had none)
 };
+constexpr int64_t kSeedTimeSlack = 2'000'000'000;
 enum class PrepareWhy { None, First, Translator, Seed };
-/// The seed's size and write time (false: there is none)
+/// The seed's size and write time, in nanoseconds (false: there is none). On Windows from the file's FILETIME (100 ns): what
+/// std::filesystem gives there can be whole seconds
 bool seed_file_id(const std::string& path, uint64_t* size, int64_t* time) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    *size = (uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow;
+    *time = (int64_t)((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime) * 100;
+#else
     std::error_code ec;
     const auto fsize = std::filesystem::file_size(path, ec);
     if (ec) return false;
     const auto ftime = std::filesystem::last_write_time(path, ec);
     if (ec) return false;
-    *size = (uint64_t)fsize, *time = (int64_t)ftime.time_since_epoch().count();
+    *size = (uint64_t)fsize;
+    *time = (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(ftime.time_since_epoch()).count();
+#endif
     return true;
+}
+/// Now, on the clock seed_file_id's times are of
+int64_t file_clock_now() {
+#ifdef _WIN32
+    FILETIME t;
+    GetSystemTimeAsFileTime(&t);
+    return (int64_t)((uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime) * 100;
+#else
+    return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::filesystem::file_time_type::clock::now().time_since_epoch()).count();
+#endif
 }
 /// The seed's contents, hashed four words at a time: ~0.1 s for its 540 MB read from memory, 0.3-0.6 s from the disk (a byte at a
 /// time, as hash_bytes, 0.45 s from memory). Only after the file was written again
@@ -6161,19 +6186,21 @@ bool seed_file_hash(const std::string& path, uint64_t* out) {
     *out = h;
     return ok;
 }
-/// The record: 0 none, 1 the translator alone (written before the seed was), 2 both
+/// The record: 0 none, 1 the translator alone (written before the seed was), 2 both. A record without the time it was written
+/// at (four words) never takes the shortcut: its seed is hashed, and the record written again with it
 int prepared_read(const std::string& path, PreparedFor* had) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return 0;
-    uint64_t r[4]{};
-    const size_t n = fread(r, 8, 4, f);
+    uint64_t r[5]{};
+    const size_t n = fread(r, 8, 5, f);
     fclose(f);
     had->stamp = r[0], had->seed_hash = r[1], had->seed_size = r[2], had->seed_time = (int64_t)r[3];
-    return n == 4 ? 2 : n >= 1 ? 1 : 0;
+    had->recorded_at = (int64_t)r[4], had->timed = n == 5;
+    return n >= 4 ? 2 : n >= 1 ? 1 : 0;
 }
 void prepared_write(const std::string& path, const PreparedFor& now) {
-    const uint64_t r[4] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time};
-    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 4, f), fclose(f);
+    const uint64_t r[5] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now()};
+    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 5, f), fclose(f);
 }
 /// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
 /// *hash_ms: how long the seed's hash took (0: not taken)
@@ -6184,7 +6211,8 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
     now->stamp = stamp;
     const bool have_seed = seed_file_id(seed, &now->seed_size, &now->seed_time);
     bool same_seed = !have_seed;
-    if (have_seed && read == 2 && had.seed_size == now->seed_size && had.seed_time == now->seed_time) {
+    if (have_seed && read == 2 && had.seed_size == now->seed_size && had.seed_time == now->seed_time &&
+        had.timed && had.seed_time < had.recorded_at - kSeedTimeSlack) {
         now->seed_hash = had.seed_hash, same_seed = true;   // (not read again)
     } else if (have_seed) {
         const auto t0 = std::chrono::steady_clock::now();
@@ -6192,7 +6220,8 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
         *hash_ms = std::max(1e-3, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         same_seed = hashed && read == 2 && had.seed_hash == now->seed_hash &&
                     had.seed_size == now->seed_size;
-        // (rewritten as it was, by a build: the new time kept, so the next start does not hash it again)
+        // (rewritten as it was, by a build: the new time kept, so the next start does not hash it again; a seed written just
+        // before the record is hashed again until a record is written 2 s after it)
         if (same_seed && had.stamp == stamp) prepared_write(path, *now);
     }
     if (!read) return PrepareWhy::First;
@@ -6225,7 +6254,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     double hash_ms = 0;
     const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
     if (hash_ms > 0)
-        logf("vk: the shader list's size or time changed: hashed it (%.0f MB) in %.0f ms", prepared_for.seed_size / 1048576.0, hash_ms);
+        logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
+             prepared_for.seed_size / 1048576.0, hash_ms);
     if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
         if (getenv("RX_VK_SEED_CHECK")) seed_open();
         return false;

@@ -7,10 +7,13 @@ first met. The record now also holds the seed's hash, size and write time; prepa
 or time is not the recorded one. This builds the record's helpers as they are in the source and checks, on files in a
 temporary folder: the same seed is not prepared again (and not hashed again); a changed seed is, and so is a changed
 translator; a seed rewritten as it was (a new time) is hashed once and not prepared; a record from before (the stamp alone)
-prepares once; and that prepare_run uses all of this.
+prepares once; a seed whose time is as new as the record's is hashed (its time cannot show a second write in the same tick:
+whole seconds from libstdc++'s std::filesystem on Windows); and that prepare_run uses all of this. Every write time is set
+by the test, so that it does not depend on how fast it runs or the file system's resolution.
 python -I -B tests/test_prepare_seed_stamp.py [--cxx g++]
 """
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -37,6 +40,11 @@ def main():
     start = src.index("struct PreparedFor {")
     helpers = src[start:src.index("} // namespace", start)]
     cpp = r"""
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -44,7 +52,6 @@ def main():
 #include <cstring>
 #include <filesystem>
 #include <string>
-#include <thread>
 #include <vector>
 """ + helpers + r"""
 int fails = 0;
@@ -54,11 +61,17 @@ void put(const std::string& path, const std::string& bytes) {
     fwrite(bytes.data(), 1, bytes.size(), f);
     fclose(f);
 }
-void later() {   // (a write time the file system tells apart from the last)
+// Every write time is set, not left to the clock: a write's own time can be the last one's (whole seconds from libstdc++ on
+// Windows, a timer tick at best), which would make the test depend on how fast it runs. An hour back, ten seconds apart: well
+// before each record is written, where the shortcut is taken
+const auto base = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+int tick = 0;
+void stamp_time(std::filesystem::file_time_type t) {
     std::error_code ec;
-    const auto t = std::filesystem::last_write_time(seed, ec);
-    std::filesystem::last_write_time(seed, t + std::chrono::seconds(5), ec);
+    std::filesystem::last_write_time(seed, t, ec);
+    if (ec) std::printf("could not set the write time: %s\n", ec.message().c_str()), fails++;
 }
+void later() { stamp_time(base + std::chrono::seconds(10 * ++tick)); }
 /// One start: the check, and the record written when it prepares (as prepare_run does once done)
 PrepareWhy start(uint64_t stamp, double* hash_ms = nullptr) {
     PreparedFor now;
@@ -71,11 +84,17 @@ PrepareWhy start(uint64_t stamp, double* hash_ms = nullptr) {
 void want(const char* what, PrepareWhy got, PrepareWhy wanted) {
     if (got != wanted) std::printf("%s: got %d, wanted %d\n", what, (int)got, (int)wanted), fails++;
 }
+void old_record(uint64_t stamp) {   // (from before the seed was in it: the translator's stamp alone, 8 bytes)
+    FILE* f = fopen(rec.c_str(), "wb");
+    fwrite(&stamp, 8, 1, f);
+    fclose(f);
+}
 int main(int argc, char** argv) {
     dir = argv[1], rec = dir + "/hookshot_prepared.bin", seed = dir + "/hookshot_shaders.bin";
     std::string bytes(3 * (1 << 20) + 77, '\0');   // (more than one read, and bytes over the last 32)
     for (size_t i = 0; i < bytes.size(); i++) bytes[i] = (char)(i * 2654435761u >> 13);
     put(seed, bytes);
+    later();
     double ms = 0;
     want("first start", start(1), PrepareWhy::First);
     want("same seed, same translator", start(1, &ms), PrepareWhy::None);
@@ -90,9 +109,10 @@ int main(int argc, char** argv) {
     if (ms != 0) std::puts("rewritten, the next start: hashed again"), fails++;
     // a grown seed (an update's new programs)
     put(seed, bytes + std::string(4096, 'x'));
+    later();
     want("grown seed", start(2), PrepareWhy::Seed);
     want("grown seed, the next start", start(2), PrepareWhy::None);
-    // one byte changed in the middle, the size the same (with a new write time, as any rewrite has)
+    // one byte changed in the middle, the size the same
     std::string changed = bytes + std::string(4096, 'x');
     changed[changed.size() / 2] ^= 1;
     put(seed, changed);
@@ -103,22 +123,45 @@ int main(int argc, char** argv) {
     put(seed, changed);
     later();
     want("a tail byte changed", start(2), PrepareWhy::Seed);
-    // a record from before the seed was in it: the translator's stamp alone, 8 bytes
+    // a record of four words (the seed's hash, size and time, not when it was written): hashed once, then the shortcut
     {
-        const uint64_t stamp = 2;
+        PreparedFor four;
+        double unused;
+        prepare_check(rec, seed, 2, &four, &unused);
+        const uint64_t r[4] = {four.stamp, four.seed_hash, four.seed_size, (uint64_t)four.seed_time};
         FILE* f = fopen(rec.c_str(), "wb");
-        fwrite(&stamp, 8, 1, f);
+        fwrite(r, 8, 4, f);
         fclose(f);
     }
+    want("four-word record", start(2, &ms), PrepareWhy::None);
+    if (ms == 0) std::puts("four-word record: the shortcut was taken"), fails++;
+    want("four-word record, the next start", start(2, &ms), PrepareWhy::None);
+    if (ms != 0) std::puts("four-word record, the next start: hashed again"), fails++;
+    // a record from before the seed was in it
+    old_record(2);
     want("old record, same translator", start(2), PrepareWhy::Seed);
     want("old record, then", start(2), PrepareWhy::None);
-    {
-        const uint64_t stamp = 2;
-        FILE* f = fopen(rec.c_str(), "wb");
-        fwrite(&stamp, 8, 1, f);
-        fclose(f);
-    }
+    old_record(2);
     want("old record, changed translator", start(3), PrepareWhy::Translator);
+    // a seed written as the record was (the same second, tick): its time cannot tell a write that follows, of the same size,
+    // in that same second. Both writes get the very same time here: the second is still seen, as the first was hashed
+    const auto now = std::filesystem::file_time_type::clock::now();
+    put(seed, bytes);
+    stamp_time(now);
+    want("written just now", start(3), PrepareWhy::Seed);
+    want("written just now, the next start", start(3, &ms), PrepareWhy::None);
+    if (ms == 0) std::puts("written just now: the shortcut was taken"), fails++;
+    std::string close = bytes;
+    close[12345] ^= 1;
+    put(seed, close);
+    stamp_time(now);
+    want("rewritten in the same tick", start(3), PrepareWhy::Seed);
+    // once its time is well before a record, the shortcut again
+    later();
+    want("written well before", start(3, &ms), PrepareWhy::None);
+    if (ms == 0) std::puts("written well before: not hashed"), fails++;
+    want("written well before, the next start", start(3, &ms), PrepareWhy::None);
+    if (ms != 0) std::puts("written well before, the next start: hashed again"), fails++;
     // no seed: the translator alone, as before
     std::filesystem::remove(seed);
     want("no seed, same translator", start(3), PrepareWhy::None);
@@ -128,7 +171,7 @@ int main(int argc, char** argv) {
 }
 """
     with tempfile.TemporaryDirectory(prefix="seed-stamp-") as tmp:
-        c, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture"
+        c, exe = Path(tmp) / "fixture.cpp", Path(tmp) / ("fixture.exe" if os.name == "nt" else "fixture")
         c.write_text(cpp, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-O1", str(c), "-o", str(exe)], check=True)
         work = Path(tmp) / "game"
