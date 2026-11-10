@@ -49,8 +49,17 @@ jobs:
             echo "Already contains upstream/main at $upstream_sha"
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
-            # No force-push: a conflict fails the run and requires explicit resolution.
-            git merge --no-ff --no-edit upstream/main
+            # The built-in Actions token cannot import upstream workflow edits.
+            # Preserve all local workflows, including this sync job and the release guard.
+            # Conflicting source changes fail closed; no forced merge or push.
+            before=$(git rev-parse HEAD)
+            git merge --no-ff --no-commit upstream/main
+            git restore --source="$before" --staged --worktree -- .github/workflows
+            git commit -m "chore(sync): merge upstream/main $upstream_sha"
+            if ! git diff --quiet "$before" HEAD -- .github/workflows; then
+              echo "::error::The merge unexpectedly modified local GitHub workflows"
+              exit 1
+            fi
             test -f .github/workflows/sync-upstream.yml
             git push origin HEAD:main
             echo "Merged upstream/main at $upstream_sha"
