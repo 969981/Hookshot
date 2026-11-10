@@ -45,6 +45,7 @@ ARGS = {
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
+    "tests/test_linux_menu_utf8.py": ["--cc", "clang"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
@@ -111,6 +112,7 @@ SKIP = {
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
     "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
+    "tests/test_linux_menu_utf8.py": ({"windows"}, "POSIX menu text renderer"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_types.py", "nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
