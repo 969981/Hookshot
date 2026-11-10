@@ -1,0 +1,114 @@
+# Keep a non-fork mirror current with NotRexed/Hookshot without force-pushing over local changes.
+# GITHUB_TOKEN pushes do not trigger push workflows, so tag builds are explicitly dispatched.
+name: Sync upstream and publish
+
+on:
+  schedule:
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: hookshot-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out local main and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge new upstream commits
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/NotRexed/Hookshot.git
+          git fetch --no-recurse-submodules --tags upstream main
+          upstream_sha=$(git rev-parse refs/remotes/upstream/main)
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "Already contains upstream/main at $upstream_sha"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            # No force-push: a conflict fails the run and requires explicit resolution.
+            git merge --no-ff --no-edit upstream/main
+            test -f .github/workflows/sync-upstream.yml
+            git push origin HEAD:main
+            echo "Merged upstream/main at $upstream_sha"
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create an idempotent preview tag for the upstream commit
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_sha='${{ steps.source.outputs.upstream_sha }}'
+          short=${upstream_sha:0:12}
+          # A given upstream source commit gets only one tag, including across retries.
+          tag=$(git tag --merged HEAD --list "v*-rc.sync.g$short" | head -n 1)
+          if [[ -n "$tag" ]]; then
+            echo "Existing snapshot tag: $tag"
+            echo 'created=false' >> "$GITHUB_OUTPUT"
+          else
+            base=$(git tag --merged upstream/main --list 'v[0-9]*' --sort=-version:refname | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+            [[ -n "$base" ]] || base=v0.0.0
+            if [[ ! "$base" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::Unexpected stable base tag: $base"
+              exit 1
+            fi
+            # Snapshots are always prereleases, not replacements for upstream's stable versions.
+            tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))-rc.sync.g$short"
+            git tag -a "$tag" -m "Preview of upstream/main $upstream_sha"
+            git push origin "refs/tags/$tag"
+            echo "Created snapshot tag: $tag"
+            echo 'created=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch tag builders (new commits, or manual retry)
+        if: steps.tag.outputs.created == 'true' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ steps.tag.outputs.tag }}'
+          # Skip a manual retry if the release already has the expected assets.
+          if [[ '${{ steps.tag.outputs.created }}' != 'true' ]]; then
+            assets=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            if grep -Eq '\.AppImage$' <<<"$assets" &&
+               grep -qx 'HookshotBuilder.exe' <<<"$assets" &&
+               grep -qx 'hookshot-setup.txt' <<<"$assets"; then
+              echo "Release $tag already has Linux and Windows assets"
+              exit 0
+            fi
+          fi
+          echo "Dispatching Linux AppImage and Windows Builder for $tag"
+          gh workflow run linux-appimage.yml --ref "$tag"
+          gh workflow run windows-builder.yml --ref "$tag"
+
+      - name: Summary
+        if: always() && steps.source.outcome == 'success'
+        shell: bash
+        run: |
+          {
+            echo '## Hookshot upstream synchronization'
+            echo ''
+            echo "- Upstream commit: \`${{ steps.source.outputs.upstream_sha }}\`"
+            echo "- Source merged in this run: \`${{ steps.source.outputs.changed }}\`"
+            echo "- Snapshot tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- View build jobs in the repository Actions page; the tag release is published when packaging succeeds."
+          } >> "$GITHUB_STEP_SUMMARY"
