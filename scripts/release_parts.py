@@ -193,6 +193,9 @@ def package(a):
     shutil.copytree(a.publish, out)
     copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (the builder's Repair runs it)
     copy(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
+    # RecompLauncher reads the manifest from the installed builder's root.
+    # make_setup_parts.py includes non-builder root files in the dotnet part.
+    copy(os.path.join(ROOT, "recomplauncher.json"), os.path.join(out, "recomplauncher.json"))
     tools = os.path.join(out, "tools")
     for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
