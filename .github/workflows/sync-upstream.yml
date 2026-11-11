@@ -54,8 +54,15 @@ jobs:
             # Preserve all local workflows, including this sync job and the release guard.
             # Conflicting source changes fail closed; no forced merge or push.
             before=$(git rev-parse HEAD)
-            git merge --no-ff --no-commit upstream/main
+            git merge --no-ff --no-commit upstream/main || true
+            # Resolve only workflow conflicts by restoring the mirror's version.
+            # Any source-code conflict is fatal; never silently choose 'ours'.
             git restore --source="$before" --staged --worktree -- .github/workflows
+            if [[ -n "$(git ls-files -u)" ]]; then
+              echo "::error::Unresolved source conflicts; manual review required."
+              git ls-files -u
+              exit 1
+            fi
             git commit -m "chore(sync): merge upstream/main $upstream_sha"
             if ! git diff --quiet "$before" HEAD -- .github/workflows; then
               echo "::error::The merge unexpectedly modified local GitHub workflows"
