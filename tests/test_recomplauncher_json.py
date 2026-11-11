@@ -5,7 +5,12 @@ Run with: python -I tests/test_recomplauncher_json.py
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,10 +33,33 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertIn('cp recomplauncher.json "$APPDIR/recomplauncher.json"',
                       (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8"))
 
-    def test_windows_zip_carries_it(self):
+    def test_windows_builder_parts_carry_it(self):
+        # The Windows installer now downloads content-addressed parts instead of
+        # distributing the old monolithic Windows ZIP. Check the real part
+        # builder rather than asserting removed workflow text.
+        source = (ROOT / "scripts" / "release_parts.py").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "windows-builder.yml").read_text(encoding="utf-8")
-        self.assertIn('z.write("recomplauncher.json", "recomplauncher.json")', workflow)
-        self.assertIn("dist/Hookshot-*-Windows-x64.zip", workflow)
+        self.assertIn('copy(os.path.join(ROOT, "recomplauncher.json"), os.path.join(out, "recomplauncher.json"))', source)
+        self.assertIn("scripts/release_parts.py package", workflow)
+        self.assertIn("scripts/make_setup_parts.py", workflow)
+
+        with tempfile.TemporaryDirectory(prefix="hookshot-launcher-parts-") as temp:
+            package = Path(temp) / "package"
+            output = Path(temp) / "dist"
+            package.mkdir()
+            (package / "tools").mkdir()
+            (package / "HookshotBuilder.exe").write_bytes(b"test-fixture")
+            shutil.copyfile(ROOT / "recomplauncher.json", package / "recomplauncher.json")
+            subprocess.run(
+                [sys.executable, "-I", str(ROOT / "scripts/make_setup_parts.py"),
+                 str(package), "test", str(output)],
+                check=True, capture_output=True, text=True,
+            )
+            archives = list(output.glob("HookshotBuilder-dotnet-*.zip"))
+            self.assertEqual(len(archives), 1)
+            with zipfile.ZipFile(archives[0]) as archive:
+                manifest = json.loads(archive.read("HookshotBuilder/recomplauncher.json"))
+            self.assertEqual(manifest, json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":
