@@ -82,6 +82,9 @@ class ShippedList(unittest.TestCase):
         (root / "assets").mkdir()
         shutil.copy(ROOT / "nx2" / "pipeline_states.py", root / "nx2")
         (root / "LICENSE").write_text("license")
+        # release_parts.package now ships the launcher manifest as well.
+        # Keep this miniature checkout faithful to required top-level files.
+        shutil.copy(ROOT / "recomplauncher.json", root / "recomplauncher.json")
         if data is not None:
             root.joinpath(*self.tool.SHIPPED).write_bytes(data)
         rp = load("release_parts_under_test", ROOT / "scripts" / "release_parts.py")
