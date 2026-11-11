@@ -29,17 +29,28 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          apt-get update
-          # (libstdc++ 13, from the toolchain PPA: the Vulkan back end's C++20 needs <format>; linked in statically)
-          apt-get install -y --no-install-recommends software-properties-common gpg-agent
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev
-          apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
-            build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
-            libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
-            libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
-
+          # Retry the entire bootstrap after transient index/PPA errors. Re-run
+          # apt-get update every time, preserving the last failing exit code.
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            if apt-get update &&
+               apt-get install -y --no-install-recommends software-properties-common gpg-agent &&
+               add-apt-repository -y ppa:ubuntu-toolchain-r/test &&
+               apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
+               apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
+                 build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
+                 libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
+                 libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
+                 libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
+            then
+              break
+            else
+              status=$?
+              if [ "$attempt" -eq 3 ]; then exit "$status"; fi
+              sleep 20
+              attempt=$((attempt + 1))
+            fi
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -78,6 +89,11 @@ jobs:
 
       - name: AppImage
         run: scripts/linux/appimage.sh
+
+      # Validate the actual extracted AppImage as a first-time player would.
+      # This catches files absent from the shipped image before upload/Release.
+      - name: Check packaged player build
+        run: scripts/linux/check_player_build.sh
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
