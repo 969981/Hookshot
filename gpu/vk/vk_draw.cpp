@@ -900,6 +900,7 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
 }
 // ---- (end of the play caches) ----
 
+bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
@@ -907,7 +908,11 @@ void pcache_init() {
     std::string dir(exe, n);
     pcache_dir = dir = dir.substr(0, dir.find_last_of("\\/") + 1);
     pcache_path = dir + "mkw_vk_pipelines.bin";
-    std::vector<uint8_t> data = pcache_file_read(pcache_path);
+    // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
+    // starts empty and is not saved; the driver's own shader cache is all there is)
+    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    pcache_no_save = off;
+    std::vector<uint8_t> data = off ? std::vector<uint8_t>{} : pcache_file_read(pcache_path);
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
     ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -7712,6 +7717,19 @@ void prepare_background() {
     }).detach();
 }
 
+/// (hookshot) A line every 10 s while the preparation builds pipelines: their count and an estimate of the time left. The
+/// pipeline steps wrote nothing to the log for 10-30 minutes on some AMD cards, and players pasted a log whose last lines (the
+/// vertex formats) looked like a hang (Discord 2026-11-10, "stuck on preparing shaders"); the Builder's bar moved, the log did not
+void prepare_progress_log(const char* what, size_t done, size_t total, std::chrono::steady_clock::time_point t0,
+                          std::chrono::steady_clock::time_point& next) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next || !total) return;
+    next = now + std::chrono::seconds(10);
+    const double s = std::chrono::duration<double>(now - t0).count();
+    const double left = done ? s * (double)(total - std::min(done, total)) / (double)done : 0.0;
+    if (done) logf("vk: %s: %zu of %zu pipelines in %.0f s, about %.0f s left", what, done, total, s, left);
+    else logf("vk: %s: 0 of %zu pipelines in %.0f s (the driver compiles the first ones)", what, total, s);
+}
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
@@ -7844,8 +7862,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
     bool gone_on = false;
+    auto log_at = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto built0 = std::chrono::steady_clock::now();
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
+        prepare_progress_log("noted pipelines", done.load(), total, built0, log_at);
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
         const auto now = std::chrono::steady_clock::now();
@@ -7947,8 +7968,11 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    auto log_at = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto built0 = std::chrono::steady_clock::now();
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
+        prepare_progress_log("predicted pipelines", done.load(), predicted.size(), built0, log_at);
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
@@ -8502,7 +8526,7 @@ void pipeline_cache_close() {
 }
 
 void pipeline_cache_save(bool force) {
-    if (!pcache || (!force && pcache_built_since_save < 32)) return;
+    if (!pcache || pcache_no_save || (!force && pcache_built_since_save < 32)) return;
     pcache_built_since_save = 0;
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
     // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile)
