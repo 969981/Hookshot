@@ -132,6 +132,9 @@ workload, or build it from a developer prompt:
 dotnet build builder/HookshotBuilder.sln
 ```
 
+For a Windows installation that keeps its own state on an external SSD, see
+[portable Builder setup and relocation](docs/windows-portable-builder.md).
+
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
 The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
@@ -159,6 +162,9 @@ compilers that always run (up to 4 on Windows) still run under a smaller number.
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
+
+Not measuring speed? [A faster build for development](docs/development.md#a-faster-build-for-development) compiles the
+hot code at `-O1`, about a quarter less compile time. Never use it for fps, timings or a release.
 
 ## Testing
 
@@ -254,13 +260,17 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 3. Write the title as a Conventional Commit (see [Pull request titles](#pull-request-titles) below). Start the body
    with why the PR is needed, in one or two plain sentences a player could follow: the bug, the missing feature or the
    cost it removes ("The menu's text is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say
-   what changed, how it was tested (GPU, driver, game area, fps before and after), and link the issue it fixes.
-4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
+   what changed and how it was tested (GPU, driver, game area, fps before and after).
+4. Link the issues the PR fixes, if there are any. Write `Fixes #123` in the body (one line per issue) so that merging
+   the PR closes the issue. If the PR only addresses part of an issue, or is related to one, write `Part of #123` or
+   `See #123` instead, so the issue stays open. Search the open issues before you open the PR: a report may already
+   describe the bug you fixed.
+5. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
    message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
    screenshot of the game is fine; the rule above is about game files, not pictures of the game.
-5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+6. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
+7. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+8. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 ### Pull request titles
 
@@ -305,9 +315,8 @@ NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing
 ## Where to talk
 
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
-- **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
+- **Discord:** https://discord.gg/rexed. Use the `dev-work` channel for prs.
+- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.

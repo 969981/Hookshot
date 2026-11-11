@@ -26,6 +26,7 @@
    pad } = 0x28 bytes. */
 #include "hos.h"
 #include "hos_paths.h"
+#include "control.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,9 @@
 #include <xinput.h>
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 #define STATE_SIZE 0x28
@@ -203,7 +207,7 @@ static void host_drag_read(int32_t stick[4]) {
 static int invert = -1;
 static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
-        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
+        invert = env_on("HOS_MOUSE_INVERT_Y");
         hos_mouse_sens = 1.0;
         char path[512];
         snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
@@ -322,12 +326,15 @@ static void parse_script(void) {
     {
         const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
         script_frame_clock = e && atoi(e) != 0;
-        if (script_frame_clock) script_frame0 = InterlockedCompareExchange64(&hos_present_count, 0, 0);
+        if (script_frame_clock) {
+            script_frame0 = InterlockedCompareExchange64(&hos_present_count, 0, 0);
+            hos_log("hid: input frame clock origin=%lld native presents; rate=60", (long long)script_frame0);
+        }
     }
     parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
     if (npresses)
-        hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too)", npresses,
-                script_end_ms / 1000.0);
+        hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too); origin_ns=%lld", npresses,
+                script_end_ms / 1000.0, (long long)script_t0);
 }
 
 static void live_input(void) {
@@ -361,6 +368,13 @@ static void live_input(void) {
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
                 if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                void hos_bind(int set, int button, int slot, int code);   /* "!bind <HOS_SW_*> <HOS_PAD_*>", as the Controls page */
+                int bind_b = -1, bind_pad = -2;
+                if (!strncmp(line, "!bind ", 6) && sscanf(line + 6, "%d %d", &bind_b, &bind_pad) == 2 &&
+                    bind_b >= 0 && bind_b < HOS_SW_N)
+                    hos_bind(HOS_BIND_PAD, bind_b, 0, bind_pad);
+                extern volatile int hos_prompts_row;   /* host/prompts.c: "!prompts <0 Auto, HOS_PROMPT_* + 1>", as the row */
+                if (!strncmp(line, "!prompts ", 9)) __atomic_store_n(&hos_prompts_row, atoi(line + 9), __ATOMIC_RELAXED);
                 hos_log("hid: live command at %.1f s: %.*s", at / 1000.0, (int)(n > 1 ? n - 1 : 0), line);
                 continue;
             }
@@ -460,7 +474,7 @@ static void host_stick_read(int32_t stick[4]) {
     {   /* (HOS_MENU_TRACE: the stick as the game reads it, at most 4 a second) */
         static int trace = -1;
         static int64_t logged;
-        if (trace < 0) trace = getenv("HOS_MENU_TRACE") != NULL;
+        if (trace < 0) trace = env_on("HOS_MENU_TRACE");
         if (trace && hos_now_ns() - logged > 250000000)
             logged = hos_now_ns(), hos_log("hid: the host's stick %ld %ld %ld %ld read", (long)host_stick[0], (long)host_stick[1],
                                           (long)host_stick[2], (long)host_stick[3]);
@@ -484,8 +498,8 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
         if ((v[i] < 0 ? -v[i] : v[i]) > (stick[i] < 0 ? -stick[i] : stick[i])) stick[i] = v[i];
 }
 
-/* ---- (hookshot) the controls: the gamepad input (by position) and the keys that press each Switch button, from
-   hookshot_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
+/* ---- (hookshot) the controls: the gamepad inputs (by position) and the keys that press each Switch button, from
+   hookshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
    stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
@@ -505,13 +519,25 @@ static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
     {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
-static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
+static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
+static int pad_bind[HOS_SW_N][2];
+static volatile LONG key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 static void binds_default(void) {
-    for (int i = 0; i < HOS_KEY_N; i++) {
-        if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
-        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+    AcquireSRWLockExclusive(&pad_bind_lock);
+    for (int i = 0; i < HOS_SW_N; i++) {
+        pad_bind[i][0] = pad_default[i];
+        pad_bind[i][1] = -1;
     }
+    ReleaseSRWLockExclusive(&pad_bind_lock);
+    for (int i = 0; i < HOS_KEY_N; i++)
+        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+}
+
+static int pad_code(const char *text) {
+    char *end;
+    const long code = strtol(text, &end, 10);
+    return end != text && code >= 0 && code < HOS_PAD_N ? (int)code : -1;
 }
 
 static void binds_load(void) {
@@ -544,11 +570,11 @@ static void binds_load(void) {
             for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
                 changed++;
+                const char *comma = strchr(eq + 1, ',');
                 if (pad) {
-                    const int v = atoi(eq + 1);
-                    pad_bind[i] = v >= 0 && v < HOS_PAD_N ? v : -1;
+                    pad_bind[i][0] = pad_code(eq + 1);
+                    pad_bind[i][1] = comma ? pad_code(comma + 1) : -1;
                 } else {
-                    const char *comma = strchr(eq + 1, ',');
                     const int a = atoi(eq + 1), b = comma ? atoi(comma + 1) : 0;
                     key_bind[i][0] = a > 0 && a < 256 ? a : 0;
                     key_bind[i][1] = b > 0 && b < 256 ? b : 0;
@@ -575,10 +601,15 @@ int hos_binding(int set, int button, int slot) {
     binds_load();
     if (button < 0 || button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1)
         return set == HOS_BIND_PAD ? -1 : 0;
-    return set == HOS_BIND_PAD ? (slot ? -1 : (int)pad_bind[button]) : (int)key_bind[button][slot];
+    if (set != HOS_BIND_PAD) return (int)key_bind[button][slot];
+    AcquireSRWLockShared(&pad_bind_lock);
+    const int code = pad_bind[button][slot];
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return code;
 }
-/* A gamepad input moved to another button gives that one this button's old input (one button an input, none left
-   without); a key moved to it is taken from the others */
+/* A gamepad input already bound to a slot trades places with the input being replaced; into an empty slot it is
+   taken only from a button that keeps another gamepad input (no button left without one). A key moved to a slot
+   is taken from the others. */
 void hos_bind(int set, int button, int slot, int code) {
     binds_load();
     if (button < 0) {
@@ -587,11 +618,28 @@ void hos_bind(int set, int button, int slot, int code) {
     }
     if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
     if (set == HOS_BIND_PAD) {
-        if (slot || code < -1 || code >= HOS_PAD_N) return;
-        const LONG old = pad_bind[button];
-        for (int i = 0; i < HOS_SW_N; i++)
-            if (i != button && code >= 0 && pad_bind[i] == code) InterlockedExchange(&pad_bind[i], old);
-        InterlockedExchange(&pad_bind[button], code);
+        if (code < -1 || code >= HOS_PAD_N) return;
+        AcquireSRWLockExclusive(&pad_bind_lock);
+        const int old = pad_bind[button][slot];
+        if (code >= 0 && code != old) {
+            /* (the input taken from where it is: it gets the replaced input; with none (an empty Input 2), its own
+               other input moves into its Input 1; a button it is the only gamepad input of keeps it, and nothing changes) */
+            for (int i = 0; i < HOS_SW_N; i++)
+                for (int k = 0; k < 2; k++)
+                    if (pad_bind[i][k] == code && old < 0 && pad_bind[i][1 - k] < 0) {
+                        ReleaseSRWLockExclusive(&pad_bind_lock);
+                        return;
+                    }
+            for (int i = 0; i < HOS_SW_N; i++)
+                for (int k = 0; k < 2; k++)
+                    if (pad_bind[i][k] == code) {
+                        if (old >= 0) pad_bind[i][k] = old;
+                        else if (k == 0) pad_bind[i][0] = pad_bind[i][1], pad_bind[i][1] = -1;
+                        else pad_bind[i][1] = -1;
+                    }
+        }
+        pad_bind[button][slot] = code;
+        ReleaseSRWLockExclusive(&pad_bind_lock);
     } else {
         if (code < 0 || code > 255) return;
         for (int i = 0; i < HOS_KEY_N; i++)
@@ -599,6 +647,18 @@ void hos_bind(int set, int button, int slot, int code) {
                 if (code && key_bind[i][k] == code) InterlockedExchange(&key_bind[i][k], 0);
         InterlockedExchange(&key_bind[button][slot], code);
     }
+}
+
+static uint64_t bound_pad_buttons(uint64_t raw) {
+    binds_load();
+    uint64_t buttons = 0;
+    AcquireSRWLockShared(&pad_bind_lock);
+    for (int i = 0; i < HOS_SW_N; i++) {
+        const int a = pad_bind[i][0], alt = pad_bind[i][1];
+        if ((a >= 0 && (raw >> a & 1)) || (alt >= 0 && (raw >> alt & 1))) buttons |= 1ULL << i;
+    }
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return buttons;
 }
 
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
@@ -643,7 +703,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
        or controller wrappers emulate an XInput controller for a pad SDL is already reading (#1480, #1583).
        Only poll XInput when SDL has no open controllers, unless HOS_XINPUT=1 is explicitly requested. */
     static int poll_xinput_env = -1;
-    if (poll_xinput_env < 0) poll_xinput_env = getenv("HOS_XINPUT") != NULL;
+    if (poll_xinput_env < 0) poll_xinput_env = env_on("HOS_XINPUT");
     if (!sdl_pads || poll_xinput_env) {
         if (!xinput_get) {
             static int64_t load_retry;
@@ -698,10 +758,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
     if ((raw & chord) == chord) raw &= ~chord;
-    binds_load();
-    uint64_t b = 0;
-    for (int i = 0; i < HOS_SW_N; i++)
-        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1)) b |= 1ULL << i;
+    const uint64_t b = bound_pad_buttons(raw);
     cached_buttons = b;
     memcpy(cached_stick, s, sizeof s);
     *buttons |= b;
@@ -793,6 +850,9 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
+    /* (hookshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
+       player's devices out while it lasts */
+    if (hos_control_input(buttons, stick)) return;
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
@@ -800,7 +860,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     /* (hookshot) The player's devices count during a script too (the user plays along in test runs, 2026-11-05):
        the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
-    if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
+    if (exclusive < 0) exclusive = env_on("HOS_INPUT_EXCLUSIVE");
     if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
     /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
@@ -808,7 +868,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
        monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
     static int scripted_background = -1;
     if (scripted_background < 0) {
-        scripted_background = getenv("HOS_INPUT_SCRIPT_BACKGROUND") != NULL;
+        scripted_background = env_on("HOS_INPUT_SCRIPT_BACKGROUND");
         if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
     }
     if (!game_in_front() && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
@@ -890,6 +950,8 @@ static void npad_states(Ctx *c) {
             hos_log("hid: the game read no controller for %.1f s (lr %#llx)", (now - last_read) / 1e9,
                     (unsigned long long)c->x[30]);
         if (connected) last_read = hos_hid_last_read = now;
+        void hos_prompts_live(void);   /* (hookshot, prompts.c: a new face or new controls shown at once) */
+        if (connected) hos_prompts_live();
         int known = 0;
         for (int i = 0; i < nseen; i++) known |= seen_ids[i] == id;
         if (!known && nseen < 16) {

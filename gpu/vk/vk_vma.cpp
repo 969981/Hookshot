@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <vector>
 
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 #include "vk_work.h"   // (last: RX_VK_RECORDER=defer drains before the destructions and the invalidate below)
 
 namespace mkwvk {
@@ -100,7 +103,7 @@ VmaPool images_pool() {
     return image_pool;
 }
 
-// (hookshot) The sampled textures' own pool, when they are compacted (RX_VK_COMPACT=1): VMA's defragmentation asks to move any
+// (hookshot) The sampled textures' own pool, when they are compacted (unless RX_VK_COMPACT=0): VMA's defragmentation asks to move any
 // allocation of the pool it works on, and only vk_texture.cpp's images can be moved (it knows what they hold and who uses
 // them) or kept from being freed while a pass is open. The render targets' images stay in their blocks above; DLSS's, the
 // frame interpolation's and the scratch ones in the images' pool
@@ -196,7 +199,7 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
         dai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         if (vmaCreateImage(vma, &ci, &dai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
     }
-    static const bool no_pool = getenv("RX_VK_NO_IMAGE_POOL") != nullptr;
+    static const bool no_pool = env_on("RX_VK_NO_IMAGE_POOL");
     if (VmaPool pool = no_pool ? VK_NULL_HANDLE
                        : textures && textures_pool() ? textures_pool()
                        : target && target_images_pool() ? target_images_pool() : images_pool()) {
@@ -215,7 +218,7 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     }
     // (hookshot) VRAM is full (a 4 GB card at a high resolution, #96): an image left unmade is a black screen, so it goes
     // to system memory instead, slow but drawn
-    if (getenv("RX_VK_IMAGES_VRAM_ONLY")) return false;
+    if (env_on("RX_VK_IMAGES_VRAM_ONLY")) return false;
     VmaAllocationCreateInfo sai{};
     sai.usage = VMA_MEMORY_USAGE_AUTO;
     if (vmaCreateImage(vma, &ci, &sai, &image, &allocation, nullptr) != VK_SUCCESS) return false;
@@ -241,7 +244,7 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
     if (host_visible) ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     // (a buffer with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT from VMA:
     // vma_init sets VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT)
-    static const bool blocks = getenv("RX_VK_BLOCK_BUFFERS") != nullptr;
+    static const bool blocks = env_on("RX_VK_BLOCK_BUFFERS");
     if (dedicated && !blocks) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
@@ -272,6 +275,12 @@ void flush_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size
 }
 void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaInvalidateAllocation(vma, allocation, 0, size);
+}
+bool flush_mapped_checked(VmaAllocation allocation, uint64_t size) {
+    return !size || vmaFlushAllocation(vma, allocation, 0, size) == VK_SUCCESS;
+}
+bool invalidate_mapped_checked(VmaAllocation allocation, uint64_t size) {
+    return !size || vmaInvalidateAllocation(vma, allocation, 0, size) == VK_SUCCESS;
 }
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);

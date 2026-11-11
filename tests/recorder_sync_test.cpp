@@ -27,6 +27,9 @@
 #ifdef _WIN32
 #include <malloc.h>
 #endif
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "vk_work.h"
 
@@ -987,6 +990,17 @@ static void oversize() {
     draws_into(kCmd, 20, 1);
     recording_end(6);
 }
+/// The same packet first, the ring empty (the recorder just started, at the ring's start): the ring has room for it, the packet's
+/// room has not, so it is still made directly (the room alone decides, not how far the recorder has got)
+static void oversize_first() {
+    recording_begin();
+    std::vector<uint8_t> big(4096);
+    for (size_t i = 0; i < big.size(); i++) big[i] = (uint8_t)(i * 7);
+    vkCmdUpdateBuffer(kUp, H<VkBuffer>(0xE200), 0, big.size(), big.data());
+    if (g_mutate) poison(big.data(), big.size());
+    draws_into(kCmd, 20, 2);
+    recording_end(7);
+}
 /// Teardown with work queued: g_at_stop runs with frames in flight (the recorder stopped and joined), then more is recorded (the
 /// recorder started again), then vkDestroyDevice (stopped again: its boundary)
 static void (*g_at_stop)() = nullptr;
@@ -1551,6 +1565,17 @@ static void thread_checks(const std::vector<Call>& ref) {
         check_run("thread, a packet bigger than its room (4 KB vkCmdUpdateBuffer, 2 KB room): made directly in order", oref.log,
                   run_tracked(oversize, rec::THREAD, true));
         if (rec::g_rec.direct.load() - d0 != 1) std::printf("FAIL thread oversize: %llu calls made directly, 1 expected\n", (unsigned long long)(rec::g_rec.direct.load() - d0)), failures++;
+        // (again with the ring empty: stopped, its counters moved on to the ring's start, so the 8 KB free ahead of the first
+        // packet would hold it; the 2 KB room must still decide)
+        rec::g_rec.stop();
+        const uint64_t at = (rec::g_rec.W.load() + 8191) & ~uint64_t(8191);
+        rec::g_rec.W.store(at), rec::g_rec.R.store(at);
+        const uint64_t d1 = rec::g_rec.direct.load();
+        check_run("thread, the same packet first with the ring empty: made directly in order",
+                  run_tracked(oversize_first, rec::OFF, false).log, run_tracked(oversize_first, rec::THREAD, true));
+        if (rec::g_rec.direct.load() - d1 != 1)
+            std::printf("FAIL thread oversize, ring empty: %llu calls made directly, 1 expected\n",
+                        (unsigned long long)(rec::g_rec.direct.load() - d1)), failures++;
         rec::g_rec.stop();
         rec::g_ring_bytes = bytes, rec::g_ring_room = room;
     }
@@ -1600,6 +1625,9 @@ static void thread_checks(const std::vector<Call>& ref) {
 int main(int argc, char** argv) {
 #ifdef _WIN32
     SetErrorMode(0x0002 | 0x0001);   // (SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)
+#endif
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);   // (a fault or abort ends it without a core dump: no crash report, no notification)
 #endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a broken variant may end the process: what it printed before is kept)
     // (the switch as the renderer reads it: first use, from the environment)
