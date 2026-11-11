@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +42,8 @@ def main():
         if Path(args.cc).name.lower() in ("cl", "cl.exe"):
             flags = ["/nologo", "/TC", "/W4", "/WX", f"/Fe:{executable}"]
         else:
-            flags = ["-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-o", str(executable)]
+            flags = ["-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-Wno-unknown-warning-option", "-Wno-unused-but-set-global",
+                     "-o", str(executable)]   # (newer clang: a fixture global set and never read)
         subprocess.run([args.cc, *flags, str(c_file)], cwd=temp, check=True)
         subprocess.run([str(executable)], check=True)
 

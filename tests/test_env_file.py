@@ -39,7 +39,11 @@ def main():
         (game / "hookshot_env.txt").write_text(
             "HOS_T_BESIDE=1\nHOS_T_SHARED=beside\nVK_ADD_LAYER_PATH=/x\nLD_PRELOAD=/x.so\nPATH=C:\\x\nSDL_DYNAMIC_API=/x.so\n"
             "HOS_ENV_FILE=other.txt\nHOS_SAMPLE_FILE=/home/x/.bashrc\nRX_VK_DUMP_DIR=C:\\Users\\x\nRX_VK_SKIP_CODE=2c56,ab\n"
-            "RX_VK_DLSS_DIR=/opt/ngx\nHOS_T_HOME=~\n", encoding="utf-8")
+            "RX_VK_DLSS_DIR=/opt/ngx\nHOS_T_HOME=~\nSDL_VULKAN_LIBRARY=x.dll\nSDL_VIDEO_EGL_DRIVER=x.so\n"
+            "SDL_AUDIODRIVER=pulseaudio\nHOS_T_UP=..\nHOS_SAMPLE_FILE=hookshot_vk.dll\nRX_VK_FRAME_LOG=x.txt\n"
+            "RX_VK_DUMP_DIR=dumps\nHOS_PRESENT_TRACE=t.txt\nRX_VK_DLSS_DIR=\\\\server\\share\n"
+            "HOS_AUDIO_DUMP=image.bin\nRX_VK_HANG_DUMP=hookshot_options.ini\nRX_VK_SHOTS=user\n"
+            "HOS_INPUT_SCRIPT=1:A,2:A\nRX_VK_MENU_SCRIPT=1:INS\n", encoding="utf-8")
         (tmp / "test_env.txt").write_text("# a test run's own switches\nHOS_T_OTHER=1\nHOS_T_SHARED=other\n"
                                           "VK_T_LAYER=/y\n", encoding="utf-8")
         exe = str(game / "hookshot").replace("\\", "\\\\")
@@ -75,7 +79,12 @@ int main(int argc, char **argv) {
     CHECK(is("HOS_T_BESIDE", "1") && is("HOS_T_SHARED", "beside") && is("HOS_T_OTHER", NULL));
     CHECK(is("VK_ADD_LAYER_PATH", NULL) && is("SDL_DYNAMIC_API", NULL) && is("HOS_ENV_FILE", NULL));
     CHECK(is("HOS_SAMPLE_FILE", NULL) && is("RX_VK_DUMP_DIR", NULL) && is("HOS_T_HOME", NULL));
+    CHECK(is("HOS_AUDIO_DUMP", NULL) && is("RX_VK_HANG_DUMP", NULL) && is("RX_VK_SHOTS", NULL));
+    CHECK(is("HOS_INPUT_SCRIPT", NULL) && is("RX_VK_MENU_SCRIPT", NULL));
     CHECK(is("RX_VK_SKIP_CODE", "2c56,ab") && is("RX_VK_DLSS_DIR", "/opt/ngx"));
+    CHECK(is("SDL_VULKAN_LIBRARY", NULL) && is("SDL_VIDEO_EGL_DRIVER", NULL) && is("HOS_T_UP", NULL));
+    CHECK(is("SDL_AUDIODRIVER", "pulseaudio") && is("HOS_SAMPLE_FILE", NULL) && is("RX_VK_FRAME_LOG", NULL));
+    CHECK(is("RX_VK_DUMP_DIR", NULL) && is("HOS_PRESENT_TRACE", NULL));
     CHECK(getenv("LD_PRELOAD") == NULL || strcmp(getenv("LD_PRELOAD"), "/x.so"));
     CHECK(getenv("PATH") == NULL || strcmp(getenv("PATH"), "C:\\x"));
 

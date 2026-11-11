@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -36,7 +38,7 @@ def main():
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL:%d %s\n",__LINE__,#x); std::exit(1); } } while (0)
 struct Texture {
-    VkImage image=(VkImage)1; VkImageType type=VK_IMAGE_TYPE_2D;
+    VkImage image=(VkImage)1; VkImageType type=VK_IMAGE_TYPE_2D; VkFormat format=VK_FORMAT_R8G8B8A8_UNORM;
     VkImageAspectFlags aspect=VK_IMAGE_ASPECT_COLOR_BIT;
     uint64_t gpu=0x1000;
     uint32_t width=64,height=32,depth=1,layers=4,levels=4,skip=0;

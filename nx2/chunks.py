@@ -20,6 +20,7 @@ import glob
 import multiprocessing
 import os
 import re
+import whole_write   # (rewrites written beside and moved over: issue 1197)
 
 import a64_lift
 import lifted_c
@@ -282,8 +283,7 @@ def split_big(gen_dir, files, budget=None):
         for j in range(len(cuts)):
             out = path if j == 0 else os.path.join(gen_dir, "code_%s_%d.c" % (m.group(1), j))
             piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
-            with open(out, "w", encoding="utf-8", newline="\n") as f:
-                f.write(piece)
+            whole_write.write_whole(out, piece)
             costs[os.path.basename(out)] = len(preamble) + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])
             if j:
                 made.append(out)
@@ -301,4 +301,4 @@ def edit_c(gen, stats, supported, whole=True):
     group of stores shared (a64_lift.group_marks), which changes that text. stats: the lift's, for its report"""
     import oot_patches
     oot_patches.apply(gen, protect_hearts=supported, required=supported and whole)
-    a64_lift.group_marks(sorted(glob.glob(os.path.join(gen, "code_*.c"))), stats)
+    a64_lift.group_marks(sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))), stats)

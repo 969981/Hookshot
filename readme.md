@@ -62,7 +62,7 @@ the table says what works and what does not yet.
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Some tested: reports from the RX 6600, RX 7800 XT and RX 7900 XTX. Known issue: the game loses the GPU in the Deku Tree on the RX 6600 ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#17](https://github.com/NotRexed/Hookshot/issues/17)) |
-| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. A fallback was tried and taken out again for now ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
+| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. Since v2.0.6 a fallback runs the mesh programs as compute shaders on cards with buffer device addresses ([#640](https://github.com/NotRexed/Hookshot/issues/640)); it leaves out the mesh draws that take their count from a buffer |
 | Linux | ✅ Works with the AppImage. Tested on several distributions (CachyOS, Fedora, Bazzite, SteamOS) and cards, with open problems on some AMD cards ([#604](https://github.com/NotRexed/Hookshot/issues/604), [#528](https://github.com/NotRexed/Hookshot/issues/528)) |
 
 ## Install and play
@@ -75,13 +75,15 @@ you start the game from its launcher, which also updates it.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS ...) and a CPU with AVX2.
+  SteamOS ...) and a CPU with AVX2. The Linux AppImage needs AVX2; on Windows, and in a build from source, a CPU
+  without it gets a game built for what it has, a little slower.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
   not supported.
 - 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
 - 16 GB of RAM or more. A run uses about 10 GB.
-- About 60 GB free while building.
+- About 60 GB free while building, on an SSD if you can: a hard drive makes the build much slower. You can build on one
+  anyway; the builder says so first.
 - An internet connection for the download. Nothing else to install: the builder brings its own compiler and tools.
 
 ### On Windows
@@ -121,11 +123,15 @@ The game is also added to your applications menu as "Hookshot". That entry, and 
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
 
+The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
+script: see [Linux, the AppImage from the command line](#build-from-source).
+
 ### Updating
 
 When a new release is out, the launcher says "Update available". Press **Update**: in `hookshot.exe` on Windows, or in
 `hookshot` (or the AppImage) on Linux. It downloads only the parts that changed and builds the game again in the same
-folder, compiling only what changed. Your saves and settings are kept. What changed is on the
+folder. The build files of the last build are gone by then (see [Where the files go](#where-the-files-go)), so an
+update takes about as long as the first build. Your saves and settings are kept. What changed is on the
 [Releases page](https://github.com/NotRexed/Hookshot/releases).
 
 <details>
@@ -153,9 +159,10 @@ with `--update <game folder>`.
 - The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
   `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
 - The romfs is hard-linked instead of copied where the disk allows it.
-- The builder keeps its build files (about 4 GB) so that updates are quick. None of them are needed to play: on
-  Windows, **Free up space** on the "Your game is ready" page deletes them, and the build files folder can be moved
-  before a build (**Change**, **Default**).
+- The build files (about 4 GB: the translated code and the compiled objects) are deleted once the game is ready. None
+  of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
+  `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
+  deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
 - Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
   earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
   arguments](#running-the-game-from-the-command-line)).
@@ -173,13 +180,30 @@ with `--update <game folder>`.
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |
 | Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
-| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see *Switches for testing* below, [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
+| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
+
+#### Low FPS or stutter
+
+Walk through the same spot twice after shader preparation finishes. Note whether the slowdown clears on the
+second pass or lasts until you restart the game. For a slowdown after an update, compare the same spot and
+settings on both versions if you still have the earlier build. Turn off **Frame generation** for both runs so the
+FPS reflects game frames, and keep the resolution, upscaler and frame rate cap the same.
+
+Attach the log from the slow run and, if available, the one from the earlier build. Say where the FPS dropped and
+keep the lines around the drop that show `presents`, `GPU time`, `waits for shaders or pipelines`, `VRAM:` and
+`memory heaps`. Compare total and per-heap memory use with the driver's allowances. The texture cache has a
+separate budget on the `VRAM:` line.
+
+If the GPU time stays high, a separate run with `RX_VK_PASS_TIMING=1` in `hookshot_env.txt` reports which GPU
+passes take the time every 600 presents. Keep the unprofiled log for the FPS comparison since the timing itself
+adds work. Remove the switch after collecting the log. The [development guide](docs/development.md#time-and-profiles)
+has more switches.
 
 #### AMD texture workaround
 
@@ -198,90 +222,139 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 
 ## In-game menu
 
-Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home button (or Select and Start together).
-The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
+By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
+a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
+The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
+<kbd>Insert</kbd> free for another overlay. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
-a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
-(<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own, what the
-value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the right
-one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
+a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
+change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
+what the value chosen does. On a controller the D-pad chooses and changes, A changes too and opens a page (Motion,
+Controls, the Teleport list, the inventory), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
+on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click a row's name to choose it (its
+value stays), click the left or right half of a value to lower or raise it, drag a slider, turn the wheel to scroll the rows (it never changes a value), and right-click to go back. The
+button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
+in `hookshot_options.ini` in the game folder.
 
-The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
-restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
+The menu, the FPS counter and the start-up screen are drawn in the style of the game's own menus. They use the game's
+own menu font, read into memory from your game files (the romfs folder the game runs from) the first time one of them is
+drawn. It is never copied anywhere, and Hookshot does not include it. Without it, or if it has no Latin letters, they use
+Libertinus, which Hookshot includes.
+
+The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
+restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
+
+A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-Lag 2 without a GPU and driver that
+have them, the Upscaler where nothing but the game's own runs, the DLSS model where DLSS does not run. HDR paper white and
+HDR peak brightness show only while HDR is on.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | Frame generation | Off, 2x to 8x | Off |
+| | Frame generation | Off, Auto, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
-| | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
-| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
+| | HDR | Off, Expanded, Native (the game's) | Off |
+| | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
+| | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
+| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
+| | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
+| | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
+| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
-| | Handheld profile | Off, On (after a restart) | Off |
+| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
+| | Profile | Docked, Handheld (after a restart) | Docked |
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
+| Audio | Volume | 0 to 100%, in steps of 5 | 100% |
+| | Mute in background | Off, On | Off |
+| | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
+| | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
-| | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
+| | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
+| | Disable camera centering | Off, On | Off |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
-| | Motion controls | Off, On | On |
-| | Motion sensitivity X | 10% to 600% | 100% |
-| | Motion sensitivity Y | 10% to 300% | 100% |
-| | Invert motion X | Off, On | Off |
-| | Invert motion Y | Off, On | Off |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
+| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
+| | Menu shortcut | Insert or F1, F1 only | Insert or F1 |
 
-- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
-  speed, Handheld profile and the video memory limits for a card with that much memory. It leaves the Upscaler as you
-  chose it: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself sets it
-  back to Custom.
+- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile
+  and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
+  you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other
+  rows yourself sets it back to Custom.
+- **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn: Medium unless you choose Small
+  (a desk) or Large (a TV across the room). It stays the same whether you use a controller or the keyboard and mouse.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
-  show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
+  show artifacts. The renderer's own interpolation makes the frames; at 2x, AMD FSR 3.1's frame interpolation can make
+  it instead with `RX_VK_FSR_FG=1` (below: it moves the HUD with the scene, so it is not the default). **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  the frames that frame generation shows, so it has no effect while Frame generation is Off.
+- **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
+  can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
+  A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
+  misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
-  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
+  included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
+  edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
+  **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
-  profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
+  Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
-  3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. For one run, set `HOS_OUTPUT_RES`
-  to `3` for 1920x1080, `0` for 2048x1152, `1` for 2560x1440, or `2` for 3840x2160.
+  3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
+  monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
+  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
+  stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
+  `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
+  pixels, and between 5:4 and 32:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
+  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 3840x2160's pixels, so above that a wide size is not a
+  native frame. For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.
+- **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
+  asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
+  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+- **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
+  mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
+  detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
-- **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
+- **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
+- **Profile** runs the game as the console docked (at the Output resolution) or Handheld (1536x864): lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
+- **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
+  follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
+  game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window
+  while the game was in front.
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
   down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
@@ -294,14 +367,18 @@ choices and starts the game again, so progress since your last save is lost.
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
+- **Disable camera centering:** On stops the game gradually turning the camera toward your movement, so it does not fight
+  native mouse look. Off keeps the game's standard behavior. Changes apply immediately with either Mouse camera mode.
+  Manual controls, explicit recentering and scripted camera headings still work; automatic pitch adjustment is unchanged.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
-- **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
-  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+- **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
-  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Motion follows the pad used
+  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. The game gets the motion
+  state as a Switch (and Eden) builds it, so how you hold the pad when motion starts does not matter. Motion follows the pad used
   last. The gyroscope's drift is learned while the pad rests on a table, so set it down for a second if the aim
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
@@ -312,6 +389,13 @@ choices and starts the game again, so progress since your last save is lost.
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
+
+**Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
+Time and Map pages, the options and the save dialogs free the mouse while they are shown. Point at an entry to select
+it, left-click to choose it (A) and right-click to go back (B); the tabs, the L and R signs and the Back prompt can be
+clicked too. The wheel turns the pause menu's pages and scrolls lists; on the map it changes floors and zooms. Drag
+with the left button to pan the map and the tapestry or turn a stone on Key Items. The cursor stays hidden while you
+play on a controller or the keyboard, until the mouse moves.
 
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
@@ -385,11 +469,12 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 Add `--log "C:\path\build.log"` to also save the build's output to a file (UTF-8, replaced if it exists); it works
 with `--check` and `--update` too, and on Linux.
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now; up to 4 always run.
 
 You need:
 
 - Python 3 from python.org (the Microsoft Store's Python installs packages where `python -I` does not look), with
-  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`.
+  `pip install -r requirements.txt` (core tools plus the button-prompt packages).
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
   clone or with `HOOKSHOT_MINGW` set to its folder. Without it the build uses the clang from
   [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools and the Windows SDK
@@ -397,8 +482,9 @@ You need:
 - What the builder's `tools` folder carries and a clone does not. Run `HookshotBuilder.exe` once: the folder is
   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`. The builder sets the variables itself;
   from the command line, set them before you run `make_game.py`:
-  - `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it the build leaves out
-    `hookshot_vk.dll`, the Vulkan renderer, and says nothing.
+  - `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it (and without system
+    Vulkan / SPIR-V / VMA headers or `HOOKSHOT_*_HEADERS`), the standalone build stops instead of shipping a
+    game with no renderer.
   - `tools\wgpu-native`: set `WGPU_NATIVE` to this folder.
   - `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic` and SDL2). Copy its `.dll`,
     `.exe`, `.lib` and `.sha1` files to the same places under `third_party\`.
@@ -419,6 +505,8 @@ You need:
 ```
 
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>` with `--cli`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now. Linux stops a compiler
+that does not fit; it is then compiled again alone at the end.
 
 In a game folder, `hookshot` is the launcher and the game itself is `bin/hookshot`. The builder's settings are in
 `~/.config/hookshot/builder.ini`.
@@ -429,9 +517,9 @@ In a game folder, `hookshot` is the launcher and the game itself is `bin/hooksho
 <summary>Linux, without the AppImage</summary>
 
 You need `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one builds without it), Python 3 with
-`lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files (with dav1d, for the movies) and
-SDL3 (SDL2 works too). Then run `python -I nx2/make_game.py ...` as on Windows, with `RX_CPM` pointing at a folder with Vulkan-Headers,
-SPIRV-Headers and VulkanMemoryAllocator in CPM's layout.
+`pip install -r requirements.txt`, FFmpeg's development files (with dav1d, for the movies) and SDL3 (SDL2 works too).
+Then run `python -I nx2/make_game.py ...` as on Windows. Vulkan / SPIR-V / VMA headers come from the distro, from
+`HOOKSHOT_*_HEADERS`, or from a CPM cache via `RX_CPM`.
 
 `scripts/linux/deps.sh` fetches and builds all of these into `build-linux/deps`, and `scripts/linux/appimage.sh` makes
 the AppImage from them. A folder built from a source checkout has no launcher: `hookshot` there is the game.
@@ -458,9 +546,9 @@ use them.
 |---|---|
 | `image.bin` | The game image to run. Without it the game uses the `image.bin`, `romfs` and `user` in its folder |
 | `--romfs <folder>` | The extracted RomFS folder |
-| `--user <folder>` | Where the game keeps per-user data: saves, caches, temp files and `mouse_sens.txt`. Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
+| `--user <folder>` | Where the game keeps per-user data: saves, caches and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
-| `--prepare-shaders` | Prepare the shaders and exit without starting the game (the build's last step) |
+| `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
 
 For example, keep saves somewhere else:
 
@@ -475,6 +563,21 @@ cd ~/Games/Hookshot
 ```
 
 `hookshot_env.txt` and the other test switches are documented below.
+
+<details>
+<summary>AMD FSR 3.1 (every build)</summary>
+
+**AMD FSR 3.1** in the Graphics tab's **Upscaler** row (`dlss=3` in `hookshot_options.ini`; `RX_VK_FSR=1` for one run,
+`RX_VK_FSR=0` never) upscales in place of the game's own network, and with **Frame generation** at 2x its frame
+interpolation can make the frame in between with `RX_VK_FSR_FG=1` (opt-in: the game draws its HUD into the same picture
+and FSR 3.1 has no HUD-less colour to keep it still, so the HUD smears; by default the renderer's own makes it). Both are AMD's FidelityFX
+SDK 1.1.4 shaders (`third_party/fidelityfx-sdk`, MIT), compiled into the renderer: no AMD runtime or DLL is needed, and
+the row offers FSR 3.1 on any Vulkan 1.3 GPU with push descriptors, extended storage image formats and storage writes
+without a format (`vk: fsr3: ... can run on this GPU` in the log). Its inputs are the scene's colour, its depth, motion
+from the camera, and the same camera jitter DLSS uses (`RX_VK_FSR_JITTER=0` turns it off); things that move by
+themselves can trail for now.
+
+</details>
 
 <details>
 <summary>NVIDIA DLSS (optional, NVIDIA's SDK under NVIDIA's license)</summary>
@@ -529,25 +632,60 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 </details>
 
 <details>
+<summary>AMD FSR 4 (optional, AMD's DLLs not included)</summary>
+
+A game built with FSR 4 offers **AMD FSR 4** and **AMD FSR 4 Native AA** in the Graphics tab's **Upscaler** row: AMD's
+machine-learned temporal upscaler in place of the game's own, on the same inputs as DLSS (the scene's colour and depth, the
+camera's and the characters' motion, and the camera jitter). Native AA draws the 3D at full size and smooths its edges.
+Unlike FSR 3.1 (above), it runs AMD's own DLLs, so it needs them beside the game. Choose it in the menu (`dlss=4` or `5`
+in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to leave it out).
+
+- **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. Nothing is downloaded.
+- **The command line:** `make_game.py --fsr` (or `HOOKSHOT_FSR=1` for `nx2/build.py`). Rebuilding a folder built with
+  it (`--update`) keeps it; `--no-fsr` takes it out.
+- **AMD's files:** Hookshot includes only AMD's MIT-licensed API headers (`third_party/fidelityfx`). Put
+  `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
+  [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
+  beside the game's exe (`bin\hookshot.exe`) or in the game folder. (`RX_VK_FSR_DIR` names another folder, for testing:
+  set it in the environment or a `HOS_ENV_FILE` file; `hookshot_env.txt` takes no paths.) Without them the Upscaler row
+  says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
+  takes their place.
+
+The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
+never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
 line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
 `hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
-`NVN_`, `TOTK_` or `SDL_`), and no value that is a path except `RX_VK_DLSS_DIR`'s; other lines are left out, and the
-log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
+`NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
+`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no value at all for the switches that name a file
+or folder (`HOS_AUDIO_DUMP`, `RX_VK_SHOTS` and the like) or press buttons on a timer (`HOS_INPUT_SCRIPT`,
+`RX_VK_MENU_SCRIPT`); other lines are left out, and the log says so. Switches that need a path, or other variables, go
+in a file named by `HOS_ENV_FILE`.
 
-To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,
-press **Insert**, then open **Gameplay → Cheats**.
+To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
+`hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
+always shown, has the Descriptor reuse and Sampler cache rows.
+
+`RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
+menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
+for screenshots.
 
 For a first run on a 4 GB card such as a GTX 1650, `RX_VK_LOW_SPEC=1` starts with the Minimum (4GB) preset, with
 frame generation and upscaling off. It applies only when there is no `hookshot_options.ini` yet; after that, change
 the settings in the in-game menu.
 
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movies' neural upscale with the plain linear one. The default, `auto`, keeps
-the networks and falls back only when a movie frame takes the GPU more than 40 ms. It does not change the gameplay
-upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the movie networks.
+the networks and falls back only when a movie frame takes the GPU more than 40 ms. That is on NVIDIA cards: on other
+cards, or where the GPU cannot multiply the networks' matrices itself, the movies always get the linear upscale. It does
+not change the gameplay upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the
+movie networks.
 
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`
@@ -556,13 +694,14 @@ task shader (a culling pass) until the kernel resets it ([#817](https://github.c
 It is a workaround, not a fix: those are task + mesh programs, so the geometry they draw goes with them, and key models
 are missing while it is set. Off unless set.
 
-`RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
-the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:
-that task shader walks a coarse depth grid cell by cell for every meshlet and ends with
-`visible = (result & 1) | (c3[2320] & 4)`, bit 4 being the game's own "draw everything". The switch makes that answer
-true, and dead code elimination removes the grid walk, so every meshlet is drawn and the rasterizer clips what is off
-screen. It costs some GPU time on cards that cull quickly, so it is off unless set. The log says
-"culling off, every meshlet drawn" for each task shader it changed.
+The switches for scripted test runs, screenshots, frame dumps and profiles are in the
+[development guide](docs/development.md#switches-for-testing-and-debugging).
+
+`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
+lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
+memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
+`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
+same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
 </details>
 
@@ -606,21 +745,26 @@ Hookshot exists thanks to the work of many people:
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **NVIDIA DLSS**: builds made with NVIDIA's DLSS SDK (optional, downloaded by each build, never bundled) use NVIDIA DLSS
   Super Resolution, NVIDIA's technology. NVIDIA and DLSS are trademarks of NVIDIA Corporation.
+- **AMD FSR 3.1 and FSR 4**: every build has AMD FidelityFX Super Resolution 3.1, built from AMD's MIT-licensed FidelityFX
+  SDK shaders; builds made with FSR 4 (optional; AMD's DLLs are never bundled) use AMD FidelityFX Super Resolution 4
+  through AMD's MIT-licensed FSR API headers. Both are AMD's technology. AMD, Radeon and FidelityFX are trademarks of Advanced Micro
+  Devices, Inc.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
-- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (the
-  exposure flicker and fog fixes, build speed, CI), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
+- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (NVIDIA
+  DLSS, DLAA and Reflex, the exposure flicker and fog fixes, build speed, CI), madebyjordan (AMD FSR 4.1), N3oTraX (FSR 4 on
+  Linux), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
   d3zessete, chrispository, vzeol, leonidasmark, Segmentree, ShyVortex, hiKareeem and i900gaming, among others.
 
 ## License
 
 Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
 It includes code from Eden, suyu and Orchid, which are under the GPL too. Third-party parts under other licenses that
-work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, stb, zbic and the a64-kit tools) keep their own notices
-in their folders.
+work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts, zbic and the
+a64-kit tools) keep their own notices in their folders.
 
 Hookshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
 Time are trademarks of Nintendo.

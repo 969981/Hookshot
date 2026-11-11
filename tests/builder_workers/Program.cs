@@ -15,8 +15,8 @@ static class Program
         checks++;
     }
 
-    static ProcessStartInfo Info(Tools tools, string[] args, int? workers = null) =>
-        (ProcessStartInfo)InfoMethod.Invoke(null, new object?[] { tools, args, workers, null })!;   // (ngxSdk: none)
+    static ProcessStartInfo Info(Tools tools, string[] args, int? workers = null, int? memoryGb = null) =>
+        (ProcessStartInfo)InfoMethod.Invoke(null, new object?[] { tools, args, workers, null, memoryGb })!;   // (ngxSdk: none)
 
     static async Task<JsonElement> Delivery(ProcessStartInfo info)
     {
@@ -50,6 +50,35 @@ static class Program
         Require(value.GetProperty("jobs").GetString() == "", "Automatic changed an inherited empty entry.");
     }
 
+    /// The shaders' step: the update's argument from the saved choice (the launcher's Update and the --update start read it, not
+    /// the tick), and what the row says when make_game left the shaders to the first start
+    static void ShaderStepChecks(string root)
+    {
+        var settings = Path.Combine(root, "builder-settings.json");
+        Require(BuilderSettings.PrepareNow(settings), "No saved settings must prepare the shaders, as the tick's default.");
+        File.WriteAllText(settings, "not json");
+        Require(BuilderSettings.PrepareNow(settings), "Unreadable settings must prepare the shaders.");
+        File.WriteAllText(settings, """{"Out":"authored output","PrepareLater":true}""");
+        Require(!BuilderSettings.PrepareNow(settings), "A saved unticked choice must leave the shaders to the first start.");
+        Require(ShaderStep.Args(new List<string> { "--update", "authored game" }, BuilderSettings.PrepareNow(settings))
+                .SequenceEqual(new[] { "--update", "authored game", "--no-prepare-shaders" }), "The update ignored the saved choice.");
+        File.WriteAllText(settings, """{"Out":"authored output","PrepareLater":false}""");
+        Require(ShaderStep.Args(new List<string> { "--update", "authored game" }, BuilderSettings.PrepareNow(settings))
+                .SequenceEqual(new[] { "--update", "authored game" }), "A saved ticked choice must prepare the shaders.");
+
+        Require(ShaderStep.Reason("the shaders were not prepared now (no usable Vulkan here): the game prepares them at its first start")
+                == "no usable Vulkan here", "make_game's not-prepared line was not read.");
+        Require(ShaderStep.Reason("the shaders were not prepared now (\"Prepare shaders now\" is unticked (here)): the game prepares them at its first start")
+                == "\"Prepare shaders now\" is unticked (here)", "A reason with brackets was cut.");
+        Require(ShaderStep.Reason("@@stage shaders Preparing shaders") is null && ShaderStep.Reason("done shaders") is null,
+                "Other lines are not a skipped step.");
+        Require(ShaderStep.Skipped(began: true, reason: null) is null, "Prepared shaders must get their check mark.");
+        Require(ShaderStep.Skipped(began: false, reason: null) is { } none && none.Contains("first start"),
+                "No @@stage shaders (an older make_game, or none ran) must not be a check mark.");
+        Require(ShaderStep.Skipped(began: true, reason: "the game printed nothing for 15 minutes and was stopped") is { } stopped
+                && stopped.Contains("15 minutes"), "A stopped preparation must say why under its row.");
+    }
+
     static async Task Main(string[] args)
     {
         if (args.Length is < 1 or > 2) throw new Exception("Pass the Python executable for the authored child.");
@@ -63,7 +92,7 @@ static class Program
             // This is authored test content, not the real pipeline, game files or a compiler invocation.
             File.WriteAllText(Path.Combine(root, "nx2", "make_game.py"), """
                 import json, os, sys
-                text = json.dumps({'argv': sys.argv[1:], 'jobs': os.environ.get('HOOKSHOT_JOBS')})
+                text = json.dumps({'argv': sys.argv[1:], 'jobs': os.environ.get('HOOKSHOT_JOBS'), 'memory': os.environ.get('HOOKSHOT_MEM_LIMIT_GB')})
                 print(('@@check ok ' if '--check' in sys.argv else '') + text, flush=True)
                 """);
             var tools = new Tools(root, python);
@@ -74,6 +103,7 @@ static class Program
                 return;
             }
 
+            ShaderStepChecks(root);
             Require(BuildWorkers.Choices(4).SequenceEqual(new object[] { BuildWorkers.Automatic, 1, 2, 3, 4 }),
                 "The menu must offer Automatic first and one count per logical processor.");
             Require(BuildWorkers.Choices(0).SequenceEqual(new object[] { BuildWorkers.Automatic, 1 }), "CPU fallback must still offer one worker.");
@@ -87,6 +117,46 @@ static class Program
             {
                 try { new Runner(tools, new List<string>(), invalid); throw new Exception("Invalid worker count accepted."); }
                 catch (ArgumentOutOfRangeException) { checks++; }
+            }
+
+            Require(BuildMemory.Choices(32).SequenceEqual(new object[] { BuildMemory.Automatic, 4, 8, 12, 16, 20, 24, 28, 32 }),
+                "The memory menu must offer Automatic first, then steps up to the PC's memory.");
+            Require(BuildMemory.Choices(64).Count() == 17 && BuildMemory.Choices(64).Last() is 64,
+                "A 64 GB PC must be offered every step up to 64.");
+            Require(BuildMemory.Choices(31).Last() is 32 && BuildMemory.Choices(8).Last() is 8,
+                "The memory menu must end on the step at or just above the PC's memory.");
+            Require(BuildMemory.Choices(0).SequenceEqual(new object[] { BuildMemory.Automatic }), "An unknown total must still offer Automatic.");
+            Require(BuildMemory.TotalGb() > 0, "The PC's memory could not be read.");
+            Require(BuildMemory.Selected(BuildMemory.Automatic) is null && BuildMemory.Selected(8) == 8, "Memory selection failed.");
+            var menu = BuildMemory.Choices(32).ToList();
+            Require(BuildMemory.Saved(menu, 12) is 12, "A saved memory choice must be selected again.");
+            Require(BuildMemory.Saved(menu, null) is string none && none == BuildMemory.Automatic, "No saved choice must select Automatic.");
+            Require(BuildMemory.Saved(menu, 64) is string gone && gone == BuildMemory.Automatic, "A choice this PC no longer offers must select Automatic.");
+            var settings = Path.Combine(Path.GetTempPath(), "hookshot-builder-settings-" + Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                File.WriteAllText(settings, System.Text.Json.JsonSerializer.Serialize(new BuilderSettings { MemoryGb = 16 }));
+                Require(BuilderSettings.Load(settings)?.MemoryGb == 16, "The memory choice must be saved for the updates.");
+                File.WriteAllText(settings, "{\"Dlss\":true}");
+                Require(BuilderSettings.Load(settings) is { MemoryGb: null }, "Settings saved before the memory choice must mean Automatic.");
+            }
+            finally { File.Delete(settings); }
+            foreach (var invalid in new object?[] { null, "8", "automatic", 0, -4, 8L, new object() })
+            {
+                try { BuildMemory.Selected(invalid); throw new Exception("Invalid memory selection accepted."); }
+                catch (ArgumentException e) { Require(e.Message.Contains("Automatic"), "Invalid memory choice needs an actionable message."); }
+            }
+            foreach (var invalid in new[] { 0, -4 })
+            {
+                try { new Runner(tools, new List<string>(), null, null, invalid); throw new Exception("Invalid memory accepted."); }
+                catch (ArgumentOutOfRangeException) { checks++; }
+            }
+            {
+                var command = new[] { "--update", "authored existing game" };
+                Info(tools, command).Environment.TryGetValue("HOOKSHOT_MEM_LIMIT_GB", out var automatic);
+                Require(automatic == Environment.GetEnvironmentVariable("HOOKSHOT_MEM_LIMIT_GB"), "Automatic must leave the memory limit as inherited.");
+                var value = await Delivery(Info(tools, command, null, 12));
+                Require(value.GetProperty("memory").GetString() == "12", "The selected memory did not reach the child.");
             }
 
             var sourceArguments = new[]

@@ -19,6 +19,7 @@
 #ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
+const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -28,6 +29,7 @@
 #include <sys/mman.h>
 #ifdef __linux__
 #include <sys/prctl.h>
+#include <sys/sysinfo.h>
 #endif
 #include <errno.h>
 #include <fcntl.h>
@@ -356,11 +358,32 @@ static int env_line_allowed(const char *name, const char *value) {
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
+       SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
+    if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
     for (const char *p = name; *p; p++)
         if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
-    if (!strcmp(name, "RX_VK_DLSS_DIR")) return 1;
+    /* (hookshot) the switches that name a file to write or a folder take no value here, not even a bare name: one
+       resolves in the game's folder (HOS_SAMPLE_FILE=hookshot_vk.dll emptied the renderer) */
+    const size_t nl = strlen(name);
+    int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
+                     !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
+    /* (hookshot) and the test switches whose value is a file or folder under another name (HOS_AUDIO_DUMP=image.bin
+       overwrote the game's image), or that press buttons and menu keys on a timer (a shared file erased a save from
+       the file select) */
+    static const char *const by_name[] = {
+        "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
+        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
+        "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
+        "RX_WGSL_OVERRIDE"};
+    for (size_t i = 0; i < sizeof by_name / sizeof *by_name; i++) names_file |= !strcmp(name, by_name[i]);
+    /* RX_VK_DLSS_DIR: a folder on this PC, not a share (\\server\x or //server/x) or a device path */
+    if (!strcmp(name, "RX_VK_DLSS_DIR"))
+        return !((value[0] == '\\' || value[0] == '/') && (value[1] == '\\' || value[1] == '/'));
+    if (names_file) return 0;
     const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
-    return !strpbrk(value, "/\\") && !drive && value[0] != '~';
+    return !strpbrk(value, "/\\") && !drive && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
 }
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
@@ -414,6 +437,27 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
     return resource && recomp_load32(c, resource + 88) == 0x79616c50 &&
            recomp_load16(c, resource + 92) == 0x7265 &&
            recomp_load8(c, resource + 94) == 0;
+}
+
+/* Movement speed (the Debug tab's row): Link's character controller and the row's percent, as oot_player_speed saw them on
+   his last update (0: none, or 1x) */
+static uint64_t oot_speed_controller;
+static int oot_speed_percent = 100;
+
+/* A character controller's forward speed being set (nx2/oot_patches.py patch_cct_speed: s0, in metres a second, or a frame when
+   per_second is 0): Link's scaled by the row while it is above 1x and the player steers him (a scene's walk, as the one into a
+   map, keeps its pace), the physics step moving him by it with its collisions. Only speeds up to 15 m/s (his run is 4.5): a ledge
+   climb sets some 55 for a frame, and scaled it threw him past the ledge. Every other controller as it is. */
+void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second) {
+    if (!controller || controller != __atomic_load_n(&oot_speed_controller, __ATOMIC_RELAXED)) return;
+    const int percent = __atomic_load_n(&oot_speed_percent, __ATOMIC_RELAXED);
+    int hos_move_stick_held(void);   /* host/nn_hid.c */
+    if (percent <= 100 || percent > 400 || !hos_move_stick_held()) return;
+    float speed;
+    memcpy(&speed, &c->vreg[0][0], sizeof speed);
+    if (!(fabsf(speed) * (per_second ? 1.0f : 60.0f) <= 15.0f)) return;   /* (and NaN) */
+    speed *= percent / 100.0f;
+    memcpy(&c->vreg[0][0], &speed, sizeof speed);
 }
 
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
@@ -487,6 +531,7 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 #define OOT_ITEM_COUNT (sizeof oot_item_names / sizeof oot_item_names[0])
 
 static int oot_item_count(Ctx *c, const char *name);
+static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -494,7 +539,16 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     static int probed;
     if (now < next) return;
     next = now + 500000000LL;
-    for (unsigned i = 0; i < OOT_ITEM_COUNT; i++) rx_option_set(OOT_CHEAT_ITEM_BASE + (int)i, oot_item_count(c, oot_item_names[i]));
+    int loaded = 0;   /* (a save's counts read: the first item's is not -1) */
+    for (unsigned i = 0; i < OOT_ITEM_COUNT; i++) {
+        const int count = oot_item_count(c, oot_item_names[i]);
+        if (!i) loaded = count >= 0;
+        rx_option_set(OOT_CHEAT_ITEM_BASE + (int)i, count);
+    }
+    {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
+        int child = 1;
+        rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
+    }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
         probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */
         static const char *const probes[] = {OOT_CHEAT_ITEM_PROBES};
@@ -900,6 +954,32 @@ static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
 static int64_t flight_player_seen;
 
+/* Link's controller (vtable 0x84c54f10, the one OneShotPhysicsCctChangePosition moves) from his components, 0 when the chain
+   is not there */
+static uint64_t oot_player_controller(Ctx *c, uint64_t components) {
+    const unsigned offsets[] = {80, 32, 16, 8};
+    uint64_t controller = components;
+    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        controller = recomp_load64(c, controller + offsets[i]);
+        if (!controller) return 0;
+    }
+    return recomp_load64(c, controller) == 0x84c54f10ULL ? controller : 0;
+}
+
+/* Movement speed (the Debug tab's row, HOS_OPT_CHEAT_SPEED in percent): Link's controller and the percent for
+   hos_oot_cct_speed, which scales the forward speed the game sets on it. (The controller's speed rate beside it, +476, is no
+   use: the game sets it again before each step.) */
+static void oot_player_speed(Ctx *c, uint64_t components) {
+    int rx_option(int id, int otherwise);
+    static int logged = 100;
+    int percent = rx_option(HOS_OPT_CHEAT_SPEED, 100);
+    if (percent < 100 || percent > 400) percent = 100;
+    __atomic_store_n(&oot_speed_controller, percent > 100 ? oot_player_controller(c, components) : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&oot_speed_percent, percent, __ATOMIC_RELAXED);
+    if (percent != logged) hos_log("cheats: movement speed %d%%", percent);
+    logged = percent;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -915,6 +995,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_player_speed(c, components);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
@@ -929,14 +1010,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!flying && action != 2 && action != 3) return;
 
     // Follow OneShotPhysicsCctChangePosition to Link's controller.
-    const unsigned offsets[] = {80, 32, 16, 8};
-    uint64_t controller = components;
-    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
-        controller = recomp_load64(c, controller + offsets[i]);
-        if (!controller) return;
-    }
-    const uint64_t vtable = recomp_load64(c, controller);
-    if (vtable != 0x84c54f10ULL || recomp_load64(c, vtable + 0xe8) != 0x806d2530ULL) return;
+    const uint64_t controller = oot_player_controller(c, components);
+    if (!controller || recomp_load64(c, 0x84c54f10ULL + 0xe8) != 0x806d2530ULL) return;
     A64Fn change_position = a64_lookup(0x806d2530ULL);
     if (!change_position) return;
 
@@ -1178,6 +1253,7 @@ volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile int hos_native_scene;
 volatile int hos_fix_res;   /* (nx2/oot_native_resolution.py's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
 /* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
 volatile int hos_occlusion_off;
 static void occlusion_switch(void) {
@@ -1185,6 +1261,48 @@ static void occlusion_switch(void) {
     hos_occlusion_off = e && e[0] == '1';
     if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
 }
+/* (hookshot, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
+   and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
+   a message says it once at boot; the game starts anyway. The text, or 0 when there is enough */
+#define HOS_MEMORY_NEEDED_MB 10240ull
+static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap_mb, char *out, size_t cap) {
+    if (ram_mb + swap_mb >= HOS_MEMORY_NEEDED_MB) return 0;
+    snprintf(out, cap,
+             "This PC has %.1f GB of memory and %.1f GB of swap (the page file on Windows). The game needs about %llu GB of the "
+             "two together; with less it can close by itself while it loads.\n\nClose other programs, or add swap (on Windows: "
+             "let it manage the page file's size), then start the game again. It starts now anyway.",
+             ram_mb / 1024.0, swap_mb / 1024.0, HOS_MEMORY_NEEDED_MB / 1024);
+    return 1;
+}
+#ifndef A64_MEM_ZERO
+static void memory_notice(void) {
+    unsigned long long ram = 0, swap = 0;   /* (MB) */
+#ifdef _WIN32
+    MEMORYSTATUSEX m = {sizeof m};
+    if (!GlobalMemoryStatusEx(&m)) return;
+    ram = m.ullTotalPhys >> 20;
+    swap = m.ullTotalPageFile > m.ullTotalPhys ? (m.ullTotalPageFile - m.ullTotalPhys) >> 20 : 0;   /* (the commit limit: RAM and page file) */
+#elif defined(__linux__)
+    struct sysinfo si;
+    if (sysinfo(&si)) return;
+    ram = ((unsigned long long)si.totalram * si.mem_unit) >> 20, swap = ((unsigned long long)si.totalswap * si.mem_unit) >> 20;
+#else
+    return;
+#endif
+    char text[512];
+    if (!memory_notice_text(ram, swap, text, sizeof text)) {
+        hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);
+        return;
+    }
+    hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
+    if (getenv("HOS_HEADLESS")) return;
+#ifndef _WIN32
+    int hos_sdl_load(void);
+    hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
+#endif
+    MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
+}
+#endif
 #ifdef _WIN32
 /* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -1294,6 +1412,13 @@ static int game_main(int argc, char **argv) {
         }
         else if (!image) image = argv[i];
     }
+#ifdef _WIN32
+    {   /* (hookshot) the Discord status (discord_rpc.c), a game run only (a --prepare-shaders run returned above). Linux starts
+           it in its own main, below; on Windows it was never started: no status and no "discord:" line in any log */
+        void hos_discord_start(void);
+        hos_discord_start();
+    }
+#endif
     static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
@@ -1424,6 +1549,9 @@ static int game_main(int argc, char **argv) {
     }
     hos_log("boot: image %zu MB at %#llx, %llu MB of memory for the game", n >> 20, IMAGE_BASE,
             (unsigned long long)(hos_total_memory >> 20));
+#ifndef A64_MEM_ZERO
+    memory_notice();
+#endif
     void hos_mods_init(const char *image_path);
     hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
 
@@ -1474,7 +1602,21 @@ int main(int argc, char **argv) {
     void hos_display_loop(void);
     load_hookshot_env();
     game_argc = argc, game_argv = argv;
-    const int window = hos_display_init();
+    int prepare_shaders = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
+        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+    }
+    /* The builder's preparation worker needs Vulkan, but no SDL display. */
+    const int window = prepare_shaders ? 0 : hos_display_init();
+    if (window < 0) {
+        hos_log_flush();
+        return 1;
+    }
+    if (!prepare_shaders) {   /* (hookshot) the Discord status (discord_rpc.c): only a game run */
+        void hos_discord_start(void);
+        hos_discord_start();
+    }
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
     if (!t) {
         fprintf(stderr, "cannot start the game's thread\n");
