@@ -126,7 +126,8 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<file>` | One thread's stacks, sampled every millisecond (needs `HOS_PROFILE`); `python -I scripts/prof.py <file>` reads them |
 | `HOS_SAMPLE_ALL=<file>` | Every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py`, `scripts/vkprof.py` and `scripts/hotlist.py` read it (on Linux with `RX_MAPS=<game folder>`: they name frames from its `hookshot` and `hookshot_vk.so`) |
 | `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
-| `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents; a CSV line per game present |
+| `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents, and the game clock's speed (1.000: real time); a CSV line per game present with host-clock times before queue flushing, around the renderer call, after virtual-core reacquisition, and at the return counter. These are CPU wall times, not GPU completion or scanout; async rendering measures the enqueue call. Unset/empty trace adds no clock reads |
+| `HOS_FPS_MAX=<61-1000>` | A frame rate cap for one run, over the Game frame rate cap row (1000 is Uncapped's) |
 | `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms |
 | `RX_VK_PASS_TIMING=1` or `2` | GPU time per pass (2: per program too), logged every 600 presents |
 | `RX_VK_SLOW_LOG=<ms>` | The replay's times for each frame that took longer than this |
@@ -143,6 +144,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_SKIP_PROG=<prefix>,...` | Leaves out the draws of these programs (default `53509044401d78d2`; `-` leaves out none) |
 | `RX_VK_PIPE_SKIP=0` | A draw whose pipeline is not ready waits for it, instead of being left out when its targets hold an earlier frame |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
+| `RX_VK_TASK_MESH_FALLBACK=0` or `1` | Task + mesh draws through the compute fallback (1) or the driver's mesh shaders (0). By default the fallback is on for AMD's Navi 21 and Navi 22 on Windows (RX 6800, 6800 XT, 6900 XT, 6700 XT), where the native path timed out the driver (issue 996) |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
 | `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
@@ -153,6 +155,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame |
 | `RX_VK_FSR4=0/1/2`, `RX_VK_FSR_DIR=<folder>` | AMD FSR 4 for one run (0 never, 1 FSR 4, 2 its Native AA), and another folder for AMD's DLLs (not from `hookshot_env.txt`): the readme's AMD FSR 4 section. `RX_VK_FSR4=1/2` and `RX_VK_DLSS=1/2` go over the Upscaler row, a saved FSR 3.1 too where the engine they ask for runs; `RX_VK_FSR=1` goes over them (one upscaler at a time). The DLSS trace and debug switches above apply to FSR 4 too, on the frame chain they share |
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
+| `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 
 ### Building
@@ -176,34 +179,52 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 
 ## The pipeline state list
 
-`assets/pipeline_states.bin.xz` is the list of pipelines every release ships, xz-compressed (about 56 KB for 4276
-pipelines) so that the repository's history stays small. Each record is a pipeline the game asked for: its shaders'
-hashes, the program variant's hash, and the target formats, vertex formats and draw state it was made with
-(`nx2/pipeline_states.py` has the layout). It holds no game code: a player's build turns the hashes back into shaders from
-their own `hookshot_shaders.bin`. `nx2/make_game.py` unpacks it beside the game as `hookshot_pipeline_states_shipped.bin`,
-and the first start's shader preparation builds those pipelines before the title. Without it a new install builds them in
-play, and draws left out while they compile wash the first field load white for seconds (v2.0.8 to v2.0.14 shipped none).
-`assets/pipeline_states.md`, beside it, records where its pipelines came from; note each merge there.
+Every release ships a list of pipelines, merged from the sources in `assets/pipeline_states/`:
 
-Every release carries it: the AppImage with `assets/` (`scripts/linux/appimage.sh` stops without it, and
-`scripts/linux/check_player_build.sh` reads it back with the image's Python), and the Windows builder's `tools/assets`
-(`scripts/release_parts.py package` stops when it is missing or does not read). xz rather than zstd: the AppImage's
-Python is 3.12, whose standard library has `lzma` but not `compression.zstd`.
+- `tour.bin.xz`, which only the pipeline tour (`scripts/pipeline_tour.py`) writes, replaced whole each time;
+- `contrib/<name>.bin.xz`, one per contributed list, which people add.
 
-A game run writes `hookshot_pipeline_states.bin` beside the executable, adding each pipeline it makes. To refresh the
-shipped list, play through on a build of the current source (the more of the game, the fuller the list) and merge that
-file into the current list, each pipeline once (an `--out` ending in `.xz` is written compressed):
+Each has a note beside it (`<name>.md`) that says who recorded it, on what GPU, driver, build and settings, and the
+route. [`assets/pipeline_states/README.md`](../assets/pipeline_states/README.md) has how to record and add a list. Each
+record is a pipeline the game asked for: its shaders' hashes, the program variant's hash, and the target formats,
+vertex formats and draw state it was made with (`nx2/pipeline_states.py` has the layout). It holds no game code: a
+player's build turns the hashes back into shaders from their own `hookshot_shaders.bin`.
+
+`nx2/make_game.py` merges the sources at every build into the game folder's `hookshot_pipeline_states_shipped.bin`. It
+takes the tour's list first, then the contributed ones by name, and keeps each pipeline once. The same sources always
+give the same bytes, and the first start's shader preparation builds those pipelines before the title. Without them a
+new install builds them in play, and draws left out while they compile wash the first field load white for seconds
+(v2.0.8 to v2.0.14 shipped none). The sources are xz-compressed, written with fixed settings, so that the repository's
+history stays small. The current ones hold 11527 pipelines in about 175 KB.
+
+Every release carries them:
+
+- the AppImage with `assets/`: `scripts/linux/appimage.sh` stops without them, and `scripts/linux/check_player_build.sh`
+  checks them with the image's Python;
+- the Windows builder's `tools/assets/pipeline_states`: `scripts/release_parts.py package` stops when there are none or
+  one does not read.
+
+xz rather than zstd: the AppImage's Python is 3.12, whose standard library has `lzma` but not `compression.zstd`.
+
+A game run writes `hookshot_pipeline_states.bin` beside the executable, adding each pipeline it makes in play. To add a
+list, play on a build of the current source and add that file as a contributed list. `add` keeps only the pipelines no
+other contributed list holds:
 
 ```sh
-python -I nx2/pipeline_states.py --out assets/pipeline_states.bin.xz assets/pipeline_states.bin.xz <game folder>/hookshot_pipeline_states.bin ...
-python -I nx2/pipeline_states.py --check assets/pipeline_states.bin.xz    # what it holds, as the release checks read it
+python -I nx2/pipeline_states.py add <name> <game folder>/hookshot_pipeline_states.bin --who ... --gpu ... --build ... --settings ... --route ...
+python -I nx2/pipeline_states.py tour <tour lists>... --gpu ... --build ... --settings ... --route ...   # the tour's, replaced
+python -I nx2/pipeline_states.py check                      # every source, and the merge, as CI and the release checks read them
+python -I nx2/pipeline_states.py merge --out merged.bin     # the list make_game writes beside the game
 ```
 
-Do it before each release, and after a change to the shaders' translation or to the state a pipeline is made from: a
-record that no longer matches what play asks for builds a pipeline nothing uses, and the one play wants compiles in play.
-When the record's format changes (its magic and record size, `MAGIC` and `SIZE` in `nx2/pipeline_states.py`), the old
-list no longer reads and the release checks stop: make a new one with the new build, without the old list among its
-inputs.
+A list depends on the settings it was recorded with: its records hold the target formats and draw state, so one recorded
+at 1440p with DLSS shares few pipelines with one recorded at 360p.
+
+Refresh the tour's list before each release, and after a change to the shaders' translation or to the state a pipeline
+is made from. A record that no longer matches what play asks for builds a pipeline nothing uses, and the one play wants
+compiles in play. When the record's format changes (its magic and record size, `MAGIC` and `SIZE` in
+`nx2/pipeline_states.py`), the old lists no longer read and the release checks stop. Convert each source in place, or
+record it again, and make a new tour list. The folder's layout stays the same.
 
 ## The options file
 

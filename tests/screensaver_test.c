@@ -39,6 +39,7 @@ typedef struct {
     fprintf(stderr, "FAIL: %s (line %d)\n", name, __LINE__); exit(1); } } while (0)
 static HWND game = (HWND)(uintptr_t)1, foreground;
 static int renderer, fullscreen, mouse_captured, pointer_tracking;
+static int esc_had_capture __attribute__((unused));   /* (Esc's note: host/display.c sets it here) */
 static volatile LONG mouse_dx, mouse_dy;
 static int iconic, query_ok, query_writes, policy_secure, query_calls, forwarded, cases;
 static UINT forwarded_msg;
@@ -115,7 +116,7 @@ static BOOL TrackMouseEvent(TRACKMOUSEEVENT *t) { (void)t; unexpected(); return 
 static HWND GetCapture(void) { unexpected(); return NULL; }
 static BOOL ReleaseCapture(void) { unexpected(); return FALSE; }
 static void menu_press(HWND w, LPARAM lp, LONG bit) { (void)w; (void)lp; (void)bit; unexpected(); }
-static void menu_mouse(HWND w, int open) { (void)w; (void)open; unexpected(); }
+static void menu_mouse(HWND w, int open, int opened_by_escape) { (void)w; (void)open; (void)opened_by_escape; unexpected(); }
 /* (the game's own menus take the mouse while one of them is shown (host/oot_menu.c); never here either) */
 typedef int64_t LONG64;
 typedef struct { LONG x, y; } POINT;

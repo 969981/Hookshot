@@ -107,20 +107,26 @@ HLE(_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE) {
    interval's vsyncs (1: 60 fps, 2: 30) after the last present, so the game runs at the display's rate.
    HOS_NO_PACING=1: as fast as it can. */
 static volatile int present_interval = 1;
-/* (hookshot) HOS_FPS_MAX=<61-240>: the frame rate cap past the console's 60 (opt-in, a test): the display pacing's interval, the game's
+/* (hookshot) The frame rate cap past the console's 60, the Insert menu's Game frame rate cap: the display pacing's interval, the game's
    own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time (realtime_step), so the game is
-   not sped up. Unset or 60: 60, as on the console */
+   not sped up. Uncapped is a cap of 1000 (fps_max's FPS_UNCAPPED), the pacing's 1 ms: the frames come as fast as the PC makes them (a display that
+   waits for its refresh, V-Sync On, still holds them to its rate). HOS_FPS_MAX=<61-1000> over the row, for a run. Unset or 60: 60, as
+   on the console */
 int hos_ini_option(const char *key, int otherwise);   /* (nn_applet.c) */
 static int fps_max(void) {
+    enum { FPS_UNCAPPED = 1000 };
     static int v = -1;
     if (v < 0) {
-        /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240; HOS_FPS_MAX over it) */
-        static const int caps[] = {60, 90, 120, 144, 165, 240};
+        /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240, 6 Uncapped; a value
+           this build does not know is 60. HOS_FPS_MAX over it) */
+        static const int caps[] = {60, 90, 120, 144, 165, 240, FPS_UNCAPPED};
+        enum { CAPS = sizeof caps / sizeof caps[0] };
         const int i = hos_ini_option("frame_rate_cap", 0);
         const char *e = getenv("HOS_FPS_MAX");
-        const int want = e ? atoi(e) : caps[i >= 0 && i < 6 ? i : 0];
-        v = want > 60 ? (want > 240 ? 240 : want) : 60;
-        if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
+        const int want = e ? atoi(e) : caps[i >= 0 && i < CAPS ? i : 0];
+        v = want > 60 ? (want > FPS_UNCAPPED ? FPS_UNCAPPED : want) : 60;
+        if (v == FPS_UNCAPPED) hos_log("vi: frame rate uncapped: pacing, the game's limiter and its time step follow the frames");
+        else if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
     }
     return v;
 }
@@ -271,7 +277,33 @@ uint32_t hos_movie_frames(uint64_t player) {
     ReleaseSRWLockExclusive(&lock);
     return n;
 }
+/* (nx2/oot_patches.py patch_whole_frames) the whole frames a game counter at `at` takes for an amount of the frame step (its
+   float's bits): with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
+#include "frame_whole.h"
+static FrameWhole frame_whole_state;
+static SRWLOCK frame_whole_lock = SRWLOCK_INIT;   /* (the game's update threads) */
+uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
+    AcquireSRWLockExclusive(&frame_whole_lock);
+    const uint32_t whole = frame_whole(&frame_whole_state, at, amount_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
+    ReleaseSRWLockExclusive(&frame_whole_lock);
+    return whole;
+}
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
+/* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
+   step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
+   Keep at most four nominal frames of debt so unpaced fast presents cannot leave a long recovery. Steps beyond
+   1/15 s are still dropped, rather than caught up after a long stall. */
+static int realtime_rate(double ratio, int maximum, double *carry) {
+    ratio += *carry;
+    if (ratio > 4.0) ratio = 4.0;
+    const double least = 60.0 / maximum;
+    const double bounded = ratio < least ? least : ratio;
+    int fps = (int)(60.0 / bounded + 0.5);
+    fps = fps < 15 ? 15 : fps > maximum ? maximum : fps;
+    *carry = ratio - 60.0 / fps;
+    if (*carry < -4.0) *carry = -4.0;
+    return fps;
+}
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
     /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
@@ -367,14 +399,15 @@ static void realtime_step(int64_t now) {
     /* (hookshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
        The step is then the frames' own time at the two places the engine makes it (nx2/oot_patches.py, hos_frame_seconds_bits):
-       this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
+       this same average, at most 1/15 s as below and at least 1/240 s (a 1000th uncapped: a shorter frame stepped a 240th ran the
+       game fast), and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
     const int timed = fps_max() > 60 && timed_step && hos_step_probe;
     if (timed) {
-        const double secs = sum / count;
-        const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < 1.0 / 240.0 ? 1.0 / 240.0 : secs);
+        const double secs = sum / count, shortest = 1.0 / (fps_max() > 240 ? fps_max() : 240);
+        const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < shortest ? shortest : secs);
         uint32_t bits;
         memcpy(&bits, &f, 4);
         __atomic_store_n(&hos_frame_seconds_bits, bits, __ATOMIC_RELAXED);   /* (read by the game's threads) */
@@ -382,25 +415,31 @@ static void realtime_step(int64_t now) {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
     const int top = timed ? 60 : fps_max();
-    double ratio = sum / count * 60.0 + carry;
-    const double least = 60.0 / top;
-    ratio = ratio < least ? least : ratio > 4.0 ? 4.0 : ratio;
-    int fps = (int)(60.0 / ratio + 0.5);
-    fps = fps < 15 ? 15 : fps > top ? top : fps;
+    const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
     if (*slot < 15 || *slot > fps_max()) {
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
         return;
     }
-    carry = ratio - 60.0 / fps;
-    carry = carry > 0.5 ? 0.5 : carry < -0.5 ? -0.5 : carry;
+    /* The timed hook already supplies the actual frame time. Its nominal rate tracks this frame without debt. */
+    double frame_carry = timed ? 0 : carry;
+    const int fps = realtime_rate(ratio, top, &frame_carry);
+    carry = timed ? 0 : frame_carry;
     *slot = fps;
     if (!(steps++ % 3000)) hos_log("vi: real-time step on: ratio %.3f, game's frame rate %d", ratio, fps);
 }
 /* HOS_PRESENT_TRACE=<csv>: native game present-call returns, not GPU completion or display times.
    Uses the existing frame ID/clock; a forced stop can lose the last second of buffered present records. */
-static void present_trace(int64_t frame, int64_t now) {
+int hos_vi_present_trace_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *path = getenv("HOS_PRESENT_TRACE");
+        enabled = path && *path;
+    }
+    return enabled;
+}
+static void present_trace(int64_t frame, int64_t now, const int64_t phases[4]) {
     static FILE *file;
     static char buffer[64 * 1024];
     static int looked;
@@ -414,19 +453,21 @@ static void present_trace(int64_t frame, int64_t now) {
         }
         if (file) {
             setvbuf(file, buffer, _IOFBF, sizeof buffer);
-            fputs("frame,return_ns,interval_ns\n", file);
+            fputs("frame,return_ns,interval_ns,present_begin_ns,renderer_begin_ns,renderer_end_ns,vcore_back_ns\n", file);
             flushed = now;
         }
     }
     if (!file) return;
-    fprintf(file, "%lld,%lld,%lld\n", (long long)frame, (long long)now, (long long)(frame > 1 ? now - last : 0));
+    fprintf(file, "%lld,%lld,%lld,%lld,%lld,%lld,%lld\n", (long long)frame, (long long)now,
+            (long long)(frame > 1 ? now - last : 0), (long long)phases[0], (long long)phases[1],
+            (long long)phases[2], (long long)phases[3]);
     last = now;
     if (now - flushed >= 1000000000LL) {
         fflush(file);
         flushed = now;
     }
 }
-void hos_vi_native_presented(void) {
+void hos_vi_native_presented(const int64_t phases[4]) {
     static long long scan_n;
     scan_dt(++scan_n);
     {   /* HOS_FRAME_SLEEP_MS (diagnostic): slower frames, for game speed against frame rate */
@@ -444,7 +485,7 @@ void hos_vi_native_presented(void) {
         shown_count = n + 1;
     }
     const int64_t n = InterlockedIncrement64(&presents);
-    present_trace(n, now);
+    present_trace(n, now, phases);
     {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any
            non-zero value is used as the interval): 1 (the default): a steady 60 fps; 2: 30; 0: the game's choice,
            which with frames between 16.7 and 33 ms swings between the two (25-27 fps, stutters). Its timing counts

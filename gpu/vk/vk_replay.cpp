@@ -163,6 +163,16 @@ uint64_t completed() {
 // present, a sparse bind, another submit (queue_flush_locked under dev.present_mu).
 // (hookshot) on by default with Mesa's RADV, where it was measured (issue 413: a Radeon 8060S on Bazzite, ~10 -> 30-50 fps, the
 // replay's queue submit ~70 -> ~6 ms a frame); elsewhere as before. RX_VK_BATCH=0 / 1: off / on on any driver
+/// (hookshot, #1993 by mrdev023) The GPU has done every batch sent so far: the batch being held goes out at once. A held
+/// batch waited for the next wait or present while the GPU sat idle, and with serial replay the game waits for it mid-frame
+/// (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest: 33-41
+/// fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still groups the
+/// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before
+bool batch_gpu_idle() {
+    static const bool on = !getenv("RX_VK_BATCH_IDLE") || atoi(getenv("RX_VK_BATCH_IDLE")) != 0;
+    uint64_t done = 0;
+    return on && vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed;
+}
 bool batch_on() {
     static const bool on = [] {
         bool radv = false;
@@ -370,6 +380,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
         if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
+        if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
         return;
     }
     PROF(PROF_QSUBMIT);
@@ -3493,8 +3504,11 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
     if (hdr_was < 0) hdr_was = opts.hdr;
+    static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
+    const bool vsync_changed = vsync_was >= 0 && vsync_was != menu_vsync();
+    if (vsync_was < 0) vsync_was = menu_vsync();
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
-    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed) {   // (resized, gone, Reflex or HDR changed)
+    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed || vsync_changed) {   // (resized, gone, Reflex, HDR or V-Sync changed)
         std::lock_guard qk(dev.present_mu);
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
@@ -3505,7 +3519,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
-        hdr_was = opts.hdr;
+        hdr_was = opts.hdr, vsync_was = menu_vsync();
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not

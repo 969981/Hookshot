@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
+#include <tuple>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -52,6 +53,7 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "shaders/shadow_stab_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -925,6 +927,7 @@ struct Targets {
     Texture* color[8]{};
     VkImageView color_view[8]{};
     VkFormat color_format[8]{};
+    int color_view_nvn[8]{};   // (hookshot) the NVN format each is drawn in (view_nvn_format): the pipeline state list's
     uint32_t color_level[8]{}, color_layer[8]{}, depth_level = 0, depth_layer = 0;   // (the levels and layers viewed)
     Texture* depth = nullptr;
     VkImageView depth_view = VK_NULL_HANDLE;
@@ -933,6 +936,33 @@ struct Targets {
     uint32_t width = 0, height = 0;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
+
+/// (hookshot) The colour output types a program is translated for: each target's, by its format (Shader::AttributeType). The draw's,
+/// and the pipeline state list's from the formats it maps the game's to (state_targets)
+void color_types_of(const Targets& at, uint8_t types[8]) {
+    for (int i = 0; i < 8; i++) {
+        const VkFormat f = i < at.n ? at.color_format[i] : VK_FORMAT_UNDEFINED;
+        switch (f) {
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+            types[i] = (uint8_t)Shader::AttributeType::UnsignedInt;
+            break;
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+            types[i] = (uint8_t)Shader::AttributeType::SignedInt;
+            break;
+        default: types[i] = (uint8_t)Shader::AttributeType::Float; break;
+        }
+    }
+}
+/// (hookshot) A mesh draw's topology (it has none of its own) and the topology a draw's pipeline is made with: the drawn one, or for
+/// the mesh fallback's program the points, lines or triangles its mesh program makes. The draw's, and the pipeline state list's
+constexpr VkPrimitiveTopology kMeshDrawTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+VkPrimitiveTopology pipeline_topology(const Program& p, VkPrimitiveTopology drawn) {
+    return p.fallback ? p.fallback_topology : drawn;
+}
 
 /// A graphics pipeline: built on a worker (vk_jobs.h); ready once pipeline is set (null: it failed)
 struct PipeEntry {
@@ -1273,9 +1303,18 @@ void compute_note(uint64_t key) {
 // hookshot_pipeline_states.bin beside the executable. Unlike hookshot_pipelines.bin it is good for any build of the back end: when
 // the shaders are prepared for a new one (prepare_run), every pipeline in it is noted for the precompile, its program translated
 // first when the seed's are not that one, so that a new release, or a new install with a list from someone else's play
-// (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: work/pipeline_states.bin), builds them before the game and not in
-// play. Only hashes, formats and state: the stages themselves come from the player's own game (hookshot_shaders.bin) ----
+// (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: merged from assets/pipeline_states/), builds them before the game and not in
+// play. Only hashes, formats and state: the stages themselves come from the player's own game (hookshot_shaders.bin).
+// Version 2 (HKSTATE2) holds what the game asked for, not what this GPU made of it: the targets' NVN formats (version 1 had the
+// Vulkan formats this device chose: decoded ASTC, widened formats), the draw's own topology and whether it was a mesh draw (not the
+// mesh fallback's topology), and the program variant's answers with its stages numbered as every GPU numbers them (the mesh
+// fallback adds a vertex stage: answers_portable). The prepare maps each record through the rules the draw itself follows
+// (state_targets: attachment_format; pipeline_topology; color_types_of), so one list made on one PC prepares the pipelines another
+// GPU's draws will ask for, the mesh fallback's included. Version 1 lists (a play folder's own from an older build) are still read ----
 constexpr char kStateMagic[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '1'};
+constexpr char kStateMagic2[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '2'};
+/// A version 1 record as the file has it, and in memory any record resolved for this device (state_list_read): the Vulkan formats
+/// and colour output types this GPU draws with, the answers and variant numbered as answers_portable numbers them
 struct StateRec {
     uint64_t code[4];        // the stages' code keys: vertex (mesh), fragment, task, the header-only stage (0: none)
     uint64_t variant;        // the program's (its answers about the textures)
@@ -1293,32 +1332,115 @@ struct StateRec {
     uint8_t questions[32];
 };
 static_assert(sizeof(StateRec) == 528 && std::is_trivially_copyable_v<StateRec>, "the state list's record is a file format");
+/// A version 2 record: what the game asked for, the same on every GPU and with any settings
+struct StateRec2 {
+    uint64_t code[4];        // as version 1
+    uint64_t variant;        // portable_variant: the hash of the answers below
+    uint32_t mesh;           // a mesh draw (task / mesh stages), whether this GPU runs it natively or through the fallback
+    uint32_t topo;           // the draw's topology (a mesh draw's: kMeshDrawTopology; pipeline_topology makes the pipeline's)
+    uint32_t n, samples, has_depth;
+    uint32_t depth_nvn;      // the depth target's NVN format
+    uint32_t color_nvn[8];   // each colour target's NVN texture format, 0: none
+    uint32_t view_nvn[8];    // and the format it is drawn in (view_nvn_format: its view's)
+    uint64_t blend[8];
+    uint32_t vattr[16], nvattr;
+    uint32_t stride[16], divisor[16];
+    uint32_t blend_en, chmask, poly_mode, depth_clamp, a2c;
+    uint32_t nanswers, nquestions;
+    uint32_t answers[24];    // (stages numbered as answers_portable numbers them)
+    uint8_t questions[32];
+    uint32_t pad[2];
+};
+static_assert(sizeof(StateRec2) == 552 && std::is_trivially_copyable_v<StateRec2>, "the state list's record is a file format");
 std::string state_list_path(const char* name) {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1) + name;
 }
-uint64_t state_hash(const StateRec& r) {
+template <class R>
+uint64_t state_hash(const R& r) {
     uint64_t h = 0xCBF29CE484222325ull;
     const uint8_t* b = (const uint8_t*)&r;
     for (size_t i = 0; i < sizeof r; i++) h = (h ^ b[i]) * 1099511628211ull;
     return h;
 }
-/// The records of a state list (none when it is not one)
-std::vector<StateRec> state_list_read(const std::string& path) {
+/// The targets a record's draw renders into on this device: each NVN format as the draw's own texture_get and texture_view make it
+/// (attachment_format), the sample count and whether there is depth as the game had them
+Targets state_targets(uint32_t n, uint32_t samples, const uint32_t color_nvn[8], const uint32_t view_nvn[8], uint32_t has_depth,
+                      uint32_t depth_nvn) {
+    Targets at{};
+    at.n = (int)std::min(n, 8u), at.samples = (VkSampleCountFlagBits)samples;
+    for (int k = 0; k < at.n; k++)
+        at.color_format[k] = color_nvn[k] ? attachment_format((int)color_nvn[k], (int)view_nvn[k]) : VK_FORMAT_UNDEFINED;
+    at.depth = has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
+    at.depth_format = has_depth ? attachment_format((int)depth_nvn, (int)depth_nvn) : VK_FORMAT_UNDEFINED;
+    return at;
+}
+/// A version 1 record's answers, numbered as answers_portable numbers them: a mesh record made with the fallback has a fragment
+/// stage one further (after the generated vertex stage) and the fallback's topology. False: it cannot be told apart (its answers left
+/// out) and is not used
+bool state_v1_portable(StateRec& r) {
+    if (!r.mesh) return true;
+    const uint32_t g = r.code[2] ? 2 : 1;   // (where the fallback's generated vertex stage is: after (task,) mesh)
+    bool fallback = r.topo != (uint32_t)kMeshDrawTopology;
+    for (uint32_t i = 0; i < r.nanswers && i < 24; i++) fallback |= (r.answers[i] >> 28) > g;
+    if (!fallback) return true;
+    if (!r.nanswers) return false;
+    std::vector<Program::Answer> answers(r.nanswers);
+    for (uint32_t i = 0; i < r.nanswers; i++) {
+        uint32_t stage = r.answers[i] >> 28;
+        if (stage > g) stage--, r.answers[i] = (r.answers[i] & 0x0FFFFFFFu) | stage << 28;
+        answers[i] = {(uint16_t)stage, (uint16_t)(r.answers[i] >> 12 & 0xFFFF), (uint8_t)(r.answers[i] & 0xFF), (r.answers[i] >> 8 & 1) != 0};
+    }
+    r.variant = answers_hash_of(answers), r.topo = (uint32_t)kMeshDrawTopology;
+    return true;
+}
+/// A version 2 record for this device (false: it cannot be, its counts out of range or a format this GPU does not draw to)
+bool state_v2_resolve(const StateRec2& v, StateRec& r) {
+    if (v.nanswers > std::size(v.answers) || v.nquestions > std::size(v.questions) || v.nvattr > 16 || !targets_ok(v.n, v.samples, v.topo))
+        return false;
+    r = StateRec{};
+    std::memcpy(r.code, v.code, sizeof r.code);
+    r.variant = v.variant, r.mesh = v.mesh != 0, r.topo = v.topo;
+    const Targets at = state_targets(v.n, v.samples, v.color_nvn, v.view_nvn, v.has_depth, v.depth_nvn);
+    r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples, r.has_depth = at.depth != nullptr, r.depth_format = (uint32_t)at.depth_format;
+    for (int k = 0; k < 8; k++) r.color_format[k] = (uint32_t)at.color_format[k];
+    color_types_of(at, r.color_types);
+    std::memcpy(r.blend, v.blend, sizeof r.blend);
+    std::memcpy(r.vattr, v.vattr, sizeof r.vattr), r.nvattr = v.nvattr;
+    std::memcpy(r.stride, v.stride, sizeof r.stride), std::memcpy(r.divisor, v.divisor, sizeof r.divisor);
+    r.blend_en = v.blend_en, r.chmask = v.chmask, r.poly_mode = v.poly_mode, r.depth_clamp = v.depth_clamp, r.a2c = v.a2c;
+    r.nanswers = v.nanswers, r.nquestions = v.nquestions;
+    std::memcpy(r.answers, v.answers, sizeof r.answers), std::memcpy(r.questions, v.questions, sizeof r.questions);
+    return formats_ok(r.n, r.color_format, r.has_depth, r.depth_format);
+}
+/// The records of a state list of either version, each resolved for this device (none when it is not one). *version: the file's
+/// (0: not a list)
+std::vector<StateRec> state_list_read(const std::string& path, int* version = nullptr) {
     std::vector<StateRec> out;
+    if (version) *version = 0;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return out;
     char magic[8];
     uint32_t size = 0;
-    if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kStateMagic, 8) && fread(&size, 4, 1, f) == 1 && size == sizeof(StateRec)) {
-        StateRec r;
-        while (fread(&r, sizeof r, 1, f) == 1) {
-            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
-                !targets_ok(r.n, r.samples, r.topo) || !formats_ok(r.n, r.color_format, r.has_depth, r.depth_format))
-                continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
-            out.push_back(r);
+    if (fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1) {
+        if (!memcmp(magic, kStateMagic, 8) && size == sizeof(StateRec)) {
+            if (version) *version = 1;
+            StateRec r;
+            while (fread(&r, sizeof r, 1, f) == 1) {
+                if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
+                    !targets_ok(r.n, r.samples, r.topo) || !formats_ok(r.n, r.color_format, r.has_depth, r.depth_format) ||
+                    !state_v1_portable(r))
+                    continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
+                out.push_back(r);
+            }
+        } else if (!memcmp(magic, kStateMagic2, 8) && size == sizeof(StateRec2)) {
+            if (version) *version = 2;
+            StateRec2 v;
+            StateRec r;
+            while (fread(&v, sizeof v, 1, f) == 1)
+                if (state_v2_resolve(v, r)) out.push_back(r);
         }
     }
     fclose(f);
@@ -1328,39 +1450,59 @@ std::mutex state_mu;
 FILE* state_file = nullptr;
 std::unordered_set<uint64_t> state_seen;
 /// (state_mu held) the state list opened for this run's new pipelines, the records it holds hashed. precompile_run opens it before
-/// play: the first new pipeline in play read and hashed the whole list on the thread replaying, 8-18 ms
+/// play: the first new pipeline in play read and hashed the whole list on the thread replaying, 8-18 ms. A version 1 list (an older
+/// build's) is kept as hookshot_pipeline_states_v1.bin, which the prepare reads too, and this build's records start a version 2 one
 void state_open_locked() {
     const std::string path = state_list_path("hookshot_pipeline_states.bin");
-    const std::vector<StateRec> had = state_list_read(path);
-    for (const StateRec& o : had) state_seen.insert(state_hash(o));
-    FILE* probe = fopen(path.c_str(), "rb");
-    const bool keep = probe && !had.empty();
-    if (probe) fclose(probe);
+    bool keep = false;
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        char magic[8];
+        uint32_t size = 0;
+        const bool v2 = fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1 && !memcmp(magic, kStateMagic2, 8) &&
+                        size == sizeof(StateRec2);
+        const bool v1 = !v2 && !memcmp(magic, kStateMagic, 8) && size == sizeof(StateRec);
+        if (v2) {
+            StateRec2 r;
+            while (fread(&r, sizeof r, 1, f) == 1) state_seen.insert(state_hash(r)), keep = true;
+        }
+        fclose(f);
+        if (v1) {
+            const std::string old = state_list_path("hookshot_pipeline_states_v1.bin");
+            remove(old.c_str());
+            if (rename(path.c_str(), old.c_str()) == 0) logf("vk: state list: the version 1 list kept as %s", old.c_str());
+        }
+    }
     state_file = fopen(path.c_str(), keep ? "ab" : "wb");
     if (state_file && !keep) {
-        const uint32_t size = sizeof(StateRec);
-        fwrite(kStateMagic, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
+        const uint32_t size = sizeof(StateRec2);
+        fwrite(kStateMagic2, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
     }
 }
+/// (the draw's state; topo: the pipeline's, pipeline_topology's) the pipeline as the game asked for it, in the list once
 void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
     static const bool off = getenv("RX_VK_NO_STATE_LIST") != nullptr;
     if (off) return;
-    StateRec r{};
+    (void)color_types;   // (made again from the formats: color_types_of)
+    StateRec2 r{};
     std::memcpy(r.code, p.codes, sizeof r.code);   // (kept with the program: the stages' lock is not taken on the draw's path)
     if (!r.code[0] || p.compute) return;
-    r.variant = p.variant;
-    r.mesh = p.mesh || p.fallback ? 1 : 0, r.topo = (uint32_t)topo, r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples;
-    r.depth_format = (uint32_t)at.depth_format, r.has_depth = at.depth != nullptr;
-    for (int i = 0; i < 8; i++) r.color_format[i] = (uint32_t)at.color_format[i], r.color_types[i] = color_types[i];
+    r.variant = portable_variant(p);
+    r.mesh = p.mesh || p.fallback ? 1 : 0;
+    r.topo = r.mesh ? (uint32_t)kMeshDrawTopology : (uint32_t)topo, r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples;
+    for (int i = 0; i < at.n && i < 8; i++)
+        if (at.color[i]) r.color_nvn[i] = (uint32_t)at.color[i]->nvn_format, r.view_nvn[i] = (uint32_t)at.color_view_nvn[i];
+    r.has_depth = at.depth != nullptr;
+    if (at.depth) r.depth_nvn = (uint32_t)at.depth->nvn_format;
     for (int i = 0; i < 16; i++) r.vattr[i] = s.vattr[i], r.stride[i] = s.vstream[i].stride, r.divisor[i] = s.vstream[i].divisor;
     r.nvattr = (uint32_t)s.nvattr;
     for (int i = 0; i < 8; i++) std::memcpy(&r.blend[i], &s.blend[i], 8);
     r.blend_en = (uint32_t)s.color.blend_en, r.chmask = s.chmask.mask, r.poly_mode = (uint32_t)s.poly.mode;
     r.depth_clamp = s.depth_clamp ? 1 : 0, r.a2c = s.ms.a2c ? 1 : 0;
     if (p.answers.size() <= 24 && p.questions.size() <= 32) {
-        r.nanswers = (uint32_t)p.answers.size(), r.nquestions = (uint32_t)p.questions.size();
-        for (size_t i = 0; i < p.answers.size(); i++) {
-            const Program::Answer& a = p.answers[i];
+        const std::vector<Program::Answer> answers = answers_portable(p);
+        r.nanswers = (uint32_t)answers.size(), r.nquestions = (uint32_t)p.questions.size();
+        for (size_t i = 0; i < answers.size(); i++) {
+            const Program::Answer& a = answers[i];
             r.answers[i] = (uint32_t)(a.stage & 0xF) << 28 | (uint32_t)(a.desc & 0xFFFF) << 12 | (a.image ? 1u : 0u) << 8 | a.type;
         }
         std::memcpy(r.questions, p.questions.data(), p.questions.size());
@@ -1370,15 +1512,18 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
     if (!state_file) state_open_locked();
     if (state_file && state_seen.insert(h).second) fwrite(&r, sizeof r, 1, state_file), fflush(state_file);
 }
-/// (prepare_run, the seed open) every pipeline of the state lists (the player's own and the shipped one): its program translated
+/// Every pipeline of the state lists (the player's own and the shipped one): its program translated
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
-void state_list_prepare(void (*progress)(size_t done, size_t total)) {
+void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_seed = false) {
     if (getenv("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
-    std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"));
+    int shipped_version = 0;
+    std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"), &shipped_version);
     const size_t shipped = recs.size();
-    for (const StateRec& r : state_list_read(state_list_path("hookshot_pipeline_states.bin"))) recs.push_back(r);
-    if (recs.empty()) return;
+    // (the player's own: this build's, and an older build's version 1 list, state_open_locked)
+    for (const char* own : {"hookshot_pipeline_states.bin", "hookshot_pipeline_states_v1.bin"})
+        for (const StateRec& r : state_list_read(state_list_path(own))) recs.push_back(r);
+    if (recs.empty() || (open_seed && !seed_open())) return;
     // the programs: each once (by its stages and the types it was translated for)
     struct Want { const StateRec* r; uint64_t key = 0; };
     std::vector<Want> want;
@@ -1399,6 +1544,16 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         if (fresh) want.push_back({&r});
         rec_program[i] = it->second;
     }
+    // The texture variants that need translation are only known after loading the base programs.
+    size_t done = 0, total = want.size() + recs.size();
+    std::mutex progress_mu;
+    const auto report_done = [&] {
+        if (progress) {
+            std::lock_guard<std::mutex> lock(progress_mu);
+            progress(++done, total);
+        }
+    };
+    if (progress) progress(0, total);
     std::atomic<size_t> next{0}, made{0}, missing{0};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off; the pipeline state list's builds raced the replay's updates)
@@ -1408,15 +1563,16 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
             if (i >= want.size()) return;
             const StateRec& r = *want[i].r;
             std::unique_ptr<Program> p;
-            // (a mesh program on a GPU without mesh shaders is not made; one with a header-only stage is made in play)
-            if (!r.code[3] && (!r.mesh || dev.mesh_shader)) p = seed_program_of(r.code, r.mesh != 0, r.vattr, r.color_types, &want[i].key);
+            // (a mesh program: native or the mesh fallback's, as this GPU draws it (seed_translate); one with a header-only stage is
+            // made in play)
+            if (!r.code[3]) p = seed_program_of(r.code, r.mesh != 0, r.vattr, r.color_types, &want[i].key);
             if (!want[i].key) missing++;
             if (p) {
                 if (!p->failed) made++;
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
             }
-            if (progress) progress(i, want.size());
+            report_done();
         }
     };
     std::vector<std::thread> threads;
@@ -1436,10 +1592,12 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         for (size_t i = 0; i < recs.size(); i++) {
             const StateRec& r = recs[i];
             const uint64_t key = want[rec_program[i]].key;
-            if (key && (r.nanswers || r.nquestions) && !program_find(key, r.variant) && seen.insert(mix(key, r.variant)).second)
+            if (key && (r.nanswers || r.nquestions) && !program_find_portable(key, r.variant) && seen.insert(mix(key, r.variant)).second)
                 variant_of.push_back(i);
         }
     }
+    total = want.size() + variant_of.size();
+    if (progress) progress(done, total);
     std::atomic<size_t> variants_made{0};
     next = 0;
     const auto variant_worker = [&] {
@@ -1454,21 +1612,22 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                 answers[k] = {(uint16_t)(r.answers[k] >> 28), (uint16_t)(r.answers[k] >> 12 & 0xFFFF), (uint8_t)(r.answers[k] & 0xFF),
                               (r.answers[k] >> 8 & 1) != 0};
             if (const Program* p = seed_variant_of(r.code, r.mesh != 0, r.vattr, r.color_types, questions, answers)) {
-                if (p->variant == r.variant) variants_made++;
+                if (portable_variant(*p) == r.variant) variants_made++;
                 ensure_layout(const_cast<Program&>(*p));
             }
+            report_done();
         }
     };
     threads.clear();
     for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
-    size_t noted_n = 0, no_variant = 0;
+    size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
     auto s = std::make_unique<NvnState>();
     for (size_t i = 0; i < recs.size(); i++) {
         const StateRec& r = recs[i];
         const uint64_t key = want[rec_program[i]].key;
         if (!key) continue;
-        const Program* p = program_find(key, r.variant);
+        const Program* p = program_find_portable(key, r.variant);
         if (!p) {
             no_variant++;
             continue;
@@ -1484,13 +1643,17 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         at.depth = r.has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
         for (int k = 0; k < 8; k++) at.color_format[k] = (VkFormat)r.color_format[k];
         if (!p->layout) ensure_layout(const_cast<Program&>(*p));
-        pipeline_note(pipeline_key(*p, *s, at, (VkPrimitiveTopology)r.topo), *p, *s, at, (VkPrimitiveTopology)r.topo);
+        const VkPrimitiveTopology topo = pipeline_topology(*p, (VkPrimitiveTopology)r.topo);   // (the draw's: the fallback's own)
+        pipeline_note(pipeline_key(*p, *s, at, topo), *p, *s, at, topo);
         noted_n++;
+        noted_mesh += p->mesh, noted_fallback += p->fallback;
     }
-    logf("vk: state list: %zu pipelines (%zu shipped), %zu programs (%zu translated now, %zu with stages not in the seed), %zu variants "
-         "by their textures (%zu made), %zu noted, %zu whose program variant was not made, in %.1f s", recs.size(), shipped,
-         want.size(), made.load(), missing.load(), variant_of.size(), variants_made.load(), noted_n, no_variant,
+    logf("vk: state list: %zu pipelines (%zu shipped, version %d), %zu programs (%zu translated now, %zu with stages not in the seed), "
+         "%zu variants by their textures (%zu made), %zu noted (%zu native mesh, %zu mesh fallback), %zu whose program variant was not "
+         "made, in %.1f s", recs.size(), shipped, shipped_version, want.size(), made.load(), missing.load(), variant_of.size(),
+         variants_made.load(), noted_n, noted_mesh, noted_fallback, no_variant,
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    if (open_seed && !getenv("RX_VK_SEED_CHECK")) seed_close();
 }
 
 // ---- (hookshot) Stage libraries, as TotK Recomp's runtime/vk_pipeline.c: the part of a pipeline that costs is its shaders, and with
@@ -3584,7 +3747,7 @@ Targets targets(NvnState& s) {
         VkFormat f = VK_FORMAT_UNDEFINED;
         const VkImageView view = texture_view(tex, t, v, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment, &f);
         if (!view) continue;
-        at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
+        at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f, at.color_view_nvn[i] = view_nvn_format(t, v);
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
         uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
@@ -3600,7 +3763,7 @@ Targets targets(NvnState& s) {
     for (int i = 0; i < at.n; i++)
         for (int j = 0; j < i; j++)
             if (at.color_view[i] && at.color_view[i] == at.color_view[j]) {
-                at.color[i] = nullptr, at.color_view[i] = VK_NULL_HANDLE, at.color_format[i] = VK_FORMAT_UNDEFINED;
+                at.color[i] = nullptr, at.color_view[i] = VK_NULL_HANDLE, at.color_format[i] = VK_FORMAT_UNDEFINED, at.color_view_nvn[i] = 0;
                 break;
             }
     while (at.n > 0 && !at.color[at.n - 1]) at.n--;   // (trailing empty targets)
@@ -5806,12 +5969,128 @@ static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, c
     temporal_note_skinned_draw(k);
 }
 
+/// OoT's tree-shadow pass (3427a1dbefd5e02c: a full-screen draw that writes G and B of an RGBA8 mask at the scene's size, MIN
+/// blended) offsets each pixel's shadow-map lookup by a normal it reconstructs from a gather of the neighbouring depths. On
+/// grass blades and leaf edges those neighbours flip between the blade and the ground behind it with the camera's sub-pixel
+/// shift, so pixels flip between lit and shadowed every frame: fast thin streaks over sunlit ground (the console's TAAU
+/// averages them away). The mask is evened out over frames right after that draw (shaders/shadow_stab.comp).
+/// RX_VK_MASK_BLEND=<weight> (default 0.85, 0: off), RX_VK_MASK_RADIUS=<r> (the history's bound, a (2r+1)^2 neighbourhood;
+/// default 0: unbounded. A 3x3 bound kept nothing: the streaks move as blocks wider than that)
+float mask_weight() {
+    static const float w = std::clamp(getenv("RX_VK_MASK_BLEND") ? (float)atof(getenv("RX_VK_MASK_BLEND")) : 0.85f, 0.0f, 0.95f);
+    return w;
+}
+int mask_radius_env() {
+    static const int r = std::clamp(getenv("RX_VK_MASK_RADIUS") ? atoi(getenv("RX_VK_MASK_RADIUS")) : 0, 0, 4);
+    return r;
+}
+void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, float weight) {
+    if (!tex || !tex->image || tex->format != VK_FORMAT_R8G8B8A8_UNORM || !(tex->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return;
+    if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return;
+    static VkPipeline pipe = VK_NULL_HANDLE;
+    static VkPipelineLayout layout = VK_NULL_HANDLE;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                             {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                             {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        li.bindingCount = 3, li.pBindings = b;
+        VkDescriptorSetLayout set{};
+        vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
+        const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
+        VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
+        vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = sizeof SHADOW_STAB_COMP_SPV, mi.pCode = SHADOW_STAB_COMP_SPV;
+        VkShaderModule m{};
+        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
+        ci.layout = layout;
+        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        vkDestroyShaderModule(dev.device, m, nullptr);
+        logf("vk: tree-shadow mask blend %s", pipe ? "ready" : "not made");
+    }
+    if (!pipe) return;
+    const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+    // (the mask's own storage view at that level and layer, made once a texture and level)
+    static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
+    VkImageView& mv = views[{tex->image, level, layer}];
+    if (!mv) {
+        VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vc.image = tex->image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
+        if (vkCreateImageView(dev.device, &vc, nullptr, &mv) != VK_SUCCESS) { mv = VK_NULL_HANDLE; return; }
+    }
+    static VkImage hist[2] = {};
+    static VmaAllocation hist_mem[2] = {};
+    static VkImageView hist_view[2] = {};
+    static uint32_t hist_w = 0, hist_h = 0, cur = 0;
+    static uint64_t hist_frame = 0;
+    if (hist_w != w || hist_h != h) {
+        for (int i = 0; i < 2; i++) {
+            VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_R8G8B8A8_UNORM;
+            ic.extent = {w, h, 1}, ic.mipLevels = 1, ic.arrayLayers = 1, ic.samples = VK_SAMPLE_COUNT_1_BIT;
+            ic.tiling = VK_IMAGE_TILING_OPTIMAL, ic.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+            if (!create_image(ic, hist[i], hist_mem[i])) { hist_w = hist_h = 0; return; }
+            VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vc.image = hist[i], vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = ic.format;
+            vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCreateImageView(dev.device, &vc, nullptr, &hist_view[i]);
+            VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_NONE, ib.srcAccessMask = VK_ACCESS_2_NONE;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = hist[i], ib.subresourceRange = vc.subresourceRange;
+            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        }
+        hist_w = w, hist_h = h, hist_frame = 0, cur = 0;
+    }
+    const uint64_t now_frame = texture_frame_no();
+    const int valid = hist_frame && now_frame - hist_frame <= 3 ? 1 : 0;
+    hist_frame = now_frame;
+    const uint32_t prev = cur, nxt = cur ^ 1u;
+    cur = nxt;
+    const VkDescriptorImageInfo infos[3] = {{VK_NULL_HANDLE, mv, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, hist_view[prev], VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, hist_view[nxt], VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet wr[3]{};
+    for (int i = 0; i < 3; i++) {
+        wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, wr[i].dstBinding = (uint32_t)i, wr[i].descriptorCount = 1;
+        wr[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, wr[i].pImageInfo = &infos[i];
+    }
+    struct { int32_t size[2]; int32_t valid, mode; float weight; int32_t radius; } pc{{(int32_t)w, (int32_t)h}, valid, 0, weight, mask_radius_env()};
+    end_pass(cmd);
+    full_barrier(cmd);   // (after the pass's write of the mask)
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 3, wr);
+    descriptors_disturbed();   // (what bind_descriptors remembers pushing is not what is bound now: the next dispatch pushes all again; unmarked, a dispatch of the same layout kept these bindings and read our images: the device lost)
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+    vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+    full_barrier(cmd);
+    pc.mode = 1;
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+    vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+    full_barrier(cmd);   // (before the next pass reads or draws the mask)
+    static std::atomic<int> told{0};
+    if (told++ == 0) logf("vk: tree-shadow mask blend on #%u %ux%u, weight %.2f", tex->id, w, h, weight);
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
-    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPrimitiveTopology topo = kMeshDrawTopology;
     if (!d.mesh && !topology(d.prim, topo)) {
         static int logged[32];
         if (d.prim >= 0 && d.prim < 32 && logged[d.prim]++ < 2) logf("vk: draws of NVN primitive %d are left out", d.prim);
@@ -5826,22 +6105,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         fsr3_inputs::note_scene_draw(at.color[0], at.width, at.height, at.depth, s.ubo[0][0].addr, s.ubo[0][0].size);
     }
     uint8_t types[8];
-    for (int i = 0; i < 8; i++) {
-        const VkFormat f = i < at.n ? at.color_format[i] : VK_FORMAT_UNDEFINED;
-        switch (f) {
-        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
-        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
-        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-            types[i] = (uint8_t)Shader::AttributeType::UnsignedInt;
-            break;
-        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
-        case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
-        case VK_FORMAT_R32G32B32A32_SINT:
-            types[i] = (uint8_t)Shader::AttributeType::SignedInt;
-            break;
-        default: types[i] = (uint8_t)Shader::AttributeType::Float; break;
-        }
-    }
+    color_types_of(at, types);
     const Program* cp;
     {
         PROF_HOT(PROF_PROGRAM);
@@ -5968,7 +6232,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             return;
         }
     }
-    if (p.fallback) topo = p.fallback_topology;   // (the mesh program's points, lines or triangles)
+    topo = pipeline_topology(p, topo);   // (the mesh fallback's: its mesh program's points, lines or triangles)
     PipeEntry* pe;
     {
         PROF_HOT(PROF_PIPE);
@@ -5988,6 +6252,17 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     cur_program = &p;
     dlss_trace_draw(s, p, d, at);
     skin_check(s, p, d, at);
+    // (after OoT's tree-shadow pass has drawn its mask: the mask evened out over frames, at this draw's end: mask_stabilize)
+    struct MaskGuard {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        Texture* tex = nullptr;
+        uint32_t level = 0, layer = 0;
+        float w = 0;
+        ~MaskGuard() { if (cmd) mask_stabilize(cmd, tex, level, layer, w); }
+    } mask_guard;
+    if (p.key == 0x3427a1dbefd5e02cull && at.n > 0 && at.color[0])
+        if (const float mw = mask_weight(); mw > 0)
+            mask_guard = {cmd, at.color[0], at.color_level[0], at.color_layer[0], mw};
     if (!record_progs().empty() && std::find(record_progs().begin(), record_progs().end(), p.key) != record_progs().end())
         record_draw(s, p, d, at);
     // (RX_VK_DUMP_EACH=<key>,...: in a dump, the pass ends after each draw of those programs, so every one of them is
@@ -6641,7 +6916,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     // (hookshot) an upscale network that did not translate here (the Render resolution's fixed shares have one each, and on a
     // GPU without cooperative matrices they are left out): the temporal upscaler is offered it first, as temporal_stand_in
     // offers the networks that did translate. It takes only the scene into the picture; anything else goes on below
-    if (temporal_wanted() && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
+    if ((temporal_wanted() || temporal_off()) && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
     VkFormatProperties fs{}, fd{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, src->format, &fs);
     vkGetPhysicalDeviceFormatProperties(dev.physical, dst->format, &fd);
@@ -6898,7 +7173,7 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     // share of the Render resolution row (67%: 6676619641320ba7, 58% f10782f9e58b6a7c, 50% 72ba090c70fe2614, 33%
     // 0775215f8da720e6 at 2048x1152), by their shape: a network sampling one texture into one image. temporal_upscale takes those
     // only when the texture is this frame's scene, in the gameplay networks' input format, and the image the picture)
-    if (!temporal_wanted() || p.stages.empty()) return false;
+    if ((!temporal_wanted() && !temporal_off()) || p.stages.empty()) return false;   // (Off: the network's stretch)
     const Stage& st = p.stages[0];
     if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
                                       st.info.image_descriptors.size() == 1))
@@ -7243,7 +7518,8 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
 /// driver's part made once for this driver (see PreparedFor). True: prepared now, either of them.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
-bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
+/// refresh_states: Builder preparation also imports state lists when the seed is already prepared
+bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
     PreparedFor prepared_for;
@@ -7256,7 +7532,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
              prepared_for.seed_size / 1048576.0, hash_ms);
     if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
-        if (getenv("RX_VK_SEED_CHECK")) seed_open();
+        // A Builder run can add pipeline states without changing the shader seed.
+        if (getenv("RX_VK_SEED_CHECK")) {
+            if (seed_open() && refresh_states) state_list_prepare(progress);
+        } else if (refresh_states) {
+            state_list_prepare(progress, true);
+        }
         if (prepared_for.warmed == warmed || background) return false;
         // (translated, and the driver's part is another driver's, or of before the libraries were wanted: that part alone, no
         // shader translated. Without libraries it is predict_run's pipelines, which follow a prepare that prepared)
@@ -7420,9 +7701,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
 /// of the state list are made now, before it, so that precompile_run builds them before the game as on a first start
 void state_list_run() {
-    if (getenv("RX_VK_NO_STATE_LIST") || !seed_open()) return;
-    state_list_prepare(nullptr);
-    if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    state_list_prepare(nullptr, true);
 }
 void prepare_background() {
     std::thread([] {
@@ -7594,25 +7873,56 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built
 // once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
+/// (hookshot) The preparation's three parts as the files on disk count them before it runs: PrepareBar's guesses, so that the bar
+/// has every part in its total from the start. The seed's programs (its header); the pipelines the notes will predict, about one for
+/// each graphics program variant no note names, about as many as the seed has programs (38,809 programs, 43,000-46,000 predicted
+/// on a played folder); the pipelines the notes and state lists name, and the compute programs play dispatched
+void prepare_guess(size_t out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    const auto size_of = [](const std::string& path) -> int64_t {
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) return 0;
+        _fseeki64(f, 0, SEEK_END);
+        const int64_t n = _ftelli64(f);
+        fclose(f);
+        return n;
+    };
+    if (FILE* f = fopen(seed_path().c_str(), "rb")) {
+        char head[16]{};
+        uint32_t programs = 0;
+        if (fread(head, 1, 16, f) == 16 && !memcmp(head, "HKSEED01", 8)) std::memcpy(&programs, head + 8, 4);
+        fclose(f);
+        out[0] = out[1] = programs;
+    }
+    const int64_t notes = size_of(pipe_notes_path()), computes = size_of(computes_path());
+    const int64_t lists = std::max<int64_t>(0, size_of(state_list_path("hookshot_pipeline_states_shipped.bin")) - 12) +
+                          std::max<int64_t>(0, size_of(state_list_path("hookshot_pipeline_states.bin")) - 12);
+    out[2] = (size_t)(std::max<int64_t>(0, notes - 16) / (int64_t)sizeof(PipeNote) + lists / (int64_t)sizeof(StateRec) +
+                      std::max<int64_t>(0, computes - 8) / 8);
+}
+
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
     size_t programs = 0;
     const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs);
+    const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
     std::vector<uint64_t> keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
     std::atomic<size_t> next{0}, done{0}, made{0};
-    // (hookshot) A time budget, RX_VK_PREDICT_S (90 s by default; 0: none): once #1051 let the prediction find its programs again it
-    // predicted ~28000 pipelines, and a first start after an update spent many minutes on them before the game's first frame (20 with
-    // the CPU busy). Those not built by then are built in play when first drawn, as before the prediction worked
-    static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 90;
+    // (hookshot) No time budget by default: every predicted pipeline is built here, in the preparation, under its progress bar (the
+    // start-up screen's and the builder's), not in play. RX_VK_PREDICT_S=<seconds> sets one: those not built by then are built in
+    // play when first drawn. The budget (90 s) came when #1051 let the prediction find its programs again: ~28,000 pipelines, many
+    // minutes before the game's first frame (20 with the CPU busy) with nothing on screen to say so, on half the CPUs below normal
+    // priority. Now the bar counts them from the start (PrepareBar), closing the window stops them (prepare_stopped, kept for the
+    // next start), and they take every CPU: nothing else runs before the game
+    static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 0;
     std::atomic<bool> out_of_time{false};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
             if (prepare_stopped()) return;
@@ -7627,7 +7937,8 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
                 ensure_layout(p);
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant)
-                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo))
+                        // (a mesh fallback program's own topology: its donor's may be an ordinary draw's, pipeline_topology)
+                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), pipeline_topology(p, (VkPrimitiveTopology)n->topo)))
                             vkDestroyPipeline(dev.device, pl, nullptr), made++;
             });
             done += list.size();
@@ -7635,15 +7946,19 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
-    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s%s", predicted.size(),
-         notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
-         out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
+    if (progress) progress(done.load(), predicted.size());
+    const double all_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s (%.1f s deciding them, "
+         "%.1f s building them on %zu threads)%s", predicted.size(), notes.size(), programs, made.load(), all_s, decide_s, all_s - decide_s,
+         threads.size(),
+         out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
+         : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
 }
 
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {

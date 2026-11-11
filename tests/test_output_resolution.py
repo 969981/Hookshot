@@ -32,7 +32,11 @@ constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
 volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
-struct { int handheld, output_res; } opts;
+struct { int handheld, output_res, ultrawide; } opts;
+#include "host/hos_wide_size.h"
+// (the main screen tx_output_res shapes its sizes for: none unless a check sets one)
+static uint32_t screen_w = 0, screen_h = 0;
+bool screen_size(uint32_t* w, uint32_t* h) { return screen_w ? (*w = screen_w, *h = screen_h, true) : false; }
 namespace mkwvk {
 int up_now = 0;   // (the Upscaler shown: 0 the game's own, 1 DLSS, 2 DLAA)
 int upscaler() { return up_now; }
@@ -88,20 +92,41 @@ int main(int argc, char **argv) {
     assert(parse_output(saved) == opts.output_res);
     unsigned scene_w, scene_h;
     game_size(1.0f, scene_w, scene_h);
-    assert(scene_w == (opts.handheld ? 1536 : mode ? w : 2048));
-    assert(scene_h == (opts.handheld ? 864 : mode ? h : 1152));
+    if (w == 7680 && h == 1440) {
+        assert(scene_w == 6528 && scene_h == 1224);
+    } else {
+        assert(scene_w == (opts.handheld ? 1536 : mode ? w : 2048));
+        assert(scene_h == (opts.handheld ? 864 : mode ? h : 1152));
+    }
     if (mode == 3) assert(strcmp(tx_resolution(2), "75% (1440x810)") == 0);
     if (mode == 3) {   // (DLSS at 1080p: its modes' render sizes, each a twelfth of the output, exact; DLAA the full size)
         up_now = ur::DLSS;
-        assert(strcmp(tx_resolution(3), "Quality (67%)") == 0 && strcmp(tx_resolution(6), "Ultra Performance (33%)") == 0);
+        // (each stop with its render size)
+        assert(strcmp(tx_resolution(3), "Quality 67% (1280x720)") == 0 &&
+               strcmp(tx_resolution(6), "Ultra Performance 33% (640x360)") == 0);
+        assert(strcmp(tx_resolution(9), "92% (1760x990)") == 0 && strcmp(tx_resolution(7), "42% (800x450)") == 0);
         const unsigned want[][3] = {{3, 1280, 720}, {5, 1120, 630}, {4, 960, 540}, {6, 640, 360}};
         for (const auto& m : want) {
             game_size(ur::percent(m[0]) / 100.0f, scene_w, scene_h);
             assert(scene_w == m[1] && scene_h == m[2] && scene_w * 1080 == scene_h * 1920);
         }
         up_now = ur::DLAA;
-        assert(strcmp(tx_resolution(1), "Native (DLAA)") == 0);
+        assert(strcmp(tx_resolution(1), "Native (DLAA, 1920x1080)") == 0);
         up_now = ur::GAME;
+    }
+    if (mode == 2 && !opts.handheld) {   // (Ultrawide on a 21:9 monitor: the pictures it makes, the screen's own size named)
+        screen_w = 5120, screen_h = 2160, opts.ultrawide = 1;
+        assert(strcmp(tx_output_res(2), "4416x1864") == 0);   // (at most 3840x2160's pixels: host/hos_wide_size.h)
+        assert(strcmp(tx_output_res(1), "3416x1440") == 0 && strcmp(tx_output_res(4), "3416x1440") == 0);
+        assert(strcmp(tx_output_res(3), "2560x1080") == 0);
+        assert(strcmp(tx_output_res(0), "2048x1152 (game's)") == 0);   // (the game's own keeps its name)
+        opts.ultrawide = 0;   // (16:9: the outputs as they are)
+        assert(strcmp(tx_output_res(2), "3840x2160") == 0);
+        screen_w = 3440, screen_h = 1440, opts.ultrawide = 1;   // (a 3440x1440 monitor at the 1440 output: its own size)
+        assert(strcmp(tx_output_res(1), "3440x1440 (native)") == 0);
+        screen_w = 3840, screen_h = 2160, opts.ultrawide = 1;   // (a 16:9 monitor: the same, native named)
+        assert(strcmp(tx_output_res(2), "3840x2160 (native)") == 0 && strcmp(tx_output_res(1), "2560x1440") == 0);
+        screen_w = screen_h = 0, opts.ultrawide = 0;
     }
 }
 '''
@@ -133,7 +158,9 @@ int main(int argc, char **argv) {
         ("7680x4320", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (more than 5120x2880's pixels)
         ("6144x2560", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
         ("640x4320", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (narrower than 5:4)
-        ("5120x1080", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (wider than 32:9)
+        ("5760x1080", 0, None, 6, 5760, 1080, "5760x1080", 515, "5760x1080"),
+        ("7680x1440", 0, None, 6, 7680, 1440, "6528x1224", 900, "7680x1440"),
+        ("7688x1440", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (wider than 48:9)
         ("3840 x 2160", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (not a size)
         ("abc", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
         ("5120x2880", 1, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),

@@ -133,6 +133,39 @@ VkFormat storage_view_format(VkFormat f) {
     default: return f;
     }
 }
+}  // namespace
+/// (hookshot) The format of the image made for a texture of this Vulkan format (vk_format's, widened): depth as it is, decoded ASTC as
+/// RGBA8, the rest as their UNORM twin. create's choice, and the pipeline state list's (attachment_format): one rule for both
+VkFormat image_format_of(VkFormat vf, bool astc_decoded) {
+    return is_depth_format(vf) ? vf : astc_decoded ? VK_FORMAT_R8G8B8A8_UNORM : linear_twin(vf);
+}
+/// (hookshot) The format a view of an image takes for a use: the view's NVN format as this device has it (widened), the image's own
+/// for depth and for a format Vulkan lacks, decoded ASTC as RGBA8, ASTC kept as BC3 as BC3 (sampled only); UNDEFINED: no such view
+/// (a compressed format is no target). texture_view's choice, and the pipeline state list's: one rule for both
+VkFormat view_format_of(VkFormat image, bool astc_decoded, bool bc, int view_nvn, ViewUse use, VkFormat force_format) {
+    int from = 0;
+    VkFormat f = widened(vk_format(view_nvn).format, &from);
+    if (is_depth_format(image) || f == VK_FORMAT_UNDEFINED) f = image;
+    if (astc_decoded) f = (view_nvn >= 0x87 && view_nvn <= 0x94) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    if (bc) {
+        if (use != ViewUse::Sample) return VK_FORMAT_UNDEFINED;
+        f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+    }
+    if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
+    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_FORMAT_UNDEFINED;
+    return f;
+}
+/// (hookshot) The format a draw renders in, on this device, into a texture of NVN format tex_nvn through a view of NVN format view_nvn
+/// (a depth target: its own). What texture_get and texture_view make of them, without the texture: the pipeline state list's
+/// targets are the game's NVN formats, and each GPU builds the pipelines its draws will ask for (vk_draw.cpp state_targets)
+VkFormat attachment_format(int tex_nvn, int view_nvn) {
+    const VkFormatInfo fi = vk_format(tex_nvn);
+    if (fi.format == VK_FORMAT_UNDEFINED) return VK_FORMAT_UNDEFINED;
+    int from = 0;
+    return view_format_of(image_format_of(widened(fi.format, &from), fi.astc), fi.astc, false, view_nvn, ViewUse::Attachment,
+                          VK_FORMAT_UNDEFINED);
+}
+namespace {
 /// The class an image format shares images by (see the top of the file)
 uint32_t format_class(VkFormat vf, int nvn_format, int bpb, bool astc_decoded) {
     if (astc_decoded) return 0x30000u | (uint32_t)(nvn_format - 0x79) % 14;
@@ -140,7 +173,10 @@ uint32_t format_class(VkFormat vf, int nvn_format, int bpb, bool astc_decoded) {
     if (is_bc(vf) || is_astc(vf)) return 0x20000u | (uint32_t)linear_twin(vf);
     int from = 0;
     widened(vf, &from);
-    return 0x40000u | (uint32_t)bpb | (from ? 0x100u : 0u);
+    // (RGB10A2 a class of its own (#2038, moosky73): the game's window textures are RGBA8 until it is told its display is HDR10,
+    // then RGB10A2 at the same addresses. Shared by class, a window texture first made as RGBA8 stayed RGBA8, the native-HDR present
+    // (vk_replay.cpp: the image's format) took it for an SDR picture, and one frame in three was grey)
+    return 0x40000u | (uint32_t)bpb | (from ? 0x100u : 0u) | (vf == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ? 0x200u : 0u);
 }
 
 VkComponentSwizzle component(unsigned s) {
@@ -1354,6 +1390,76 @@ bool upload(Texture& tex, const Ranges* dirty) {
     }
     return ok;
 }
+/// (hookshot) A big texture whose whole storage is zero: the image cleared to zero on the GPU, not unswizzled on the CPU. All-zero
+/// bits are 0 in every format this path takes (not ASTC or BC, not one widened on the way), so the clear is what the unswizzle
+/// would have made. The game's shadow map (12288 x 12288 D16, 288 MB, its storage fresh and zero) took 73 ms of the replay
+/// thread at a scene change; the check reads the storage once, on several threads, and stops at the first byte that is not 0.
+/// RX_VK_ZERO_UPLOAD=0: off
+bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool widened_format) {
+    static const bool off = getenv("RX_VK_ZERO_UPLOAD") && atoi(getenv("RX_VK_ZERO_UPLOAD")) == 0;
+    if (off || total < (32ull << 20) || tex.astc || tex.bc || tex.sparse || widened_format || !tex.image ||
+        tex.type == VK_IMAGE_TYPE_3D || is_bc(tex.format) || is_astc(tex.format))
+        return false;
+    if (dirty) {   // (only an upload of the whole storage: a part of it says nothing of the rest)
+        uint64_t covered = 0;
+        for (const auto& r : *dirty) covered += std::min(r.second, total) - std::min(r.first, total);
+        if (covered < total) return false;
+    }
+    // (live memory, as the GPU unswizzle reads it: not a storage the capture kept as it was at its submit, which the CPU path reads)
+    if (tex.gpu >= (1ull << 40) || memory_has_shadow(tex.gpu, total)) return false;
+    uint64_t avail = 0;
+    const uint8_t* p = host->gpu_ptr(tex.gpu, &avail);
+    if (!p || avail < total) return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::atomic<bool> found{false};
+    const uint32_t nthreads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
+    const uint64_t per = ((total / nthreads) + 4095) & ~4095ull;
+    auto part = [&](uint32_t t) {
+        const uint64_t a = std::min<uint64_t>(total, (uint64_t)t * per), b = std::min<uint64_t>(total, a + per);
+        for (uint64_t at = a; at < b && !found.load(std::memory_order_relaxed); at += 65536) {
+            const uint64_t end = std::min<uint64_t>(b, at + 65536);
+            uint64_t acc = 0;
+            uint64_t k = at;
+            for (; k + 8 <= end; k += 8) {
+                uint64_t w;
+                std::memcpy(&w, p + k, 8);
+                acc |= w;
+            }
+            for (; k < end; k++) acc |= p[k];
+            if (acc) found.store(true, std::memory_order_relaxed);
+        }
+    };
+    if (nthreads > 1) {
+        std::vector<std::thread> th;
+        for (uint32_t t = 1; t < nthreads; t++) th.emplace_back(part, t);
+        part(0);
+        for (auto& x : th) x.join();
+    } else {
+        part(0);
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    static std::atomic<int> told{0};
+    if (found.load()) {
+        if (told.fetch_add(1) < 4)
+            logf("vk: upload: %ux%u NVN %#x (%llu MB) is not all zero (checked in %.1f ms): unswizzled as before", tex.width,
+                 tex.height, tex.nvn_format, (unsigned long long)(total >> 20), ms);
+        return false;
+    }
+    texture_resident_flush(&tex);
+    checkpoint_mark(upload_cmd(), tex.gpu, 'u');
+    const VkImageSubresourceRange range{tex.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+    if (tex.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        const VkClearDepthStencilValue z{0.0f, 0};
+        vkCmdClearDepthStencilImage(upload_cmd(), tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &range);
+    } else {
+        const VkClearColorValue z{};
+        vkCmdClearColorImage(upload_cmd(), tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &range);
+    }
+    if (told.fetch_add(1) < 4)
+        logf("vk: upload: %ux%u NVN %#x (%llu MB) is all zero: cleared on the GPU (checked in %.1f ms)", tex.width, tex.height,
+             tex.nvn_format, (unsigned long long)(total >> 20), ms);
+    return true;
+}
 bool upload_inner(Texture& tex, const Ranges* dirty) {
     PROF(PROF_UPLOAD);
     if (!tex.gpu || tex.samples != VK_SAMPLE_COUNT_1_BIT) return false;
@@ -1387,6 +1493,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     const bool linear = nvn_tex_is_linear(&tex.d);
     int widen_from = 0;
     widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
+    if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
     const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
@@ -1742,7 +1849,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     int from = 0;
     vf = widened(vf, &from);
     const bool depth = is_depth_format(vf);
-    x.format = depth ? vf : astc ? VK_FORMAT_R8G8B8A8_UNORM : linear_twin(vf);
+    x.format = image_format_of(vf, astc);
     x.aspect = !depth ? VK_IMAGE_ASPECT_COLOR_BIT
              : vf == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT
              : has_stencil(vf) ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
@@ -2520,18 +2627,9 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
                          VkFormat* format_out, VkFormat force_format) {
     if (!tex) return VK_NULL_HANDLE;
     const int nf = view_nvn_format(t, v);
-    VkFormat f = vk_format(nf).format;
-    int from = 0;
-    f = widened(f, &from);
+    const VkFormat f = view_format_of(tex->format, tex->astc, tex->bc, nf, use, force_format);
+    if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
     const bool depth = is_depth_format(tex->format);
-    if (depth || f == VK_FORMAT_UNDEFINED) f = tex->format;
-    if (tex->astc) f = (nf >= 0x87 && nf <= 0x94) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    if (tex->bc) {
-        if (use != ViewUse::Sample) return VK_NULL_HANDLE;
-        f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
-    }
-    if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
-    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_NULL_HANDLE;
     const uint32_t vl = view_level(v);
     uint32_t level0 = image_level(tex, vl);
     uint32_t nlevels = v && v->set_levels && v->nlevels ? (vl + v->nlevels > tex->skip ? vl + v->nlevels - tex->skip - level0 : 1)

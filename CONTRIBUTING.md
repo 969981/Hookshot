@@ -173,7 +173,9 @@ python -I -B tests/run_all.py
 It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/vk/tests` and a
 byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
-`test_*.py` file is picked up by itself: no workflow to edit.
+`test_*.py` file is picked up by itself: no workflow to edit. The slowest checks start first, by the times in
+`tests/run_all_times.json`, which also split CI's Linux and Windows runs into two parts each (`--shard 1/2`,
+`--shard 2/2`); a full run with `--write-times` refreshes this OS's times there.
 
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
@@ -281,7 +283,7 @@ and the check runs again.
 | `revert` | undoing an earlier change | `revert: ...`, with the reverted PR in the body |
 
 The scope is optional and names the part of the project: `vk`, `linux`, `builder`, `menu`, `video`, `runtime` and so
-on. `feat` releases a minor version, and `fix` and `perf` a patch. A `!` after the type or scope (`feat(builder)!: ...`)
+on. `feat` makes the next release a minor version, and `fix` and `perf` a patch (each first as a release candidate). A `!` after the type or scope (`feat(builder)!: ...`)
 marks a breaking change. The other types make no release on their own. The commits inside a branch can be written
 any way you like: only the title reaches `main`. The version rules are in [docs/versioning.md](docs/versioning.md).
 
