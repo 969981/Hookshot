@@ -27,6 +27,7 @@ Usage:  python -I nx2/build.py [--jobs 1] [--dll] [--standalone]
 """
 import argparse
 import concurrent.futures
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -642,6 +643,101 @@ def object_key(src, fl, deps):
     return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
 
 
+def key_of(src, fl, deps):
+    """object_key, without reading a source HASHES still knows: the key worked out from it before, for these flags and headers,
+    is the same"""
+    part = kept_part(fl, deps)
+    entry, st = known(src)
+    if entry is not None and part in entry["keys"]:
+        return entry["keys"][part]
+    content = open(src, "rb").read()
+    key = hashlib.sha1(content + flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
+    remember(src, st, content)["keys"][part] = key
+    return key
+
+
+# (the dev-loop proposal's A5) what each source's object key was, by the file's size, modification time and id: every build read
+# and hashed each source again to name its object, the 1.4 GB of lifted C up to three times (migrate_stamps, the fingerprint,
+# plan_jobs): 7.5 s of a one-file edit's 32 s build on Windows. A file whose size, time and id are the ones recorded has the
+# content it had; its key for the same flags and headers (kept_part) is the one worked out then, and its content's sha1 is kept
+# for the fingerprint. A file written less than RACY_NS before the record was is read again: a change within the clock's step
+# keeps the time (git's "racily clean" index entries). Kept in <build>/hash_cache.json; a record that cannot be read is no record
+HASH_CACHE = "hash_cache.json"
+HASH_SCHEME = 1
+RACY_NS = 2 * 10 ** 9
+HASHES = {}   # (source path -> {"stat": [size, mtime_ns, id], "sha1": the content's, "keys": {kept_part: object key}})
+HASHES_AT = [0]   # (when the record read in was written, in ns: entries for files written after it, less RACY_NS, are not trusted)
+
+
+def file_stat(src):
+    st = os.stat(src)
+    return [st.st_size, st.st_mtime_ns, st.st_ino]
+
+
+def known(src):
+    """(the record of src while it still describes the file on disk, or None; and the file's stat, None when it is not there)"""
+    try:
+        st = file_stat(src)
+    except OSError:
+        return None, None
+    entry = HASHES.get(src)
+    if entry is not None and entry.get("stat") == st and st[1] < HASHES_AT[0] - RACY_NS:
+        return entry, st
+    return None, st
+
+
+def remember(src, st, content):
+    """The record of src for the content just read from it: the one there when it was made from that same content (its other
+    keys hold), else a new one. A record not trusted for its time (RACY_NS) that names other content is dropped with its keys"""
+    digest = hashlib.sha1(content, usedforsecurity=False).hexdigest()
+    entry = HASHES.get(src)
+    if entry is None or entry.get("stat") != st or entry.get("sha1") != digest:
+        entry = {"stat": st, "sha1": digest, "keys": {}}
+        if st is not None:
+            HASHES[src] = entry
+    return entry
+
+
+def content_sha1(src):
+    """A source's content's sha1, from the record when it still describes the file"""
+    entry, st = known(src)
+    if entry is not None:
+        return entry["sha1"]
+    return remember(src, st, open(src, "rb").read())["sha1"]
+
+
+def load_hashes(out):
+    HASHES.clear()
+    HASHES_AT[0] = 0
+    try:
+        with open(os.path.join(out, HASH_CACHE), encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("scheme") != HASH_SCHEME:
+            return
+        HASHES_AT[0] = int(data["written_ns"])
+        for src, entry in data["files"].items():
+            if (isinstance(entry.get("stat"), list) and len(entry["stat"]) == 3 and isinstance(entry.get("sha1"), str)
+                    and isinstance(entry.get("keys"), dict)):
+                HASHES[src] = {"stat": [int(x) for x in entry["stat"]], "sha1": entry["sha1"], "keys": dict(entry["keys"])}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        HASHES.clear()
+        HASHES_AT[0] = 0
+
+
+def save_hashes(out):
+    """The record of the sources this build saw, for the next one (written atomically; a failure only costs the next build a read)"""
+    data = {"scheme": HASH_SCHEME, "written_ns": time.time_ns(),
+            "files": {src: e for src, e in sorted(HASHES.items()) if os.path.exists(src)}}
+    tmp = os.path.join(out, HASH_CACHE + ".new")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp, os.path.join(out, HASH_CACHE))
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
 # (a player's update: make_game.py deletes the lifted C (1.5 GB) once the game folder is ready, but keeps the compiled objects and
 # this list, gen/lifted_objects.txt: each lifted file's name, its object key, its size, and what of the key is not the source
 # (flags and headers, kept_part). The next build with the same lift key (make_game.py kept_before) skips the lift and passes
@@ -700,7 +796,7 @@ def write_kept(gen, jobs):
     for cc, src, obj, fl, deps in jobs:
         name = os.path.basename(src)
         if os.path.dirname(src) == gen and name.startswith("code_") and name.endswith(".c"):
-            lines.append("%s %s %d %s\n" % (name, PLANNED.get((src, obj)) or object_key(src, fl, deps), src_size(src),
+            lines.append("%s %s %d %s\n" % (name, PLANNED.get((src, obj)) or key_of(src, fl, deps), src_size(src),
                                             kept_part(fl, deps)))
     tmp = os.path.join(gen, KEPT_LIST + ".new")
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
@@ -756,7 +852,7 @@ def plan_jobs(jobs):
     The keys go to compile_one, which then does not hash every source a second time."""
     work, keys = [], {}
     for cc, src, obj, fl, deps in jobs:
-        key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
+        key = PLANNED.get((src, obj)) or key_of(src, fl, deps)
         keys[(src, obj)] = key
         stamp = obj + ".sha1"
         if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
@@ -782,8 +878,11 @@ def migrate_stamps(gen, obj_dir, fl, deps):
         if not (os.path.exists(obj) and os.path.exists(stamp)):
             continue
         src = os.path.join(gen, f)
+        old = open(stamp).read()
+        if os.path.exists(os.path.join(OBJ_CACHE, old + ".o")):
+            continue   # (stamped with a key of today's kind already: its object is in the cache by it. Nothing to read)
         content = open(src, "rb").read()
-        if open(stamp).read() == hashlib.sha1(content + " ".join(fl).encode() + deps, usedforsecurity=False).hexdigest():
+        if old == hashlib.sha1(content + " ".join(fl).encode() + deps, usedforsecurity=False).hexdigest():
             key = object_key(src, fl, deps)
             open(stamp, "w").write(key)
             cache_put(obj, key)
@@ -869,6 +968,7 @@ def main():
     obj_dir = os.path.join(out, "obj")
     gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
+    load_hashes(out)
     if kit.env_on("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
@@ -951,7 +1051,7 @@ def main():
     norm = lambda f: flag_text(f).encode()
     code = hashlib.sha1(usedforsecurity=False)
     for code_src in sorted(x for x in srcs if os.path.basename(x).startswith("code_")):
-        code.update(os.path.basename(code_src).encode() + (KEPT[code_src][0].encode() if code_src in KEPT else open(code_src, "rb").read()))
+        code.update(os.path.basename(code_src).encode() + (KEPT[code_src][0] if code_src in KEPT else content_sha1(code_src)).encode())
     print("object keys: game-code headers %s, flags %s, hot flags %s, lifted code %s (%d files)" % (
         fp(deps), fp(norm(fl)), fp(norm(hot_fl)), code.hexdigest()[:10],
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
@@ -1142,6 +1242,7 @@ def main():
     if counted:
         work_jobs, keys = plan_jobs(jobs)
         PLANNED.update(keys)
+        save_hashes(out)   # (the sources this plan hashed, for the next build: A5)
         estimate = per_file_seconds(work_jobs, times_from(counted))
         pending = list(estimate)
         for job, seconds in zip(work_jobs, estimate):

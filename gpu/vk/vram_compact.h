@@ -25,6 +25,28 @@ inline bool pressed(uint64_t used, uint64_t allowed) { return allowed && used > 
 /// into what a run gave back while the next one waits: under a 9.8 GB allowance the count reached 10.2 GB with 1.1-1.6 GB free
 inline uint64_t run_from(uint64_t min_free, bool is_pressed) { return is_pressed ? std::min<uint64_t>(min_free, 192ull << 20) : min_free; }
 
+/// The blocks a pool starts with (#2438: each block made in play is a vkAllocateMemory on the replay thread, ~170 ms on AMD's
+/// Windows driver): 15% of the card's memory, 2 to 24, in the pool the sampled textures are made in (holds_textures) and in no
+/// other. They were the images' pool's, where the textures went when #2438 was measured; compacted, the textures have a pool of
+/// their own, and the images' pool is left DLSS's, the frame interpolation's and the scratch images. There the blocks stayed
+/// empty: the driver counted them (1152 MB on an 8 GB card), no texture could take them, so reclaimable() rightly left them in
+/// the count and the hold cut the texture budget by as much (#2690: an RTX 3070 in Castle Town Market, 31-36 fps against 54-56
+/// without them), and the textures' blocks were made in play as before. In the textures' pool the scene's textures fill them,
+/// and what they hold free is that pool's free space, which the budget takes off the count already
+inline uint64_t blocks_at_start(uint64_t heap, uint64_t block, bool holds_textures) {
+    return holds_textures && block ? std::clamp<uint64_t>(heap / 100 * 15 / block, 2, 24) : 0;
+}
+
+/// The free space of the textures' pool a run can give back: not what the blocks made at the start hold (kept), which VMA
+/// keeps whatever is in them. Counted, a scene with fewer textures than those blocks hold started a run every time one was due
+inline uint64_t returnable(uint64_t block_bytes, uint64_t free_bytes, uint64_t kept) {
+    return std::min(free_bytes, block_bytes - std::min(block_bytes, kept));
+}
+
+/// Whether the textures' pool is down to its blocks made at the start. VMA keeps those, so nothing an eviction frees comes off
+/// the driver's count: the rule that squeezes by the count alone (97% of the allowance) waits, as it does for room in the blocks
+inline bool kept_only(uint64_t block_bytes, uint64_t kept) { return kept && block_bytes <= kept; }
+
 /// The presents between the end of a run and the next look
 inline uint64_t rest(bool is_pressed) { return is_pressed ? 120 : 600; }
 

@@ -109,19 +109,20 @@ def say(*words):
 def check_writable(out):
     """The game folder must take new files before anything is read into it. A folder under Program Files (or another protected
     place) only takes them with administrator rights, and the build used to stop minutes later inside nup.py with a bare
-    "PermissionError: [WinError 5]" on its .game folder"""
+    "PermissionError: [WinError 5]" on its .game folder. A write refused another way (#2792: a FileNotFoundError in a folder
+    just made) gets the same plain reason"""
     probe = os.path.join(out, ".hookshot_write_check")
     try:
         os.makedirs(out, exist_ok=True)
         with open(probe, "w") as f:
             f.write("ok")
         os.remove(probe)
-    except PermissionError as e:
+    except OSError as e:
         protected = [os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot")]
         inside = any(d and os.path.normcase(os.path.abspath(out)).startswith(os.path.normcase(os.path.abspath(d)) + os.sep)
                      for d in protected)
         where = (" Windows protects folders under Program Files and Windows, and only lets administrators write there."
-                 if inside else "")
+                 if inside and isinstance(e, PermissionError) else "")
         example = "~/Games/Hookshot" if LINUX else r"C:\Games\Hookshot"
         fail("The game folder %s can't be written to (%s).%s In Hookshot Builder, choose a game folder of your own, for example "
              "%s, and build again." % (out, e.strerror or e, where, example))
@@ -2335,10 +2336,11 @@ def main(a=None):
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
-    shutil.rmtree(prompts, ignore_errors=True)
     if importlib.util.find_spec("fontTools") is None:
+        shutil.rmtree(prompts, ignore_errors=True)
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
-    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts], check=False, output=sys.stderr):
+    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts] +
+             ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
