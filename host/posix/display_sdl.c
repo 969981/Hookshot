@@ -207,6 +207,11 @@ int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on t
 
 /* main(), before the game: SDL's video on this, the main, thread; the screen's size for GetSystemMetrics.
    Returns 1 when ready, 0 for explicit headless, -1 for startup failure. */
+static const char *window_title(const char *fallback) {
+    const char *e = getenv("HOS_WINDOW_TITLE");
+    return (e && e[0]) ? e : fallback;
+}
+
 int hos_display_init(void) {
     if (env_on("HOS_HEADLESS")) return 0;
     if (!hos_sdl_load()) {
@@ -214,7 +219,9 @@ int hos_display_init(void) {
         fprintf(stderr, "display: no SDL: no window\n");
         return -1;
     }
-    hos_sdl_identity("Hookshot", HOS_APP_ID);
+    const char *env_class = getenv("HOS_WM_CLASS");
+    const char *app_id = (env_class && env_class[0]) ? env_class : HOS_APP_ID;
+    hos_sdl_identity(window_title("Hookshot"), app_id);
     hos_sdl_hint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
     hos_sdl_hint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate
@@ -265,7 +272,7 @@ void hos_display_loop(void) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h);
+    window = hos_sdl_window(window_title(HOS_GAME_TITLE), win_w, win_h);
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());

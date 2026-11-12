@@ -750,6 +750,17 @@ int temporal_status(char* b, size_t n) {
     return mode;
 }
 
+void temporal_reset_failure() {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    for (auto& k : s.engines) {
+        k.failed.store(false, std::memory_order_relaxed);
+    }
+    s.reason = nullptr;
+    s.reason_repeats = 0;
+    s.last_frame = 0;
+}
+
 void temporal_idle() {
     State& s = st();
     if (!s.holding.load(std::memory_order_relaxed)) return;

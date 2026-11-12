@@ -38,7 +38,8 @@ DLSS_LICENSE = (
     "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from "
     "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n"
     "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n"
-    "Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so in the game folder's ngx folder). "
+    "Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so and libnvidia-ngx-dlssg.so in "
+    "the game folder's ngx folder). "
     "Hookshot never includes or shares them: never share a game folder built with them.\n\n"
     "Do you accept NVIDIA's license?"
 )
@@ -151,6 +152,32 @@ def game_ready(folder):
     return linux_update.game_exe(folder) is not None
 
 
+def own_scope(env, cgroup="/proc/self/cgroup", which=shutil.which, run=subprocess.run):
+    """What goes before the game's command so that it outlives this window's systemd service, or [] when nothing has to.
+    A desktop that starts each launcher as a service of its own (app-hookshot@<id>.service: COSMIC, GNOME, KDE) stops that
+    service, and everything in its control group, when its main process ends; start_new_session leaves the session, not the
+    control group, so Play then closing the window had systemd stop the game too, with SIGKILL 90 s later (#2529). In a scope
+    of its own it stays. A terminal, a scope or no systemd: nothing to do, and the game starts as before"""
+    try:
+        with open(cgroup, encoding="utf-8") as f:
+            unit = next((line.rstrip("\n")[3:] for line in f if line.startswith("0::")), "")
+    except OSError:
+        return []
+    if not unit.rpartition("/")[2].endswith(".service"):
+        return []
+    tool = which("systemd-run", path=env.get("PATH"))
+    if not tool:
+        return []
+    scope = [tool, "--user", "--scope", "--collect", "--quiet", "--"]
+    # (once first with true: a user manager that cannot be reached would otherwise leave Play starting nothing)
+    try:
+        ok = run(scope + ["true"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return scope if ok else []
+
+
 def play(folder):
     """the game, on its own (it outlives this window), from its folder. The launcher already asked about updates."""
     exe = linux_update.game_exe(folder)
@@ -160,9 +187,10 @@ def play(folder):
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
     exe = os.path.abspath(exe)
     options = dict(cwd=folder, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    scope = own_scope(env)   # (out of the launcher's systemd service, when it runs in one: #2529)
     try:
         with open(os.path.join(HERE, "play-diagnostics.sh"), encoding="utf-8") as script:
-            command = ["/bin/sh", "-c", script.read(), "hookshot-play", exe]
+            command = scope + ["/bin/sh", "-c", script.read(), "hookshot-play", exe]
         # (stderr a socket, not a pipe: the game takes a socket, as the journal's where a desktop launcher sends it, for nowhere to
         # log, and writes hookshot_log.txt; a pipe it takes for a reader and writes no log file (host/posix/win32_posix.c GetFileType).
         # The script reads the other end: what the game prints before its log opens)
@@ -170,7 +198,7 @@ def play(folder):
         with reading, writing:
             subprocess.Popen(command, **dict(options, stdin=reading, stderr=writing))
     except OSError:
-        subprocess.Popen([exe], **options)
+        subprocess.Popen(scope + [exe], **options)
 
 
 def share_pipeline_list(folder, out_dir=None, copy=None, open_path=None):

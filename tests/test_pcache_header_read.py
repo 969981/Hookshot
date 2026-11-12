@@ -31,6 +31,7 @@ def main():
     source = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     reader = function(source, "std::vector<uint8_t> pcache_file_read(const std::string& path)")
     fixture = r'''
+#define _CRT_SECURE_NO_WARNINGS   /* (Windows: fopen is not deprecated here) */
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,8 +39,10 @@ def main():
 #include <string>
 #include <vector>
 #include <vulkan/vulkan_core.h>
+#ifndef _WIN32   /* (Windows has _fseeki64 and _ftelli64 themselves, and no fseeko) */
 #define _fseeki64 fseeko
 #define _ftelli64 ftello
+#endif
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL:%d %s\n",__LINE__,#x); std::exit(1); } } while (0)
 struct { VkPhysicalDeviceProperties props; } dev;
 static size_t bytes_read;

@@ -97,9 +97,23 @@ VmaPool images_pool() {
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
     pi.blockSize = kImageBlock;
-    if (vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) image_pool = VK_NULL_HANDLE;
-    logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(kImageBlock >> 20), type,
-         image_pool ? "" : ": not made");
+    {   // (hookshot, RX 7800 XT: part of the blocks made now, at the start, not when the game first needs them. Each is a vkAllocateMemory of
+        // 128 MB, ~170 ms on AMD's driver, on the replay thread: ~70 of them in a walk across Hyrule Field, the frame rate dropping to the low
+        // 40s whenever new ground came in. 15% of the card's memory, 2 to 24 blocks; RX_VK_IMAGE_PREALLOC=<blocks>: that many, 0: none)
+        uint64_t heap = 0;
+        for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+            if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, dev.memory.memoryHeaps[h].size);
+        uint64_t n = std::clamp<uint64_t>(heap / 100 * 15 / kImageBlock, 2, 24);
+        if (const char* e = getenv("RX_VK_IMAGE_PREALLOC")) n = (uint64_t)std::max(0, atoi(e));
+        pi.minBlockCount = (size_t)n;
+        if (n && vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) {   // (no room for them: as before, made as needed)
+            pi.minBlockCount = 0;
+            image_pool = VK_NULL_HANDLE;
+        }
+    }
+    if (!image_pool && vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) image_pool = VK_NULL_HANDLE;
+    logf("vk: images from a pool of %llu MB blocks (memory type %u), %zu made at the start%s", (unsigned long long)(kImageBlock >> 20), type,
+         (size_t)pi.minBlockCount, image_pool ? "" : ": not made");
     return image_pool;
 }
 
@@ -266,6 +280,11 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
     if (mapped) *mapped = info.pMappedData;
     return true;
+}
+bool host_cached(VmaAllocation allocation) {
+    VkMemoryPropertyFlags f = 0;
+    if (allocation) vmaGetAllocationMemoryProperties(vma, allocation, &f);
+    return (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
 }
 void flush_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaFlushAllocation(vma, allocation, 0, size);

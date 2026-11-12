@@ -37,7 +37,8 @@ DLSS_LICENSE = (
     "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from "
     "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n"
     "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n"
-    "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). "
+    "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll and nvngx_dlssg.dll in the game "
+    "folder's ngx folder). "
     "Hookshot never includes or shares them: never share a game folder built with them.\n\nDo you accept NVIDIA's license?")
 
 
@@ -1064,6 +1065,7 @@ class Window(QWidget):
         if s.get("Out"):
             self.out_path.setText(s["Out"])
         self.dlss_tick.setChecked(bool(s.get("Dlss")))
+        self.dlss_license = bool(s.get("DlssLicense"))
         self.prepare_tick.setChecked(not s.get("PrepareLater"))
         r, x, n = s.get("Romfs"), s.get("Exefs"), s.get("Nup")
         if r and x and os.path.isdir(r) and os.path.isfile(os.path.join(x, "main")):
@@ -1078,6 +1080,7 @@ class Window(QWidget):
     def save_settings(self):
         core.save_settings({"Out": self.out_path.text(), "Nup": None if self.romfs else self.chosen_nup, "Romfs": self.romfs,
                             "Exefs": self.exefs, "Dlss": self.dlss_tick.isChecked(),
+                            "DlssLicense": getattr(self, "dlss_license", False) or bool(core.load_settings().get("DlssLicense")),
                             "PrepareLater": not self.prepare_tick.isChecked()})
 
     def preview(self, what):
@@ -1356,6 +1359,8 @@ class Window(QWidget):
             b = QMessageBox.question(self, "NVIDIA DLSS", DLSS_LICENSE, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if b != QMessageBox.StandardButton.Yes:
                 self.dlss_tick.setChecked(False)
+            else:
+                self.dlss_license = True   # (kept in the settings, DlssLicense: an update keeps DLSS by it, not the SDK's files)
         self.save_settings()   # (kept at once: ticked and closed, it is still ticked next time)
 
     def make_rows(self, update, shaders=False):
@@ -1753,7 +1758,11 @@ class Window(QWidget):
         if "download" in self.rows:
             self.rows["download"].done()
             self.rows["download"].small_text("Build tools checked")
-        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt"))
+        # (a folder built with DLSS keeps it: NVIDIA's license accepted, as the settings record it (DlssLicense, the WPF builder's
+        # too), or for one accepted before the record, the SDK's LICENSE.txt. The SDK's files alone were the record, and with them
+        # gone (deleted, a new builder folder) the update built without DLSS and its runtime went)
+        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and (
+            bool(core.load_settings().get("DlssLicense")) or os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt")))
         self.run(tools, ["--update", folder] + ([] if self.prepare_now else [SHADERS_LATER]), keep_rows=True, dlss=dlss)
 
     def quit_app(self):

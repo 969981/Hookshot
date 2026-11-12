@@ -39,7 +39,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
+import prompt_keys   # noqa: E402 (the keyboard face)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
+KENNEY_KEYBOARD = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input_keyboard")   # (the keyboard face's)
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
 PAD_BASE = 0xF700
@@ -49,6 +51,7 @@ STATIC_AT = 24
 # code): BIND_BASE + (face x 16 + Switch button) x 17 + pad input, the face's icon of that pad input. A code of its own for each,
 # where the game keeps a code's glyph drawn: a new icon is drawn anew, never an old one shown
 BIND_BASE = 0xF000
+ALL_FACES = ["switch"] + list(FACES) + ["keyboard"]   # (HOS_PROMPT_*: the keyboard last, nx2/prompt_keys.py)
 WIDE = 1.6   # (how much wider than the game's icon a wide Kenney icon may be)
 # the HOS_PAD_* inputs (gpu/vk/vk_api.h), in order
 PADS = ["south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick", "lshoulder", "rshoulder", "up", "down", "left",
@@ -155,11 +158,13 @@ def cmap4(mapping, single):
     return struct.pack(">HHHHIHHI", 0, 2, 0, 3, 20, 3, 1, 20) + sub
 
 
-def faces_font(otf, faces):
+def faces_font(otf, faces, label_otf=None):
     """the game's font (decrypted) with every face's icons (faces: their names, in HOS_PROMPT_* order), and each face's icons'
-    advances ({face: [advance per pad input]}): a pad icon per input at PAD_BASE + FACE_CODES x face + its number and the face's
-    d-pad icons at PAD_BASE + FACE_CODES x face + STATIC_AT.. (the Switch's, and an input a face has no glyph for: the game's own
-    glyph), each Switch button's on each pad input at BIND_BASE.., the game's code points kept"""
+    advances ({face: [advance per pad input]}; the keyboard's: per key code): a pad icon per input at PAD_BASE + FACE_CODES x face +
+    its number and the face's d-pad icons at PAD_BASE + FACE_CODES x face + STATIC_AT.. (the Switch's, and an input a face has no
+    glyph for: the game's own glyph), each Switch button's on each pad input at BIND_BASE.., the game's code points kept. The
+    keyboard face (nx2/prompt_keys.py; label_otf: the game's bold font, for its word keys): the Switch's pad icons, and its keys'
+    and sticks' icons"""
     from fontTools.pens.boundsPen import BoundsPen
     from fontTools.pens.t2CharStringPen import T2CharStringPen
     from fontTools.pens.transformPen import TransformPen
@@ -186,11 +191,30 @@ def faces_font(otf, faces):
         hmtx.metrics[name] = (width, 0)
         return name
 
+    def drawer(kset):
+        def draw(target, kn, scale=1):
+            """the Kenney glyph scaled into the box of the game's glyph `target` (as a square around its centre); a wide one
+            (the Menu and View pills on the square Plus and Minus) as high as the box, up to WIDE times as wide, the glyph
+            widened"""
+            gb, kb = bounds(gset, target), bounds(kset, kn)
+            side = max(gb[2] - gb[0], gb[3] - gb[1])
+            s = scale * min(side * WIDE / (kb[2] - kb[0]), side / (kb[3] - kb[1]))
+            over = max(0, s * (kb[2] - kb[0]) - side)
+            dx = (gb[0] + gb[2] + over) / 2 - s * (kb[0] + kb[2]) / 2
+            dy = (gb[1] + gb[3]) / 2 - s * (kb[1] + kb[3]) / 2
+            width = hmtx[target][0] + round(over)
+            pen = T2CharStringPen(width, gset)
+            kset[kn].draw(TransformPen(pen, (s, 0, 0, s, dx, dy)))
+            cs = chars[target]
+            return pen.getCharString(private=cs.private, globalSubrs=cs.globalSubrs), width
+        return draw
+
     assert BIND_BASE + len(faces) * len(SWITCH) * len(PADS) <= PAD_BASE
+    assert PAD_BASE + FACE_CODES * len(faces) <= prompt_keys.KEY_BASE
     placed, widths = {}, {}   # ({code: glyph name}, the advances)
     for n, face in enumerate(faces):
         base = PAD_BASE + FACE_CODES * n
-        if face == "switch":
+        if face in ("switch", "keyboard"):
             for i, p in enumerate(PADS):
                 placed[base + i] = cmap[SWITCH_ICON[p]]
             for k, c in enumerate(STATIC):
@@ -199,27 +223,11 @@ def faces_font(otf, faces):
         else:
             f = FACES[face]
             prefix, names = f["prefix"], f["icons"]
-            kenney = TTFont(os.path.join(KENNEY, f["font"]))
-            kset = kenney.getGlyphSet()
+            kset = TTFont(os.path.join(KENNEY, f["font"])).getGlyphSet()
+            draw = drawer(kset)
 
             def kname(s):
                 return s[1:] if s.startswith("/") else prefix + s
-
-            def draw(target, kn):
-                """the Kenney glyph scaled into the box of the game's glyph `target` (as a square around its centre); a wide one
-                (the Menu and View pills on the square Plus and Minus) as high as the box, up to WIDE times as wide, the glyph
-                widened"""
-                gb, kb = bounds(gset, target), bounds(kset, kn)
-                side = max(gb[2] - gb[0], gb[3] - gb[1])
-                s = min(side * WIDE / (kb[2] - kb[0]), side / (kb[3] - kb[1]))
-                over = max(0, s * (kb[2] - kb[0]) - side)
-                dx = (gb[0] + gb[2] + over) / 2 - s * (kb[0] + kb[2]) / 2
-                dy = (gb[1] + gb[3]) / 2 - s * (kb[1] + kb[3]) / 2
-                width = hmtx[target][0] + round(over)
-                pen = T2CharStringPen(width, gset)
-                kset[kn].draw(TransformPen(pen, (s, 0, 0, s, dx, dy)))
-                cs = chars[target]
-                return pen.getCharString(private=cs.private, globalSubrs=cs.globalSubrs), width
 
             for i, p in enumerate(PADS):
                 kn = kname(names[p]) if p in names else None
@@ -231,6 +239,13 @@ def faces_font(otf, faces):
                 if c in cmap:
                     placed[base + STATIC_AT + k] = add(f"static_{face}_{c:04x}", *draw(cmap[c], kn)) if kn in kset else cmap[c]
         widths[face] = [hmtx[placed[base + i]][0] for i in range(len(PADS))]
+        if face == "keyboard":
+            import prompt_draw
+            kset = TTFont(os.path.join(KENNEY_KEYBOARD, prompt_keys.FONT)).getGlyphSet()
+            keys, widths[face] = prompt_draw.keyboard_glyphs(add, gset, cmap, chars, hmtx, label_otf, kset, drawer(kset))
+            placed.update(keys)
+            for i in range(prompt_keys.SLOTS):   # (host/prompts.c points each at its key when it gives it out)
+                placed[prompt_keys.SLOT_BASE + i] = cmap[SWITCH[0]]
         for b in range(len(SWITCH)):
             for i in range(len(PADS)):
                 placed[BIND_BASE + (n * len(SWITCH) + b) * len(PADS) + i] = placed[base + i]
@@ -240,7 +255,10 @@ def faces_font(otf, faces):
     mapping = {c: gid[n] for c, n in cmap.items() if c <= 0xFFFF}
     mapping.update({c: gid[n] for c, n in placed.items()})
     t = DefaultTable("cmap")
-    t.data = cmap4(mapping, set(SWITCH) | set(STATIC))
+    singles = set(SWITCH) | set(STATIC)   # (each a segment of its own: host/prompts.c points them at the face's icons)
+    if "keyboard" in faces:
+        singles |= {c for c, _, _ in prompt_keys.STICKS} | {prompt_keys.SLOT_BASE + i for i in range(prompt_keys.SLOTS)}
+    t.data = cmap4(mapping, singles)
     game["cmap"] = t
     out = io.BytesIO()
     game.save(out)
@@ -909,9 +927,9 @@ def hint_panes(blarc):
 
 
 def write_hint(path, widths, panes):
-    """widths: the face's icons' advances, per pad input (faces_font)"""
+    """widths: the face's icons' advances, per pad input (faces_font; the keyboard's: per key code)"""
     with open(path, "wb") as f:
-        f.write(b"HPHN" + struct.pack("<I", len(PADS)))
+        f.write(b"HPHN" + struct.pack("<I", len(widths)))
         f.write(b"".join(struct.pack("<f", round(max(0, w - HINT_FITS) * HINT_SCALE)) for w in widths))
         f.write(struct.pack("<I", len(panes)) + b"".join(struct.pack("<IB3xf", at, slot, x) for at, slot, x in panes))
 
@@ -931,7 +949,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--romfs", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--faces", default=",".join(["switch"] + list(FACES)))
+    ap.add_argument("--faces", default=",".join(ALL_FACES))
     ap.add_argument("--no-textures", action="store_true")
     ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
                     "takes in their place), and the game's textures they go into into <dir>/game/")
@@ -958,9 +976,13 @@ def main():
     if not hint:
         print("prompts: the ocarina's hint keeps the game's spacing (its layout is not the one known)", file=sys.stderr)
     faces = a.faces.split(",")
-    if faces != ["switch"] + list(FACES)[:len(faces) - 1]:
-        raise SystemExit("prompts: --faces must be the Switch, then prompt_faces.FACES in their order (HOS_PROMPT_*)")
-    plain, widths = faces_font(otf, faces)
+    if faces != ALL_FACES[:len(faces)]:
+        raise SystemExit("prompts: --faces must be the Switch, then prompt_faces.FACES in their order, then the keyboard (HOS_PROMPT_*)")
+    try:   # (the keyboard face's word keys are set in the game's own bold font; without it, Kenney's keys)
+        label = unwrap(read_zs(a.romfs, prompt_keys.LABEL_FONT, dictionary))[1]
+    except OSError:
+        label = None
+    plain, widths = faces_font(otf, faces, label)
     font = wrap(key, plain)
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "External.bfotf"), "wb") as f:
@@ -970,7 +992,7 @@ def main():
         os.makedirs(d, exist_ok=True)
         if hint:
             write_hint(os.path.join(d, "hint.bin"), widths[face], hint)
-        if textures:
+        if textures and face != "keyboard":   # (the keyboard's: the Switch's textures, host/prompts.c texture_face)
             layers = face_layers(textures, tex, face, otf)
             write_textures(os.path.join(d, "textures.bin"), face_textures(textures, tex, layers))
             if a.dump:

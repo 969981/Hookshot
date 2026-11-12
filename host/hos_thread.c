@@ -10,6 +10,7 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   /* (older Windows SDKs lack it: Windows 10 1803 and later take it) */
@@ -671,6 +672,20 @@ static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *c
         }
     }
     if (logical < 8 || fast < 4) return 0;
+
+    // One-time debug logging
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        hos_log("vk: reserved core selection: %d cores, %d logical, best class=%d, fast cores=%d, selected=%#llx",
+                n, logical, best, fast, (unsigned long long)last);
+        for (int i = 0; i < n; i++) {
+            if (masks[i]) {
+                hos_log("vk:   core %d: mask=%#llx, class=%d, popcount=%d",
+                        i, (unsigned long long)masks[i], classes[i], __builtin_popcountll(masks[i]));
+            }
+        }
+    }
     return last;
 }
 #if defined(_WIN32)
@@ -725,6 +740,63 @@ uint64_t hos_cache_cpus(void) {
     return mask;
 }
 /* (pick_reserved_core over the calling thread's group's cores; *cores: how many, 0 when they could not be read) */
+static uint64_t last_fastest_core_legacy(int *cores) {
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
+    DWORD len = sizeof info;
+    if (!GetLogicalProcessorInformation(info, &len)) {
+        hos_log("vk: GetLogicalProcessorInformation failed: %lu", GetLastError());
+        return 0;
+    }
+
+    int logical = 0;
+    int current_core = 0;
+    uint64_t masks[256];
+    unsigned char classes[256];
+
+    int pcore_candidates = 0;
+    int ecore_candidates = 0;
+
+    for (DWORD i = 0; i < len / sizeof info[0] && current_core < 256; i++) {
+        if (info[i].Relationship == RelationProcessorCore) {
+            uint64_t mask = (uint64_t)info[i].ProcessorMask;
+            int popcount = __builtin_popcountll(mask);
+            logical += popcount;
+
+            // Heuristic: cores with 2+ logical processors = P-cores (with HT)
+            // cores with 1 logical processor = E-cores (no HT)
+            if (popcount >= 2) {
+                classes[current_core] = 1;  // P-core
+                pcore_candidates++;
+            } else {
+                classes[current_core] = 0;  // E-core
+                ecore_candidates++;
+            }
+            masks[current_core] = mask;
+            current_core++;
+        }
+    }
+
+    *cores = current_core;
+
+    hos_log("vk: legacy API fallback: %d cores, %d logical, P-candidates=%d, E-candidates=%d",
+            current_core, logical, pcore_candidates, ecore_candidates);
+
+    // If mixed core types detected, use enhanced picker
+    if (pcore_candidates > 0 && ecore_candidates > 0) {
+        hos_log("vk: Intel hybrid CPU detected via legacy API heuristic");
+        return pick_reserved_core(masks, classes, current_core);
+    }
+
+    // Single CPU type - use original logic (last core)
+    uint64_t last = 0;
+    for (int i = 0; i < current_core; i++) {
+        if ((uint64_t)masks[i] > last) last = (uint64_t)masks[i];
+    }
+    if (logical >= 8) return last;
+    return 0;
+}
+
+/* (pick_reserved_core over the calling thread's group's cores; *cores: how many, 0 when they could not be read) */
 static uint64_t last_fastest_core(int *cores) {
     static uint64_t masks[256];
     static unsigned char classes[256];
@@ -733,10 +805,18 @@ static uint64_t last_fastest_core(int *cores) {
     *cores = 0;
     GROUP_AFFINITY ga;
     const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
-    if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-        return 0;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        hos_log("vk: GetLogicalProcessorInformationEx failed: %lu", GetLastError());
+        return last_fastest_core_legacy(cores);
+    }
     char *buf = (char *)malloc(len);
-    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)buf, &len))
+    if (!buf) {
+        hos_log("vk: failed to allocate buffer for processor info");
+        return last_fastest_core_legacy(cores);
+    }
+
+    bool success = false;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)buf, &len)) {
         for (DWORD at = 0; at < len && n < 256;) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
             if (!e->Size) break;
@@ -747,7 +827,16 @@ static uint64_t last_fastest_core(int *cores) {
             }
             at += e->Size;
         }
+        success = true;
+    }
+
     free(buf);
+
+    if (!success || n == 0) {
+        hos_log("vk: extended API failed or no cores found, trying legacy API with Intel hybrid detection");
+        return last_fastest_core_legacy(cores);
+    }
+
     *cores = n;
     return pick_reserved_core(masks, classes, n);
 }
@@ -756,7 +845,25 @@ uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
-    if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
+
+    // Allow explicit hex mask override for testing
+    const char* override = getenv("HOS_RESERVE_CORE_MASK");
+    if (override) {
+        char* endptr;
+        mask = strtoull(override, &endptr, 16);
+        if (*endptr != '\0') {
+            hos_log("vk: HOS_RESERVE_CORE_MASK '%s' is not a valid hex value, ignoring", override);
+            mask = 0;
+        } else {
+            hos_log("vk: HOS_RESERVE_CORE_MASK override: %#llx", (unsigned long long)mask);
+        }
+        return mask;
+    }
+
+    if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) {
+        hos_log("vk: HOS_RESERVE_CORE=0, no core reserved");
+        return mask;
+    }
 #if defined(_WIN32)
     /* (hookshot) none where the game is kept to the cores of the largest L3 (hos_cache_cpus): they are 8 cores on the CPUs
        measured (a 9950X3D, SMT off), and with one of them kept for the replay the game's threads had 7. In the market the replay
@@ -767,7 +874,11 @@ uint64_t hos_reserved_cpus(void) {
     {
         int cores = 0;
         const uint64_t fast = last_fastest_core(&cores);
-        if (cores) return mask = fast;
+        if (cores) {
+            mask = fast;
+            hos_log("vk: reserved core mask (enhanced): %#llx (%d cores)", (unsigned long long)mask, cores);
+            return mask;
+        }
     }
 #endif
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
@@ -781,6 +892,7 @@ uint64_t hos_reserved_cpus(void) {
             if ((uint64_t)info[i].ProcessorMask > last) last = (uint64_t)info[i].ProcessorMask;
         }
     if (logical >= 8) mask = last;
+    hos_log("vk: reserved core mask (fallback): %#llx", (unsigned long long)mask);
     return mask;
 }
 
@@ -910,13 +1022,23 @@ static void sleep_ns(int64_t ns, int guest) {
         if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
             threads = __builtin_popcountll((uint64_t)proc);
 #endif
-        const int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+        int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+#if !defined(_WIN32)
+        /* (hookshot) Linux: the game's own sleeps wait on the timer whatever the processors, the host's still yield (1).
+           With #2602, OoT's five idle job workers and sead::MainThread yielded 3.3-3.6 ms a frame each in Hyrule Field
+           (RTX 3090, 7900X, 24 threads), ~9 ms of CPU a frame in all, while one of them waited on a GPU readback. With
+           the timer for all sleeps the frame's CPU fell 44.8 -> 35.4 ms at the same median frame (11.30 / 11.32 ms).
+           The job workers are not on the frame's critical path there (HOS_CHAIN), so their ~0.5 ms later wake costs
+           nothing measured; on 4-8 thread CPUs (the Steam Deck: 8) those yields took processors the frame needs.
+           HOS_SHORT_SLEEP_TIMER=0: all yield, as before; =1: all on the timer */
+        if (!getenv("HOS_SHORT_SLEEP_TIMER")) how = 1;
+#endif
         /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
            be made, Windows before 10 1803, a short sleep falls through to the yield loop at the end and nothing changes) */
         static volatile LONG told;
         if (how && !InterlockedExchange(&told, 1))
-            hos_log("sleep: %s sleeps under a millisecond wait on the timer where Windows has the high-resolution one "
-                    "(%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
+            hos_log("sleep: %s sleeps under a millisecond wait on the timer where the high-resolution one can be made "
+                    "(%d logical processors, 0: not counted; HOS_SHORT_SLEEP_TIMER=0: all yield)",
                     how == 2 ? "all" : "the game's", threads);
         short_timer = how;
     }

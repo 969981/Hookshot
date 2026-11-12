@@ -80,7 +80,7 @@ def main():
         assert options["start_new_session"]
         processes.append(subprocess.Popen(command, **options))
 
-    namespace = dict(HERE=str(BUILDER), os=os, socket=socket,
+    namespace = dict(HERE=str(BUILDER), os=os, socket=socket, own_scope=lambda env: [],   # (test_linux_play_scope.py has it)
                      linux_update=SimpleNamespace(game_exe=lambda folder: str(Path(folder) / "hookshot")),
                      make_game=SimpleNamespace(game_env=lambda: dict(os.environ)),
                      subprocess=SimpleNamespace(Popen=launch, DEVNULL=subprocess.DEVNULL))

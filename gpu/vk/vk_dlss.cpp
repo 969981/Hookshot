@@ -3,7 +3,9 @@
 // vk_temporal.cpp's; here are NGX, DLSS's feature and its evaluation.
 //
 // RX_VK_DLSS=0 / 1 / 2: the game's own, DLSS, DLAA over the Insert menu's Upscaler row (0 also leaves NGX's extensions
-// off). DLSS's runtime (Windows: nvngx_dlss.dll; Linux: libnvidia-ngx-dlss.so.*) is looked for in RX_VK_DLSS_DIR=<folder>
+// off). DLSS's runtime (Windows: nvngx_dlss.dll; Linux: libnvidia-ngx-dlss.so.*), and DLSS Frame Generation's beside it
+// (nvngx_dlssg.dll; libnvidia-ngx-dlssg.so.*: without one there NGX takes the driver's own copy, which may be older), is
+// looked for in RX_VK_DLSS_DIR=<folder>
 // when set, the game folder's ngx folder, and %LOCALAPPDATA%\Hookshot\ngx (Linux: $XDG_DATA_HOME/hookshot/ngx): NGX takes
 // the newest one it finds in them. Windows' paths are wide all the way (GetModuleFileNameW, _wgetenv), so any folder name
 // works. On Linux NGX takes only ASCII paths: a folder named otherwise goes to it as /proc/self/fd/<n> (wide()), and the
@@ -91,6 +93,9 @@ struct State {
     // picture. Then the feature takes HDR colour, linear, with its own exposure, and the chain does not clamp it: hdr())
     bool feature_hdr = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
+    // (the preset, output and HDR a creation failed for: not tried again each frame, but once any of them changes, so the
+    // menu's DLSS rows bring DLSS back without a restart. 0: none failed)
+    uint64_t refused = 0;
 };
 State& st() {
     static State s;
@@ -180,6 +185,17 @@ constexpr const fs::path::value_type* kRuntimeName = L"nvngx_dlss.dll";
 constexpr const char* kRuntime = "libnvidia-ngx-dlss.so";
 constexpr const fs::path::value_type* kRuntimeName = "libnvidia-ngx-dlss.so";
 #endif
+#ifdef _WIN32
+constexpr const char* kFgRuntime = "nvngx_dlssg.dll";   // (DLSS Frame Generation's runtime, as scripts/ngx_sdk.py fetches it)
+constexpr const fs::path::value_type* kFgRuntimeName = L"nvngx_dlssg.dll";
+#else
+constexpr const char* kFgRuntime = "libnvidia-ngx-dlssg.so";
+constexpr const fs::path::value_type* kFgRuntimeName = "libnvidia-ngx-dlssg.so";
+#endif
+// (DLSS-G's sets refused in a row before it is given up, as after three failed creations of its feature: an older runtime,
+// the driver's own 310.2.1 on an RTX 5080, refused every set at 2x, each refusal a wasted evaluation, and the game ran at
+// half its rate with no frame made)
+constexpr int kFgRefusalsOff = 3;
 
 /// The folders NGX looks for its runtimes in (DLSS's, kRuntime, and frame generation's): RX_VK_DLSS_DIR, the game folder's
 /// ngx, then the user's
@@ -364,6 +380,8 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
             logf("vk: NVIDIA DLSS: the render size %ux%u is a little outside quality mode %d's range (%ux%u to %ux%u): taken by "
                  "it (a rounded size)", rw, rh, (int)mode, ranges[k].min_w, ranges[k].min_h, ranges[k].max_w, ranges[k].max_h);
     }
+    const uint64_t key = (uint64_t)ow << 44 ^ (uint64_t)oh << 24 ^ (uint64_t)preset << 1 ^ (hdr ? 1 : 0) ^ 1ull << 63;
+    if (s.refused == key) return *fail = "its feature was not made", 0;
     if (s.feature) {   // (the old one, once a new one is to be made)
         NVSDK_NGX_Handle* old = s.feature;
         temporal_later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -392,11 +410,15 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     if (NVSDK_NGX_FAILED(r) || !s.feature) {
         logf("vk: NVIDIA DLSS: its feature was not made (%#x) for %ux%u -> %ux%u", (unsigned)r, max_w, max_h, ow, oh);
         s.feature = nullptr;
-        return *fail = "its feature was not made", -1;
+        // (a transient one too, out of video memory while menu switches had old features still waiting to be let go: the
+        // game's upscale until a DLSS setting changes, not for the rest of the run)
+        s.refused = key;
+        return *fail = "its feature was not made", 0;
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
     s.feature_hdr = hdr;
+    s.refused = 0;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
          "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
@@ -459,7 +481,7 @@ bool hdr() {
     return s.feature && s.feature_hdr;
 }
 
-const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr};
+const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr, false, true};
 
 }  // namespace
 
@@ -535,9 +557,10 @@ struct Fg {
     NVSDK_NGX_Handle* feature = nullptr;
     uint32_t fw = 0, fh = 0;          // (the picture its feature was made for)
     int create_failures = 0;
+    int refusals = 0;                 // (sets NGX refused in a row: kFgRefusalsOff of them give frame generation up)
     bool closed = false;
     // (read without mu, each present: a feature held (dlss_fg_idle), and NGX's answer a no or its feature given up after
-    // three failed creations (dlss_fg_runs))
+    // three failed creations or kFgRefusalsOff refused sets in a row (dlss_fg_runs))
     std::atomic<bool> held{false}, start_failed{false};
     // this frame's inputs (dlss_fg_inputs): the depth and motion copied, the camera NGX's way
     FgImage depth, motion;
@@ -645,7 +668,32 @@ bool fg_start(Fg& g) {
         return false;
     }
     g.most = most ? most : 1;
-    logf("vk: DLSS Frame Gen (NGX): available, up to %u made frames between two of the game's", g.most);
+    // (its runtime: NGX takes the newest nvngx_dlssg in the runtime folders, else the driver's own copy, which may be older
+    // and make 1 frame at most, or refuse every set. scripts/ngx_sdk.py puts the SDK's beside DLSS's runtime)
+    // (Linux: NGX loads it by its real path, ASCII only, as DLSS's runtime: one only in folders named otherwise is not used)
+    std::string where;
+    bool here = false, loadable = false;
+    std::error_code ec;
+    for (const auto& d : runtime_dirs(game_dir())) {
+        where += (where.empty() ? "" : ", ") + shown(d);
+        for (const auto& f : fs::directory_iterator(d, ec))
+            if (f.path().filename().native().rfind(kFgRuntimeName, 0) == 0) {
+                here = true;
+#ifdef _WIN32
+                loadable = true;
+#else
+                std::error_code real;
+                loadable |= dlss_checks::ascii(fs::canonical(f.path(), real).native()) && !real;
+#endif
+            }
+    }
+    const std::string runtime =
+        loadable ? "its runtime: the newest " + std::string(kFgRuntime) + " in " + where
+        : here   ? std::string(kFgRuntime) + " only in folders whose path is not all ASCII (" + where +
+                     "), which NGX on Linux does not load from: the driver's own, which may be older"
+                 : "no " + std::string(kFgRuntime) + " in " + where +
+                     ": the driver's own, which may be older (scripts/ngx_sdk.py fetches it)";
+    logf("vk: DLSS Frame Gen (NGX): available, up to %u made frames between two of the game's (%s)", g.most, runtime.c_str());
     g.ok = true;
     g.start_failed = false;
     return true;
@@ -859,8 +907,21 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
         g.made = g.no_inputs = g.not_blended = g.too_many = g.refused = g.resets = g.still = g.no_interp = 0;
     }
     if (!fg_start(g) || count < 1) return 0;
+    if (g.refusals >= kFgRefusalsOff) {   // (given up: dlss_fg_runs says no from here)
+        // (the refused sets' feature and its memory, let go once: vk_framegen.cpp still calls at 2x and up)
+        if (g.feature) fg_release(g);
+        return g.refused++, 0;
+    }
     if (!blend) return g.not_blended++, 0;
-    if ((unsigned)count > g.most) return g.too_many++, 0;
+    if ((unsigned)count > g.most) {
+        static bool told = false;   // (once a run: the 600-present lines count them)
+        if (!told) {
+            told = true;
+            logf("vk: DLSS Frame Gen (NGX): %d made frames asked, but its runtime makes %u at most (an older %s?): the "
+                 "renderer's own makes them", count, g.most, kFgRuntime);
+        }
+        return g.too_many++, 0;
+    }
     if (g.inputs == g.used || !g.rw) return g.no_inputs++, 0;
     g.used = g.inputs;
     if (g.feature && (g.fw != w || g.fh != h)) fg_release(g);
@@ -975,10 +1036,16 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
             g.last_sequence = 0;
             // (frames 1..k-1 are NGX's writes in this command buffer: done before the renderer's own write the same images)
             if (k > 1) fg_barrier(cmd);
+            if (++g.refusals == kFgRefusalsOff) {
+                g.start_failed = true;   // (dlss_fg_runs says no: V-Sync Auto goes back to its mode without DLSS-G)
+                logf("vk: DLSS Frame Gen (NGX): %d sets in a row refused (%#x): off, the renderer's own makes the frames (an "
+                     "older %s?)", kFgRefusalsOff, (unsigned)r, kFgRuntime);
+            }
             return g.refused++, 0;   // (a half-made set: the renderer's own makes all of it)
         }
     }
     fg_barrier(cmd);
+    g.refusals = 0;
     g.inputs_reset = false;
     g.last_sequence = sequence;
     g.made++;

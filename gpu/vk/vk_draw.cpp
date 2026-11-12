@@ -51,6 +51,7 @@
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
 #include "driver_faults.h"
+#include "fallback_size_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -1418,7 +1419,9 @@ void compute_note(uint64_t key) {
 // mesh fallback's topology), and the program variant's answers with its stages numbered as every GPU numbers them (the mesh
 // fallback adds a vertex stage: answers_portable). The prepare maps each record through the rules the draw itself follows
 // (state_targets: attachment_format; pipeline_topology; color_types_of), so one list made on one PC prepares the pipelines another
-// GPU's draws will ask for, the mesh fallback's included. Version 1 lists (a play folder's own from an older build) are still read ----
+// GPU's draws will ask for, the mesh fallback's included. A record with variant 0 and no answers or questions stands for the variant
+// nothing bound makes (seed_plain_of: each texture as its instruction declares it), as lists converted from records that hold no
+// texture answers have them. Version 1 lists (a play folder's own from an older build) are still read ----
 constexpr char kStateMagic[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '1'};
 constexpr char kStateMagic2[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '2'};
 /// A version 1 record as the file has it, and in memory any record resolved for this device (state_list_read): the Vulkan formats
@@ -1708,19 +1711,27 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
     // (these keys only: the kept compute programs stay on disk for precompile_run, which builds their pipelines)
     program_cache_load_some(keys, [](Program& p) { ensure_layout(p); }, false);
     // the variants made by other textures (the seed's are for nothing bound): translated with the answers the game's gave
+    // (a record with variant 0 and no answers or questions stands for the variant nothing bound makes: a list converted from records
+    // that hold no texture answers has those; a program without textures has variant 0 already, and is found as it is)
+    const auto plain = [](const StateRec& r) { return !r.variant && !r.nanswers && !r.nquestions; };
     std::vector<size_t> variant_of;   // (a record of each variant the cache lacks)
+    size_t plain_wanted = 0;
     {
         std::unordered_set<uint64_t> seen;
         for (size_t i = 0; i < recs.size(); i++) {
             const StateRec& r = recs[i];
             const uint64_t key = want[rec_program[i]].key;
-            if (key && (r.nanswers || r.nquestions) && !program_find_portable(key, r.variant) && seen.insert(mix(key, r.variant)).second)
-                variant_of.push_back(i);
+            // (a plain record: the variant nothing bound makes has the hash of its answers, not 0, so it is looked up by them:
+            // loaded from the program cache already, it is not translated, and saved, again)
+            if (key && (r.nanswers || r.nquestions || plain(r)) && !program_find_portable(key, r.variant) &&
+                !(plain(r) && program_find_plain(key)) && seen.insert(mix(key, r.variant)).second)
+                variant_of.push_back(i), plain_wanted += plain(r);
         }
     }
     total = want.size() + variant_of.size();
     if (progress) progress(done, total);
     std::atomic<size_t> variants_made{0};
+    std::vector<const Program*> made_plain(variant_of.size());   // (each worker writes its own records' only)
     next = 0;
     const auto variant_worker = [&] {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -1728,28 +1739,40 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
             const size_t i = next++;
             if (i >= variant_of.size()) return;
             const StateRec& r = recs[variant_of[i]];
-            std::vector<uint8_t> questions(r.questions, r.questions + r.nquestions);
-            std::vector<Program::Answer> answers(r.nanswers);
-            for (uint32_t k = 0; k < r.nanswers; k++)
-                answers[k] = {(uint16_t)(r.answers[k] >> 28), (uint16_t)(r.answers[k] >> 12 & 0xFFFF), (uint8_t)(r.answers[k] & 0xFF),
-                              (r.answers[k] >> 8 & 1) != 0};
-            if (const Program* p = seed_variant_of(r.code, r.mesh != 0, r.vattr, r.color_types, questions, answers)) {
-                if (portable_variant(*p) == r.variant) variants_made++;
-                ensure_layout(const_cast<Program&>(*p));
+            const Program* p = nullptr;
+            if (plain(r)) {
+                p = made_plain[i] = seed_plain_of(r.code, r.mesh != 0, r.vattr, r.color_types);
+            } else {
+                std::vector<uint8_t> questions(r.questions, r.questions + r.nquestions);
+                std::vector<Program::Answer> answers(r.nanswers);
+                for (uint32_t k = 0; k < r.nanswers; k++)
+                    answers[k] = {(uint16_t)(r.answers[k] >> 28), (uint16_t)(r.answers[k] >> 12 & 0xFFFF), (uint8_t)(r.answers[k] & 0xFF),
+                                  (r.answers[k] >> 8 & 1) != 0};
+                p = seed_variant_of(r.code, r.mesh != 0, r.vattr, r.color_types, questions, answers);
+                if (p && portable_variant(*p) == r.variant) variants_made++;
             }
+            if (p) ensure_layout(const_cast<Program&>(*p));
             report_done();
         }
     };
     threads.clear();
     for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
-    size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
+    std::unordered_map<uint64_t, const Program*> plain_of;   // (by program key: the variant nothing bound makes)
+    for (size_t i = 0; i < variant_of.size(); i++)
+        if (made_plain[i]) plain_of.emplace(want[rec_program[variant_of[i]]].key, made_plain[i]);
+    size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0, noted_plain = 0;
     auto s = std::make_unique<NvnState>();
     for (size_t i = 0; i < recs.size(); i++) {
         const StateRec& r = recs[i];
         const uint64_t key = want[rec_program[i]].key;
         if (!key) continue;
         const Program* p = program_find_portable(key, r.variant);
+        if (!p && plain(r)) {   // (made now, or loaded from the program cache)
+            const auto it = plain_of.find(key);
+            p = it != plain_of.end() ? it->second : program_find_plain(key);
+            noted_plain += p != nullptr;
+        }
         if (!p) {
             no_variant++;
             continue;
@@ -1771,10 +1794,10 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         noted_mesh += p->mesh, noted_fallback += p->fallback;
     }
     logf("vk: state list: %zu pipelines (%zu shipped, version %d), %zu programs (%zu translated now, %zu with stages not in the seed), "
-         "%zu variants by their textures (%zu made), %zu noted (%zu native mesh, %zu mesh fallback), %zu whose program variant was not "
-         "made, in %.1f s", recs.size(), shipped, shipped_version, want.size(), made.load(), missing.load(), variant_of.size(),
-         variants_made.load(), noted_n, noted_mesh, noted_fallback, no_variant,
-         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+         "%zu variants by their textures (%zu made), %zu by nothing bound (%zu made), %zu noted (%zu native mesh, %zu mesh fallback, "
+         "%zu by nothing bound), %zu whose program variant was not made, in %.1f s", recs.size(), shipped, shipped_version, want.size(),
+         made.load(), missing.load(), variant_of.size() - plain_wanted, variants_made.load(), plain_wanted, plain_of.size(), noted_n,
+         noted_mesh, noted_fallback, noted_plain, no_variant, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (open_seed && !env_on("RX_VK_SEED_CHECK")) seed_close();
 }
 
@@ -2200,11 +2223,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
         // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
         // without it on AMD. RX_VK_MESH_OPT=1: with it, as the others)
-        static const bool amd = [] {
-            VkPhysicalDeviceProperties pr{};
-            vkGetPhysicalDeviceProperties(dev.physical, &pr);
-            return pr.vendorID == 0x1002;
-        }();
+        // (hookshot) Not on Mesa's RADV: there the task programs built without it run long enough to reset the GPU while the
+        // save loads at the Great Deku Tree (Steam Deck OLED, RX 6800 XT; issue 1000). Built with it, that reset is gone; other
+        // RADV hangs remain (issue 1000).
+        static const bool amd = dev.props.vendorID == 0x1002 && dev.driver_id != VK_DRIVER_ID_MESA_RADV;
         static const bool mesh_opt = env_on("RX_VK_MESH_OPT");
         if (amd && !mesh_opt) {
             bool mesh = false;
@@ -2787,7 +2809,17 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 return {cur->stream, at, n};
             }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        static const bool snapshot = env_on("RX_VK_UB_SNAPSHOT");
+        // (on by default on Intel when the pools have no VRAM mirror (vk_memory.cpp mirror_on() off): the GPU then reads the
+        // game's memory itself when it runs the frame, and by then the game has written the next frame's uniforms over the ones
+        // submitted (the per-object matrices are in memory it reuses frame after frame). The depth prepass drew the Kokiri ground
+        // with other objects' matrices, out of sight: the depth there stayed far, and the fog pass painted sky over the ground
+        // (the white forest on Intel Core Ultra iGPUs, still there after the split-submission fence fix #2419). A mirror is made
+        // at the submission and does not see the rewrite. Other GPUs with no mirror (AMD APUs, GCN since #2343, RX_VK_MIRROR=0)
+        // keep the default off until it is measured there. RX_VK_UB_SNAPSHOT=0: off)
+        static const bool snapshot = [] {
+            const char *e = getenv("RX_VK_UB_SNAPSHOT");
+            return e ? env_on("RX_VK_UB_SNAPSHOT") : dev.props.vendorID == 0x8086 && !pools_mirrored();
+        }();
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
@@ -5933,6 +5965,35 @@ bool fallback_compute_pipelines(Program& p) {
         std::lock_guard lk(mu);
         if (!p.fallback_compute.empty()) return true;
         if (failed.count({p.key, p.variant})) return false;
+    }
+    // (hookshot) none of its stages given to a compiler that would never finish one: RADV on GCN 1-4 grew past 25 GB on the two
+    // biggest mesh programs and kept the memory on its thread (fallback_size_policy.h). Left out, as a refused one is below.
+    // RX_VK_FALLBACK_PHI_LIMIT=<n>: another limit, 0 none
+    static const uint32_t phi_limit = [] {
+        uint32_t limit = fallback_size::kRadvGcnPhiLimit;
+        const char* e = getenv("RX_VK_FALLBACK_PHI_LIMIT");
+        if (e && !fallback_size::parse_limit(e, limit)) {
+            limit = fallback_size::kRadvGcnPhiLimit;
+            logf("vk: RX_VK_FALLBACK_PHI_LIMIT=%s is not a number from 0 to 4294967295: ignored", e);
+        }
+        if (dev.radv_gcn || e)
+            logf("vk: mesh fallback compute stages with more than %u phis are not built on RADV GCN 1-4 cards%s", limit,
+                 limit ? "" : " (0: none left out)");
+        return limit;
+    }();
+    for (size_t i = 0; i < p.stages.size(); i++) {
+        const Stage& st = p.stages[i];
+        if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT || !fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)) continue;
+        {
+            std::lock_guard lk(mu);
+            failed.insert({p.key, p.variant});
+        }
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: fallback: the compute pipeline of %016llx (stage %zu of %zu, %u phis, the most %u) is not built: RADV on this GCN "
+                 "card would not finish it (RX_VK_FALLBACK_PHI_LIMIT); its draws are left out",
+                 (unsigned long long)p.key, i, p.stages.size(), st.phis, phi_limit);
+        return false;
     }
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;

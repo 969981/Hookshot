@@ -1783,21 +1783,32 @@ def place_fsr_runtime(out):
 
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
-    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
-    NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
+    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux; and
+    DLSS Frame Generation's beside it (nvngx_dlssg.dll, libnvidia-ngx-dlssg.so.<version>), without which NGX takes the
+    driver's own, maybe older, copy. Never NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns DLSS's
+    runtime placed, or None"""
     ngx = ngx_script()
     platform = ngx_platform()
     sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
     if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
-        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
-        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
-        if os.path.isfile(stale):
-            with contextlib.suppress(OSError):
-                os.remove(stale)
-                os.rmdir(os.path.dirname(stale))
+        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtimes too)
+        for kind in ngx.RUNTIMES:
+            stale = os.path.join(out, "ngx", ngx.runtime_name(platform, kind))
+            if os.path.isfile(stale):
+                with contextlib.suppress(OSError):
+                    os.remove(stale)
+        with contextlib.suppress(OSError):
+            os.rmdir(os.path.join(out, "ngx"))
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    fg = os.path.join(out, "ngx", ngx.runtime_name(platform, "framegen"))
+    if os.path.isfile(ngx.runtime(sdk, platform, "framegen")):
+        print("NVIDIA DLSS Frame Generation: %s (NVIDIA's too)" % fg, flush=True)
+    else:
+        print("NVIDIA DLSS Frame Generation: %s has no %s yet (scripts/ngx_sdk.py, or the Builder's DLSS tick, fetches it): "
+              "until then NGX takes the driver's own, which may be older" % (sdk, ngx.runtime_name(platform, "framegen")),
+              flush=True)
     return dst
 
 
@@ -2131,6 +2142,7 @@ def main(a=None):
     kept_lift = []   # (build.py's --kept-lift: the lift skipped, its objects by the kept list)
 
     def translate():
+        nonlocal key
         for _ in range(2):
             if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
                 print("the game was translated with these tools before: translating it again is skipped", flush=True)
@@ -2162,6 +2174,11 @@ def main(a=None):
                 run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
                 if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
                     run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+                # (the lift writes inputs of the next one: split_hot's kept pieces, image/hot_pieces.txt, which the key hashes. Its key is
+                # taken again now, from what the next build reads: taken before, in a fresh work folder (no hot_pieces.txt yet) it never
+                # matched the next build's, which translated the game again for nothing, ~5 minutes on Windows, and a player's first
+                # update after a new install did not keep the translation)
+                key = lift_key(exefs, work, env)
                 write_lift_key(work, key)
             cut = lifted_cut_short(gen_dir)
             if not cut:
