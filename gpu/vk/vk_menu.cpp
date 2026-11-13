@@ -837,8 +837,9 @@ const char* hn_haptic(int v, int variant) {
     if (variant > 0) return nullptr;
     if (v == 0) return "Auto: the fine haptics for a DualSense on a cable, its motors on Bluetooth, a Switch Pro "
                       "Controller its own HD rumble, everything else the standard rumble.";
-    if (v == 2) return "DualSense haptics: a DualSense without the audio endpoint (Bluetooth, none found) falls back to "
-                       "the standard rumble, and the status row says so.";
+    if (v == 2) return "DualSense haptics: a DualSense without the audio endpoint (on Bluetooth, or none found) falls "
+                       "back to the standard rumble — this build drives the USB audio endpoint only — and the status "
+                       "row says so.";
     return nullptr;
 }
 const char* hn_haptic_status(int v, int variant) {
@@ -1387,8 +1388,9 @@ Row rows[] = {
      "controller can do (a Switch Pro Controller keeps its own HD rumble), Standard rumble plays every pad's motors, "
      "Off stops the fine haptics only. The Rumble strength's Off still stops all of it.", hn_haptic, false, true},
     {TAB_CONTROLS, "Haptic strength", &opts.haptic_strength, 0, 200, 25, tx_haptic_strength,
-     "How strong the fine haptics alone are, in percent of what the game asks for. Game's own leaves them exactly "
-     "as the game sends them; the Rumble strength still applies on top, and its Off still stops everything.", nullptr,
+     "An extra gain for the fine haptics only, applied where they leave the haptics' audio stream. Game's own plays "
+     "them as the game asks; this is on top of the Rumble strength, whose Off still stops everything, and it never "
+     "stacks with itself: the scale is applied exactly once.", nullptr,
      false, true},
     {TAB_CONTROLS, "Haptic status", &opts.haptic_status, 0, 0, 1, tx_haptic_status,
      "What drives the controller now, and why not the fine haptics (a missing renhdrum.dll, a DualSense on Bluetooth, "

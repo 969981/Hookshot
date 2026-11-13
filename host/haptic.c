@@ -306,7 +306,7 @@ static int want_status(void) {   /* (g_life held; g_host shared) */
     if (g_pad.switch_hd && mode != HOS_HAPTIC_STANDARD) return HOS_HAPTIC_SWITCH_HD;
     if (!pad_is_dualsense()) return HOS_HAPTIC_STANDARD_RUMBLE;
     if (mode == HOS_HAPTIC_STANDARD) return HOS_HAPTIC_STANDARD_RUMBLE;
-    if (g_pad.wireless == 1) return HOS_HAPTIC_DS_BT;   /* no four-channel endpoint over Bluetooth */
+    if (g_pad.wireless == 1) return HOS_HAPTIC_DS_BT;   /* this build drives USB audio only: Bluetooth keeps the standard rumble */
     return HOS_HAPTIC_DS_USB;
 }
 static void stop_haptics(void) {
