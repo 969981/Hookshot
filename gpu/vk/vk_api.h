@@ -1,4 +1,4 @@
-/* The Vulkan back end (hookshot_vk.dll, hookshot_vk.so on Linux) and the game executable: what each gives the other.
+﻿/* The Vulkan back end (hookshot_vk.dll, hookshot_vk.so on Linux) and the game executable: what each gives the other.
 
    The executable records the game's NVN command buffers (host/nvn_native.c) and calls a renderer through the rx_*
    functions (gpu/render/rx_nvn.h). Unless RX_BACKEND names another, host/rx_backend.c loads it, hands it the host

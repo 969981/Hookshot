@@ -381,6 +381,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Auto run | Off, On | Off |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
 | | Haptic feedback | Auto, Standard rumble, DualSense haptics, Off | Auto |
+| | Haptic strength | Game's own, 25% to 200%, in steps of 25 | Game's own |
 | | Haptic status | DualSense haptics (USB), DualSense Bluetooth (standard rumble), Switch Pro HD rumble, Standard rumble, Off, Waiting for the DualSense audio endpoint, Haptic backend unavailable, No controller | No controller |
 | | Test haptics | Test, Not now (an action: confirm does it) | Not now |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
@@ -582,6 +583,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Windows game brings; optional — without it, or without the controller's audio endpoint, the standard rumble plays
   and the status row says why). A DualSense over Bluetooth plays the standard rumble: its fine haptics need the cable.
   A Switch Pro controller or Joy-Con keeps its own HD rumble in every mode but Standard rumble and Off. **Haptic
+  strength** scales the fine haptics alone: Game's own leaves the game's values exactly as they arrive, and a
+  percentage scales them, so a game whose rumble feels faint on the DualSense can be lifted without touching the
+  motors of any other pad. The Rumble strength still applies on top, and its Off still stops everything. **Haptic
   status** shows what drives the controller now, and why when it fell back. **Test haptics** plays a short, gentle
   buzz so you can check the controller really vibrates, whether it is the fine haptics, and how strong the Rumble
   strength makes it; it stops on its own in half a second.

@@ -70,7 +70,8 @@ struct Options {
     int invert_cam_x = 0; // right-stick camera horizontal inversion: 0 normal, 1 inverted
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
     int rumble = 100;     // the controllers' rumble in percent of the game's: 0 Off, 25 to 150 (host/pad_sdl.c)
-    int haptic = 0;       // (hookshot) Haptic feedback: 0 Auto, 1 Standard rumble, 2 DualSense haptics, 3 Off (host/haptic.c)
+    int haptic = 0;            // (hookshot) Haptic feedback: 0 Auto, 1 Standard rumble, 2 DualSense haptics, 3 Off (host/haptic.c)
+    int haptic_strength = 0;   // (hookshot) extra strength for the fine haptics alone: 0 the game's own, else a percent of it
     int haptic_status = 0;   // (hookshot) Haptic status' row value, never saved: the text comes from host/haptic.c live
     int stick_dead_zone = 0;  // circular stick cutoff: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
     int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Custom

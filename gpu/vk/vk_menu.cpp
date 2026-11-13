@@ -816,6 +816,8 @@ const char* hn_mic(int v, int variant) {
 // (before tx_haptic_status/hn_haptic_status/hn_haptic_test, which read it)
 std::atomic<int> haptic_status_cache{7};
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) Haptic strength: 0 leaves the game's own levels alone, a percent scales them
+const char* tx_haptic_strength(int v) { return v ? tx_percent(v) : "Game's own"; }
 // (hookshot) Haptic feedback: what host/haptic.c does with the game's vibration values
 const char* tx_haptic(int v) {
     static const char* t[] = {"Auto", "Standard rumble", "DualSense haptics", "Off"};
@@ -1384,6 +1386,10 @@ Row rows[] = {
      "Fine vibration for a DualSense on a cable: the game's high and low tones as they are. Auto picks the best a "
      "controller can do (a Switch Pro Controller keeps its own HD rumble), Standard rumble plays every pad's motors, "
      "Off stops the fine haptics only. The Rumble strength's Off still stops all of it.", hn_haptic, false, true},
+    {TAB_CONTROLS, "Haptic strength", &opts.haptic_strength, 0, 200, 25, tx_haptic_strength,
+     "How strong the fine haptics alone are, in percent of what the game asks for. Game's own leaves them exactly "
+     "as the game sends them; the Rumble strength still applies on top, and its Off still stops everything.", nullptr,
+     false, true},
     {TAB_CONTROLS, "Haptic status", &opts.haptic_status, 0, 0, 1, tx_haptic_status,
      "What drives the controller now, and why not the fine haptics (a missing renhdrum.dll, a DualSense on Bluetooth, "
      "Haptic feedback Off).", hn_haptic_status, false, true},
@@ -1780,9 +1786,11 @@ int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.ultrawide || r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.ultrawide || r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.haptic_strength || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
+/// (the ini's Haptic strength on the menu's steps: 0 Game's own, else 25 to 200, the nearest 25)
+int haptic_step(int v) { return v > 0 ? (std::min(v, 200) + 12) / 25 * 25 : 0; }
 // (hookshot) A run's environment over a saved row (RX_VK_PACE=1, HOS_OUTPUT_RES=...): for that run only. save() writes the
 // player's own value while the row still holds the environment's; once the player changes the row, theirs is kept. (These
 // were copied into the row and the next save wrote them into hookshot_options.ini, so a test run's switch stayed for good)
@@ -1842,6 +1850,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     if (r.value == &opts.haptic) return "haptic";   // (hookshot: host/haptic.c reads it back, HOS_OPT_HAPTIC_MODE)
+    if (r.value == &opts.haptic_strength) return "haptic_strength";   // (hookshot: HOS_OPT_HAPTIC_STRENGTH)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -4260,6 +4269,7 @@ void menu_init() {
         if (menu_auto) opts.menu_size = 2;
         if (!has_haptic) opts.haptic = 0;   // (hookshot: a file from before the row: Auto, not 0 carried as Standard rumble)
         opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
+        opts.haptic_strength = haptic_step(opts.haptic_strength);   // (hookshot: 0 stays Game's own; a hand-edited 60: 50)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;

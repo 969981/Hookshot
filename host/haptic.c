@@ -39,6 +39,7 @@
 
 static volatile LONG g_mode = HOS_HAPTIC_AUTO;
 static volatile LONG g_strength = 100;
+static volatile LONG g_extra;   /* the Haptic strength row: 0 the game's own, else a percent of it */
 static volatile LONG g_status = HOS_HAPTIC_NO_PAD;
 static volatile LONG g_running;
 static volatile LONG g_stop;
@@ -66,6 +67,7 @@ static int g_muted[2] = {1, 1};
 static int64_t g_test_until;
 static HANDLE g_thread;
 static volatile LONG g_pushes, g_packets, g_fills, g_nonzero;
+static volatile LONG g_peak;   /* the loudest sample the coils got, in thousandths */
 
 static void note(const char *fmt, ...) {
     char text[192];
@@ -86,6 +88,23 @@ static float strength_scale(void) {   /* the menu's Rumble strength, once: 100 %
     const int percent = (int)g_strength;
     const float scale = percent > 0 ? (float)percent / 100.0f : 0.0f;
     return scale > 2.0f ? 2.0f : scale;
+}
+static float extra_scale(void) {   /* the Haptic strength row: 0 (Game's own) leaves the values as they are */
+    const int percent = (int)g_extra;
+    if (percent <= 0) return 1.0f;
+    return percent > 200 ? 2.0f : (float)percent / 100.0f;
+}
+/* The strength is one gain on the samples the DSP has already made, not a scale on the values handed
+   to it. RenHDrum's DSP takes the square root of every amplitude and then normalises the two bands
+   when their sum passes 1 (make_side in dualsense/haptics.rs), and it ends at
+   DUALSENSE_OUTPUT_CEILING. Scaling the inputs therefore went through that square root and, past about
+   100 %, the normalisation held the output at the ceiling: 150 % and 200 % came out exactly like the
+   game's own level, which is what a slider that "does nothing" is. Our own gain after the DSP is
+   linear, so every step of either row is a step in how hard the coils are driven. */
+static float strength_gain(void) {
+    float gain = strength_scale() * extra_scale();
+    if (gain > 3.0f) gain = 3.0f;
+    return gain;
 }
 static int pad_is_dualsense(void) {
     if (g_pad.vendor == 0x054C /* Sony */) return 1;
@@ -172,11 +191,14 @@ static void endpoint_pull(void *user, float *out, int frames) {
     if (!filled) {
         memset(out, 0, (size_t)frames * 4 * sizeof(float));   /* (nothing to play: silence, never a held waveform) */
     } else {
+        const float gain = strength_gain();   /* (the one place the strength is applied: on the coils' own samples) */
         float peak = 0.0f;
         unsigned loud = 0;
         for (int i = 0; i < frames; i++) {
             for (int ch = 2; ch <= 3; ch++) {   /* (the voice coils: channels 3 and 4) */
-                const float v = out[i * 4 + ch];
+                float v = out[i * 4 + ch] * gain;
+                v = v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v;
+                out[i * 4 + ch] = v;
                 const float a = v < 0 ? -v : v;
                 if (a > peak) peak = a;
                 if (a > 0.0001f) loud++;
@@ -184,7 +206,9 @@ static void endpoint_pull(void *user, float *out, int frames) {
         }
         InterlockedIncrement(&g_fills);
         if (loud) InterlockedExchangeAdd(&g_nonzero, (LONG)loud);
-        (void)peak;
+        /* the loudest sample since the last line: what the Rumble strength really did */
+        const LONG milli = (LONG)(peak * 1000.0f);
+        if (milli > g_peak) InterlockedExchange(&g_peak, milli);
     }
     ReleaseSRWLockExclusive(&g_eng);
 }
@@ -370,8 +394,11 @@ static DWORD WINAPI haptic_main(LPVOID unused) {
             g_muted[0] = g_muted[1] = 1;
         } else if (until) {
 #ifdef _WIN32
-            if (g_dsp) rh.dsp_set_half(g_dsp, 0, HAPTIC_TEST_AMP, HAPTIC_TEST_FREQ_LOW, HAPTIC_TEST_AMP, HAPTIC_TEST_FREQ_HIGH),
-                        rh.dsp_set_half(g_dsp, 1, HAPTIC_TEST_AMP, HAPTIC_TEST_FREQ_LOW, HAPTIC_TEST_AMP, HAPTIC_TEST_FREQ_HIGH);
+            /* the plain test level: the strength is the gain endpoint_pull puts on every sample, so the
+               test shows what the slider does without being scaled twice */
+            const float amp = HAPTIC_TEST_AMP;
+            if (g_dsp) rh.dsp_set_half(g_dsp, 0, amp, HAPTIC_TEST_FREQ_LOW, amp, HAPTIC_TEST_FREQ_HIGH),
+                        rh.dsp_set_half(g_dsp, 1, amp, HAPTIC_TEST_FREQ_LOW, amp, HAPTIC_TEST_FREQ_HIGH);
 #endif
             g_at[0] = g_at[1] = now;
             g_muted[0] = g_muted[1] = 0;
@@ -404,8 +431,9 @@ static DWORD WINAPI haptic_main(LPVOID unused) {
         if (now >= (int64_t)next_report) {   /* a line every 5 s, when it has something to say */
             next_report = (uint64_t)(now + 5000000000LL);
             if (status == HOS_HAPTIC_DS_USB || g_pushes)
-                hos_log("haptic: %s, %ld values, %ld audio fills, %ld loud samples", status == HOS_HAPTIC_DS_USB ? "DualSense haptics (USB)" : "no haptics",
-                        (long)g_pushes, (long)g_fills, (long)g_nonzero);
+                hos_log("haptic: %s, %ld values, %ld audio fills, %ld loud samples, peak %.3f", status == HOS_HAPTIC_DS_USB ? "DualSense haptics (USB)" : "no haptics",
+                        (long)g_pushes, (long)g_fills, (long)g_nonzero, (double)g_peak / 1000.0);
+                InterlockedExchange(&g_peak, 0);
         }
         Sleep(1);
     }
@@ -452,6 +480,12 @@ void hos_haptic_strength(int percent) {
         ReleaseSRWLockExclusive(&g_life);
     }
 }
+void hos_haptic_extra(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 200) percent = 200;
+    /* read by the next value, like the Rumble strength: the stream is never rebuilt for a step */
+    InterlockedExchange(&g_extra, percent);
+}
 void hos_haptic_pad_added(void *pad, int vendor, const char *name, int wireless, int switch_hd) {
     if (!pad) return;
     AcquireSRWLockExclusive(&g_life);
@@ -480,9 +514,10 @@ void hos_haptic_push(int hand, const float value[4]) {
     if (mode == HOS_HAPTIC_OFF) return;
     const int status = (int)g_status;
     if (status != HOS_HAPTIC_DS_USB) return;
-    const float scale = strength_scale();
-    if (scale <= 0.0f) return;   /* Rumble strength Off: nothing at all */
-    float al = value[0] * scale, ah = value[2] * scale;
+    if (strength_gain() <= 0.0f) return;   /* Rumble strength Off: nothing at all */
+    /* the game's own four values go to the DSP as they are: the strength is a gain on the samples it
+       makes (endpoint_pull), so it never passes through the DSP's square root and normalisation */
+    float al = value[0], ah = value[2];
     al = al < 0.0f ? 0.0f : al > 1.0f ? 1.0f : al;
     ah = ah < 0.0f ? 0.0f : ah > 1.0f ? 1.0f : ah;
     const float fl = value[1] > 0.0f ? value[1] : HAPTIC_FREQ_LOW;

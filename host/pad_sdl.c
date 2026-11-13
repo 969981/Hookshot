@@ -387,6 +387,7 @@ static void pads_poll(void) {
            and a Test haptics press from the menu (an option id's one-shot, like HOS_OPT_CHEAT_ACTION). The status is
            pushed back for the menu's Haptic status row, which reads it through its own option id */
         hos_haptic_strength(strength);
+        hos_haptic_extra(rx_option(HOS_OPT_HAPTIC_STRENGTH, 0));
         hos_haptic_mode(rx_option(HOS_OPT_HAPTIC_MODE, HOS_HAPTIC_AUTO));
         if (rx_option(HOS_OPT_HAPTIC_TEST, 0)) hos_haptic_test();
         void rx_option_set(int id, int value);

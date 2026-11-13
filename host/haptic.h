@@ -37,6 +37,8 @@ enum {
 
 void hos_haptic_mode(int mode);        /* HOS_HAPTIC_*: the menu's row, read every poll (host/pad_sdl.c) */
 void hos_haptic_strength(int percent); /* the menu's Rumble strength, 0 (off) to 150: scales the values once */
+/* The Haptic strength row: 0 leaves the game's own amplitudes alone, a percent scales the haptics alone. */
+void hos_haptic_extra(int percent);
 void hos_haptic_pad_added(void *pad, int vendor, const char *name, int wireless, int switch_hd);
 void hos_haptic_pad_removed(void *pad);
 void hos_haptic_push(int hand, const float value[4]); /* the game's amp_low, freq_low, amp_high, freq_high */

@@ -77,8 +77,9 @@ FACES = {
             ("pad", .498, .175, (.400, .300), None), ("face", .765, .265, .078, "west"), ("face", .840, .150, .078, "north"),
             ("face", .840, .380, .078, "south"), ("face", .915, .265, .078, "east"), ("small", .248, .080, .036, "back"),
             ("small", .750, .080, .036, "start"), ("small", .496, .480, .046, "guide"), ("small", .496, .575, .030, None)]),
-        parts=_parts(1158, ((430, 341, 39), (730, 341, 39)), (305, 217, 51, 19), ((863, 153), (800, 217), (925, 217), (863, 281), 30),
-                     (370, 114, 12), (577, 336, 16), ((321, 52), (383, 70)), touchpad=(412, 84, 744, 250), mute=(563, 375, 591, 403)),
+        # (the picture in nx2/prompt_faces/ps5/Controller_Pro.png: the DualSense drawn there, measured on it)
+        parts=_parts(1158, ((432, 350, 55), (726, 350, 55)), (292, 222, 46, 26), ((869, 158), (804, 221), (929, 221), (869, 286), 29),
+                     (366, 125, 12), (579, 353, 26), ((338, 58), (311, 63)), touchpad=(402, 70, 758, 248), mute=(558, 391, 601, 399)),
         icons=dict(_DPAD, south="button_cross", east="button_circle", west="button_square", north="button_triangle",
                    back="/playstation5_button_create", start="/playstation5_button_options", lshoulder="trigger_l1",
                    rshoulder="trigger_r1", ltrigger="trigger_l2", rtrigger="trigger_r2", lstick="button_l3", rstick="button_r3")),
