@@ -249,7 +249,10 @@ def main():
         exe = tmp / ("driver.exe" if windows else "driver")
         cpp.write_text(DRIVER, encoding="utf-8")
         # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's getenv deprecation, as the game's own Windows build passes)
-        subprocess.run([a.cxx, "-std=c++20", "-O1", *([] if windows else ["-pthread"]), "-Wall", "-Wextra", "-Werror",
+        # (-static on Windows: a MinGW-targeted clang++ links libstdc++/libgcc as DLLs the temp exe cannot find;
+        #  g++ on CI links them statically already, and -static changes nothing there)
+        subprocess.run([a.cxx, "-std=c++20", "-O1", *([] if windows else ["-pthread"]),
+                        *(["-static"] if windows else []), "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"), str(cpp),
                         str(ROOT / "gpu" / "vk" / "vk_bug_report.cpp"), "-o", str(exe)], check=True)
         user = "alice"

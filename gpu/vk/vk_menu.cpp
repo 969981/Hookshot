@@ -812,6 +812,9 @@ const char* hn_mic(int v, int variant) {
     if (variant > 1) return nullptr;
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
+// (hookshot) Haptic status: host/pad_sdl.c pushes the live answer back through menu_option_set, the rows' text fns read it
+// (before tx_haptic_status/hn_haptic_status/hn_haptic_test, which read it)
+std::atomic<int> haptic_status_cache{7};
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
 // (hookshot) Haptic feedback: what host/haptic.c does with the game's vibration values
 const char* tx_haptic(int v) {
@@ -1499,8 +1502,6 @@ std::atomic<int> free_camera{0};
 std::atomic<int> cheat_action{0};
 // (hookshot) Test haptics: the row's confirm sets it, HOS_OPT_HAPTIC_TEST reads and clears it (pad_sdl.c acts)
 std::atomic<int> menu_haptic_test{0};
-// (hookshot) Haptic status: host/pad_sdl.c pushes the live answer back through menu_option_set, the rows' text fns read it
-std::atomic<int> haptic_status_cache{7};
 std::atomic<int> link_age{-1};
 // (Movement speed: the choice, an index of link_speeds; the game side reads it in percent, HOS_OPT_CHEAT_SPEED)
 constexpr int link_speeds[] = {100, 125, 150, 200, 300};
@@ -4382,6 +4383,8 @@ int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.l
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 // (hookshot) the Haptic status row's live value, for vk_replay.cpp's option callback (HOS_OPT_HAPTIC_STATUS)
 int menu_haptic_status_option() { return haptic_status_cache.load(std::memory_order_relaxed); }
+// (hookshot) the Test haptics one-shot, for vk_replay.cpp's option callback (HOS_OPT_HAPTIC_TEST)
+int menu_haptic_test_take() { return menu_haptic_test.exchange(0, std::memory_order_relaxed); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
