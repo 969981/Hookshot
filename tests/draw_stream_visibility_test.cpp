@@ -96,7 +96,8 @@ uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: no Reflex here)
 const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
-int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0;bool batch_gpu_idle() { return false; }
+int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0,FR_READBACK=7;bool batch_gpu_idle() { return false; }
+bool readback_send_now() { return false; }   // (held submits sent for a readback's wait: none waits here)
 void device_lost() { require(false,"unexpected device loss"); }
 void note_timeline_sent(uint64_t) {}
 #define PROF(x) ((void)0)
