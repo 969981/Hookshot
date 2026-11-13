@@ -18,13 +18,17 @@ static struct {
         *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
-    void *CloseAudioDevice, *DestroyAudioStream;
+    void *CloseAudioDevice;
+    /* (a pad's own audio endpoint: the DualSense's voice coils, host/haptic.c) */
+    void *GetAudioPlaybackDevices, *GetAudioDeviceName, *GetAudioDeviceFormat, *GetAudioStreamDevice,
+        *AudioStreamDevicePaused, *DestroyAudioStream;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
     void *PadType, *PadEffect;   /* (optional: HD rumble, host/pad_sdl.c) */
     void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *PadVendor, *PadSteamHandle, *SetHintPriority;   /* (Steam's stand-in pads: optional, host/steam_pads.h) */
     void *JoystickGUID, *PadMapping;   /* (optional connection diagnostics: no serial number or device path) */
+    void *PadWireless;   /* (optional: a pad's transport, SDL_GetJoystickConnectionState) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2; GetJoystick also SDL3's diagnostics) */
 } f;
@@ -92,6 +96,16 @@ static int get_all(HMODULE m, int three) {
         GET(GetGamepads, "SDL_GetGamepads");
         GET(GetGamepadID, "SDL_GetGamepadID");
         GET(Free, "SDL_free");
+        /* (a pad's own audio endpoint, host/haptic.c: the DualSense's four channels. Optional: without them every pad
+           keeps the standard rumble) */
+        *(FARPROC *)&f.GetAudioPlaybackDevices = GetProcAddress(m, "SDL_GetAudioPlaybackDevices");
+        *(FARPROC *)&f.GetAudioDeviceName = GetProcAddress(m, "SDL_GetAudioDeviceName");
+        *(FARPROC *)&f.GetAudioDeviceFormat = GetProcAddress(m, "SDL_GetAudioDeviceFormat");
+        *(FARPROC *)&f.GetAudioStreamDevice = GetProcAddress(m, "SDL_GetAudioStreamDevice");
+        *(FARPROC *)&f.AudioStreamDevicePaused = GetProcAddress(m, "SDL_AudioStreamDevicePaused");
+        *(FARPROC *)&f.DestroyAudioStream = GetProcAddress(m, "SDL_DestroyAudioStream");
+        /* (a pad's transport: SDL3 3.2 on. Optional: a DualSense without it keeps the standard rumble) */
+        *(FARPROC *)&f.PadWireless = GetProcAddress(m, "SDL_GetJoystickConnectionState");
         *(FARPROC *)&f.LoadPNG = GetProcAddress(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
         *(FARPROC *)&f.SetWindowIcon = GetProcAddress(m, "SDL_SetWindowIcon");
         *(FARPROC *)&f.DestroySurface = GetProcAddress(m, "SDL_DestroySurface");
@@ -442,6 +456,72 @@ int hos_sdl_audio_channels(void) {
     return n > 0 ? n : 2;
 }
 
+/* ---- (hookshot) a pad's own audio endpoint: the DualSense's voice coils (host/haptic.c) ----
+   A DualSense on a cable is a four-channel 48 kHz sound card as well as a pad; its third and fourth channels drive the
+   voice coils, which is how the game's HD Rumble values reach it. Only SDL3 can open a stream on a device of our choice
+   and tell whether it is still there, so on SDL2 (the Linux AppImage) there are no endpoints and every pad keeps the
+   standard rumble. */
+typedef struct {
+    void (*pull)(void *user, float *out, int frames);
+    void *user;
+} HapticPull;
+static void haptic_pull3(void *p, void *stream, int want, int total) {   /* (SDL3: a stream asks for want more bytes) */
+    (void)total;
+    const HapticPull *s = (const HapticPull *)p;
+    float buf[1024];
+    int frames = want / (int)(4 * sizeof(float));   /* (four channels of float: whole frames only) */
+    for (; frames > 0; frames -= 256) {
+        const int n = frames < 256 ? frames : 256;
+        s->pull(s->user, buf, n);
+        CALL(_Bool (*)(void *, const void *, int), PutAudioStreamData)(stream, buf, n * 4 * (int)sizeof(float));
+    }
+}
+int hos_sdl_audio_endpoints(uint32_t *ids, char (*names)[128], int *channels, int max) {
+    if (!hos_sdl_load() || version != 3) return 0;
+    if (!f.GetAudioPlaybackDevices || !f.GetAudioDeviceName || !f.GetAudioDeviceFormat) return 0;
+    if (!hos_sdl_init(HOS_SDL_AUDIO)) return 0;
+    int count = 0, n = 0;
+    uint32_t *got = CALL(uint32_t *(*)(int *), GetAudioPlaybackDevices)(&count);
+    for (int i = 0; got && i < count && n < max; i++) {
+        struct { uint32_t format; int channels, freq; } spec = {0, 0, 0};
+        int frames = 0;
+        if (!CALL(_Bool (*)(uint32_t, void *, int *), GetAudioDeviceFormat)(got[i], &spec, &frames)) continue;
+        const char *name = CALL(const char *(*)(uint32_t), GetAudioDeviceName)(got[i]);
+        ids[n] = got[i], channels[n] = spec.channels, names[n][0] = 0;
+        if (name) snprintf(names[n], 128, "%s", name);
+        n++;
+    }
+    if (got) CALL(void (*)(void *), Free)(got);
+    return n;
+}
+void *hos_sdl_audio_endpoint_open(uint32_t device, int freq, int channels, void (*pull)(void *user, float *out, int frames),
+                                  void *user) {
+    if (!hos_sdl_load() || version != 3) return NULL;
+    if (!f.OpenAudioDeviceStream || !f.ResumeAudioStreamDevice || !f.PutAudioStreamData) return NULL;
+    if (!hos_sdl_init(HOS_SDL_AUDIO)) return NULL;
+    HapticPull *p = (HapticPull *)calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->pull = pull, p->user = user;
+    const struct { uint32_t format; int channels, freq; } spec = {0x8120 /* F32LE */, channels, freq};
+    void *stream = CALL(void *(*)(uint32_t, const void *, void (*)(void *, void *, int, int), void *), OpenAudioDeviceStream)(
+        device, &spec, haptic_pull3, p);
+    if (!stream || !CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(stream)) {
+        if (stream && f.DestroyAudioStream) CALL(void (*)(void *), DestroyAudioStream)(stream);
+        free(p);
+        return NULL;
+    }
+    return stream;
+}
+int hos_sdl_audio_endpoint_alive(void *stream) {
+    if (!stream || !f.GetAudioStreamDevice || !f.AudioStreamDevicePaused) return 0;
+    return CALL(uint32_t (*)(void *), GetAudioStreamDevice)(stream) != 0 &&
+           !CALL(_Bool (*)(void *), AudioStreamDevicePaused)(stream);
+}
+void hos_sdl_audio_endpoint_close(void *stream) {
+    if (!stream || !f.DestroyAudioStream) return;
+    CALL(void (*)(void *), DestroyAudioStream)(stream);   /* (waits for the callback: call it with no lock held) */
+}
+
 /* ---- (hookshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
    stream each opened, in the format asked for, read as the game asks ---- */
 static struct {
@@ -714,5 +794,15 @@ int hos_sdl_knows_steam_pads(void) { return f.PadVendor && f.PadSteamHandle && f
 uint16_t hos_sdl_pad_vendor(void *pad) { return f.PadVendor ? CALL(uint16_t (*)(void *), PadVendor)(pad) : 0; }
 uint64_t hos_sdl_pad_steam_handle(void *pad) {
     return f.PadSteamHandle ? CALL(uint64_t (*)(void *), PadSteamHandle)(pad) : 0;
+}
+/* (a pad's transport, host/haptic.c: a DualSense's haptics need a cable. -1 when the SDL cannot say) */
+int hos_sdl_pad_wireless(void *pad) {
+    if (!f.PadWireless || !f.GetJoystick || !pad) return -1;
+    void *joystick = CALL(void *(*)(void *), GetJoystick)(pad);
+    if (!joystick) return -1;
+    /* SDL_JoystickConnectionState: -1 invalid, 0 unknown, 1 wired, 2 wireless */
+    const int state = CALL(int (*)(void *), PadWireless)(joystick);
+    if (state < 1) return -1;
+    return state == 2 ? 1 : 0;
 }
 #undef CALL

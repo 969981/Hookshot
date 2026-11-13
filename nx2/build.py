@@ -1505,6 +1505,13 @@ def main():
         if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
             import shutil
             shutil.copyfile(sdl3, sdl3_dst)
+        # (hookshot) renhdrum.dll beside it (optional: host/haptic.c's DualSense fine haptics; without it the game
+        # falls back to the standard rumble, so a missing copy is not an error)
+        rh = os.path.join(kit.HERE, "..", "third_party", "renhdrum", "renhdrum.dll")
+        rh_dst = os.path.join(out, "renhdrum.dll")
+        if os.path.exists(rh) and (not os.path.exists(rh_dst) or os.path.getsize(rh_dst) != os.path.getsize(rh)):
+            import shutil
+            shutil.copyfile(rh, rh_dst)
     if vk_prebuilt and a.standalone:
         import shutil
         shutil.copyfile(vk_prebuilt, os.path.join(out, VK_LIB))

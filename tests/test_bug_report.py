@@ -193,8 +193,8 @@ def wiring():
           "constexpr int kBugReportRow = kRestartRow - 1;" in menu, "the row is not the one before Restart")
     check("&r == &rows[kBugReportRow]) bug_report_save()" in menu[menu.index("void menu_tick() {"):],
           "A or Enter on the row does not save the report")
-    check(menu.count('&selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : "Open"') +
-          menu.count('&r == &rows[kBugReportRow] || is_share_row(r) ? "Save" : "Open"') >= 2,
+    check(menu.count('&selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : is_haptic_test_row(selr) ? "Test" : "Open"') +
+          menu.count('&r == &rows[kBugReportRow] || is_share_row(r) ? "Save" : is_haptic_test_row(r) ? "Test" : "Open"') >= 2,
           "a prompt (the menu's, or the compact bar's) does not say Save for the row")
     save = menu[menu.index("void bug_report_save() {"):]
     save = save[:save.index("\n}\n")]

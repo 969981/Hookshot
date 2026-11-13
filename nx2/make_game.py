@@ -2423,6 +2423,12 @@ def main(a=None):
         if os.path.exists(src):
             staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
+    # (hookshot) the DualSense fine-haptics library (host/haptic.c): optional, third_party/renhdrum/renhdrum.dll, built by
+    # RenHDrum's release workflow. The game falls back to the standard rumble without it (host/haptic.c load_renhdrum)
+    if not LINUX:
+        rh = os.path.join(HERE, "..", "third_party", "renhdrum", "renhdrum.dll")
+        if os.path.exists(rh):
+            staged.append((rh, os.path.join(game_dir, "renhdrum.dll")))
     if launcher:
         staged.append((launcher, os.path.join(out, BESIDE[0])))
     for src, dst in staged:

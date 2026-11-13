@@ -325,7 +325,7 @@ def check_sources():
     # the compact tuning bar (row_value_cell, its prompts) shows it as an action too, not as a page to open
     cell = body_of(menu, "void row_value_cell(")
     assert 'is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value' in cell, "the tuning bar shows the row as a page"
-    assert menu.count('is_share_row(r) ? "Save" : "Open"') + menu.count('is_share_row(selr) ? "Save" : "Open"') >= 2, \
+    assert menu.count('is_share_row(r) ? "Save" : is_haptic_test_row(r) ? "Test" : "Open"') + menu.count('is_share_row(selr) ? "Save" : is_haptic_test_row(selr) ? "Test" : "Open"') >= 2, \
         "a prompt says Open for Save my pipeline list"
     cs = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
     tick = menu[menu.find("void menu_tick() {"):]

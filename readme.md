@@ -380,6 +380,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Auto run | Off, On | Off |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| | Haptic feedback | Auto, Standard rumble, DualSense haptics, Off | Auto |
+| | Haptic status | DualSense haptics (USB), DualSense Bluetooth (standard rumble), Switch Pro HD rumble, Standard rumble, Off, Waiting for the DualSense audio endpoint, Haptic backend unavailable, No controller | No controller |
+| | Test haptics | Test, Not now (an action: confirm does it) | Not now |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
@@ -573,6 +576,15 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   end it, so A never picks an entry, skips text or plays a note there.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
+- **Haptic feedback:** what plays the game's rumble on a DualSense. Auto picks by the controller and how it is
+  connected: a DualSense on a USB cable plays the game's own HD rumble values (each hand's low and high band, kept as
+  the game sends them) as fine haptics through the controller's own audio, by RenHDrum (`renhdrum.dll`, which the
+  Windows game brings; optional — without it, or without the controller's audio endpoint, the standard rumble plays
+  and the status row says why). A DualSense over Bluetooth plays the standard rumble: its fine haptics need the cable.
+  A Switch Pro controller or Joy-Con keeps its own HD rumble in every mode but Standard rumble and Off. **Haptic
+  status** shows what drives the controller now, and why when it fell back. **Test haptics** plays a short, gentle
+  buzz so you can check the controller really vibrates, whether it is the fine haptics, and how strong the Rumble
+  strength makes it; it stops on its own in half a second.
 - **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
   Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
@@ -605,7 +617,9 @@ play on a controller or the keyboard, until the mouse moves.
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
 one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
 the game's rumble on their two motors. The menu's Rumble strength scales it too. `HOS_HD_RUMBLE=0` sends the Switch
-controllers the motor rumble too. On Linux, SDL talks to the Switch controller itself through its hidraw device, which
+controllers the motor rumble too. A DualSense on a USB cable plays the game's rumble as fine haptics through the
+controller's own audio (see Haptic feedback above) instead of the two motors. On Linux, SDL talks to the Switch
+controller itself through its hidraw device, which
 needs read and write access for your user; Steam's udev rules (the `steam-devices` package on most distributions) give
 it. Without them the kernel's hid-nintendo driver runs the controller, and it gets the motor rumble. HD rumble goes to
 anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes third-party controllers in Switch mode
@@ -700,7 +714,9 @@ You need:
     Vulkan / SPIR-V / VMA headers or `HOOKSHOT_*_HEADERS`), the standalone build stops instead of shipping a
     game with no renderer.
   - `tools\wgpu-native`: set `WGPU_NATIVE` to this folder.
-  - `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic` and SDL2). Copy its `.dll`,
+  - `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic`, SDL2 and
+    `renhdrum`, the DualSense fine-haptics library, optional: without it the game falls back to the
+    standard rumble). Copy its `.dll`,
     `.exe`, `.lib` and `.sha1` files to the same places under `third_party\`.
   - `tools\work`: copy it to `work\`. It holds the hot-function list, the link order, the profile and the icon;
     without them the game builds but runs slower.

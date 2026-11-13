@@ -54,6 +54,12 @@ enum { HOS_OPT_SKIP_OPENING = 52 };
 /* The Auto run row (Controls): 0 Off, 1 On, A (the sprint) kept held after it is let go (host/auto_run.h,
    host/nn_hid.c). */
 enum { HOS_OPT_AUTO_RUN = 55 };
+/* (hookshot) Controls' Haptic feedback row (opts.haptic, host/haptic.h: 0 Auto, 1 Standard rumble, 2 DualSense haptics,
+   3 Off) and its two tools: Haptic status, the read-only line saying what drives the pad now (host/haptic.c
+   hos_haptic_status), and Test haptics, which starts a short, self-stopping buzz (hos_haptic_test). The strength is the
+   Rumble strength row's own (option 9, read only by host/pad_sdl.c). 53, 54 and 56: after Skip opening's 52, before
+   Auto run's 55 was taken. */
+enum { HOS_OPT_HAPTIC_MODE = 53, HOS_OPT_HAPTIC_STATUS, HOS_OPT_HAPTIC_STRENGTH = 56, HOS_OPT_HAPTIC_TEST };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
