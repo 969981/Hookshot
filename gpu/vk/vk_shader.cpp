@@ -596,8 +596,10 @@ Shader::Profile make_profile() {
     // (the lanes the broadcast fallbacks walk: all of the host's when a warp may be larger than the guest's)
     p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32;
     // (Lichii #273) AMD's Windows compiler gets fragment-stage subgroup shuffles wrong (a basket in Link's house drew as a white
-    // blob): broadcasts and selects there instead
-    p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
+    // blob): broadcasts and selects there instead. RADV too (seen so far on RDNA1, other RADV GPUs untested): objects flickered
+    // between right, speckled and glowing white while moving (the ladder of Link's house) until the fallback was on
+    p.has_broken_spirv_fragment_shuffle =
+        dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || dev.driver_id == VK_DRIVER_ID_MESA_RADV;
     // (RX_VK_FRAG_SHUFFLE_FALLBACK=0 or 1, a test: the fragment stages' shuffles native or through broadcasts, whatever the
     // driver; in the cache's stamp)
     if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
