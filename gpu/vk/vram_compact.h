@@ -90,6 +90,21 @@ inline uint64_t reserve_pct(uint64_t pct) { return pct > kReservePoints ? pct - 
 /// off; UINT64_MAX: nothing
 inline uint64_t rule_target(uint64_t total, uint64_t rule_budget) { return total > rule_budget ? rule_budget / 8 * 7 : UINT64_MAX; }
 
+/// The same, with the budget's size (size_budget) told from what the 90% rule and the driver's limit made of it (rule_budget,
+/// never more). Those two are not sizes: each is "what the textures hold less the excess over a line", as the hold's is, and is
+/// crossed again whenever anything grows. Cut to 7/8 of it, a few MB over the line took an eighth of the cache: Castle Town
+/// Market entered from Hyrule Field on an 8 GB card sat 60 MB over the 90% line and lost ~400 MB of textures unused for a
+/// second, all on screen again within the camera's turn, made again, over the line again: 2.5 <-> 2.95 GB every few seconds,
+/// 8-9 uploads a frame and 16-25 frames over 50 ms in 30 s, where the same scene loaded from a save (just under the line) had
+/// none. So for them what goes is the excess and kExcessSlack more, so that not every pass is one; the budget's size still asks
+/// for its 7/8
+inline constexpr uint64_t kExcessSlack = 64ull << 20;
+inline uint64_t rule_target(uint64_t total, uint64_t size_budget, uint64_t rule_budget) {
+    uint64_t to = rule_target(total, size_budget);
+    if (rule_budget < size_budget && total > rule_budget) to = std::min(to, rule_budget - std::min(rule_budget, kExcessSlack));
+    return to;
+}
+
 /// What a live texture unused for that many presents may be let go down to in the hold's pass, the lowest of the lines that
 /// apply to it; UINT64_MAX: it stays. Three tiers:
 /// - unused for need_unused (the eviction's own 60 presents): what the other rules ask for (rule_to). Over 90% of the allowance

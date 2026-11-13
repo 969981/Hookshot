@@ -2209,10 +2209,12 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
         std::lock_guard lk(disk_mu);
         if (auto it = disk_records.find(cs->key); it != disk_records.end())
             for (const DiskRecord& d : it->second) {
-                std::vector<uint8_t> data(d.size);
-                _fseeki64(disk_in, d.at, SEEK_SET);
-                if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
-                Reader rd{data.data(), data.data() + data.size()};
+                std::vector<uint8_t> data(d.size), plain;
+                if (_fseeki64(disk_in, d.at, SEEK_SET) || fread(data.data(), 1, d.size, disk_in) != d.size) continue;
+                const uint8_t* payload = nullptr;
+                size_t payload_size = 0;
+                if (!program_cache_payload(data.data(), data.size(), d.kind, plain, &payload, &payload_size)) continue;
+                Reader rd{payload, payload + payload_size};
                 Program q;
                 rd.get<uint32_t>();
                 rd.list(q.answers);
@@ -2447,6 +2449,101 @@ void program_released(const nvn_prog* p) {
     if (!p) return;
     std::lock_guard lk(shader_mu);
     codes.erase(p->serial);
+}
+
+// ---- (hookshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw: vk_programs.cpp. Its stages are
+// read from the game's memory and hashed as a draw's are (code_key), but not lowered: only what names the program (the stages'
+// code keys) and what its key is made of (graphics_key, mesh_key: the headers). Kept by the program's serial, under a lock of
+// their own: the game's thread calls this, and shader_mu is held through whole translations ----
+namespace {
+std::mutex created_mu;
+std::unordered_map<uint64_t, std::vector<Code>> created_codes;
+Code read_code_head(const nvn_stage_data& sd) {
+    Code c;
+    uint8_t ctl[kControlSize];
+    uint32_t end = 0;
+    if (!sd.control || !sd.data || !host->gpu_read(sd.control, ctl, sizeof ctl) || !control_end(ctl, &end)) return c;
+    std::vector<uint8_t> area(end);
+    if (!host->gpu_read(sd.data, area.data(), end)) return c;
+    uint32_t len;
+    uint16_t st;
+    std::memcpy(&len, ctl + 0x38, 4);
+    std::memcpy(&st, ctl + 0x56, 2);
+    c.key = code_key(ctl, area.data(), end);
+    c.stage = st;
+    if (st == 1) {   // (as parse_code: a scene mapping program's fragment stage)
+        static constexpr float kFit[] = {2.51f, 0.03f, 2.43f, 0.59f, 0.14f};
+        c.scene_fit = true;
+        for (const float f : kFit) {
+            uint8_t bits[4];
+            std::memcpy(bits, &f, 4);
+            c.scene_fit = c.scene_fit && std::search(area.begin(), area.end(), bits, bits + 4) != area.end();
+        }
+    }
+    const bool graphics = st != 5;
+    if (graphics) std::memcpy(c.sph, area.data(), std::min<size_t>(sizeof c.sph, area.size()));
+    c.header_only = graphics && len <= kAmpereHeader + 16;
+    c.ok = true;
+    return c;
+}
+struct CreatedStages {
+    const Code *vs = nullptr, *fs = nullptr, *task = nullptr, *mesh = nullptr, *prim = nullptr, *compute = nullptr;
+};
+CreatedStages created_stages(const std::vector<Code>& cs) {
+    CreatedStages o;
+    for (const Code& c : cs) {
+        if (c.header_only) o.prim = &c;
+        else if (c.stage == 0) o.vs = &c;
+        else if (c.stage == 1) o.fs = &c;
+        else if (c.stage == 5) o.compute = &c;
+        else if (c.stage == 6) o.task = &c;
+        else if (c.stage == 7) o.mesh = &c;
+    }
+    return o;
+}
+} // namespace
+
+CreatedProgram program_created_read(const nvn_prog& prog) {
+    CreatedProgram out;
+    std::vector<Code> cs;
+    for (uint32_t i = 0; i < prog.nstage && i < 6; i++) {
+        Code c = read_code_head(prog.sd[i]);
+        if (c.ok) cs.push_back(std::move(c));
+    }
+    const CreatedStages st = created_stages(cs);
+    out.stages = (int)cs.size();
+    if (st.compute) {
+        out.compute = true, out.codes[0] = st.compute->key;
+    } else if (st.mesh) {
+        out.mesh = true, out.codes[0] = st.mesh->key, out.codes[1] = st.fs ? st.fs->key : 0;
+        out.codes[2] = st.task ? st.task->key : 0, out.codes[3] = st.prim ? st.prim->key : 0;
+    } else if (st.vs) {
+        out.codes[0] = st.vs->key, out.codes[1] = st.fs ? st.fs->key : 0;
+    } else {
+        return out;
+    }
+    out.ok = true;
+    std::lock_guard lk(created_mu);
+    created_codes[prog.serial] = std::move(cs);
+    return out;
+}
+uint64_t program_created_key(uint64_t serial, const uint32_t vattr[16], const uint8_t color_types[8]) {
+    std::lock_guard lk(created_mu);
+    const auto it = created_codes.find(serial);
+    if (it == created_codes.end()) return 0;
+    const CreatedStages st = created_stages(it->second);
+    if (st.compute) return st.compute->key;
+    if (st.mesh) return mesh_key(st.task, *st.mesh, st.fs, st.prim, color_types);
+    if (!st.vs) return 0;
+    const bool tonemap = scene_tonemap_for(st.fs);
+    return graphics_key(*st.vs, st.fs, vattr, color_types, tonemap);
+}
+void program_created_forget(uint64_t serial) {
+    std::lock_guard lk(created_mu);
+    created_codes.erase(serial);
+}
+int64_t shader_translated() {
+    return st_translated.load();
 }
 
 } // namespace mkwvk

@@ -272,18 +272,25 @@ static int is_link(const char *p) {
     struct stat st;
     return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
 }
-static const char *move_old, *move_new;   /* (the user folder on the move, as realpath names it, and the new place) */
+static const char *move_old, *move_from, *move_new;   /* (the user folder on the move, as realpath names it and as given, and the new place) */
+static int moved_to(char *target, const char *dir) {   /* (a target under dir: named where it will be) */
+    char there[MAX_PATH];
+    const size_t n = dir && dir[0] == SEP ? strlen(dir) : 0;
+    if (!n || strncmp(target, dir, n) || target[n] != SEP) return 0;
+    snprintf(there, sizeof there, "%s%s", move_new, target + n);
+    snprintf(target, MAX_PATH, "%s", there);
+    return 1;
+}
 static int copy_link(const char *from, const char *to) {   /* (to what it names, in full; one that names nothing: as written) */
-    char target[MAX_PATH], there[MAX_PATH];
-    const size_t old = move_old ? strlen(move_old) : 0;
+    char target[MAX_PATH];
     if (!realpath(from, target)) {
         const ssize_t n = readlink(from, target, sizeof target - 1);
         if (n < 0) return 0;
         target[n] = 0;
-    } else if (old && !strncmp(target, move_old, old) && target[old] == SEP) {   /* (to an entry that moves too: where it will be) */
-        snprintf(there, sizeof there, "%s%s", move_new, target + old);
-        snprintf(target, sizeof target, "%s", there);
     }
+    /* (to an entry that moves too: where it will be. One whose entry went first names nothing by now, so its text is
+       checked too: else it named the old place, and only when the folder listed it before the entry) */
+    if (!moved_to(target, move_old)) moved_to(target, move_from);
     return symlink(target, to) == 0;
 }
 static int has_link(const char *p) {
@@ -373,7 +380,7 @@ static const char *saves_dir(const char *beside) {
     snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
     int moved = 0, kept = 0;
     char real[MAX_PATH];
-    move_old = realpath(beside, real), move_new = dir;
+    move_old = realpath(beside, real), move_from = beside, move_new = dir;
     /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
        The others used to go all the same, and the game then ran here without them) */
     for (int move = 0; move < 2 && !kept; move++) {
@@ -1885,7 +1892,7 @@ static int game_main(int argc, char **argv) {
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
-           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
+           An output that is not 16:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
@@ -1916,8 +1923,9 @@ static int game_main(int argc, char **argv) {
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         uint32_t hos_output_size(int height);
         const uint32_t output_w = hos_output_size(0), output_h = hos_output_size(1);
-        /* A custom surround output explicitly requests that shape, even if the OS reports one monitor. */
-        if (hos_output_is_surround(output_w, output_h)) want = (float)output_w / (float)output_h;
+        /* An output of a shape of its own (the Insert menu's Aspect ratio: 21:9, 16:10, 4:3, a 32:9 surround...) asks for that
+           shape, over HOS_ASPECT and Ultrawide, even if the OS reports one monitor (host/hos_wide_size.h) */
+        if (hos_output_own_shape(output_w, output_h)) want = (float)output_w / (float)output_h;
         const double game = 16.0 / 9.0;
         /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
