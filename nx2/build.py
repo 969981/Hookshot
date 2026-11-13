@@ -775,6 +775,7 @@ def key_of(src, fl, deps):
     """object_key, without reading a source HASHES still knows: the key worked out from it before, for these flags and headers,
     is the same"""
     part = kept_part(fl, deps)
+    USED.setdefault(src, set()).add(part)
     entry, st = known(src)
     if entry is not None and part in entry["keys"]:
         return entry["keys"][part]
@@ -795,6 +796,12 @@ HASH_SCHEME = 1
 RACY_NS = 2 * 10 ** 9
 HASHES = {}   # (source path -> {"stat": [size, mtime_ns, id], "sha1": the content's, "keys": {kept_part: object key}})
 HASHES_AT = [0]   # (when the record read in was written, in ns: entries for files written after it, less RACY_NS, are not trusted)
+# (hckrman101 on #2702) a record is written under the time its build started, before it stat'd and read any source: the save
+# comes after the whole plan, seconds later, and the 2 s rule is about the stat. And it keeps, for each source this build looked
+# at, only the keys this build asked for: a header's edit added a key to every renderer source, and the file only grew. A source
+# this build did not look at (a renderer-only build's lifted C) keeps its record as it was
+HASHES_STARTED = [0]
+USED = {}   # (source path -> the kept_parts key_of was asked for this build; content_sha1's sources with none)
 
 
 def file_stat(src):
@@ -828,6 +835,7 @@ def remember(src, st, content):
 
 def content_sha1(src):
     """A source's content's sha1, from the record when it still describes the file"""
+    USED.setdefault(src, set())
     entry, st = known(src)
     if entry is not None:
         return entry["sha1"]
@@ -835,7 +843,9 @@ def content_sha1(src):
 
 
 def load_hashes(out):
+    HASHES_STARTED[0] = time.time_ns()   # (before any source is stat'd: the time the next record is written under)
     HASHES.clear()
+    USED.clear()
     HASHES_AT[0] = 0
     try:
         with open(os.path.join(out, HASH_CACHE), encoding="utf-8") as f:
@@ -854,8 +864,12 @@ def load_hashes(out):
 
 def save_hashes(out):
     """The record of the sources this build saw, for the next one (written atomically; a failure only costs the next build a read)"""
-    data = {"scheme": HASH_SCHEME, "written_ns": time.time_ns(),
-            "files": {src: e for src, e in sorted(HASHES.items()) if os.path.exists(src)}}
+    def kept(src, e):
+        if src not in USED:
+            return e
+        return dict(e, keys={part: key for part, key in e["keys"].items() if part in USED[src]})
+    data = {"scheme": HASH_SCHEME, "written_ns": HASHES_STARTED[0] or time.time_ns(),
+            "files": {src: kept(src, e) for src, e in sorted(HASHES.items()) if os.path.exists(src)}}
     tmp = os.path.join(out, HASH_CACHE + ".new")
     try:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
