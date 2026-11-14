@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.0-rc.18](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.17...v2.3.0-rc.18) (2026-11-14)
+
+
+### Features
+
+* **profile:** Mario Kart World 1.0.0 builds and plays from main (not released yet) ([#65](https://github.com/notquiteog/Hookshot/issues/65)) ([bdbf77d](https://github.com/notquiteog/Hookshot/commit/bdbf77da7b14c7559779c4d2ab3fdc744abde314))
+
+
+### Documentation
+
+* **worklist:** row 2.1's Castle Town and Hyrule Field frame profiled, and two cuts that gained nothing ([#63](https://github.com/notquiteog/Hookshot/issues/63)) ([816541c](https://github.com/notquiteog/Hookshot/commit/816541cc82a50386717b6e5ae04fe7f52dcfb6d0))
+
+
+### Tests
+
+* the pointer check's reader always takes once after the last publish ([#56](https://github.com/notquiteog/Hookshot/issues/56)) ([47825ea](https://github.com/notquiteog/Hookshot/commit/47825eaea1dacc43b2a7cb0fa412bb872d79499f))
+
 ## [2.3.0-rc.17](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.16...v2.3.0-rc.17) (2026-11-14)
 
 
