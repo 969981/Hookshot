@@ -29,8 +29,32 @@ run). `tests/test_option_ids.py` catches it.
 
 ## Up to 514591a3
 
-Taken (Longshot PR): #7, #8, #39, #54, #55, #78, #94, #108, #110, #138, #176, #177, #178, #187, #202, #233, #247,
-#265, #266. Also, in a pull request of their own because each needs its own measurement: #41, #197, #198, #260.
+Taken in [#29](https://github.com/notquiteog/Hookshot/pull/29), one squash commit (44a8a29a), so each pick's author is
+named here: a squash keeps a commit's author only where GitHub knows its email.
+
+| Longshot | Author | What |
+|---|---|---|
+| [#7](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/7) | hckrman101 | feat(menu): the Game frame rate cap, Descriptor reuse and Sampler cache apply in play |
+| [#8](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/8) | hckrman101 | feat(fps): a Dev level of the FPS counter, past Breakdown, with the renderer's own numbers |
+| [#39](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/39) | llun | fix(dlss): the DLSS model row's preset is taken once it holds it, not a feature for each one stepped past |
+| [#54](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/54) | mooki | fix(linux): warn about low physical RAM even with ample swap |
+| [#55](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/55) | mooki | fix(menu): keep render scale when switching upscalers |
+| [#78](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/78) | mooki | fix(oot): preserve Scarecrow's Song recording and playback timing |
+| [#94](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/94) | HumanBean | fix(vk): one slow load no longer takes an install back to loading before the title |
+| [#108](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/108) | futondestroyer | fix(vk): an opt-in RGBA16F route for PsychoV35 HDR with DLSS and NVIDIA frame generation |
+| [#110](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/110) | HumanBean | fix(video): a decoder refuses submissions while 16 wait, so a movie's first seconds are not skipped |
+| [#138](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/138) | simonwjackson | feat(gameplay): a Damage taken row (Half to Quadruple) |
+| [#176](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/176) | d4nkn3ss | fix(vk): Auto (this PC) reads the primary monitor when there's no window, so an update no longer lowers the resolution |
+| [#177](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/177) | HumanBean | feat(log): a log line can be debug or trace, and the movie networks a card leaves out are trace lines |
+| [#178](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/178) | HumanBean | feat(input): Mouse camera Off, for playing without the mouse |
+| [#187](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/187) | d4nkn3ss | test(input): the display-pointer fixture defines rx_option, which mouse_capture now asks (#178) |
+| [#202](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/202) | dyst | test(vk): the texture staging check declares LogLevel and logf_at again, failing on main since #177 |
+| [#233](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/233) | TrashPanda | fix(vk): RX_VK_JOB_STEAL=true no longer turns off a draw's pipeline build where it waits |
+| [#247](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/247) | MustardTiger | fix(vk): opt-in RGBA16F route for PsychoV35 HDR with AMD FSR 4 |
+| [#265](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/265) | jarynclouatre | fix(input): a mouse button released outside the game is not a click on return |
+| [#266](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/266) | jarynclouatre | fix(menu): a layout preset is applied whole after a face button was cleared |
+
+Also, in a pull request of their own because each needs its own measurement: #41, #197, #198, #260.
 
 Already here from upstream, under other hashes: #49 (= upstream #2929), #77 (= #2972), #131 (= #3038), #147 (= #2732),
 #4 (`third_party/zbic` is carried whole), #63 (`host/rx_backend.c` already steps over 256 clear marks at a time), #174
