@@ -39,7 +39,8 @@ def main():
     block = helpers.block
     nvn = (ROOT / "host/nvn_native.c").read_text(encoding="utf-8")
     hos = (ROOT / "host/hos.h").read_text(encoding="utf-8")
-    start = nvn.index("typedef struct { uint64_t owner; uint8_t *seg, *cur, *end; } cmd_rec;")
+    # (the command table from cmd_rec's definition: its first fields, then the target and viewport the graphics push check keeps)
+    start = nvn.index("typedef struct {\n    uint64_t owner; uint8_t *seg, *cur, *end;")
     table_decls = nvn[start:nvn.index("static cmd_rec *cmd_slot(", start)]
     live_decls_start = nvn.index("static uint64_t *live_handles;")
     live_decls = nvn[live_decls_start:nvn.index("static void live_handle_add(", live_decls_start)]

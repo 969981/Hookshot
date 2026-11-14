@@ -21,6 +21,7 @@
 #include "hos.h"
 #include "game_profile.h"   /* (the present poll's return addresses) */
 #include "../gpu/render/rx_nvn.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1261,7 +1262,10 @@ static void pool_put(void *b, unsigned cls) {
    object (guest memory). The object holds its slot's number; a slot names the object it belongs to, so a slot number
    that is not the object's own is not used: the object gets a new slot, as an object never initialized does. Slots are
    in chunks that are never freed, so a lookup needs no lock (a command buffer records on one thread at a time). */
-typedef struct { uint64_t owner; uint8_t *seg, *cur, *end; } cmd_rec;
+typedef struct {
+    uint64_t owner; uint8_t *seg, *cur, *end;
+    uint32_t rt_w, rt_h; float vp[4];   /* (hookshot) the first target's size and viewport 0 last set in it (push_graphics_check) */
+} cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
 static cmd_rec *volatile cmd_chunks[CMD_CHUNKS];
@@ -1752,6 +1756,76 @@ NV(nvnCommandBufferPushComputeConstants) {
     memcpy(p + 8, &u, sizeof u);
     memcpy(p + 8 + sizeof u, PN(4, n), n);
 }
+/* (hookshot) nvnCommandBufferPushGraphicsConstants(cmdbuf, u32 table, offset, size, const void* data): graphics root table
+   0, which NVN2's full-screen blit shaders read as constant bank 24. The replay does not take these bytes: the shader
+   recompiler lowers bank 24 to bank 17 and BlitConstantsPass (gpu/vk/eden/shader_recompiler/ir_opt/position_pass.cpp)
+   gives a blit's reads of it the values of a blit covering the whole render target. Donkey Kong Bananza's one call site
+   (main 0x808ca7e0) pushes {1/w, 1/h, w, h} of the bound target with a full viewport, the pass's values word for word
+   (docs/donkey-kong-bananza.md). This checks each push against what the pass gives, and logs once when a game pushes
+   something else (then the bytes would have to reach the shader). HOS_NVN_PUSH_LOG=1: the counts, every 10000 pushes. */
+static uint32_t blit_block_word(uint32_t offset, float w, float h) {   /* (BlitConstantsPass's word(), for a w x h target) */
+    float f;
+    uint32_t u;
+    switch (offset) {
+    case 0x0: case 0x10: f = 1.0f / w; break;
+    case 0x4: case 0x14: f = 1.0f / h; break;
+    case 0x8: f = w; break;
+    case 0xc: f = h; break;
+    case 0x18: case 0x1c: case 0x38: case 0x3c: f = 1.0f; break;
+    case 0x58: return (uint32_t)(w - 1.0f);
+    case 0x5c: return (uint32_t)(h - 1.0f);
+    default: return 0;
+    }
+    memcpy(&u, &f, 4);
+    return u;
+}
+/* 1: the push is what the pass gives (a float within one part in a million); 0: it is not, *at the first word that
+   differs; -1: nothing to compare with (no target set in this command buffer yet, another table, or a viewport that
+   is not the whole target, which the pass does not model) */
+static int push_graphics_check(uint32_t table, uint32_t offset, uint32_t size, const uint32_t *words, uint32_t rt_w,
+                               uint32_t rt_h, const float vp[4], uint32_t *at) {
+    if (table != 0 || !rt_w || !rt_h || (offset & 3) || (size & 3)) return -1;
+    if (vp[0] != 0.0f || vp[1] != 0.0f || vp[2] != (float)rt_w || vp[3] != (float)rt_h) return -1;
+    for (uint32_t i = 0; i < size / 4; i++) {
+        const uint32_t o = offset + 4 * i, want = blit_block_word(o, (float)rt_w, (float)rt_h);
+        if (words[i] == want) continue;
+        float a, b;
+        memcpy(&a, &words[i], 4), memcpy(&b, &want, 4);
+        const int floats = o != 0x58 && o != 0x5c;
+        if (floats && b != 0.0f && fabsf(a - b) <= fabsf(b) * 1e-6f) continue;
+        *at = o;
+        return 0;
+    }
+    return 1;
+}
+NV(nvnCommandBufferPushGraphicsConstants) {
+    static volatile LONG64 calls, same, other, unknown;
+    static volatile LONG told;
+    const uint32_t n = U32(3);
+    if (!P(4) || !n || n > 0x100) return;
+    uint32_t w[64] = {0};
+    memcpy(w, PN(4, n), n);
+    const cmd_rec *k = cmd_host(CB(P(0)));
+    uint32_t at = 0;
+    const int r = push_graphics_check(U32(1), U32(2), n, w, k->rt_w, k->rt_h, k->vp, &at);
+    InterlockedIncrement64(r > 0 ? &same : r == 0 ? &other : &unknown);
+    if (r == 0 && !InterlockedExchange(&told, 1)) {
+        float f[4] = {0};
+        memcpy(f, w, n < 16 ? n : 16);
+        uint32_t want = blit_block_word(at, (float)k->rt_w, (float)k->rt_h);
+        float g;
+        memcpy(&g, &want, 4);
+        hos_log("nvn: PushGraphicsConstants table %u offset %#x size %u: %g %g %g %g, not what the blit pass gives a %ux%u "
+                "target (at %#x: %#x, the pass %#x = %g): these bytes would have to reach the shader (lr %#llx)",
+                U32(1), U32(2), n, f[0], f[1], f[2], f[3], k->rt_w, k->rt_h, at, w[(at - U32(2)) / 4], want, g,
+                (unsigned long long)c->x[30]);
+    }
+    static int counts = -1;
+    if (counts < 0) counts = env_on("HOS_NVN_PUSH_LOG");
+    if (counts && InterlockedIncrement64(&calls) % 10000 == 1)
+        hos_log("nvn: PushGraphicsConstants: %lld pushes: %lld as the blit pass gives, %lld not, %lld with nothing to compare",
+                (long long)calls, (long long)same, (long long)other, (long long)unknown);
+}
 /* (hookshot) nvnQueueWaitSync(queue, sync): the queue's later work waits on the GPU for the sync's fence. Every
    NVN queue replays in one stream in submit order, so a fence submitted before this already came first; a sync not
    fenced yet (a wait on a fence another queue submits later) cannot be honored that way and is logged. */
@@ -1856,6 +1930,9 @@ NV(nvnCommandBufferSetRenderTargets) {
     }
     tex_copy(&r->depth, U64(4));
     set_view(&r->dview, &r->has_dview, U64(5));
+    cmd_rec *k = cmd_host(o);   /* (for push_graphics_check: the size a full-screen blit covers) */
+    const nvn_tex *first = n && r->color[0] ? r->color[0] : r->depth;
+    k->rt_w = first ? first->d.width : 0, k->rt_h = first ? first->d.height : 0;
 }
 NV(nvnCommandBufferClearColor) {
     nvn_p_clear_color *r = REC(CB(P(0)), NOP_CLEAR_COLOR, nvn_p_clear_color);
@@ -1876,11 +1953,13 @@ NV(nvnCommandBufferSetViewports) {
     nvn_p_viewports *r = REC(CB(P(0)), NOP_VIEWPORTS, nvn_p_viewports);
     r->first = first, r->n = n;
     memcpy(r->v, PN(3, 16 * (size_t)n), 16 * (size_t)n);
+    if (first == 0 && n) memcpy(cmd_host(CB(P(0)))->vp, r->v[0], 16);
 }
 NV(nvnCommandBufferSetViewport) {
     nvn_p_viewports *r = REC(CB(P(0)), NOP_VIEWPORTS, nvn_p_viewports);
     r->first = 0, r->n = 1;
     r->v[0][0] = (float)I(1), r->v[0][1] = (float)I(2), r->v[0][2] = (float)I(3), r->v[0][3] = (float)I(4);
+    memcpy(cmd_host(CB(P(0)))->vp, r->v[0], 16);
 }
 NV(nvnCommandBufferSetScissor) {
     nvn_p_scissor *r = REC(CB(P(0)), NOP_SCISSOR, nvn_p_scissor);
@@ -2925,6 +3004,7 @@ static const nvn_impl impls[] = {
     {"nvnCommandBufferWaitSync", n_nvnCommandBufferWaitSync},
     {"nvnQueueWaitSync", n_nvnQueueWaitSync},
     {"nvnCommandBufferPushComputeConstants", n_nvnCommandBufferPushComputeConstants},
+    {"nvnCommandBufferPushGraphicsConstants", n_nvnCommandBufferPushGraphicsConstants},
     {"nvnCommandBufferResetCounter", n_nvnCommandBufferResetCounter},
     {"nvnCommandBufferReportCounter", n_nvnCommandBufferReportCounter},
     {"nvnCommandBufferCopyBufferToBuffer", n_nvnCommandBufferCopyBufferToBuffer},
