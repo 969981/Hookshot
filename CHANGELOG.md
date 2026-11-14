@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.14](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.13...v2.3.0-rc.14) (2026-11-14)
+
+
+### Bug Fixes
+
+* Ocarina and engine fixes from Longshot, through its 514591a3 ([#29](https://github.com/notquiteog/Hookshot/issues/29)) ([44a8a29](https://github.com/notquiteog/Hookshot/commit/44a8a29a0b934a568853b41f0fcca8a8b66aea3f))
+
 ## [2.3.0-rc.13](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.12...v2.3.0-rc.13) (2026-11-14)
 
 
