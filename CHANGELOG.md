@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.13](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.12...v2.3.0-rc.13) (2026-11-14)
+
+
+### Bug Fixes
+
+* **release:** a file with no digest yet is hashed, not a 404 that ends the upload ([#49](https://github.com/notquiteog/Hookshot/issues/49)) ([af05c99](https://github.com/notquiteog/Hookshot/commit/af05c99bf56178266fa829fe1d3a648417c65aed))
+
+
+### Documentation
+
+* **worklist:** where the memory row's 13.5 GB of RSS is ([#50](https://github.com/notquiteog/Hookshot/issues/50)) ([aa67a9f](https://github.com/notquiteog/Hookshot/commit/aa67a9fb2f4400edcff8901ddd6fb06e1bec8922))
+
 ## [2.3.0-rc.12](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.11...v2.3.0-rc.12) (2026-11-14)
 
 
