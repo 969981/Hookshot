@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.16](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.15...v2.3.0-rc.16) (2026-11-14)
+
+
+### Features
+
+* **profile:** the graphics scale enum a game is answered, and Donkey Kong Bananza's is 0 (it drew at 80%) ([#59](https://github.com/notquiteog/Hookshot/issues/59)) ([fdbfb7a](https://github.com/notquiteog/Hookshot/commit/fdbfb7aa5ed984130f608b34324da8d9dc175bc9))
+
+
+### Bug Fixes
+
+* **vk:** the game's occlusion queries get the GPU's counts, and a leaner draw path (from Longshot) ([#30](https://github.com/notquiteog/Hookshot/issues/30)) ([bfa73dd](https://github.com/notquiteog/Hookshot/commit/bfa73dde8abb42c1fe4c87324c760f3104253283))
+
 ## [2.3.0-rc.15](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.14...v2.3.0-rc.15) (2026-11-14)
 
 
