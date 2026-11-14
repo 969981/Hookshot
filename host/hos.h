@@ -77,11 +77,14 @@ static inline void *hos_guest_range(uint64_t a, uint64_t n) {
 }
 #define HOS_TICK_HZ 31250000ULL   /* (mkw-recomp: the Switch 2 counter; the SDK checks it at init) */
 
-/* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL */
+/* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL. hos_log is info; hos_log_at gives a line another level,
+   written after the thread's tag ("[hos host] [trace] vk: ..."), for the launcher's log to show or leave out (docs/development.md) */
+enum { HOS_LOG_ERROR, HOS_LOG_WARN, HOS_LOG_INFO, HOS_LOG_DEBUG, HOS_LOG_TRACE };
 extern int hos_trace;
 void hos_log(const char *fmt, ...);
+void hos_log_at(int level, const char *fmt, ...);
 void hos_log_flush(void);
-#define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log("%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \
+#define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log_at(HOS_LOG_TRACE, "%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)
 void hos_fatal(Ctx *c, const char *fmt, ...);

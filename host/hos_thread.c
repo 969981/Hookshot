@@ -302,13 +302,22 @@ static void log_flush(void) {}
 
 void hos_log_flush(void) { log_flush(); }
 
-void hos_log(const char *fmt, ...) {
+/* (hookshot) A line's level as the log writes it: none for info, so the lines most of the log is stay as they were; "[trace] "
+   after the thread's tag for the rest, which the launcher's log reads to show info and above unless asked for more */
+static const char *log_level_tag(int level) {
+    switch (level) {
+    case HOS_LOG_ERROR: return "[error] ";
+    case HOS_LOG_WARN: return "[warn] ";
+    case HOS_LOG_DEBUG: return "[debug] ";
+    case HOS_LOG_TRACE: return "[trace] ";
+    default: return "";
+    }
+}
+
+static void hos_vlog(int level, const char *fmt, va_list ap) {
     char buf[1024], line[1100];
-    va_list ap;
-    va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
-    va_end(ap);
-    snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
+    snprintf(line, sizeof line, "[hos %s] %s%s\n", cur ? cur->name : "host", log_level_tag(level), buf);
     extern volatile int hos_control_on;   /* (control.c: log lines for its subscribers) */
     if (hos_control_on) {
         void hos_control_log(const char *line);
@@ -317,6 +326,20 @@ void hos_log(const char *fmt, ...) {
     if (log_queue(line)) return;
     fputs(line, stderr);
     fflush(stderr);
+}
+
+void hos_log(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    hos_vlog(HOS_LOG_INFO, fmt, ap);
+    va_end(ap);
+}
+
+void hos_log_at(int level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    hos_vlog(level, fmt, ap);
+    va_end(ap);
 }
 
 /* The resolver every R_AARCH64_TLSDESC descriptor is bound to (nx2/image.py: thread-local storage descriptors are not

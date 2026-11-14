@@ -80,10 +80,12 @@ void publish() {
     current->stages.values = {Stage{}, shader_stage(effect)};
     current->ready.store(true, std::memory_order_release);
 }
-void jobs_wait(const std::atomic<bool>& ready) {
+bool jobs_wait(const std::atomic<bool>& ready) {
     if (&ready == &current->ready) { ++translation_waits; publish(); }
     else { ++pipeline_waits; pipe_entry.ready.store(true, std::memory_order_release); }
+    return true;
 }
+int jobs_pending() { return 0; }
 bool jobs_wait_for(const std::atomic<bool>& ready, double) {
     ++bounded_waits;
     if (&ready == &current->ready && fast_translation) publish();

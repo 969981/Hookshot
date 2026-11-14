@@ -113,6 +113,8 @@ static void decode_next(Dec *d) {
     d->qn++;
 }
 static void decode_pending(Dec *d) { decode_next(d); }
+static void input_room(Dec *d) { (void)d; }   /* (the input limit's event: tests/test_video_input_limit.py) */
+static void end_picture(Dec *d);   /* (cut from the source below: put_picture queues an owed end) */
 /* the reservations (a buffer acquired before its picture): counted, not filled here */
 static int reserves, fills;
 static uint64_t sync_reserve(void) { return 0x5ec0000000000000ull | (uint64_t)++reserves; }

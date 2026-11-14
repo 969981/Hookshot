@@ -86,6 +86,7 @@ static int show(BOOL){return 0;}
 #define IsIconic minimized
 #define GetCapture capture
 #define WindowFromPoint under_cursor
+int rx_option(int, int otherwise) { return otherwise; }   // (the menu's options: defaults; mouse_capture asks Mouse camera, 6)
 /* ACTUAL_WINDOWS */
 /* ACTUAL_MOVE */
 /* ACTUAL_WHEEL */
@@ -127,6 +128,7 @@ constexpr uint32_t WM_APP=0x8000;
 #ifndef WM_CLOSE
 constexpr uint32_t WM_CLOSE=0x0010;
 #endif
+int rx_option(int, int otherwise) { return otherwise; }   // (the menu's options: defaults; mouse_capture asks Mouse camera, 6)
 /* ACTUAL_SDL */
 static void request_menu(bool open, bool escape) {
     hos_posix_post_message(WM_APP+8,open,escape);

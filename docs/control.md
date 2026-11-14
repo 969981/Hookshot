@@ -234,6 +234,13 @@ a list of their own (the Upscaler, Render resolution, the output resolution) are
 reach the value; one that none of their steps reach on this PC leaves them, the Quality preset and the rest as they
 were, and replies `failed`. A `fixed` row replies `failed` too. The reply has the value it had before and the setting as it is now. The menu's lock keeps a change apart from the menu's own frame.
 
+For Render resolution, `value` is the saved scale choice; `text` describes the active engine's supported size.
+Changing the Upscaler does not overwrite that choice. For example, saved `resolution=5` (58%) shows 50% with the
+game's own upscaler, then Balanced 58% on returning to DLSS, even after saving and restarting with the game's own.
+Stepping into Native (DLAA or FSR 4's native AA) keeps that numeric choice too: FSR 3.1 at 100%, then DLSS at its
+supported 92%, then Left to Native, then back to FSR 3.1 returns to 100%. Leaving Native for a numbered scale or
+Auto deliberately selects that new value. This does not remember the last native-versus-scaled mode of each engine.
+
 ```
 > {"id":9,"cmd":"option_set","name":"FPS counter","value":true}
 < {"id":9,"ok":true,"frame":5510,"was":0,"option":{"key":"fps_counter",...,"value":1,"text":"On"}}

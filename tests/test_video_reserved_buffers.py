@@ -125,6 +125,8 @@ def main():
     src = args.source.read_text(encoding="utf-8")
     start = src.index("#define SYNC_RESERVED_TAG")
     end = src.index("static void dec_submit(Ctx *c) {")
+    if "static int submit_refused(" in src[start:end]:   # (Longshot #110's input limit, checked by test_video_input_limit.py)
+        end = src.rindex("\n/*", start, src.index("static int submit_refused("))
     section = src[start:end].replace("void hos_system_event_signal(uint64_t key);\n", "")
     fixture = HARNESS.replace("@SECTION@", section)
     with tempfile.TemporaryDirectory(prefix="video-reserved-") as tmp:

@@ -1431,8 +1431,8 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             if (!said.exchange(true))
                 logf("vk: the game's networks this card does not run are left out (the first: program %016llx), not an error: a "
                      "linear upscale takes their place", (unsigned long long)p.key);
-            else if (getenv("RX_VK_IR"))
-                logf("vk: program %016llx: %s", (unsigned long long)p.key, e.what());
+            else if (getenv("RX_VK_IR"))   // (each of the others: a trace line, the log's detail)
+                logf_at(log_trace, "vk: program %016llx: %s", (unsigned long long)p.key, e.what());
         }
     } catch (const std::exception& e) {
         p.failed = true;

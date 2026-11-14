@@ -32,6 +32,9 @@ namespace mkwvk {
 extern std::vector<std::string> gpu_device_names;
 extern const MkwVkHost* host;
 void logf(const char* fmt, ...);
+// (hookshot) A line at another level than info, as host/hos.h's hos_log_at: "[trace] " leads its text, after the host's thread tag
+enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };
+void logf_at(LogLevel level, const char* fmt, ...);
 void queue_flush_locked();   // (vk_replay.cpp, RX_VK_BATCH: held submits out; dev.present_mu held)
 void queue_flush();          // (the same, taking dev.present_mu)
 // (hookshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's

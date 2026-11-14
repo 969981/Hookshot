@@ -4,7 +4,8 @@ The engine's rate is a whole number of display intervals, 60 at most, and it put
 rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
 (hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
 60 or is 30 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
-1 ms, so the game keeps real time past 240 fps. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
+1 ms, so the game keeps real time past 240 fps. The row applies in play (HOS_OPT_FPS_CAP): a cap brought down gives the game
+back its own limiter, rate and step. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code and the build goes on with a warning.
 
 python -I -B tests/test_frame_rate_cap_step.py [--cc gcc]
@@ -69,7 +70,6 @@ static void hos_log(const char *fmt, ...) {
         clock_logs++;
     }
 }
-int rx_option(int id, int otherwise) { return id == 0 && getenv("T_PER_FRAME") ? 0 : otherwise; }
 typedef struct { int unused; } Ctx;
 static volatile int present_interval = 1;
 int hos_ini_option(const char *key, int otherwise) {   /* (frame_rate_cap=: the test's T_CAP_INDEX) */
@@ -81,6 +81,11 @@ volatile int hos_fixed_resolution, hos_dynres_runs, hos_scene_rgba16f;
 volatile uint32_t hos_fixed_scale_bits;
 volatile float hos_text_scale, hos_camera_scale;
 @OPTS@
+static int live_cap = -1;   /* (the Game frame rate cap row changed in play: HOS_OPT_FPS_CAP's answer, -1 the renderer not up) */
+int rx_option(int id, int otherwise) {
+    if (id == 0 && getenv("T_PER_FRAME")) return 0;
+    return id == HOS_OPT_FPS_CAP && live_cap >= 0 ? live_cap : otherwise;
+}
 volatile uint64_t hos_step_probe, hos_res_module;
 volatile uint32_t hos_frame_seconds_bits;
 @HOST@
@@ -160,6 +165,32 @@ int main(int argc, char **argv) {
         CHECK(near(frames(10, 1.0 / 500), 1.0 / 500));    /* (500 fps: a 500th of game time each, not a 240th) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.12));   /* (60 * a 500th: real time) */
         CHECK(near(frames(10, 1.0 / 5000), 1.0 / 1000));  /* (the shortest step, the pacing's 1 ms) */
+    } else if (!strcmp(mode, "live")) {   /* (started at 120, frame_rate_cap=2; the row changed in play) */
+        CHECK(near(frames(600, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);
+        live_cap = 0;   /* (60: the game's own limiter and step back) */
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);
+        live_cap = 4;   /* (165) */
+        CHECK(near(frames(10, 1.0 / 165), 1.0 / 165) && *limit == 165 && *rate == 60);
+        live_cap = 3;   /* (144: the limiter comes down with it) */
+        CHECK(near(frames(10, 1.0 / 144), 1.0 / 144) && *limit == 144);
+        live_cap = 6;   /* (Uncapped) */
+        CHECK(near(frames(10, 1.0 / 500), 1.0 / 500) && *limit == 1000);
+        live_cap = 0;
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);
+    } else if (!strcmp(mode, "live step off")) {   /* (HOS_FPS_STEP=0: the rate went up to 120; at 60 it must come back) */
+        CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 120 && *limit == 120);
+        live_cap = 0;
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *rate == 60 && *limit == 60);
+    } else if (!strcmp(mode, "live 30")) {   /* (started at 30, frame_rate_cap=7: the limiter lowered, and given back in play) */
+        CHECK(near(frames(60, 1.0 / 30), 1.0 / 30) && *rate == 30 && *limit == 30);
+        live_cap = 0;   /* (60: the game's own limiter, 60, and its own step) */
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);
+        live_cap = 2;   /* (120, then straight down to 30) */
+        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *limit == 120 && *rate == 60);
+        live_cap = 7;
+        CHECK(near(frames(10, 1.0 / 30), 1.0 / 30) && *limit == 30 && *rate == 30);
+        live_cap = 0;
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);
     } else if (!strcmp(mode, "unknown index")) {   /* (frame_rate_cap= a later build's value: 60, as on the console) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *limit == 60);
     } else if (!strcmp(mode, "cap 60")) {
@@ -238,8 +269,10 @@ def main():
     check("V-Sync" in row and "real time" in row, "the row's help does not say Uncapped keeps real time and V-Sync limits it")
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static float camera_scale(", "static int fps_max(void) {",
-                                             "int hos_vi_native_interval(", "static int realtime_rate(", "static void realtime_step("))
+    fps = vi[vi.index("enum { FPS_UNCAPPED"):]   # (the cap's values and fps_of, fps_refresh, fps_max)
+    fps = fps[:fps.index(block(vi, "static int fps_max(void) {")) + len(block(vi, "static int fps_max(void) {"))]
+    host = "\n".join([block(vi, "static float text_scale("), block(vi, "static float camera_scale("), fps] +
+                     [block(vi, m) for m in ("int hos_vi_native_interval(", "static int realtime_rate(", "static void realtime_step(")])
     # (the option ids realtime_step names: vk_api.h's HOS_OPT_* enums)
     opts = "\n".join(re.findall(r"enum \{ HOS_OPT_[^}]*\};", (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")))
     fixture = FIXTURE.replace("@OPTS@", opts).replace("@HOST@", host).replace(
@@ -256,7 +289,8 @@ def main():
                                        ("unknown index", None, None, "8"), ("cap 120", None, None, "2"), ("clock log", "60", None, None),
                                        ("cap 30", None, None, "7"), ("cap 30", "30", None, None),
                                        ("30 fallback", "30", "0", None), ("cap 60", "29", None, "7"),
-                                       ("cap 120", "120", None, "7")):
+                                       ("cap 120", "120", None, "7"), ("live", None, None, "2"), ("live step off", None, "0", "2"),
+                                       ("live 30", None, None, "7")):
             env = {k: v for k, v in os.environ.items() if not k.startswith(("HOS_", "T_"))}
             if mode == "clock log":
                 env["HOS_FPS_LOG"] = "1"

@@ -28,12 +28,12 @@ def menu_rows(tabs="GRAPHICS|AUDIO|GAMEPLAY|CONTROLS|PAGE"):
     return re.findall(r'\{TAB_(%s),\s*"([^"]+)"' % tabs, ROWS)
 
 
-def table_lines():
+def table_lines(include_debug=False):
     start = README.index("| Tab | Option | Choices | Default |")
     lines = README[start:README.index("\n\n", start)].split("\n")[2:]
     rows = [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in lines]
     debug = next((i for i, cells in enumerate(rows) if cells[0] == "Debug"), len(rows))
-    return rows[:debug]   # (the Debug tab's lines end the table: its Developer rows, not checked here)
+    return rows if include_debug else rows[:debug]   # (the Debug tab's lines end the table: its Developer rows, not checked here)
 
 
 class ReadmeMenuRowsTests(unittest.TestCase):
@@ -60,6 +60,17 @@ class ReadmeMenuRowsTests(unittest.TestCase):
         order = [name for _, name in rows if name not in ACTIONS and name not in page]
         listed = [cells[1] for cells in table_lines() if cells[1] not in page]
         self.assertEqual(listed, order)
+
+    def test_damage_taken_is_listed_in_debug_player(self):
+        tab = ""
+        found = []
+        for cells in table_lines(include_debug=True):
+            tab = cells[0] or tab
+            if "Damage taken" in cells[1]:
+                found.append((tab, cells[1], cells[3]))
+        self.assertEqual(found, [("Debug", "Player: Damage taken", "Normal")])
+        self.assertIn(("DEBUG", "Damage taken"), menu_rows("DEBUG"))
+        self.assertNotIn(("GAMEPLAY", "Damage taken"), menu_rows("GAMEPLAY"))
 
     def test_every_line_has_its_four_cells_and_a_default(self):
         for cells in table_lines():

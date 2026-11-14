@@ -1033,11 +1033,12 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     static const char *native_env;
     static int native_looked;
     if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
-    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
+    const int mode = native_env ? atoi(native_env) != 0 : rx_option(6, 0);   /* (2: Off, the mouse never captured) */
+    const int native = mode == 1;
     int hos_mouse_native(void);
     void hos_mouse_native_free(int free);
     const uint64_t game_stick = (1ULL << B_ZR) | (1ULL << B_L) | (1ULL << B_R);
-    int captured = 0, as_stick = !native;
+    int captured = 0, as_stick = mode == 0;
     if (native) {
         mouse_setup();
         mouse_sens_keys();

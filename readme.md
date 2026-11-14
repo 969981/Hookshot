@@ -348,7 +348,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
 | | HDR contrast | 50% to 200% around mid grey (while HDR is on) | 100% |
-| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS, FSR and TAAU do not take its scene yet: the game's own upscale runs) | Vanilla |
+| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS/DLAA with their NVIDIA frame-generation inputs, and AMD FSR 4, can be tried with `RX_VK_PSYCHOV35_DLSS=1`; FSR 3.1, TAAU and Upscaler Off still fall back to the game's network) | Vanilla |
 | | Texture detail | Auto, Full, Medium, Low | Auto |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
@@ -356,7 +356,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown | Off |
+| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
 | | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
 | | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
@@ -370,7 +370,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Skip opening | Off, On (skips the new-game opening: the story movie and Navi waking Link; later cutscenes and the title screen stay) | Off |
 | | Bug report | Saves a report into a new folder in `bug-reports` (below) | |
 | Controls | Controller in background | Off, On | Off |
-| | Mouse camera | As the stick, Native | As the stick |
+| | Mouse camera | As the stick, Native, Off | As the stick |
 | | Disable camera centering | Off, On | Off |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
@@ -387,8 +387,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
-| | Developer: Descriptor reuse | Off, On (after a restart) | On |
-| | Developer: Sampler cache | Off, On (after a restart) | Off |
+| | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
+| | Developer: Descriptor reuse | Off, On (changes at once) | On |
+| | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
 | | Developer: ASTC as RGBA8 | Off, On (after a restart) | Off |
 
@@ -424,6 +425,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   in the row so existing saved caps keep their meaning. At 30, Game speed follows real time even if Per frame is selected.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
+  Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
+  re-record a song after updating if its recorded rhythm was lost.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `<61-1000>` sets a cap for one
   run.
@@ -450,6 +453,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
   Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
+  Changing the Upscaler keeps your chosen render scale, including across a restart. An engine without that scale
+  temporarily uses and shows its nearest supported size: DLSS Balanced (58%) shows 50% with the game's own, then 58%
+  again on returning to DLSS. Changing Render resolution or choosing a Quality preset replaces that saved scale.
 - **Aspect ratio** and **Output resolution:** the menu lists the resolutions your screen offers (its display modes, as
   Windows lists them, DSR's included), with the common sizes of each of those shapes your screen does not list (1440p, 4K
   and 5K at 16:9, 1920x1200 and 2560x1600 at 16:10, 3440x1440 at 21:9, ...), grouped by shape. **Aspect ratio** lists
@@ -516,7 +522,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in a corner (**FPS counter position**; at the top right while the menu is open), at one of
-  four levels. **FPS** is the number alone (an options file's old On); with frame generation on, it also shows the
+  five levels. **FPS** is the number alone (an options file's old On); with frame generation on, it also shows the
   game's own rate and who makes the frames: `Base 60, DLSS FG` (NVIDIA DLSS Frame Generation), `FSR 3.1 FG` or `Built-in FG`. **Frame time** adds the game's frame time and its 1% low (the rate of the slowest 1% of frames over
   the last 10 seconds). From this level on, the number and the frame time are green at the Game frame rate cap's rate,
   amber under it and red under two thirds of it. (The cap's rate is the display's refresh instead with V-Sync On when
@@ -527,7 +533,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   where the frame's time went on the game's presenting thread, as a bar and in numbers: the game's own code (Game),
   recording and submitting the GPU's work (Renderer), waiting for the GPU (GPU wait), and waiting for the frame's turn
   (Pacing: the frame rate cap, vsync, Reflex); then the GPU's own time per frame, and the shaders built and draws left
-  out in the last 4 seconds (red marks on the graph where they happened, the usual cause of a stutter).
+  out in the last 4 seconds (red marks on the graph where they happened, the usual cause of a stutter). **Dev** adds the
+  renderer's own numbers, for debugging and bug reports: video memory used of what the driver allows (red past it), the
+  textures held and their memory, draws, dispatches and render passes a frame, draws skipped a frame (red when any),
+  texture uploads a second and the pipelines built since the start.
 - **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
   follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
   game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window
@@ -557,7 +566,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
   When another camera takes over, Native leaves it alone; on returning, mouse look starts from the game's current
-  pitch and yaw rather than restoring the old view.
+  pitch and yaw rather than restoring the old view. Off leaves the mouse out of play: a click in the window doesn't
+  capture it, so it neither turns the camera nor presses buttons. Play with a controller or the keyboard.
 - **Disable camera centering:** On stops the game gradually turning the camera toward your movement, so it does not fight
   native mouse look. Off keeps the game's standard behavior. Changes apply immediately with either Mouse camera mode.
   Manual controls, explicit recentering and scripted camera headings still work; automatic pitch adjustment is unchanged.
@@ -1038,8 +1048,11 @@ switch that stands in for a menu row (`RX_VK_PACE`, `RX_VK_UPSCALE`, `RX_VK_FRAM
 `HOS_DYNRES`, `HOS_OUTPUT_RES`) applies to that run only: `hookshot_options.ini` keeps the value chosen in the menu.
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
-`hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
-always shown, has the Descriptor reuse, Sampler cache, Robust buffers and ASTC as RGBA8 rows.
+`hookshot_env.txt` in the game folder). The tools then show below it on the same tab. **Damage taken** is in the
+**Player** group beside **Heart protection**: Half, Normal (the default), Double or Quadruple. It applies only while
+Debug tools is on: off, Link takes Normal damage, and the saved choice returns when the tools do. Heart protection takes
+priority while enabled. The tab's Developer section, always shown, has the Descriptor reuse, Sampler cache, Robust
+buffers and ASTC as RGBA8 rows.
 
 A save whose minimap stopped showing after a Teleport on an earlier build (the area left had hidden it, and the flag
 stayed set in the save) is mended by the Teleport itself: teleport to an outdoor area, wait until you can move, then

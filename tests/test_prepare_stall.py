@@ -302,8 +302,10 @@ def check_watchdog(cxx, tmp):
     main = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     watch = main[main.index("struct PrepareSeen {"):]
     watch = watch[:watch.index(block(watch, "void prepare_watchdog() {")) + len(block(watch, "void prepare_watchdog() {"))]
-    pieces = [block(main, "int64_t steady_ms() {"), "std::atomic<int64_t> last_log_ms{0};\n", block(main, "void logf(const char* fmt, ...) {"),
-              watch]
+    internal = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
+    pieces = [block(main, "int64_t steady_ms() {"), "std::atomic<int64_t> last_log_ms{0};\n",
+              internal[internal.index("enum LogLevel"):internal.index(";", internal.index("enum LogLevel")) + 1],
+              block(main, "static void vlogf("), block(main, "void logf(const char* fmt, ...) {"), watch]
     exe = compile_run(cxx, "watchdog", WATCH_HEAD + "\n".join(pieces) + WATCH_MAIN, tmp)
     for case, code, need, never in (
             ("stuck", 4, ["waiting on the GPU driver or the disk", "the predicted pipelines (5 of 10)", "STOPPED"], ["faulted"]),

@@ -669,7 +669,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
         // out, and a scene change made several right after the idle ones were freed)
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_make).count();
         static int slow_logged;
-        if (ms > 5 && slow_logged++ < 24) logf("vk: a staging arena of %llu MB took %.1f ms to make", (unsigned long long)(a.size >> 20), ms);
+        if (ms > 5 && slow_logged++ < 24) logf_at(log_debug, "vk: a staging arena of %llu MB took %.1f ms to make", (unsigned long long)(a.size >> 20), ms);
     }
     a.value = rec_value, a.used = n;
     a.used_at = std::chrono::steady_clock::now();
@@ -3929,7 +3929,7 @@ void texture_written(Texture* tex, const char* why) {
     tex->only_cleared = false;
     if (tex->sparse && !tex->gpu_written) {
         static int logged;
-        if (logged++ < 20) logf("vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
+        if (logged++ < 20) logf_at(log_debug, "vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
     }
     watch_tex(tex, "written");
     if (!tex->gpu_written || tex->released) tex->first_written = frame_no, drawn_writeback_note(tex);

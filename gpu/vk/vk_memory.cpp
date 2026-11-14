@@ -676,7 +676,7 @@ void memory_sync() {
     last_pool = nullptr;
     std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
     static int logged;
-    if (logged++ < 8) logf("vk: %zu pools mapped", guest_pools.size());
+    if (logged++ < 8) logf_at(log_debug, "vk: %zu pools mapped", guest_pools.size());
 }
 
 // ---- page write generations ----

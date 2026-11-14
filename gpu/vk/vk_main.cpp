@@ -114,14 +114,25 @@ int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
-void logf(const char* fmt, ...) {
+static void vlogf(LogLevel level, const char* fmt, std::va_list a) {
+    static const char* const tags[] = {"[error] ", "[warn] ", "", "[debug] ", "[trace] "};
     char b[1024];
-    std::va_list a;
-    va_start(a, fmt);
-    std::vsnprintf(b, sizeof b, fmt, a);
-    va_end(a);
+    const int n = std::snprintf(b, sizeof b, "%s", tags[level >= log_error && level <= log_trace ? level : log_info]);
+    std::vsnprintf(b + n, sizeof b - n, fmt, a);
     last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
+}
+void logf(const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(log_info, fmt, a);
+    va_end(a);
+}
+void logf_at(LogLevel level, const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(level, fmt, a);
+    va_end(a);
 }
 
 namespace {
@@ -1553,16 +1564,21 @@ void auto_profile() {
     mi.cbSize = sizeof mi;
     DEVMODEW dm{};
     dm.dmSize = sizeof dm;
-    if (main_window && GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+    // (no window, the Builder's shader preparation and a headless start: the primary monitor, MonitorFromWindow(NULL, ...).
+    // A 0x0 screen made a fingerprint no options file had, so such a run chose Auto again for no screen and wrote it over
+    // the player's settings: issue 165)
+    if (GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
         hw.screen_w = (int)dm.dmPelsWidth, hw.screen_h = (int)dm.dmPelsHeight;
+        if (!main_window && dm.dmDisplayFrequency > 1) hw.refresh_hz = (int)dm.dmDisplayFrequency;   // (as display_refresh_mhz)
+    }
 #else
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     if (pages > 0 && page > 0) hw.ram_mb = (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20);
     const MkwVkWindow* w = (const MkwVkWindow*)main_window;
     if (w && w->version >= 3 && w->desktop_size) w->desktop_size(w->window, &hw.screen_w, &hw.screen_h);
 #endif
-    hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
+    if (main_window || !hw.refresh_hz) hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
     menu_auto_for_gpu(p, hw);
 }
 

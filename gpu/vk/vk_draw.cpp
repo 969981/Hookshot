@@ -1904,7 +1904,8 @@ std::string state_list_bytes(bool* present) {
 void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_seed = false) {
     if (env_on("RX_VK_NO_STATE_LIST")) return;
     remove(precompile_built_path().c_str());   // (notes are added here without their pipelines: precompile_run builds them)
-    remove((pipe_notes_path().substr(0, pipe_notes_path().find_last_of("\\/") + 1) + "hookshot_load_start.txt").c_str());   // (a preparation: loads at create are tried again, load_default.h load_fallback_path)
+    remove((pipe_notes_path().substr(0, pipe_notes_path().find_last_of("\\/") + 1) + "hookshot_load_start.txt").c_str());
+    remove((pipe_notes_path().substr(0, pipe_notes_path().find_last_of("\\/") + 1) + "hookshot_load_start.txt.waited").c_str());   // (a preparation: loads at create are tried again, load_default.h load_fallback_path)
     const auto t0 = std::chrono::steady_clock::now();
     int shipped_version = 0;
     // (the shipped list's compute programs are not pipelines to note: precompile_run keeps them ready, computes_plan)
@@ -3318,38 +3319,61 @@ bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = fals
 /// RX_VK_DESC_REUSE goes over the row for a run, with the row's values: 0 (or off) its Off, 1 (or on) its On; never: level 0.
 /// (It replaces RX_VK_DESC_SLOTGEN, same values, RX_VK_NO_DESC_REUSE=1, now never, and RX_VK_DESC_REUSE_DGEN, which turned
 /// off the texture-destroy check of issue 1126 and is gone: host/hos_main.c names the replacement when one is still set)
+/// The row applies in play (menu_debug_rows): a draw keeps descriptors only from a build made at the same level, desc_fp_on.
+/// RX_VK_DESC_REUSE holds the level for the run
+std::atomic<int> desc_reuse_row{-1}, sampler_cache_row{-1};   // (the rows as the menu has them now; -1 before it has loaded)
+} // namespace
+void menu_debug_rows(int descriptor_reuse, int sampler_cache) {   // (vk_draw.h: the menu, when it loads and when either row changes)
+    desc_reuse_row.store(descriptor_reuse != 0, std::memory_order_relaxed);
+    sampler_cache_row.store(sampler_cache != 0, std::memory_order_relaxed);
+}
+namespace {
 int desc_reuse_level() {
-    static int level = -1;
-    if (level < 0) {
+    static int start = -1;
+    static bool env = false;
+    if (start < 0) {
         const char* e = getenv("RX_VK_DESC_REUSE");
-        level = e && !strcmp(e, "never") ? 0 : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
-        if (level == 2)
+        env = e != nullptr;
+        start = e && !strcmp(e, "never") ? 0 : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
+        if (start == 2)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");
-        if (level == 0) logf("vk: RX_VK_DESC_REUSE=never: every draw builds its own descriptors");
+        if (start == 0) logf("vk: RX_VK_DESC_REUSE=never: every draw builds its own descriptors");
     }
+    const int row = env ? -1 : desc_reuse_row.load(std::memory_order_relaxed);
+    const int level = row < 0 ? start : row ? 2 : 1;
+    static std::atomic<int> last{-1};
+    if (last.load(std::memory_order_relaxed) != level && last.exchange(level, std::memory_order_relaxed) >= 0)
+        logf("vk: Descriptor reuse %s (menu)", level == 2 ? "on: draws keep their descriptors through other slots' registrations"
+                                                          : "off: kept only while no registration at all was made");
     return level;
 }
 bool desc_slotgen_on() { return desc_reuse_level() == 2; }
 /// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
 /// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
+/// The row applies in play (menu_debug_rows): what is kept is checked by the slot's version, so entries from before it was
+/// turned off and on again are still good while the slot was not registered anew. RX_VK_SAMPLER_CACHE holds it for the run
 bool sampler_cache_on() {
-    static int on = -1;
-    if (on < 0) {
-        on = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
-        if (on) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
+    static int start = -1;
+    static bool env = false;
+    if (start < 0) {
+        env = getenv("RX_VK_SAMPLER_CACHE") != nullptr;
+        start = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
+        if (start) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
     }
-    return on;
+    const int row = env ? -1 : sampler_cache_row.load(std::memory_order_relaxed);
+    return row < 0 ? start != 0 : row != 0;
 }
 // (Descriptor reuse) What the descriptors being built read of the registrations: the version of every slot whose handle they
 // resolved. The next draw of the same bindings keeps them while none of those versions moved. A handle read as 0 is noted: of a
 // slot that is not registered, only a registration (the global generation) can tell us that it is one now.
 TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
 thread_local bool desc_fp_dummy = false;      // (some handle read 0)
+thread_local bool desc_fp_on = false;         // (the build being made records its handles: Descriptor reuse on when it began)
 thread_local uint64_t desc_samp_seen = 0;     // (the samplers' generation when the build began)
 thread_local uint64_t desc_destroy_seen = 0;  // (the eviction generation: destroy_later retires a view without touching any slot or sampler generation)
 void desc_fp_note(uint32_t handle) {
-    if (!desc_slotgen_on()) return;
+    if (!desc_fp_on) return;
     const uint32_t slot = handle & 0xFFFFF;
     desc_fp().push_back((uint64_t)texture_slot_version((int)slot) << 20 | slot);
     desc_fp_dummy |= handle == 0;
@@ -3436,6 +3460,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
     desc_fp().clear(), desc_fp_dummy = false;   // (Descriptor reuse: the samplers' generation is read before the first handle,
+    desc_fp_on = desc_slotgen_on();             // (the row read once for the whole build: it changes in play)
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
     desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
     draw_sampled().clear();
@@ -4295,6 +4320,7 @@ thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0, l
 // sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
 TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
 thread_local bool last_desc_fp_dummy = false;
+thread_local bool last_desc_fp_on = false;   // (the last build recorded its handles: one made with the row off has none to check)
 thread_local uint64_t last_desc_samp = 0, last_desc_destroy = 0;
 int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation check would have rebuilt for)
 /// (Descriptor reuse) Whether every slot the last build resolved still holds what it did: no registration since touched a
@@ -4901,7 +4927,7 @@ void clear_after_draws(VkCommandBuffer cmd) {
 /// chain: it is given no mask, so nothing is copied for it
 void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
     if (!reactive::wanted()) return;
-    if (!at.n || !at.color[0] || !at.depth || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return;
+    if (!at.n || !at.color[0] || !at.depth || !temporal_scene_format(at.color_format[0])) return;
     const uint64_t now = texture_frame_no();
     struct Seen { uint64_t frame; uint32_t w, h; };
     static thread_local Seen seen{~0ull, 0, 0};
@@ -6490,7 +6516,7 @@ bool fallback_pipelines_ready(Program& p) {
         std::this_thread::sleep_for(std::chrono::microseconds(200));
     if (p.compute_state.load(std::memory_order_acquire) != 2) {
         static std::atomic<int> told{0};
-        if (told++ < 40) logf("vk: fallback draw of %016llx left out: its compute pipelines are still compiling", (unsigned long long)p.key);
+        if (told++ < 40) logf_at(log_debug, "vk: fallback draw of %016llx left out: its compute pipelines are still compiling", (unsigned long long)p.key);
         st_pending_skips++;
         return false;
     }
@@ -6646,7 +6672,7 @@ static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs&
 /// binding 3: 3 x 4 matrices, a whole number of them) and the object's origin in its buffer 4 (binding 1, at 0x40)
 static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
     if (d.mesh || !d.indexed || d.indirect || d.instances != 1 || !at.n || !at.color[0] || !at.depth ||
-        !temporal_scene_size(at.width, at.height) || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || s.nvattr < 7 ||
+        !temporal_scene_size(at.width, at.height) || !temporal_scene_format(at.color_format[0]) || s.nvattr < 7 ||
         !temporal_wanted())
         return;
     const auto attr = [&](int i) { return *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]); };
@@ -6981,9 +7007,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     auto wait_for = [&](const std::atomic<bool>& ready) {
         PROF_EXACT();
         const auto t0 = std::chrono::steady_clock::now();
-        jobs_wait(ready);
+        const int queued = jobs_pending();
+        const bool here = jobs_wait(ready);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         st_waits++;
-        st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        st_wait_ms += ms;
+        static std::atomic<int> told{0};
+        if (here && told++ < 10)   // (hookshot: that the steal ran, with the queue the wait would have stood behind)
+            logf("vk: a draw's %s ran where it waited, ahead of the queue (%d other jobs queued or running), in %.1f ms "
+                 "(RX_VK_JOB_STEAL=0: waited in turn)",
+                 &ready == &cp->ready ? "shader translation" : "pipeline build", queued > 0 ? queued - 1 : 0, ms);
     };
     // (hookshot) RX_VK_TRANSLATE_WAIT_MS=<ms> (off unless set): a translation not ready, for a draw whose targets hold an
     // earlier frame's picture, is waited for at most this long a frame in all, on each recording thread, without taking the
@@ -7134,7 +7167,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool slotgen = desc_slotgen_on();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_ub == ub_gen && last_desc_dgen == dgen &&
-                           (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
+                           (slotgen ? last_desc_fp_on && desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
         static std::atomic<int> told{0};
@@ -7279,7 +7312,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen, last_desc_dgen = dgen;
-        if (slotgen)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
+        last_desc_fp_on = desc_fp_on;
+        if (desc_fp_on)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;
     } else {
@@ -8055,7 +8089,12 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     uint32_t level = 0;
     const uint32_t out_handle = handle_of(s, st, od, 0);
     if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    const bool done = temporal_upscale(cmd, p.key, gameplay_network(p.key), in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
+    VkImageView in_view = dw().imgs[0].imageView, out_view = dw().imgs[ntex].imageView;
+    if (in && out && temporal_colour_pair(in->format, out->format) && out->format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        in_view = texture_view_of(in_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_R16G16B16A16_SFLOAT);
+        out_view = texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, VK_FORMAT_R16G16B16A16_SFLOAT);
+    }
+    const bool done = temporal_upscale(cmd, p.key, gameplay_network(p.key), in, in_view, out, out_view, level);
     // (its actor motion may have drawn with a pipeline, viewport and descriptors of its own: the next draw sets all of its again)
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
@@ -8071,13 +8110,15 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     end_pass(cmd);
     VkFormat in_format = VK_FORMAT_UNDEFINED, out_format = VK_FORMAT_UNDEFINED;
     const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
+    const bool rgba_pair = temporal_colour_pair(src->format, dst->format) && dst->format == VK_FORMAT_R16G16B16A16_SFLOAT;
     const VkImageView out_view = texture_view(dst, out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, &out_format,
-                                              VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+                                              rgba_pair ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32);
     // (the gameplay networks' own formats: their input is the square root of the scene colour, which the fixed shares' networks
     // sample as RGB9E5 from the B10G11R11 image it is kept in (shaders/taau_upscale.comp), the 3/4 one as B10G11R11. Decoded,
     // both are what the temporal upscaler's prep pass takes. The movies' (RGBA8) are not the scene)
-    if (!in_view || !out_view || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
-        (in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && in_format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32))
+    const bool packed_pair = out_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
+                             (in_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || in_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32);
+    if (!in_view || !out_view || (!packed_pair && !temporal_colour_pair(in_format, out_format)))
         return false;
     // (FSR 3.1 first, as fsr3_stand_in comes before temporal_stand_in: its upscale, or its frame interpolation's inputs while
     // another upscaler draws. Without it, on a card that leaves these networks out, FSR 3.1's own Render resolution steps
@@ -9458,7 +9499,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         if (p.compute_state.load(std::memory_order_acquire) != 2) {
             static std::atomic<int> told{0};
-            if (told++ < 40) logf("vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
+            if (told++ < 40) logf_at(log_debug, "vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
             st_pending_skips++;
             use.skipped();
             return;
@@ -9473,7 +9514,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         const auto t0 = std::chrono::steady_clock::now();
         {   // (EvilOOT, 11-07: a freeze after Load was the driver's compiler on one compute pipeline, here, on the submit's thread)
             static std::atomic<int> told{0};
-            if (told++ < 400) logf("vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
+            if (told++ < 400) logf_at(log_trace, "vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
         }
         if (const VkResult made = cached_compute(&ci, &p.compute_pipeline); made != VK_SUCCESS) {
             static std::atomic<int> told{0};
