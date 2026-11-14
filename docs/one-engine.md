@@ -6,7 +6,7 @@ four games**, and a general improvement made for one game reaches the other thre
 | Game | Repository | Profile key | State (2026-11-13) |
 |---|---|---|---|
 | The Legend of Zelda: Ocarina of Time | `notquiteog/Hookshot` (this one) | `oot` | released (v2.3.0-rc.1) |
-| Mario Kart World | `notquiteog/Lakitu`, branch `fork/mario-kart-world` | `mkw` | 1.0.0 boots to its title screen |
+| Mario Kart World | this one ([its page](mario-kart-world.md)); `notquiteog/Lakitu` keeps only what is in review | `mkw` | 1.0.0 plays from `main`: the menus, Grand Prix, the Mushroom Cup's races; not released yet |
 | Kirby Air Riders | `notquiteog/Dragoon`, branch `fork/kirby-air-riders` | `kar` | lifts, boots to NVN, crashes in a PhysX worker |
 | Donkey Kong Bananza | this one ([its page](donkey-kong-bananza.md)); `~/Projects/hookshot-dkb` keeps only what is in review | `dkb` | 3.2.0 plays from `main`: the opening, the mining tunnel, the guide movies; not released yet |
 

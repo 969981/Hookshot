@@ -39,6 +39,8 @@ def check_profiles():
     for key, p in game_profile.GAMES.items():
         if key in ("oot", "dkb", "none") and p.vk_parallel is not None:
             fail("the %s profile sets vk_parallel: the renderer's default must stay its own there" % key)
+    if game_profile.GAMES["mkw"].vk_parallel != 4:
+        fail("Mario Kart World's profile does not keep the 4 threads its race was measured with")
     head = game_profile.emit_header(game_profile.GAMES[game_profile.DEFAULT])
     if "#define GAME_VK_PARALLEL -1" not in head:
         fail("an unset vk_parallel is not written as -1 in the header")

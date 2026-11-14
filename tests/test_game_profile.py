@@ -96,8 +96,16 @@ def check_choice():
     ids = [p.build_id for p in game_profile.GAMES.values() if p.build_id]
     check(len(ids) == len(set(ids)) and all(re.fullmatch(r"[0-9a-f]{40}", b) for b in ids),
           "a profile's build id is not main's whole 40-digit build id, or two profiles share one")
-    check([p.key for p, _ in game_profile.known_builds()] == ["oot", "dkb"],
-          "make_game.py's known builds are not Ocarina's and Donkey Kong Bananza's")
+    check([p.key for p, _ in game_profile.known_builds()] == ["oot", "dkb", "mkw"],
+          "make_game.py's known builds are not Ocarina's, Donkey Kong Bananza's and Mario Kart World 1.0.0's")
+    mkw = game_profile.GAMES["mkw"]
+    check(game_profile.for_build(mkw.build_id) is mkw and game_profile.for_build("9e244438c3d8ef1c") is mkw
+          and mkw.main_base == 0x80020000, "Mario Kart World 1.0.0's build id does not choose its profile")
+    # (built from main, not in the release's launcher entry until it joins; its saves of its own; the parallel replay
+    # its race was measured with, #55)
+    check(mkw.released is False and game_profile.saves_dir(mkw) == "hookshot-mkw" and mkw.vk_parallel == 4
+          and "#define GAME_VK_PARALLEL 4" in game_profile.emit_header(mkw),
+          "Mario Kart World's profile is offered by the release, shares a save folder, or lost its parallel replay")
     dkb = game_profile.GAMES["dkb"]
     check(game_profile.for_build(dkb.build_id) is dkb and dkb.main_base == 0x80020000,
           "Donkey Kong Bananza's build id does not choose its profile")
