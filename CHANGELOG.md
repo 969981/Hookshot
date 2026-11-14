@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.15](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.14...v2.3.0-rc.15) (2026-11-14)
+
+
+### Features
+
+* **vk:** the parallel replay's default is the game profile's, handed to the renderer at run time ([#55](https://github.com/notquiteog/Hookshot/issues/55)) ([2c46057](https://github.com/notquiteog/Hookshot/commit/2c4605773f5bab727a08497cce100aa19e386443))
+
+
+### Documentation
+
+* **longshot:** name each pick's author, which [#29](https://github.com/notquiteog/Hookshot/issues/29)'s squash kept for 3 of 12 ([#53](https://github.com/notquiteog/Hookshot/issues/53)) ([bb08123](https://github.com/notquiteog/Hookshot/commit/bb081232b89f6ffdfba9631365522d74a1c07d8d))
+
 ## [2.3.0-rc.14](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.13...v2.3.0-rc.14) (2026-11-14)
 
 
