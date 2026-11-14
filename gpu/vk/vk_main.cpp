@@ -636,6 +636,10 @@ bool create_device() {
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     dev.provoking_vertex = dev.provoking_vertex && pv.provokingVertexLast;
     dev.conditional_rendering = dev.conditional_rendering && cond.conditionalRendering;
+    // (hookshot) the occlusion queries' real counts (vk_replay.cpp, RX_VK_OCC_QUERIES): a sample count, not only "any", and
+    // their reset from the CPU once read (both on when the device has them: the queried chain is what it is created with)
+    dev.occlusion_precise = f.features.occlusionQueryPrecise == VK_TRUE;
+    dev.host_query_reset = f12.hostQueryReset == VK_TRUE;
     dev.custom_border_color = dev.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
     dev.depth_clip_control = dev.depth_clip_control && clip.depthClipControl;
     dev.graphics_pipeline_library = dev.graphics_pipeline_library && gpl.graphicsPipelineLibrary;

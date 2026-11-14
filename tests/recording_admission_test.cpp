@@ -144,6 +144,7 @@ Writes& dw() { return writes; }
 bool bind_tail() {
     VkCommandBuffer cmd{}; VkPipelineBindPoint bp = VK_PIPELINE_BIND_POINT_GRAPHICS;
     struct { VkDescriptorSetLayout set_layout{}; VkPipelineLayout layout{}; } p;
+    Writes& wr = dw();   // (bind_descriptors takes it at its top, above the part cut in here)
     /* DESCRIPTORS */
 }
 void begin(int slot = 0, uint64_t value = 1) { draw_begin_recording(slot, VkCommandBuffer{}, value); }

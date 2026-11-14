@@ -311,7 +311,8 @@ def main():
         cache = cache.replace("/* " + token + " */", extracted)
     start = source.index("    uint64_t vaddr[16]{};")
     end = source.index("    if (g_fine) fine_ns[FT_VERTEX]", start)
-    cache = cache.replace("/* BIND_VERTICES */", source[start:end])
+    # (draw() reads vertex_complete after the block: whether the occlusion query may count the draw)
+    cache = cache.replace("/* BIND_VERTICES */", source[start:end] + "    (void)vertex_complete;\n")
     with tempfile.TemporaryDirectory(prefix="hookshot-fallback-pipeline-") as temp:
         cpp, exe = Path(temp) / "pipeline.cpp", Path(temp) / "pipeline.exe"
         cpp.write_text(fixture + cache + MAIN, encoding="utf-8")

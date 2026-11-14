@@ -76,6 +76,8 @@ struct Program {
     std::vector<Answer> answers;
     uint64_t variant = 0;   // (a hash of the answers: key alone names all the variants of these stages)
     mutable std::atomic<int64_t> wm_sig{-1};   // (hookshot: what its write masks are made from, vk_draw.cpp program_wm_sig; -1: not asked yet)
+    // (hookshot) how many buffer, image and texel view descriptors its stages have, packed (vk_draw.cpp desc_counts_pack); ~0: not counted yet
+    mutable std::atomic<uint64_t> desc_counts{~0ull};
     // (hookshot) the translation's texture questions as answered, in the order asked: what makes this variant again with nothing
     // bound (the pipeline state list, vk_draw.cpp)
     std::vector<uint8_t> questions;

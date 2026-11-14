@@ -105,6 +105,26 @@ true, and dead code elimination removes the grid walk, so every meshlet is drawn
 screen. It costs some GPU time on cards that cull quickly, so it is off unless set. The log says
 "culling off, every meshlet drawn" for each task shader it changed.
 
+The game culls by occlusion: its z-prepass draws each candidate object's bounds between a samples-passed reset and a
+report, reads the reports back on the CPU a frame or two later, and leaves out the objects whose count was 0. The
+replay writes every report as 4096 ("visible") as it is recorded and gives each depth-only draw from a reset to its
+report a Vulkan occlusion query; as each recording begins, it reads every waiting report's queries at once (no wait)
+and writes the sum over the reports whose queries have all ended. A count not known for sure stays "visible": a late
+or unknown count costs culling, a wrong 0 would hide an object in view. So a report stays 4096 when its run has a draw
+that writes colour or more than 256 draws, when one of its draws did not draw (it returned before its draw command,
+its vertex input could not all be bound, or the mesh fallback split it into task batches: its query is never begun),
+when another queue's queries came in the middle of its run (the queries are numbered from one counter for all the
+game's queues), and when the slot was reported into again before the count came. Work held back at an event wait has
+its reports written as 4096 at once, so the game never reads an older count there before the replay gets to it.
+`RX_VK_OCC_QUERIES=0` turns this off (every report reads 4096, as before), as does setting `RX_VK_OCC_FIXED=<n>`
+(every report reads n, whatever `RX_VK_OCC_QUERIES` says) or `RX_VK_ASYNC=1` (a replay running behind the game);
+`RX_VK_OCC_QUERIES=2` counts the runs with colour draws too (a query around a real draw cost ~0.9 ms of GPU time a
+frame in the Market on an RTX 3090, for a few more objects left out).
+`RX_VK_OCC_LOG` (set) logs every ~5,000 reports how many read 0, how many were left visible and why, how late they
+were written and what the reading cost;
+`RX_VK_OCC_DRY` (set, a test) makes and reads the queries but leaves the reports at 4096, to time the queries alone.
+`HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
+
 `RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA and AMD FSR 4 (and its Native AA)
 with Native HDR and PsychoV35. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
 motion as usual. It requires the engine's native-HDR context: DLSS's HDR feature (`RX_VK_DLSS_HDR=0` prevents this
@@ -253,6 +273,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
 | `RX_VK_DESC_REUSE=0/1/never` | Over the Descriptor reuse row for a run, with its values: 0 its Off (a draw keeps the descriptors of the draw before it while no registration at all was made), 1 its On (through registrations of slots it does not sample, the default); `never`: every draw builds its own |
 | `RX_VK_DESCRIPTOR_SETS=1` | Use pooled descriptor sets for game programs, including those that fit the push-descriptor limit. Restart to change it; changing layouts can require fresh driver pipeline compilation. Off by default; for comparing CPU descriptor-binding costs on a driver. Renderer helper passes retain their push descriptors. Sets use the existing per-recording pools, recycled after their GPU work completes; this can require more pool storage than pushing descriptors. |
+| `RX_VK_DESC_COUNTS=0` | A/B switch: a draw's descriptor build (`build_descriptors`, `gpu/vk/vk_draw.cpp`) counts the program's descriptors before every build, as before; by default the three counts are taken once and kept with the program (`Program::desc_counts`), once it is ready. The same writes and reserves either way |
 | `RX_VK_NAN_GUARD=0` | No NaN guard on float colour outputs (on by default on every card: one NaN texel spreads through bloom into glowing blocks) |
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
