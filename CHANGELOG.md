@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.17](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.16...v2.3.0-rc.17) (2026-11-14)
+
+
+### Bug Fixes
+
+* **nvn:** PushGraphicsConstants is checked against the blit pass, and says so when a game pushes something else ([#58](https://github.com/notquiteog/Hookshot/issues/58)) ([d8588cb](https://github.com/notquiteog/Hookshot/commit/d8588cb1b1fac7240c3be68894cae0ee6b011f11))
+
 ## [2.3.0-rc.16](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.15...v2.3.0-rc.16) (2026-11-14)
 
 
