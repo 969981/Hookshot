@@ -118,9 +118,12 @@ static void game_profile_env(void) {
     static const unsigned long long keys[] = GAME_GAMEPLAY_NETWORK_KEYS;
     for (int i = 0, at = 0; live && i < GAME_GAMEPLAY_NETWORK_KEY_COUNT; i++)
         at += snprintf(gameplay + at, sizeof gameplay - at, "%s%016llx", i ? "," : "", keys[i]);
+    char parallel[12] = "";   /* (the renderer's parallel replay threads; none: its own default) */
+    if (live && GAME_VK_PARALLEL >= 0) snprintf(parallel, sizeof parallel, "%d", GAME_VK_PARALLEL);
     const char *const vars[][2] = {{"HOOKSHOT_PROFILE_TAAU_KEYS", live ? GAME_UPSCALE_TAAU_KEYS : ""},
                                    {"HOOKSHOT_PROFILE_NETWORK_KEEP", live ? GAME_NETWORK_KEEP_KEYS : ""},
-                                   {"HOOKSHOT_PROFILE_GAMEPLAY_KEYS", gameplay}};
+                                   {"HOOKSHOT_PROFILE_GAMEPLAY_KEYS", gameplay},
+                                   {"HOOKSHOT_PROFILE_VK_PARALLEL", parallel}};
     for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) {
         const char *value = *vars[i][1] ? vars[i][1] : "-";
 #ifdef _WIN32

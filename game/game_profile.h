@@ -71,4 +71,8 @@
    a game whose movie player counts every picture it submitted */
 #define GAME_VIDEO_CATCHUP 1
 
+/* the renderer's parallel replay threads (RX_VK_PARALLEL's default, handed over at run time as
+   HOOKSHOT_PROFILE_VK_PARALLEL by host/hos_main.c); -1: the renderer's own default (off) */
+#define GAME_VK_PARALLEL -1
+
 #endif /* GAME_PROFILE_H */

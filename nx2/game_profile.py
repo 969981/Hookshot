@@ -81,7 +81,7 @@ class Profile(object):
 
     def __init__(self, key, game, program_id=None, version=None, build_id=None, main_base=None,
                  patch_modules=(), code_patch_module=None, gfx=EMPTY_GFX, upscale=EMPTY_UPSCALE, hooks=EMPTY_HOOKS,
-                 npad_players=1, account_users=1, video_catchup=True, released=True, notes=""):
+                 npad_players=1, account_users=1, video_catchup=True, vk_parallel=None, released=True, notes=""):
         self.key = key                                # HOOKSHOT_GAME=<this>
         self.game = game                              # the game's name, for logs
         self.program_id = program_id                  # as nx2/dump.py reports it
@@ -100,6 +100,11 @@ class Profile(object):
         # a movie skips pictures behind its clock (host/nn_video.c's catch-up, for Ocarina's intro and its sound); off
         # for a game whose movie player counts every picture it submitted
         self.video_catchup = video_catchup
+        # The renderer's parallel replay (gpu/vk/vk_replay.cpp par_threads): the threads that record one command buffer,
+        # as RX_VK_PARALLEL gives them, or None for the renderer's own default (off). It helps a game that hands over most
+        # of a frame in one command buffer and costs one that does not (docs/performance.md: Ocarina loses a fifth), so it
+        # is the game's. Handed to the renderer at run time (HOOKSHOT_PROFILE_VK_PARALLEL); RX_VK_PARALLEL still overrides
+        self.vk_parallel = vk_parallel
         # in the release: recomplauncher.json's games[] (nx2/game_folders.py released()). A profile main builds but the
         # release does not offer yet says False (docs/one-engine.md step 5: a game joins with its games[] row)
         self.released = released
@@ -327,6 +332,10 @@ def emit_header(profile=None):
     w("/* 1: a movie skips pictures behind its clock (host/nn_video.c; HOS_VIDEO_NO_CATCHUP=1 turns it off); 0: never, for")
     w("   a game whose movie player counts every picture it submitted */")
     w("#define GAME_VIDEO_CATCHUP %d" % (1 if p.video_catchup else 0))
+    w("")
+    w("/* the renderer's parallel replay threads (RX_VK_PARALLEL's default, handed over at run time as")
+    w("   HOOKSHOT_PROFILE_VK_PARALLEL by host/hos_main.c); -1: the renderer's own default (off) */")
+    w("#define GAME_VK_PARALLEL %d" % (-1 if p.vk_parallel is None else int(p.vk_parallel)))
     w("")
     w("#endif /* GAME_PROFILE_H */")
     return "\n".join(out) + "\n"
