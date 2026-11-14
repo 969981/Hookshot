@@ -2,6 +2,7 @@
    The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
    "Player". */
 #include "hos.h"
+#include "game_profile.h"   /* (GAME_GRAPHICS_SCALE: the game's answer to GetCurrentGraphicsScale) */
 #include "hos_paths.h"
 #include "hos_wide_size.h"
 #include <stdio.h>
@@ -470,6 +471,19 @@ HLE(_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERK
     G64(ARG(0)) = 0;
     RET(0x7C7C);
 }
+/* (hookshot) the scale enum GetCurrentGraphicsScale answers in w0: 0 the full scale, 1 x0.8, 2 x0.667. The game profile's
+   (GAME_GRAPHICS_SCALE: Donkey Kong Bananza 0, which sizes its render targets by it), else x1 for a chosen output size and
+   x0.8 as before. HOS_GRAPHICS_SCALE_ENUM=0|1|2: that one, a test of what a game does with each */
+static int graphics_scale_enum(int output_chosen) {
+    static int forced = -2;
+    if (forced == -2) {
+        const char *e = getenv("HOS_GRAPHICS_SCALE_ENUM");
+        forced = e && *e >= '0' && *e <= '2' && !e[1] ? *e - '0' : -1;
+    }
+    if (forced >= 0) return forced;
+    if (GAME_GRAPHICS_SCALE >= 0) return GAME_GRAPHICS_SCALE;
+    return output_chosen ? 0 : 1;
+}
 /* nn::oe::GetCurrentGraphicsScale() -> float (docked/handheld render scale): 1.0 */
 HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     /* (hookshot) HOS_GRAPHICS_SCALE=<f>: another scale, a test of whether the game sizes its picture by it (4K, issue 68) */
@@ -482,7 +496,7 @@ HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     uint32_t bits;
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;
-    c->x[0] = output_mode() ? 0 : 1;   /* (the scale enum the game reads, w0: x1 for a chosen output, x0.8 as before) */
+    c->x[0] = graphics_scale_enum(output_mode());   /* (the scale enum the game reads, w0) */
 }
 HLE(_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) {}

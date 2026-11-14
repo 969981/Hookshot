@@ -108,6 +108,13 @@ def check_choice():
     check(dkb.released is False and oot.released is True, "Bananza is offered by the release before it joins")
     check("#define GAME_VIDEO_CATCHUP 0" in game_profile.emit_header(dkb) and
           "#define GAME_VIDEO_CATCHUP 1" in game_profile.emit_header(oot), "the header does not carry GAME_VIDEO_CATCHUP")
+    # (Bananza draws at its full size with 0; every other profile keeps the host's answer)
+    check(dkb.graphics_scale == 0 and oot.graphics_scale is None and game_profile.GAMES["none"].graphics_scale is None,
+          "the graphics scale is not 0 for Bananza alone")
+    check("#define GAME_GRAPHICS_SCALE 0" in game_profile.emit_header(dkb) and
+          "#define GAME_GRAPHICS_SCALE -1" in game_profile.emit_header(oot), "the header does not carry GAME_GRAPHICS_SCALE")
+    for p in game_profile.GAMES.values():
+        check(p.graphics_scale in (None, 0, 1, 2), "%s: graphics_scale is not None or 0..2" % p.key)
 
 
 def check_wholeness():

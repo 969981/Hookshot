@@ -52,8 +52,15 @@ Also fixed on the way, because they would have bitten any second game: saves in 
    before acting.
 3. **Add-on content**: `aoc::CountAddOnContent` is the generic stub's 0, so the DLC (mounted as "EmeraldRush" on a
    console) is not offered. Not needed to play the base game.
-4. **`oe::GetCurrentGraphicsScale`** answers Ocarina's meaning (1.00). Bananza maps an int enum 0..2 differently
-   (dkb-pc-recomp answers 2). The game renders at its own 2880x1620.
+4. **`oe::GetCurrentGraphicsScale`: fixed, Bananza renders at its full size.** The host answered Ocarina's enum 1
+   (x0.8). Bananza reads it as an enum: main 0x8033e9b4 and 0x80569324 keep a mode byte, and 0x803ad180 and 0x805695d0
+   index a float table `{3, 12, 16}` with it. With 1 it drew at 80% of its 2880x1620 (2304x1296; scenes 1536x864). Its
+   profile now answers 0 (`graphics_scale`), so it draws at 2880x1620 (scenes 1920x1080). Measured in a quiet window on an
+   RTX 5060 Ti (2026-11-14, alternating 1, 0, 0, 1): GPU time 1.70 → 2.20 ms a frame (median; p90 2.40 → 2.90), 60.0 fps
+   either way. A card about 9 times slower would go from about 15 to about 20 ms, under 60 fps:
+   `HOS_GRAPHICS_SCALE_ENUM=1` gives the old answer.
+   **Open:** that variable is the only way back to 80% for a slow card. The scale wants to be a choice in the game's
+   menu (full size or 80%), not an environment variable.
 5. **`oe::GetDisplayVersion`** answers "1.8.0" (the game logs `ReleaseVersion : 320 (nmeta=1.8.0)`). The update's real
    string is not in the dump.
 6. **Not tried:** sound (every run had `HOS_AUDIO=0`), Windows, AMD, the add-on content, play past the tutorial.
