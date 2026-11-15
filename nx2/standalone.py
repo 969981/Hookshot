@@ -173,6 +173,7 @@ def write_image_c(gen, img, meta, exefs):
         sys.exit("main.npdm: no META header")
     prio, core = npdm[0xE], npdm[0xF]
     stack = int.from_bytes(npdm[0x1C:0x20], "little")
+    system_resource = int.from_bytes(npdm[0x14:0x18], "little")   # (the process's own system resource: svcGetInfo 16)
     aoff, asz = int.from_bytes(npdm[0x70:0x74], "little"), int.from_bytes(npdm[0x74:0x78], "little")
     aci = npdm[aoff:aoff + asz]
     program_id = int.from_bytes(aci[0x10:0x18], "little") if aci[:4] == b"ACI0" else 0
@@ -187,6 +188,7 @@ def write_image_c(gen, img, meta, exefs):
              "const uint64_t hos_entry_nninitStartup = %#xULL;" % ex.get("nninitStartup", 0),
              "const uint64_t hos_entry_nnMain = %#xULL;" % ex.get("nnMain", 0),
              "const uint64_t hos_program_id = %#xULL;   /* (main.npdm's ACI0) */" % program_id,
+             "const uint64_t hos_system_resource_size = %#xULL;   /* (main.npdm's system resource size) */" % system_resource,
              'const char hos_main_build_id[] = "%s";' % main_build]
     for sym in ("_init_libc0", "_init_libc1", "_init_libc2", "nnosInitialize", "nninitInitializeSdkModule",
                 "nvnBootstrapLoaderInternal"):
