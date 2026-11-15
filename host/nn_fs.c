@@ -288,6 +288,54 @@ HLE(_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE) {
     make_dirs(root);
     RET(0);
 }
+/* nn::fs::GetSaveDataSize(long* size, long* journalSize, account::Uid const&) -> Result: the user's save data's size and
+   its journal's. On the console they are what the save was made with (the game's control data, which the dump here
+   does not carry); here a save is a host folder with no size of its own, so both are answered as a generous 1 GiB:
+   a game that checks for room finds it, one that only shows the sizes shows a plausible one. Left to the lifted SDK it
+   asked the fs service proxy the runtime does not have (fs is answered above IPC) and read through the null it got:
+   Kirby Air Riders (Dragoon) asks it right after its first save mount. */
+HLE(_ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE) {
+    const int64_t size = 1LL << 30, journal = 1LL << 30;
+    static int told;
+    if (!told++) hos_log("fs: GetSaveDataSize: %lld MB, journal %lld MB (a host folder has no size of its own; lr %#llx)",
+                         (long long)(size >> 20), (long long)(journal >> 20), (unsigned long long)c->x[30]);
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = (uint64_t)size;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = (uint64_t)journal;
+    RET(0);
+}
+/* nn::fs::GetCacheStorageSize(long* size, long* journalSize, int index) -> Result: as GetSaveDataSize, for a cache
+   storage (a host folder too). Kirby Air Riders asks it right after mounting its cache; the lifted SDK aborted. */
+HLE(_ZN2nn2fs19GetCacheStorageSizeEPlS1_i) {
+    const int64_t size = 1LL << 30, journal = 1LL << 30;
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = (uint64_t)size;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = (uint64_t)journal;
+    RET(0);
+}
+/* nn::fs::GetSaveDataSizeMax(long* size, long* journalSize) -> Result: the most a save may be extended to, at least the
+   size GetSaveDataSize answers: 2 GiB each */
+HLE(_ZN2nn2fs18GetSaveDataSizeMaxEPlS1_) {
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = 2ULL << 30;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = 2ULL << 30;
+    RET(0);
+}
+/* nn::fs::ExtendSaveData(account::Uid const&, long size, long journalSize) -> Result: a host folder grows by itself */
+HLE(_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll) { RET(0); }
+/* nn::fs::GetFreeSpaceSize(long* out, char const* path) -> Result: the room a mount has. Its host folder takes what the
+   disk has; answered as a generous 4 GiB (what a game checks it against is a save's size) */
+HLE(_ZN2nn2fs16GetFreeSpaceSizeEPlPKc) {
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = 4ULL << 30;
+    RET(0);
+}
+/* nn::fs::IsMounted(char const* name) -> bool: in this file's mount table (the lifted SDK's own one is never filled:
+   every mount is answered here) */
+HLE(_ZN2nn2fs9IsMountedEPKc) {
+    const char *name = gstr(ARG(0));
+    int found = 0;
+    AcquireSRWLockShared(&mount_lock);
+    for (int i = 0; i < nmounts && !found; i++) found = !strcmp(mounts[i].name, name);
+    ReleaseSRWLockShared(&mount_lock);
+    RET(found);
+}
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
@@ -307,6 +355,10 @@ HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
     snprintf(sub, sizeof sub, "cache\\%d", (int)ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
+/* MountCacheStorage(char const*): the cache storage of index 0, as the indexed form's. Left to the lifted SDK it asked
+   the fs service proxy through sm: (answered empty) and aborted: Kirby Air Riders (Dragoon) mounts its cache this way
+   right after its save. */
+HLE(_ZN2nn2fs17MountCacheStorageEPKc) { RET(user_mount(gstr(ARG(0)), "cache\\0") ? 0 : R_NOT_MOUNTED); }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
     char root[HOS_FS_PATH];
