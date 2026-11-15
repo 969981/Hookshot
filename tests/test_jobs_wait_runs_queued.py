@@ -84,6 +84,10 @@ def main():
             if value is not None:
                 env["RX_VK_JOB_STEAL"] = value
             subprocess.run([str(exe), mode], check=True, timeout=60, env=env)
+        # (jobs_hurry, quick pipelines' brief wait: one worker, so that the order the queue runs in is the order checked)
+        env = {k: v for k, v in os.environ.items() if k != "RX_VK_JOB_STEAL"}
+        env["RX_VK_WORKERS"] = "1"
+        subprocess.run([str(exe), "hurry"], check=True, timeout=60, env=env)
 
 
 if __name__ == "__main__":

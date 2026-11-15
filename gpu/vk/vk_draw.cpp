@@ -56,6 +56,7 @@
 #include "driver_faults.h"
 #include "fallback_size_policy.h"
 #include "translate_wait.h"
+#include "quick_pipe.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -1088,6 +1089,7 @@ struct PipeEntry {
     std::atomic<bool> ready{false};
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};   // (a fast-linked one first, the worker's full build over it)
     std::atomic<uint8_t> how{0};   // (the census: how play made it, UseCounters::made_how; 0: before play, or not made)
+    std::atomic<uint8_t> quick{0};   // (hookshot: quick_pipeline's, before the full build: quick_pipe.h's kNone, kMaking, kTried)
 };
 std::unordered_map<uint64_t, std::unique_ptr<PipeEntry>> pipelines;   // (the replay thread's)
 // (hookshot) Pipelines made ahead of their first draw by the load at a program's create call (vk_programs.cpp), by their keys.
@@ -1289,6 +1291,22 @@ bool gpl_libs_cached() {
     return on;
 }
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
+thread_local bool quick_build = false;   // (hookshot: quick_pipeline's, without the driver's optimizer and into no cache)
+thread_local bool gate_busy = false;   // (hookshot: set by build_graphics when the driver-fault gate answered kBusy: quick_pipeline's)
+thread_local bool slow_full_build = false;   // (hookshot: the worker's full build in graphics_pipeline's job: RX_VK_TEST_SLOW_MS's)
+/// (hookshot, a test from Mako) RX_VK_TEST_SLOW_MS=<ms> holds each full build that long, as AMD's optimizer on a cold cache, to
+/// see quick pipelines and the brief wait at work on any GPU. Off unless set; a value not a number is ignored. Read once
+int test_slow_ms() {
+    static const int slow_ms = [] {
+        const char* e = getenv("RX_VK_TEST_SLOW_MS");
+        bool bad = false;
+        const int ms = quick_pipe::slow_ms(e, &bad);
+        if (bad) logf("vk: RX_VK_TEST_SLOW_MS=%s is not a number of milliseconds: ignored", e);
+        if (ms > 0) logf("vk: every full pipeline build is held %d ms (RX_VK_TEST_SLOW_MS, a test)", ms);
+        return ms;
+    }();
+    return slow_ms;
+}
 // (with driver_cache_only: the cache handed to the driver instead of none, predicted_check's empty one, as play hands its generation's)
 thread_local VkPipelineCache driver_ask_cache = VK_NULL_HANDLE;
 /// (with the pipeline cache: from it, or in play into the play generation's, create_cached)
@@ -2351,10 +2369,25 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     auto job = std::make_shared<Job>();
     job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->cold[0] = cold[0], job->cold[1] = cold[1];
     jobs_push([job] {
-        // (over a linked one, which goes once the GPU is past every submission that may have bound it: fast_retire)
+        // (over a linked one or a quick one (quick_pipeline), which goes once the GPU is past every submission that may have
+        // bound it: fast_retire. Both are read by draws as they record, and a recording's value is handed out before it is
+        // replayed, so a quick pipeline is given back as a linked one is, not kept for the session)
         use_counters.made_how = 0;
-        if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo))
-            if (const VkPipeline linked = job->e->pipeline.exchange(full)) fast_retire(linked);
+        VkPipeline full;
+        {   // (RX_VK_TEST_SLOW_MS: held inside the driver-fault gate, build_graphics)
+            const quick_pipe::Raise slow(slow_full_build);
+            full = build_graphics(*job->p, job->s, job->at, job->topo);
+        }
+        if (full) {
+            if (const VkPipeline replaced = job->e->pipeline.exchange(full)) fast_retire(replaced);
+        } else if (job->e->pipeline.load(std::memory_order_acquire)) {
+            // (hookshot, deliberate) a full build that failed, or that the driver faulted on, leaves a quick pipeline (no optimizer)
+            // the entry's for the session: its draws are drawn with it, where without one they would be left out (SKIP_HERE)
+            static std::atomic<int> told{0};
+            if (told++ < 10)
+                logf("vk: the full pipeline of %016llx was not made: the one made ahead of it is drawn with for the session",
+                     (unsigned long long)job->p->key);
+        }
         job->e->how.store(use_counters.made_how, std::memory_order_relaxed);
         job->e->ready.store(true, std::memory_order_release);
         // (the cold libraries after it and behind what is queued, with no flag: the draw waits for the pipeline above, and
@@ -2580,6 +2613,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         if (driver.driverID == VK_DRIVER_ID_AMD_PROPRIETARY) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     }
 #endif
+    if (quick_build) {   // (hookshot) quick_pipeline's: none when the full build is made without the optimizer already
+        if (part >= 0 || (ci.flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT)) return VK_NULL_HANDLE;
+        ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    }
     if (cold) ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
     // (the two shader libraries go into our cache, as whole pipelines do: asked for under the flag, the driver answers from a cache
     // it is handed and not from its own on disk, so a library the warm pass built and let go was cold again at its first draw
@@ -2588,11 +2625,12 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     const bool lib_cached = (part == 1 || part == 2) && gpl_libs_cached();
     // (hookshot) a program the driver faulted on is not asked of it again, and on AMD one program's builds go to it one at a
     // time, so a second build waits here and not inside the driver behind a faulted one (driver_faults.h, issue 996). A cold
-    // probe does not wait: another build of its program under way is, for it, a compile that is required
+    // probe does not wait: another build of its program under way is, for it, a compile that is required. Nor does a quick
+    // build: behind the program's full build it would be no quicker; the draw goes on without it
     const bool gated = driver_faults_on();
     if (gated) {
-        const auto gate = fault_quarantine().begin(p.key, !cold);
-        if (gate == driver_faults::Quarantine::kBusy) return *cold = true, VK_NULL_HANDLE;
+        const auto gate = fault_quarantine().begin(p.key, !cold && !quick_build);
+        if (gate == driver_faults::Quarantine::kBusy) return gate_busy = true, cold ? (*cold = true, VK_NULL_HANDLE) : VK_NULL_HANDLE;
         if (gate == driver_faults::Quarantine::kFaulted) {
             static std::atomic<int> told{0};
             if (told++ < 10)
@@ -2601,7 +2639,12 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             return VK_NULL_HANDLE;
         }
     }
-    const VkPipelineCache cache = lib_cached || (part < 0 && !driver_cache_only) ? pcache : driver_ask_cache;
+    // (hookshot, RX_VK_TEST_SLOW_MS) the worker's full build held here, inside the gate, where AMD's optimizer holds it: a quick
+    // build meets the gate busy as on AMD, where the gate is serial (RX_VK_DRIVER_FAULTS=2 makes it so on every driver)
+    if (slow_full_build && test_slow_ms() > 0) std::this_thread::sleep_for(std::chrono::milliseconds(test_slow_ms()));
+    // (hookshot) a quick build into no cache: an unoptimized pipeline saved would be what a later run's full build is answered with
+    const VkPipelineCache cache = quick_build ? VK_NULL_HANDLE
+                                  : lib_cached || (part < 0 && !driver_cache_only) ? pcache : driver_ask_cache;
     VkResult r = graphics_with(cache, &ci, &pl);
     // The AMD Windows compiler can reject ordinary graphics pipelines with its optimizer on. (A fault caught in it is kDriverFault
     // now, VK_ERROR_UNKNOWN before: the retry stays for both, under the gate)
@@ -2633,10 +2676,95 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
         pl = VK_NULL_HANDLE;
     }
-    st_pipelines++;
-    pcache_built_since_save += !driver_cache_only;
-    st_pipeline_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    pcache_built_since_save += !driver_cache_only && !quick_build;
+    if (!quick_build) {   // (hookshot: quick builds are counted apart, in quick_pipeline's log line)
+        st_pipelines++;
+        st_pipeline_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    }
     return pl;
+}
+
+/// (hookshot) RX_VK_QUICK_MS, read once and logged: quick_pipe.h
+double quick_budget_ms() {
+    static const double ms = [] {
+        const char* e = getenv("RX_VK_QUICK_MS");
+        bool bad = false;
+        const double v = quick_pipe::quick_ms(e, &bad);
+        if (bad)
+            logf("vk: RX_VK_QUICK_MS=%s is not a number of milliseconds: ignored, quick pipelines off (%.0f is the suggested value)",
+                 e, quick_pipe::kQuickSuggestedMs);
+        if (v > 0)
+            logf("vk: a draw whose pipeline is still being built gets one from the caches or made without the driver's optimizer, "
+                 "%.0f ms of those a frame on each recording thread (RX_VK_QUICK_MS)", v);
+        return v;
+    }();
+    return ms;
+}
+/// (hookshot) RX_VK_PIPE_WAIT_MS, read once and logged: quick_pipe.h
+double pipe_wait_budget_ms() {
+    static const double ms = [] {
+        const char* e = getenv("RX_VK_PIPE_WAIT_MS");
+        bool bad = false;
+        const double v = quick_pipe::wait_ms(e, &bad);
+        if (bad) logf("vk: RX_VK_PIPE_WAIT_MS=%s is not a number of milliseconds: ignored", e);
+        if (v > 0)
+            logf("vk: a pipeline still being built, for a draw on earlier frames' targets, is moved to the queue's front and waited "
+                 "for at most %.0f ms a frame on each recording thread before the draw is left out (RX_VK_PIPE_WAIT_MS)", v);
+        return v;
+    }();
+    return ms;
+}
+/// (hookshot, ported from Mako, by sharkiix, 8292d363) A pipeline for a draw whose full build is not done (quick_pipe::take):
+/// the full one if a cache has it compiled, asked without compiling, else one made here without the driver's optimizer and
+/// into no cache, set as the entry's pipeline and not ready: the worker's full build replaces it. At most RX_VK_QUICK_MS a frame
+/// on each recording thread, but for a draw that cannot be left out (must). true: the entry has one to draw with
+bool quick_pipeline(PipeEntry& e, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool must) {
+    const double budget_ms = quick_budget_ms();
+    if (budget_ms <= 0) return false;
+    static thread_local quick_pipe::FrameBudget budget;
+    const auto now_ms = [] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    // (busy: the driver-fault gate had another build of the program in the driver (AMD): the entry is tried again later)
+    const auto ask = [&](bool& busy) -> VkPipeline {   // (needs pipelineCreationCacheControl, as pipeline_from_caches)
+        if (!dev.vk13.pipelineCreationCacheControl) return VK_NULL_HANDLE;
+        bool cold = false;
+        gate_busy = false;
+        const quick_pipe::Raise asking(ask_start_first);
+        const VkPipeline pl = build_graphics(p, s, at, topo, -1, &cold);
+        busy = gate_busy;
+        return pl;
+    };
+    double quick_took = 0;
+    const auto build = [&](bool& busy) -> VkPipeline {
+        const double t0 = now_ms();
+        gate_busy = false;
+        const quick_pipe::Raise quick(quick_build);
+        const VkPipeline pl = build_graphics(p, s, at, topo);
+        busy = gate_busy;
+        quick_took = now_ms() - t0;
+        return pl;
+    };
+    const auto destroy = [](VkPipeline pl) { vkDestroyPipeline(dev.device, pl, nullptr); };
+    const auto poll = [] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); };
+    const quick_pipe::Got got = quick_pipe::take(e, must, budget_ms, budget, texture_frame_no(), ask, build, destroy, now_ms, poll);
+    // (each one made here is given back once the full build replaced it and the GPU is past every submission that may have
+    // bound it: graphics_pipeline's job, fast_retire; one the full build failed for stays the entry's for the session)
+    if (got == quick_pipe::Got::kCached) {
+        static std::atomic<int64_t> hits{0};
+        const int64_t h = ++hits;
+        if (h <= 5 || h % 200 == 0)
+            logf("vk: pipeline from the caches for a draw ahead of its build (%lld so far)", (long long)h);
+    } else if (got == quick_pipe::Got::kQuick) {
+        static std::atomic<int64_t> n{0}, total_us{0};
+        const int64_t k = ++n;
+        total_us += (int64_t)(quick_took * 1000);
+        if (k <= 20 || k % 50 == 0)
+            logf("vk: quick pipeline (no optimizer) for %016llx in %.1f ms, drawn with until its full build is done (%lld so far, "
+                 "%.0f ms in all)", (unsigned long long)p.key, quick_took, (long long)k,
+                 total_us.load() / 1000.0);
+    }
+    return got != quick_pipe::Got::kNothing;
 }
 
 // ---- samplers (by NVN sampler parameters) ----
@@ -7168,8 +7296,35 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
         const bool may_skip = !always_wait && targets_persistent(at) && !writes_memory(p);
-        if (may_skip) return use.skipped(), void(st_pending_skips++);
-        wait_for(pe->ready);
+        // (hookshot, from Mako) one to draw with until the full build is done: from the caches, or quick (quick_pipeline). Else a
+        // draw that may be left out first waits briefly for its build, moved to the queue's front (RX_VK_PIPE_WAIT_MS, off unless
+        // set), and one that may not waits for it, running it here if no worker has (jobs_wait). RX_VK_PIPE_SKIP=0 waits for
+        // every full pipeline, as it says: no quick one
+        if (always_wait) {
+            wait_for(pe->ready);
+        } else if (!pe->pipeline.load(std::memory_order_acquire) && !quick_pipeline(*pe, p, s, at, topo, !may_skip)) {
+            if (may_skip) {
+                static thread_local quick_pipe::FrameBudget wait_budget;
+                const auto now_ms = [] {
+                    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                };
+                double waited = -1;
+                const bool ready = quick_pipe::brief(
+                    pe->ready, pipe_wait_budget_ms(), wait_budget, texture_frame_no(), [&] { jobs_hurry(pe->ready); },
+                    [&](double ms) {
+                        PROF_EXACT();
+                        const double t0 = now_ms();
+                        const bool ok = jobs_wait_for(pe->ready, ms);
+                        waited = now_ms() - t0;
+                        return ok;
+                    },
+                    now_ms);
+                if (waited >= 0) st_waits++, st_wait_ms += waited;
+                if (!ready) return use.skipped(), void(st_pending_skips++);
+            } else {
+                wait_for(pe->ready);
+            }
+        }
     }
     if (use.on) use.pipeline_made(pe->how.load(std::memory_order_relaxed));
     const VkPipeline pl = pe->pipeline;

@@ -42,12 +42,12 @@ void release() {
 
 constexpr unsigned kHolds = 32;   // (more than start() makes: every worker is held, and some holds stay queued)
 std::vector<std::atomic<bool>> holds_done(kHolds);
-void hold_every_worker() {
+void hold_every_worker(int workers_at_least = 2) {
     for (unsigned i = 0; i < kHolds; i++)
         jobs_push([i] { hold(); holds_done[i].store(true); jobs_notify(); }, false, &holds_done[i]);
     const auto t0 = std::chrono::steady_clock::now();
-    while (held.load() < 2 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) std::this_thread::yield();
-    expect(held.load() >= 2, "the workers took the holding jobs");
+    while (held.load() < workers_at_least && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) std::this_thread::yield();
+    expect(held.load() >= workers_at_least, "the workers took the holding jobs");
 }
 bool drained() {
     const auto t0 = std::chrono::steady_clock::now();
@@ -117,12 +117,37 @@ void off() {
     for (unsigned i = 0; i < kHolds; i++) jobs_wait(holds_done[i]);
 }
 
+// (run with RX_VK_WORKERS=1) jobs_hurry: a queued job moved to the front runs next, on the worker, before what was queued
+// ahead of it; one not queued is not found
+void hurry() {
+    hold_every_worker(1);
+    std::atomic<int> order{0};
+    std::atomic<bool> a_done{false}, b_done{false};
+    std::atomic<int> a_at{-1}, b_at{-1};
+    std::atomic<int> b_runs{0};
+    std::thread::id b_on{};
+    jobs_push([&] { a_at = order++; a_done.store(true); jobs_notify(); }, false, &a_done);
+    jobs_push([&] { b_runs++; b_on = std::this_thread::get_id(); b_at = order++; b_done.store(true); jobs_notify(); }, false, &b_done);
+    expect(jobs_hurry(b_done), "the queued job is found");
+    std::atomic<bool> never{false};
+    expect(!jobs_hurry(never), "a flag with no queued job is not found");
+    release();
+    expect(jobs_wait_for(b_done, 5000), "the hurried job ran");
+    jobs_wait(a_done);
+    expect(b_at.load() < a_at.load(), "the hurried job ran before the one queued ahead of it");
+    expect(b_on != std::this_thread::get_id() && b_runs.load() == 1, "it ran once, on the worker");
+    expect(!jobs_hurry(b_done), "a done job is not hurried");
+    for (unsigned i = 0; i < kHolds; i++) jobs_wait(holds_done[i]);
+    expect(drained(), "nothing is left in the queue");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     const char* mode = argc > 1 ? argv[1] : "steal";
     if (!std::strcmp(mode, "race")) race();
     else if (!std::strcmp(mode, "off")) off();
+    else if (!std::strcmp(mode, "hurry")) hurry();
     else steal();
 
     if (failures) return EXIT_FAILURE;

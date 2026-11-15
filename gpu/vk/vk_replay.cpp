@@ -3559,9 +3559,12 @@ void log_frame_stats() {
         char libs[384] = "";   // (the stage libraries' part of the line, with RX_VK_GPL only: other logs keep the line they had)
         if (draw_stats4(&links, &link_ms, &lib_hits, &lib_cold, &lib_built, &lib_build_ms, &fast_replaced, &fast_given_back))
             snprintf(libs, sizeof libs, "; %.2f library links tried (%.2f ms), %lld libraries the driver had and %lld cold in all; "
-                     "%lld of the cold built by workers (%.0f ms); %lld linked pipelines replaced by full builds, %lld given back",
+                     "%lld of the cold built by workers (%.0f ms); %lld linked or quick pipelines replaced by full builds, %lld given back",
                      (links - l_links) / 120.0, (link_ms - l_link_ms) / 120.0, (long long)lib_hits, (long long)lib_cold,
                      (long long)lib_built, lib_build_ms, (long long)fast_replaced, (long long)fast_given_back);
+        else if (fast_replaced)   // (hookshot: quick pipelines (RX_VK_QUICK_MS) without stage libraries: what replaced them, given back)
+            snprintf(libs, sizeof libs, "; %lld quick pipelines replaced by full builds, %lld given back", (long long)fast_replaced,
+                     (long long)fast_given_back);
         {
             static int64_t p0, b0, u0, ss0, t0, sa0, i0;
             logf("vk: a frame: %lld bind_gen moves: program %.1f, many-binds %.1f, ubo %.1f, ssbo %.1f, tex %.1f, samp %.1f, img %.1f",

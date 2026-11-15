@@ -21,6 +21,8 @@ void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure
 bool jobs_wait(const std::atomic<bool>& flag);
 /// Waits at most ms for flag, without running a queued job on this thread; whether it was set
 bool jobs_wait_for(const std::atomic<bool>& flag, double ms);
+/// (hookshot) Moves flag's job, still queued, to the queue's front, for the next free worker; whether it was queued
+bool jobs_hurry(const std::atomic<bool>& flag);
 void jobs_notify();
 int jobs_pending();
 

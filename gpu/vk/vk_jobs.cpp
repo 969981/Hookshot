@@ -158,6 +158,20 @@ bool jobs_wait(const std::atomic<bool>& flag) {
     done_cv.wait(lk, [&] { return flag.load(std::memory_order_acquire); });
     return ran;
 }
+bool jobs_hurry(const std::atomic<bool>& flag) {
+    std::lock_guard lk(mu);
+    if (flag.load(std::memory_order_acquire)) return false;
+    for (auto it = queue.begin(); it != queue.end(); ++it)
+        if (it->flag == &flag) {
+            if (it != queue.begin()) {
+                Entry e = std::move(*it);
+                queue.erase(it);
+                queue.push_front(std::move(e));
+            }
+            return true;
+        }
+    return false;
+}
 bool jobs_wait_for(const std::atomic<bool>& flag, double ms) {
     if (flag.load(std::memory_order_acquire)) return true;
     if (ms <= 0) return false;

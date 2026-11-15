@@ -69,8 +69,9 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     code = between(draw, "struct FastRetired {", "\nPipeEntry* graphics_pipeline(")
     job = between(draw, "    jobs_push([job] {\n        // (over a linked one", "}, false, &e->ready,")
-    if "if (const VkPipeline linked = job->e->pipeline.exchange(full)) fast_retire(linked);" not in job:
-        raise SystemExit("FAIL: the full build does not hand the linked pipeline it replaces to fast_retire")
+    # (the one it replaces, a linked or a quick one: tests/test_quick_pipelines.py)
+    if "if (const VkPipeline replaced = job->e->pipeline.exchange(full)) fast_retire(replaced);" not in job:
+        raise SystemExit("FAIL: the full build does not hand the pipeline it replaces to fast_retire")
     stats = between(draw, "bool draw_stats4(", "\n}\n")
     if "fast_reap();" not in stats or "*fast_given_back = st_fast_given_back.load()" not in stats:
         raise SystemExit("FAIL: the frame statistics neither give back the replaced pipelines the GPU is done with nor count them")
