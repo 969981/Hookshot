@@ -93,6 +93,11 @@ For a portable install on an external SSD, run the downloaded setup with `--port
 
 1. Open the [latest release](https://github.com/notquiteog/Hookshot/releases/latest) and download `HookshotBuilder.exe`.
 2. Run it. It downloads the rest of Hookshot Builder (about 500 MB), checks it, and opens it.
+
+   To install with nothing to download (a slow or metered connection, a PC kept offline), download
+   `Hookshot-<version>-Windows-x64-full-setup.zip` from the same release instead, unzip it and run
+   `HookshotBuilder.exe` in its folder. It installs from the files beside it, each checked as a download is. Updates
+   later download only what changed.
 3. Pick your game. The builder looks for `.nup` files in your Downloads, Desktop and Documents folders and lists them
    under **Found on this PC**. Not listed? Press **Browse…**, drop the file on the window, or choose
    **romfs and exefs folders**. The builder checks that it is the right version.
@@ -1019,8 +1024,9 @@ Unlike FSR 3.1 (above), it runs AMD's own DLLs, so it needs them beside the game
 in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to leave it out).
 
 - **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. It shows AMD's license first and stays ticked
-  only if you accept; the build then fetches AMD's DLLs for you (below), into the builder's `ffx-sdk` folder and the
-  game folder.
+  only if you accept; the build then puts AMD's DLLs and AMD's license in the game folder. They come from the Hookshot
+  Builder's own `amd-fsr` folder, the same files at the v2.4.0 tag, each checked by its SHA-256; only a file missing
+  there is downloaded (below).
 - **The command line:** `make_game.py --fsr` (or `HOOKSHOT_FSR=1` for `nx2/build.py`). Rebuilding a folder built with
   it (`--update`) keeps it; `--no-fsr` takes it out.
 - **AMD's files:** Hookshot includes only AMD's MIT-licensed API headers (`third_party/fidelityfx`). Put

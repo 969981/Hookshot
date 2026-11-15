@@ -100,10 +100,12 @@ publish() {   # tag -> its release published
 }
 
 table() {
-    local appimage="the \`.AppImage\`" zip="the \`-Windows-x64.zip\`"
+    local appimage="the \`.AppImage\`" zip="the \`-Windows-x64.zip\`" full=""
     if [[ $1 =~ ^v[0-9] ]]; then
         appimage="\`$("$(dirname "${BASH_SOURCE[0]}")/product_name.sh")-$1-x86_64.AppImage\`"
         zip="\`Hookshot-$1-Windows-x64.zip\`"
+        # (a release's full setup, scripts/make_full_setup.py: the nightly has none)
+        full="| Windows, installing with nothing to download | \`Hookshot-$1-Windows-x64-full-setup.zip\`: unzip it and run \`HookshotBuilder.exe\` in its folder |"$'\n'
     fi
     cat <<EOF
 $MARK
@@ -112,7 +114,7 @@ $MARK
 | On | Download |
 |---|---|
 | Windows | \`HookshotBuilder.exe\`, the setup |
-| Linux, Steam Deck | $appimage |
+${full}| Linux, Steam Deck | $appimage |
 
 You need your own copy of the game. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` and the \`.zsync\` are for the updaters, and $zip (the setup and its \`recomplauncher.json\`) for RecompLauncher: on Windows, download \`HookshotBuilder.exe\` instead. To check a download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
 EOF

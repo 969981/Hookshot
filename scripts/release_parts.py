@@ -228,8 +228,11 @@ def package(a):
             if f.lower().startswith("amd_fidelityfx_") and f.lower().endswith("_vk.dll"):
                 copy(os.path.join(amd_fsr, f), os.path.join(tools, "amd-fsr", f))
                 n += 1
-        if os.path.isfile(os.path.join(amd_fsr, "LICENSE.txt")):
-            copy(os.path.join(amd_fsr, "LICENSE.txt"), os.path.join(tools, "amd-fsr", "LICENSE.txt"))
+        # (LICENSE-AMD-FSR-SDK.md: AMD's license for the DLLs, the file scripts/ffx_sdk.py pins beside them, so that the
+        # Builder's AMD FSR 4 tick takes all three from here and downloads nothing: nx2/make_game.py seed_fsr_runtime)
+        for name in ("LICENSE.txt", "LICENSE-AMD-FSR-SDK.md"):
+            if os.path.isfile(os.path.join(amd_fsr, name)):
+                copy(os.path.join(amd_fsr, name), os.path.join(tools, "amd-fsr", name))
         print("AMD FSR runtime: %d DLLs from %s" % (n, amd_fsr))
     # (hookshot) the repository the release is from, for the Builder's updater and the game's update check (nx2/version.py)
     if repository:

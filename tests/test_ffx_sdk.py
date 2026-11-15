@@ -170,8 +170,10 @@ class LicenseTests(unittest.TestCase):
         self.assertIn("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).", str(said.call_args))
 
     def test_make_game_fetches_once_accepted(self):
+        # (without the builder's own copy, tools/amd-fsr: seed_fsr_runtime finds nothing, tests/test_full_setup.py has it)
         make_game = load_make_game()
-        ffx = mock.Mock(NOTICE="notice")
+        ffx = mock.Mock(NOTICE="notice", FILES=ffx_sdk.FILES)
+        ffx.complete.return_value = False
         with mock.patch.object(make_game, "ffx_script", return_value=ffx), mock.patch("sys.stdout", io.StringIO()):
             make_game.fetch_fsr_runtime(SimpleNamespace(fetch_fsr_runtime=True, accept_amd_license=True))
         ffx.fetch.assert_called_once()

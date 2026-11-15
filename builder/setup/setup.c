@@ -4,6 +4,8 @@
    and starts the builder there. Parts already downloaded and checked are used again; a release already installed just
    starts. Files fetched by a program carry no "downloaded from the internet" mark, and the download itself holds no
    scripts, which is what antivirus programs' machine-learning guesses (Trojan:Script/...!ml) fired on.
+   Unpacked from the full setup (Hookshot-<tag>-Windows-x64-full-setup.zip, scripts/make_full_setup.py), with the list and a
+   parts folder beside it, a new install reads both from there and downloads nothing (beside_list, beside_part).
 
    hookshot-setup.txt, one item a line:
        tag <tag>
@@ -685,6 +687,68 @@ static const char *manifest_url(void) {
     return u;
 }
 
+/* ---- the full setup (Hookshot-<tag>-Windows-x64-full-setup.zip, unpacked): this setup with its release's hookshot-setup.txt and a
+   parts folder beside it, holding every part the list names under its download's name. A new install downloads nothing: the
+   list is read from beside the setup, and a part is taken from parts\ when its size and SHA-256 are the ones the list names,
+   the same check a download gets. An update still reads the newer release's list from GitHub and downloads only what changed
+   (what parts\ still holds unchanged is taken from there) ---- */
+static wchar_t g_beside[MAX_PATH];   /* (the setup's own folder; empty when not known) */
+
+static void beside_init(void) {
+    wchar_t self[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(NULL, self, MAX_PATH);
+    wchar_t *slash = n && n < MAX_PATH ? wcsrchr(self, L'\\') : NULL;
+    if (!slash) return;
+    *slash = 0;
+    wcscpy(g_beside, self);
+}
+
+/* The list beside the setup, into man, when it is the one to install from: a parts folder beside it, no other list asked for
+   (HOOKSHOT_SETUP_LIST, or --tag naming another release), and no other release installed already (an older full setup started
+   again after an update would otherwise put its older version back). 0: the list is read from GitHub, as before */
+static int beside_list(Mem *man, const wchar_t *versions) {
+    wchar_t list[MAX_PATH], parts[MAX_PATH], cur[MAX_PATH];
+    const char *e = getenv("HOOKSHOT_SETUP_LIST");
+    if (!g_beside[0] || (e && *e)) return 0;
+    if (swprintf(list, MAX_PATH, L"%ls\\hookshot-setup.txt", g_beside) < 0 || swprintf(parts, MAX_PATH, L"%ls\\parts", g_beside) < 0)
+        return 0;
+    const DWORD pa = GetFileAttributesW(parts);
+    if (pa == INVALID_FILE_ATTRIBUTES || !(pa & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+    HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    char buf[16384];
+    DWORD got = 0;
+    const BOOL read = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!read || !got || got >= sizeof buf - 1) return 0;   /* (empty, or longer than any list: not one) */
+    buf[got] = 0;
+    char tag[128] = "", want[128], was[128];
+    for (char *q = buf; q && *q; q = strchr(q, '\n'), q = q ? q + 1 : NULL)
+        if (!strncmp(q, "tag ", 4)) { sscanf(q + 4, "%127s", tag); break; }
+    wanted_tag(want, sizeof want);
+    if (!tag[0] || (want[0] && strcmp(want, tag))) return 0;
+    home_path(cur, L"%ls\\current.txt", versions);
+    read_small(cur, was, sizeof was);
+    if (was[0] && strcmp(was, tag)) return 0;
+    free(man->p);
+    *man = (Mem){0};
+    return mem_sink(man, buf, got);
+}
+
+/* A part from the parts folder beside the setup, its path in out, when its size and SHA-256 are the list's */
+static int beside_part(const Part *p, wchar_t *out) {
+    const char *name = strrchr(p->url, '/');
+    name = name ? name + 1 : p->url;
+    if (!g_beside[0] || !list_name_ok(name, 0)) return 0;
+    if (swprintf(out, MAX_PATH, L"%ls\\parts\\%hs", g_beside, name) < 0) return 0;
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(out, GetFileExInfoStandard, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (((unsigned long long)info.nFileSizeHigh << 32) | info.nFileSizeLow) != p->size)
+        return 0;
+    char have[65] = "";
+    return file_sha256(out, have) && !strcmp(have, p->sha);
+}
+
 static DWORD WINAPI work(LPVOID unused) {
     (void)unused;
     /* (--repair, from the builder's Repair button: every part checked again and the version unpacked anew, after the builder that
@@ -711,6 +775,12 @@ static DWORD WINAPI work(LPVOID unused) {
     static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
     enum { TRIES = 8 };
     int ok = 0;
+    {   /* (the full setup: the list beside it, nothing downloaded) */
+        wchar_t versions[MAX_PATH];
+        home_path(versions, L"%ls\\versions", base);
+        ok = beside_list(&man, versions);
+        if (ok) status(L"Installing from the files beside the setup...");
+    }
     for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
         if (attempt) {
             status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
@@ -797,7 +867,11 @@ static DWORD WINAPI work(LPVOID unused) {
                 continue;
             }
             char have[65] = "";
-            if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
+            wchar_t beside[MAX_PATH];
+            if (beside_part(p, beside)) {   /* (the full setup's parts folder: checked as a download is, and unpacked from there) */
+                status(L"Part %d of %d: from the files beside the setup", i + 1, nparts);
+                wcscpy(zip, beside);
+            } else if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
                 wchar_t part[MAX_PATH];
                 home_path(part, L"%ls.part", zip);
                 int got = 0;
@@ -1051,6 +1125,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
         if (!wcsncmp(c, L"--cli", 5) && (c[5] == L' ' || !c[5])) g_headless = 1, show = SW_HIDE;
     }
     g_home_ok = init_home(portable);
+    beside_init();
     {
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(NULL, self, MAX_PATH);

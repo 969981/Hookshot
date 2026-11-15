@@ -89,8 +89,8 @@ On every push to `main`:
 3. The same workflow calls the Linux AppImage and Windows builder workflows on the tag. The jobs that build the files
    sign their build provenance (below), and the release jobs attach them with `scripts/release_upload.sh`:
    `Hookshot-v<version>-x86_64.AppImage`, its `.zsync` and `hookshot-linux.txt`; `HookshotBuilder.exe` (the setup),
-   `hookshot-setup.txt` and the RecompLauncher zip. New update parts go to the `linux-parts` and `builder-parts`
-   releases.
+   `hookshot-setup.txt`, the full setup and the RecompLauncher zip. New update parts go to the `linux-parts` and
+   `builder-parts` releases.
 4. The publish job adds `SHA256SUMS` and the "Which file do I download?" table under the notes
    (`scripts/release_files.sh finish`), checks that all the files are there and that `SHA256SUMS` lists every file
    with its digest, and publishes the draft as a prerelease. It is never "latest". Players on the Release track do not
@@ -243,6 +243,7 @@ The names never change: the builder's update check, the setup and the Linux upda
 | `hookshot-setup.txt` | the setup's and the Windows builder's update list (`builder/setup/setup.c`, `builder/HookshotBuilder/Updater.cs`) |
 | `hookshot-linux.txt` | the Linux updater's list (`builder/linux/linux_update.py`) |
 | `Hookshot-v<version>-x86_64.AppImage.zsync` | AppImageUpdate and Gear Lever, which update the AppImage itself |
+| `Hookshot-v<version>-Windows-x64-full-setup.zip` | Windows, a new install with nothing to download: the setup, `hookshot-setup.txt` and every part it names (`scripts/make_full_setup.py`), each checked by its SHA-256 as a download is (`builder/setup/setup.c`). Releases only, not the nightly |
 | `Hookshot-v<version>-Windows-x64.zip` | RecompLauncher: `HookshotBuilder.exe` and its `recomplauncher.json` (`.github/workflows/windows-builder.yml`). Windows players download `HookshotBuilder.exe` |
 | `SHA256SUMS` | the SHA-256 of every other file, in `sha256sum`'s format |
 

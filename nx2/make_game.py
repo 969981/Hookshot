@@ -2022,6 +2022,22 @@ def ffx_folder():
     return os.environ.get("HOOKSHOT_FFX_SDK") or os.path.join(ROOT, "work", "ffx-sdk")
 
 
+def seed_fsr_runtime(ffx, folder):
+    """AMD's FSR runtime the builder carries (tools/amd-fsr, the release's amd-fsr part: the same pinned files, AMD's license
+    beside them) into folder, each file only when its SHA-256 is the pinned one, so that --fetch-fsr-runtime then downloads
+    nothing. True when folder then holds every file it pins, whether copied now or there before"""
+    src = os.path.join(ROOT, "amd-fsr")
+    for _, digest, name in ffx.FILES:
+        have, dst = os.path.join(src, name), os.path.join(folder, name)
+        if os.path.isfile(dst) and ffx.sha256(dst) == digest:
+            continue
+        if os.path.isfile(have) and ffx.sha256(have) == digest:
+            os.makedirs(folder, exist_ok=True)
+            shutil.copyfile(have, dst + ".part")
+            os.replace(dst + ".part", dst)
+    return ffx.complete(folder)
+
+
 def fetch_fsr_runtime(a):
     """--fetch-fsr-runtime (with --fsr, Windows; the Hookshot Builder's AMD FSR 4 tick): AMD's signed FSR SDK 2.4 Vulkan
     runtime (scripts/ffx_sdk.py) into ffx_folder() before the build, once AMD's license was accepted (--accept-amd-license:
@@ -2031,6 +2047,10 @@ def fetch_fsr_runtime(a):
         fail("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).")
     ffx = ffx_script()
     print(ffx.NOTICE, flush=True)
+    if seed_fsr_runtime(ffx, ffx_folder()) and ffx.complete(ffx_folder()):
+        print("AMD's license accepted: AMD's FSR runtime from the builder's own copy (%s), nothing to download"
+              % os.path.join(ROOT, "amd-fsr"), flush=True)
+        return
     print("AMD's license accepted: getting AMD's FSR runtime into %s" % ffx_folder(), flush=True)
     try:
         ffx.fetch(ffx_folder(), say=lambda line: print(line, flush=True))

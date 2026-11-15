@@ -164,12 +164,18 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             Kits/FidelityFX/signedbin
+            Kits/FidelityFX/docs
           sparse-checkout-cone-mode: true
+      # (AMD's license for the DLLs too, under the name scripts/ffx_sdk.py pins: the Builder's AMD FSR 4 tick then takes
+      # all three from the builder and downloads nothing)
       - name: AMD's FSR runtime, with its notice
         run: |
           mkdir -p "$RUNNER_TEMP/amd-fsr"
           cp _amd/Kits/FidelityFX/signedbin/amd_fidelityfx_*_vk.dll "$RUNNER_TEMP/amd-fsr/"
           cp third_party/ffx-api/LICENSE.txt "$RUNNER_TEMP/amd-fsr/LICENSE.txt"
+          # (the file's own bytes: the checkout's working copy has Windows line ends, and the pin is the repository's)
+          git -C _amd cat-file blob HEAD:Kits/FidelityFX/docs/license.md > "$RUNNER_TEMP/amd-fsr/LICENSE-AMD-FSR-SDK.md"
+          python -I -c "import importlib.util as u, sys; s = u.spec_from_file_location('f', 'scripts/ffx_sdk.py'); f = u.module_from_spec(s); s.loader.exec_module(f); sys.exit(0 if f.complete(sys.argv[1]) else 'tools/amd-fsr is not the runtime scripts/ffx_sdk.py pins')" "$RUNNER_TEMP/amd-fsr"
           ls -l "$RUNNER_TEMP/amd-fsr"
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       # (dav1d for the AV1 movies, from the dav1d job: added to the CPM part when the latest release's lacks it)
@@ -214,6 +220,67 @@ jobs:
           name: HookshotBuilder-windows
           path: dist/
           if-no-files-found: error
+
+  # The full setup with the network off: this run's package as a release's full setup (scripts/make_full_setup.py, the
+  # parts it reuses fetched first), unzipped, and then, with every outbound connection blocked but the runner's own and
+  # DNS, its HookshotBuilder.exe installs the Builder and the Builder runs make_game.py as far as it goes without a game:
+  # its prerequisites, the bundled compiler building and linking a test program, then the missing dump. A download left
+  # anywhere on that path fails it, and so does a network this job could still reach (the test would prove nothing)
+  offline:
+    name: Full setup with the network off
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly' && github.ref_name != 'rc'
+    needs: [package]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: HookshotBuilder-windows
+          path: dist
+      - name: The full setup, unzipped
+        run: |
+          python -I scripts/make_full_setup.py dist --fetch --out "$RUNNER_TEMP/full-setup.zip"
+          python -I -m zipfile -e "$RUNNER_TEMP/full-setup.zip" "$RUNNER_TEMP/full"
+          rm -rf dist "$RUNNER_TEMP/full-setup.zip"
+      - name: Offline, it installs and the builder runs up to the dump
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kit = (Get-ChildItem "$env:RUNNER_TEMP\full" -Directory)[0].FullName
+          $env:HOOKSHOT_SETUP_BASE = "$env:RUNNER_TEMP\builder-home"
+          # (the runner keeps its connection, and names still resolve: every other program's connections are refused)
+          foreach ($p in Get-Process -Name Runner.Listener, Runner.Worker -ErrorAction SilentlyContinue) {
+            New-NetFirewallRule -DisplayName "runner $($p.Id)" -Direction Outbound -Action Allow -Program $p.Path | Out-Null
+          }
+          New-NetFirewallRule -DisplayName dns-udp -Direction Outbound -Action Allow -Protocol UDP -RemotePort 53 | Out-Null
+          New-NetFirewallRule -DisplayName dns-tcp -Direction Outbound -Action Allow -Protocol TCP -RemotePort 53 | Out-Null
+          # (a file that is not a dump: make_game.py checks the prerequisites, then reads it and stops there)
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\not-a-dump.nup", [byte[]](1..4096 | ForEach-Object { $_ % 251 }))
+          Set-NetFirewallProfile -All -Enabled True -DefaultOutboundAction Block
+          try {
+            $reached = $true
+            try { Invoke-WebRequest https://github.com -TimeoutSec 20 -UseBasicParsing | Out-Null } catch { $reached = $false }
+            if ($reached) { throw "github.com still answers with outbound connections blocked: this test would prove nothing" }
+            $p = Start-Process -FilePath "$kit\HookshotBuilder.exe" -WorkingDirectory $kit -PassThru -NoNewWindow `
+              -ArgumentList '--cli', '--check', '--game', "`"$env:RUNNER_TEMP\not-a-dump.nup`"" `
+              -RedirectStandardOutput "$env:RUNNER_TEMP\out.txt" -RedirectStandardError "$env:RUNNER_TEMP\err.txt"
+            if (-not $p.WaitForExit(1200000)) { Stop-Process -Id $p.Id -Force; throw "the setup or the builder hung offline (20 minutes)" }
+          } finally {
+            Set-NetFirewallProfile -All -DefaultOutboundAction Allow
+          }
+          $out = (Get-Content "$env:RUNNER_TEMP\out.txt" -Raw) + (Get-Content "$env:RUNNER_TEMP\err.txt" -Raw)
+          Write-Output $out
+          if ($out -match 'Could not reach GitHub|could not be downloaded') { throw "something on the offline path went for the network" }
+          if (-not (Get-ChildItem "$env:HOOKSHOT_SETUP_BASE\versions" -Recurse -Filter installed.txt)) { throw "the setup installed nothing" }
+          if ($out -notmatch 'no Visual Studio needed') { throw "the builder's own compiler did not build and link its test program" }
+          if ($out -notmatch 'not a NUP package') { throw "make_game.py stopped before it read the game" }
 
   vulkan:
     name: Windows Vulkan back end (llvm-mingw)
@@ -399,7 +466,7 @@ jobs:
       || (!inputs.tag && github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [package, vulkan]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30   # (the full setup: ~0.5 GB of parts fetched, zipped and uploaded)
     # (id-token and attestations: SHA256SUMS, when it is made here)
     permissions:
       contents: write
@@ -450,11 +517,24 @@ jobs:
             case $code in 200|206) echo "ok   $url" ;; *) echo "::error::$code $url"; bad=1 ;; esac
           done < dist/hookshot-setup.txt
           exit $bad
+      # (a release's full setup, Hookshot-<tag>-Windows-x64-full-setup.zip: the setup, its list and every part it names, so a new
+      # install downloads nothing (builder/setup/setup.c beside_list). The parts this run made are in dist, the others are
+      # downloaded from the list's links and checked against its SHA-256s. Releases only: the nightly's setup downloads)
+      - if: env.RELEASE_TAG != ''
+        name: The full setup
+        run: python3 -I scripts/make_full_setup.py dist --fetch
+      - if: env.RELEASE_TAG != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/Hookshot-*-Windows-x64-full-setup.zip
       # (a tag pushed by hand and the nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's
       # publish job)
       - name: Setup and its list to the release
         # (a push to main that is not a release: the nightly)
-        run: scripts/release_upload.sh "${RELEASE_TAG:-nightly}" dist/HookshotBuilder.exe dist/hookshot-setup.txt dist/Hookshot-*-Windows-x64.zip
+        run: |
+          shopt -s nullglob
+          scripts/release_upload.sh "${RELEASE_TAG:-nightly}" dist/HookshotBuilder.exe dist/hookshot-setup.txt dist/Hookshot-*-Windows-x64.zip \
+            dist/Hookshot-*-Windows-x64-full-setup.zip
       - if: hashFiles('dist/SHA256SUMS') != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
