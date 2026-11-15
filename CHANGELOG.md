@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.23](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.22...v2.3.0-rc.23) (2026-11-15)
+
+
+### Bug Fixes
+
+* **setup:** every part a Windows install downloads comes from this repository's builder-parts ([#79](https://github.com/notquiteog/Hookshot/issues/79)) ([53bc45a](https://github.com/notquiteog/Hookshot/commit/53bc45ac4169a6a1f4417c62eb5883098518d71b))
+
 ## [2.3.0-rc.22](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.21...v2.3.0-rc.22) (2026-11-15)
 
 
