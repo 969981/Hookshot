@@ -29,6 +29,9 @@ NAMES = {
     "preselected": "HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {",
 }
 UID = "static const uint64_t user_uid[2] ="
+# (the account block's own helpers, which TryOpenPreselectedUser uses once the block counts open users: from its first
+# definition to its first handler, user_uid among them)
+HELPERS = ("#define ACCOUNT_USERS_MAX", "HLE(_ZN2nn7account10InitializeEv)")
 
 
 def check(cond, what):
@@ -50,10 +53,15 @@ FIXTURE = r'''#include <stdint.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 typedef long LONG;
 static LONG InterlockedExchange(volatile LONG *p, LONG v) { LONG o = *p; *p = v; return o; }
+static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }   /* (the account block's helpers, if it has them) */
 typedef struct { uint64_t x[32]; } Ctx;
 static uint8_t mem[0x10000];   /* guest memory: addresses are offsets into it */
 #define GP(a) ((void *)(mem + (a)))
 #define G64(a) (*(uint64_t *)GP(a))
+#define G32(a) (*(uint32_t *)GP(a))
+#ifndef GAME_ACCOUNT_USERS
+#define GAME_ACCOUNT_USERS 1   /* (Ocarina's profile: one user) */
+#endif
 #define ARG(n) (c->x[n])
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define HLE(sym) static void imp_##sym(Ctx *c)
@@ -103,12 +111,14 @@ def main():
     source = (ROOT / "host" / "nn_applet.c").read_text(encoding="utf-8")
     check(UID in source, "host/nn_applet.c has no '%s'" % UID)
     uid = source[source.index(UID):source.index(";", source.index(UID)) + 1]
+    if HELPERS[0] in source:
+        uid = source[source.index(HELPERS[0]):source.index(HELPERS[1])]
     funcs = "\n".join(function(source, m) for m in NAMES.values())
     fixture = FIXTURE.replace("@UID@", uid).replace("@FUNCTIONS@", funcs)
     with tempfile.TemporaryDirectory(prefix="offline-answers-") as tmp:
         src, exe = Path(tmp, "offline.c"), Path(tmp, "offline")
         src.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function", "-o", str(exe), str(src)],
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Werror", "-Wno-unused-function", "-Wno-unused-variable", "-o", str(exe), str(src)],
                        check=True)
         r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
         check(r.returncode == 0 and r.stdout.strip() == "ok", "the fixture failed: %s%s" % (r.stdout, r.stderr))
