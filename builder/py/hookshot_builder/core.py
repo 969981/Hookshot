@@ -466,6 +466,30 @@ def game_exe(folder):
     return g if os.path.isfile(g) else os.path.join(folder, "hookshot.exe")
 
 
+def built_games(out):
+    """"Your games": each game that builds, in its own folder by nx2/game_folders.py's rule from the game folder (out), when that
+    folder holds a built game (image.bin and the game): the tools' game_folders.built_games, as the Linux builder's; the WPF
+    builder's Games.cs keeps the same. Each a dict: key, name, folder, base. Nothing without the tools"""
+    tools = Tools.find()
+    if not tools or not out:
+        return []
+    nx2 = os.path.join(tools.root, "nx2")
+    if nx2 not in sys.path:
+        sys.path.insert(0, nx2)
+    try:
+        import game_folders
+    except ImportError:
+        return []
+    return game_folders.built_games(out, lambda f: game_exe(f) if os.path.isfile(game_exe(f)) else None)
+
+
+def play_folder(base, key):
+    """The folder `--play <base> --game <key>` starts (builder/setup/setup.c play_target): base for the default game, base-<key>
+    for another (nx2/game_folders.py folder)"""
+    import game_folders
+    return game_folders.folder(base, key)
+
+
 def start_game(folder):
     """(the launcher already checked for updates: the game does not ask again)"""
     env = dict(os.environ, HOOKSHOT_NO_UPDATE_CHECK="1")

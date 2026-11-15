@@ -766,8 +766,15 @@ class Window(QWidget):
         self.dlss_tick.clicked.connect(self.dlss_changed)
         dnote = note("For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.", 12)
         dnote.setContentsMargins(26, 4, 0, 0)
+        # ("Your games", core.built_games: each game built beside the game folder, Open folder and Play; hidden while there is none)
+        self.game_list = QVBoxLayout()
+        self.game_list.setSpacing(0)
+        games_card = Card()
+        games_card.setLayout(vbox(self.game_list))
+        self.games_box = holder(vbox(section("YOUR GAMES"), games_card))
+        self.games_box.hide()
         found = section("FOUND ON THIS PC")
-        content = holder(vbox(self.files_title, self.files_sub, found, card, 10, links, row3, 12, row4, 14, self.dlss_tick, dnote, None))
+        content = holder(vbox(self.files_title, self.files_sub, self.games_box, found, card, 10, links, row3, 12, row4, 14, self.dlss_tick, dnote, None))
         self.space_bar = Bar("Go", 160)
         self.space_text = note("", 12)
         self.space_text.setWordWrap(False)
@@ -1175,6 +1182,35 @@ class Window(QWidget):
             self.dump_list.addWidget(row)
         self.fit_dumps()
 
+    def fill_games(self):
+        """"Your games" from the game folder in the form: filled again when that folder changes and when a build ends, so a game
+        just built is in it when the form comes back. Play starts the folder as `--play <base> --game <key>` does"""
+        while self.game_list.count():
+            it = self.game_list.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        out = self.out_path.text()
+        games = core.built_games(out) if len(out) > 2 else []
+        self.games_box.setVisible(bool(games))
+        for i, g in enumerate(games):
+            if i:
+                self.game_list.addWidget(Hline())
+            name = label(g["name"], 14, W_SEMIBOLD)
+            name.setTextFormat(Qt.TextFormat.PlainText)
+            where = faint(g["folder"])
+            where.setTextFormat(Qt.TextFormat.PlainText)
+            where.setToolTip(g["folder"])
+            open_button = Button(self.T("OpenFolder"), "quiet")
+            open_button.clicked.connect(lambda _=False, f=g["folder"]: core.open_folder(f))
+            play = Button(self.T("Play"), "go", icon="play")
+            play.setAccessibleName("%s %s" % (self.T("Play"), g["name"]))
+            play.clicked.connect(lambda _=False, g=g: self.play_game(g))
+            self.game_list.addWidget(holder(hbox(vbox(name, where), None, 12, open_button, 10, play, margins=(16, 10, 12, 10))))
+
+    def play_game(self, g):
+        core.start_game(core.play_folder(g["base"], g["key"]))
+        self.showMinimized()
+
     def fit_dumps(self):
         """The list as tall as its rows, at most 128 (then it scrolls)"""
         def fit():
@@ -1273,6 +1309,7 @@ class Window(QWidget):
         else:
             self.space_text.setText("Needs 45 GB")
         self.refresh_mode()
+        self.fill_games()
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() and not self.runner:
@@ -1611,6 +1648,7 @@ class Window(QWidget):
                 core.refresh_shortcuts(self.finished)
         if core.shortcut_error:
             self.add_log("shortcut not made: " + core.shortcut_error)
+        self.fill_games()   # (the game just built is in "Your games" when the form comes back)
         self.show_page(self.ready_page)
         import threading
 

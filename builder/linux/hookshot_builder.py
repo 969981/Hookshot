@@ -160,6 +160,13 @@ def game_ready(folder):
     return linux_update.game_exe(folder) is not None
 
 
+def your_games(out):
+    """The "Your games" list: each game that builds, in its own folder by nx2/game_folders.py's rule from the Builder's game
+    folder (out), when that folder holds a built game (game_folders.built_games). The Windows Builder's Games.cs keeps the same"""
+    import game_folders
+    return game_folders.built_games(out, linux_update.game_exe)
+
+
 def read_cgroup(path):
     """The unified control group, or "" when /proc is unavailable."""
     try:
@@ -623,7 +630,7 @@ class Builder(tk.Tk):
                               ("Status.TLabel", {"foreground": BRAND_INK, "font": "HsNote"}),
                               ("Stage.TLabel", {"background": GLASS, "font": "HsStrong"}),
                               ("Bad.Stage.TLabel", {"foreground": BAD}), ("Go.Stage.TLabel", {"foreground": GO}),
-                              ("Card.Note.TLabel", {"background": GLASS})):
+                              ("Card.Note.TLabel", {"background": GLASS}), ("Game.TLabel", {"font": "HsStrong"})):
             s.configure(name, **options)
 
         # buttons: Quiet (also every plain ttk button, the dialogs' among them), Primary (blue: the step's action), Go (green: Play)
@@ -868,12 +875,9 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Build your game", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        if game_ready(self.cfg.get("out")):
-            played = ttk.Frame(f)
-            played.grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
-            ttk.Button(played, text="Play the game built in %s" % self.cfg["out"],
-                       command=lambda: self.play_and_close(self.cfg["out"])).pack(side="left")
-            self.share_row(played, self.cfg["out"], wrap=px(360)).pack(side="left", padx=(px(12), 0))
+        games = your_games(self.cfg.get("out"))
+        if games:
+            self.games_list(f, games).grid(row=2, column=0, columnspan=3, sticky="we")
         self.section(f, "Game files", 3, columnspan=3)
         kinds = ttk.Frame(f, style="Card.TFrame", padding=px(5))
         kinds.grid(row=4, column=0, columnspan=3, sticky="we")
@@ -945,6 +949,35 @@ class Builder(tk.Tk):
         self.update_space()
         self.apply_mode()
         scrolls()
+
+    def games_list(self, parent, games):
+        """"Your games" (your_games): a row for each built game, its name and folder, with Open folder and Play. Play starts it
+        as `--play <base> --game <key>` does (play_folder_for), the path the launcher's tiles take. Built again with the form,
+        so a build's new game is in it when the form comes back"""
+        px = self.px
+        box = ttk.Frame(parent)
+        box.columnconfigure(0, weight=1)
+        self.section(box, "Your games", 0, top=16)
+        rows = ttk.Frame(box)
+        rows.grid(row=1, column=0, sticky="we")
+        rows.columnconfigure(0, weight=1)
+        for i, g in enumerate(games):
+            if i:
+                tk.Frame(rows, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i - 1, column=0, columnspan=3, sticky="we",
+                                                                                pady=px(6))
+            texts = ttk.Frame(rows)
+            texts.grid(row=2 * i, column=0, sticky="we")
+            ttk.Label(texts, text=g["name"], style="Game.TLabel").pack(anchor="w")
+            home = os.path.expanduser("~").rstrip("/")
+            shown = "~" + g["folder"][len(home):] if home and g["folder"].startswith(home + "/") else g["folder"]
+            ttk.Label(texts, text=shown, style="Small.TLabel").pack(anchor="w")
+            ttk.Button(rows, text="Open folder", cursor="hand2",
+                       command=lambda f=g["folder"]: subprocess.Popen(["xdg-open", f])).grid(row=2 * i, column=1, padx=px(8))
+            ttk.Button(rows, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
+                       command=lambda g=g: self.play_and_close(play_folder_for(g["base"], g["key"]))).grid(row=2 * i, column=2)
+        if game_ready(self.cfg.get("out")):   # (the pipeline list of the folder built last, as beside its Play before)
+            self.share_row(box, self.cfg["out"], wrap=px(560)).grid(row=2, column=0, sticky="w", pady=(px(10), 0))
+        return box
 
     def scrolled(self, parent, padding):
         """a page's body that scrolls when the window is shorter than it: by the wheel or trackpad, the scroll bar (shown only

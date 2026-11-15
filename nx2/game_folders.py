@@ -21,7 +21,9 @@ The places that apply it:
     launcher entry's games[] adds `--game <key>` after start.args' `--play {home}/Games/Hookshot`, so a tile starts its
     own game's folder. (`--game` here is a profile key; nx2/make_game.py's own --game is still the copy's path, which
     RecompLauncher's prepare step passes: the two never meet, since Play is handled before make_game.py runs.)
-  - recomplauncher.json games[] (launcher_games below), once more than one game is in the release.
+  - recomplauncher.json games[] (launcher_games below), once more than one game is in the release;
+  - the Builders' "Your games" list (built_games below; builder/HookshotBuilder/Games.cs on Windows): each game that
+    builds, in its folder by this rule from the Builder's game folder, when that folder holds a built game.
 
     python -I nx2/game_folders.py --folder ~/Games/Hookshot --key mkw   # ~/Games/Hookshot-mkw
     python -I nx2/game_folders.py --launcher-games                     # the games[] the released profiles give
@@ -57,6 +59,57 @@ def released():
     """The profiles a release offers: every profile that names a build (the empty one, NONE, builds nothing) and is in
     the release (a profile main builds but the release does not offer yet says released=False)"""
     return [p for p in game_profile.GAMES.values() if p.build_id and getattr(p, "released", True)]
+
+
+def buildable():
+    """Every profile that builds a game (it names a build id), released or not: oot, mkw and dkb today, in the profiles'
+    order"""
+    return [p for p in game_profile.GAMES.values() if p.build_id]
+
+
+def base_of(out):
+    """The base the games' folders are named from, given the Builder's game folder: that folder, or the base it is
+    another game's folder of (<base>-<key>), so the list is the same whichever game's folder the Builder last built"""
+    out = out.rstrip("/\\") or out
+    for p in buildable():
+        s = suffix(p.key)
+        if s and len(out) > len(s) and out.endswith(s) and out[-len(s) - 1] not in "/\\":
+            return out[:-len(s)]
+    return out
+
+
+def folder_game(game_folder):
+    """The profile of the game a folder holds, from the copy of its game files it keeps for updates
+    (.hookshot_exefs/main: an NSO whose module id is main's build id), or None when it keeps none or no profile knows it.
+    A Builder passes the folder the player chose (--out), so a game can sit in another's folder by the rule: the list
+    names it by what it is"""
+    try:
+        with open(os.path.join(game_folder, ".hookshot_exefs", "main"), "rb") as f:
+            head = f.read(0x60)
+    except OSError:
+        return None
+    if len(head) < 0x60 or head[:4] != b"NSO0":
+        return None
+    p = game_profile.for_build(head[0x40:0x60].hex())
+    return p if p.build_id else None
+
+
+def built_games(out, game_exe):
+    """The Builders' "Your games": for each buildable() profile, its folder by the rule from base_of(out), when that folder
+    holds a built game (image.bin, and the game's executable: game_exe(folder) is its path or None). Each a dict:
+    key (the profile whose folder it is: Play is `--play <base> --game <key>`), name (the game the folder holds, else the
+    profile's), folder and base. Nothing for an empty out"""
+    if not out:
+        return []
+    base = base_of(out)
+    games = []
+    for p in buildable():
+        f = folder(base, p.key)
+        if not os.path.isfile(os.path.join(f, "image.bin")) or not game_exe(f):
+            continue
+        held = folder_game(f)
+        games.append({"key": p.key, "name": (held or p).game, "folder": f, "base": base})
+    return games
 
 
 def copy_label(p):
