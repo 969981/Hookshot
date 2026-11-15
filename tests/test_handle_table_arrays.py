@@ -223,6 +223,16 @@ int main() {
             'a table entry naming a colour texture for a depth comparison binds nothing')
     require(draw, 'if (is_table && k + 1 == d.count && view) {',
             'a table whose last element names a texture (indices past it are clamped to it) is logged')
+    # (whether a game's shaders take this path at all: the programs that read a handle from a table, counted once each when
+    # their layout is made, the first named once, the count in the program census line)
+    layout = block(draw, 'void ensure_layout(Program& p) {')
+    require(layout, 'if (d.handle_program != ~0U && d.count > 1) return d.count;', 'a program with a handle table is told apart')
+    require(layout, 'census.handle_tables.fetch_add(1) == 0', 'the programs with a handle table are counted, the first said')
+    if not layout.index('if (p.layout) return;') < layout.index('census.handle_tables') < layout.index('p.layout = layout;'):
+        raise SystemExit('FAIL: a program with a handle table is counted outside its layout\'s making (once per program)')
+    census = block((root / 'gpu/vk/vk_programs.cpp').read_text(encoding='utf-8'), 'void programs_census_log(const char* when) {')
+    require(census, 'programs read a texture handle from a table', 'the program census says how many read a handle from a table')
+    require(census, 'n(c.handle_tables)', 'the program census prints the handle tables\' count')
     print('handle table source checks passed')
 
 

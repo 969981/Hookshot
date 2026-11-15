@@ -682,6 +682,16 @@ void ensure_layout(Program& p) {
             total += d.count;
         }
     };
+    // (a program that reads a texture handle from a table: counted for the census, and the first said once, so a game's log shows
+    // whether its shaders take the handle tables' path, vk_shader.cpp handle_tables_on)
+    if (const uint32_t n = [&p]() -> uint32_t {
+            for (const Stage& st : p.stages)
+                for (const auto& d : st.info.texture_descriptors)
+                    if (d.handle_program != ~0U && d.count > 1) return d.count;
+            return 0;
+        }(); n && census.handle_tables.fetch_add(1) == 0)
+        logf("vk: handle tables: program %016llx reads its texture handles from a table of %u (the first; the program census "
+             "counts them)", (unsigned long long)p.key, n);
     for (const Stage& st : p.stages) {   // (Eden's order, as the SPIR-V back end numbered them)
         add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, st.vk_stage, st.info.constant_buffer_descriptors);
         add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, st.vk_stage, st.info.storage_buffers_descriptors);

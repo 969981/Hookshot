@@ -693,13 +693,13 @@ void programs_census_log(const char* when) {
          "under 100 ms %lld, under 1 s %lld, longer %lld; needing work %lld (%lld of them 100 ms or more after the create call, %lld "
          "created in a load or a long frame); in play: %lld program records loaded (%.1f ms), %lld new graphics pipelines, pipelines "
          "from the driver's cache %lld, from the start's cache %lld, compiled %lld; %lld draws and dispatches left out, %lld waits "
-         "(%.1f ms)",
+         "(%.1f ms); %lld programs read a texture handle from a table",
          when, n(c.created), n(c.created_ok), n(c.created_in_load), n(c.created_long_frame), c.create_ns.load() / 1e6, n(c.freed),
          n(c.freed_undrawn), n(c.used), n(c.used_ready), n(c.used_loaded), n(c.used_translated), n(c.used_failed), n(c.pipe_ready),
          n(c.pipe_cache), n(c.pipe_compiled), n(c.pipe_made), n(c.pipe_left_out), n(c.pipe_none), n(c.used_unknown),
          n(c.used_codes_differ), n(c.after_16), n(c.after_100), n(c.after_1000), n(c.after_more), n(c.needy), n(c.needy_after_100),
          n(c.needy_in_load), n(c.play_loads), c.play_load_ns.load() / 1e6, n(c.play_pipes_new), n(c.play_from_driver),
-         n(c.play_from_start), n(c.play_compiled), (long long)skips, (long long)waits, wait_ms);
+         n(c.play_from_start), n(c.play_compiled), (long long)skips, (long long)waits, wait_ms, n(c.handle_tables));
     if (!programs_load_at_create()) return;
     double median = 0, p99 = 0, worst = 0;
     {
