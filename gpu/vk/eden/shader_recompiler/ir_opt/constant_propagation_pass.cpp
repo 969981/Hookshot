@@ -1050,7 +1050,12 @@ void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
     case IR::Opcode::IMul32:
         return FoldIMul32(inst);
     case IR::Opcode::ShiftRightArithmetic32:
-        FoldWhenAllImmediates(inst, [](s32 a, s32 b) { return static_cast<u32>(a >> b); });
+        // (hookshot) a shift of 32 or more (or a negative one, as unsigned) is undefined in C++ and in SPIR-V: folded as an
+        // arithmetic shift saturates, to the sign in every bit, never shifted by it while folding
+        FoldWhenAllImmediates(inst, [](s32 a, s32 b) {
+            const u32 n{static_cast<u32>(b)};
+            return n >= 32 ? (a < 0 ? ~0U : 0U) : static_cast<u32>(a >> n);
+        });
         return;
     case IR::Opcode::BitCastF32U32:
         return FoldBitCast<IR::Opcode::BitCastF32U32, f32, u32>(inst, IR::Opcode::BitCastU32F32);

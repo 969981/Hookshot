@@ -1082,6 +1082,10 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
         if (!shift.IsImmediate()) {
             return std::nullopt;
         }
+        // (hookshot) a shift of 32 or more is not a handle's part (shifting by it is undefined, here and in the renderer)
+        if (shift.U32() >= 32) {
+            return std::nullopt;
+        }
         std::optional lhs{TrackCached(inst->Arg(0), env, host_info, block)};
         if (lhs) {
             lhs->shift_left = shift.U32();
@@ -1110,6 +1114,10 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
                 return std::nullopt;
             } while (false);
         }
+        // (hookshot) a mask of 0 keeps nothing: countr_zero(0) is 32, a shift that is undefined where the handle is put together
+        if (op2.U32() == 0) {
+            return std::nullopt;
+        }
         std::optional lhs{TrackCached(op1, env, host_info, block)};
         if (lhs) {
             lhs->shift_left = static_cast<u32>(std::countr_zero(op2.U32()));
@@ -1127,6 +1135,10 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
         // Reading a bindless texture from variable indices is valid
         // but not supported here at the moment
         return std::nullopt;
+    }
+    // (hookshot) an immediate index past the 18 buffers is a malformed program (LDC .IS from RZ folds to 0xFFFF + its bank)
+    if (index.U32() >= Info::MAX_CBUFS) {
+        throw NotImplementedException("Out of bounds constant buffer binding {}", index.U32());
     }
     if (offset.IsImmediate()) {
         return ConstBufferAddr{

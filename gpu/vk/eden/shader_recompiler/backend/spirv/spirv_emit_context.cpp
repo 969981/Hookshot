@@ -18,6 +18,7 @@
 #include "common/common_types.h"
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -173,6 +174,12 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
             xfb_varying = &ctx.runtime_info.xfb_varyings[xfb_varying_index];
             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
         }
+        // (hookshot) a transform feedback varying wider than what is left of its location (a broken or malicious
+        // varying table) would write past output_generics[index]'s 4 elements and ask for F32[n > 4]: rejected
+        if (xfb_varying && xfb_varying->components > remainder) {
+            throw NotImplementedException("Transform feedback varying of {} components at element {} of generic {}",
+                                          xfb_varying->components, element, index);
+        }
         const u32 num_components{xfb_varying ? xfb_varying->components : remainder};
 
         const Id id{DefineOutput(ctx, ctx.F32[num_components], invocations)};
@@ -299,7 +306,7 @@ void DefineConstBuffers(EmitContext& ctx, const Info& info, Id UniformDefinition
         ctx.Decorate(id, spv::Decoration::DescriptorSet, 0U);
         ctx.Name(id, fmt::format("c{}", desc.index));
         for (size_t i = 0; i < desc.count; ++i) {
-            ctx.cbufs[desc.index + i].*member_type = id;
+            ctx.cbufs.at(desc.index + i).*member_type = id;   // (hookshot: .at, an index past the 18 throws)
         }
         if (ctx.profile.supported_spirv >= 0x00010400) {
             ctx.interfaces.push_back(id);
@@ -1234,11 +1241,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             for (size_t index = 0; index < num_buffers; ++index) {
                 const auto& ssbo{info.storage_buffers_descriptors[index]};
                 if (index == miss_index || ssbo.count != 1 || ssbo.cbuf_index == 0 || ssbo.cbuf_offset % 8 != 0 ||
-                    !Sirit::ValidId(ssbos[index].*ssbo_member) || !Sirit::ValidId(cbufs[ssbo.cbuf_index].U32x2)) {
+                    !Sirit::ValidId(ssbos[index].*ssbo_member) || !Sirit::ValidId(cbufs.at(ssbo.cbuf_index).U32x2)) {
                     continue;
                 }
                 candidate[index] = true;
-                const Id words_pointer{OpAccessChain(uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero,
+                const Id words_pointer{OpAccessChain(uniform_types.U32x2, cbufs.at(ssbo.cbuf_index).U32x2, zero,
                                                      Const(ssbo.cbuf_offset / 8))};
                 bases[index] = OpBitwiseAnd(U64, OpBitcast(U64, OpLoad(U32[2], words_pointer)), Constant(U64, align_mask));
                 const Id elements{OpArrayLength(U32[1], ssbos[index].*ssbo_member, 0U)};
@@ -1282,8 +1289,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const Id ssbo_addr_cbuf_offset{Const(ssbo.cbuf_offset / 8)};
             const Id ssbo_size_cbuf_offset{Const(ssbo.cbuf_offset / 4 + 2)};
             const Id ssbo_addr_pointer{OpAccessChain(
-                uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero, ssbo_addr_cbuf_offset)};
-            const Id ssbo_size_pointer{OpAccessChain(uniform_types.U32, cbufs[ssbo.cbuf_index].U32,
+                uniform_types.U32x2, cbufs.at(ssbo.cbuf_index).U32x2, zero, ssbo_addr_cbuf_offset)};
+            const Id ssbo_size_pointer{OpAccessChain(uniform_types.U32, cbufs.at(ssbo.cbuf_index).U32,
                                                      zero, ssbo_size_cbuf_offset)};
 
             const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
@@ -1315,7 +1322,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         }
         for (const GlobalTableVars& table : ssbo_tables) {   // (hookshot: Info::global_tables)
             const Id table_id{table.vars.*ssbo_member};
-            if (!Sirit::ValidId(table_id) || !Sirit::ValidId(cbufs[table.cbuf_index].U32x2)) {
+            if (!Sirit::ValidId(table_id) || !Sirit::ValidId(cbufs.at(table.cbuf_index).U32x2)) {
                 continue;
             }
             if (Sirit::ValidId(table_counter)) {
@@ -1338,8 +1345,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 AddLabel(body);
                 // (entry k at cbuf_offset + 16k: its address in the U32x2 word cbuf_offset / 8 + 2k, its size in the next)
                 const Id word{OpIAdd(U32[1], Const(table.cbuf_offset / 8), OpShiftLeftLogical(U32[1], k, Const(1U)))};
-                const Id entry_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero, word)};
-                const Id size_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero,
+                const Id entry_pointer{OpAccessChain(uniform_types.U32x2, cbufs.at(table.cbuf_index).U32x2, zero, word)};
+                const Id size_pointer{OpAccessChain(uniform_types.U32x2, cbufs.at(table.cbuf_index).U32x2, zero,
                                                     OpIAdd(U32[1], word, Const(1U)))};
                 const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
                 const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], entry_pointer))};
@@ -1372,9 +1379,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             }
             for (u32 k = 0; k < table.count; ++k) {
                 const u32 at{table.cbuf_offset + k * 16};
-                const Id entry_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero,
+                const Id entry_pointer{OpAccessChain(uniform_types.U32x2, cbufs.at(table.cbuf_index).U32x2, zero,
                                                      Const(at / 8))};
-                const Id size_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero,
+                const Id size_pointer{OpAccessChain(uniform_types.U32x2, cbufs.at(table.cbuf_index).U32x2, zero,
                                                     Const(at / 8 + 1))};
                 const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
                 const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], entry_pointer))};

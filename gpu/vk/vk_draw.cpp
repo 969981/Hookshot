@@ -1745,10 +1745,12 @@ Targets state_targets(uint32_t n, uint32_t samples, const uint32_t color_nvn[8],
 /// stage one further (after the generated vertex stage) and the fallback's topology. False: it cannot be told apart (its answers left
 /// out) and is not used
 bool state_v1_portable(StateRec& r) {
+    // (hookshot) its own bounds, not its caller's: a record's count is the file's, and the loops below read and write answers[i]
+    if (r.nanswers > std::size(r.answers)) return false;
     if (!r.mesh) return true;
     const uint32_t g = r.code[2] ? 2 : 1;   // (where the fallback's generated vertex stage is: after (task,) mesh)
     bool fallback = r.topo != (uint32_t)kMeshDrawTopology;
-    for (uint32_t i = 0; i < r.nanswers && i < 24; i++) fallback |= (r.answers[i] >> 28) > g;
+    for (uint32_t i = 0; i < r.nanswers; i++) fallback |= (r.answers[i] >> 28) > g;
     if (!fallback) return true;
     if (!r.nanswers) return false;
     std::vector<Program::Answer> answers(r.nanswers);
@@ -3079,13 +3081,15 @@ uint32_t handle_of(const NvnState& s, const Stage& st, const D& d, uint32_t k) {
     if constexpr (requires { d.handle_program; }) {   // (read from a storage buffer: its handle program's; of a table, element k's)
         if (d.handle_program != ~0U) return stage_handle(s, st, d.handle_program, k);
     }
-    const uint32_t step = 1u << d.size_shift;
+    // (hookshot) the shifts are the descriptor's, which a program cache record carries as the file has it: one of 32 or more is
+    // undefined, so each is taken mod 32 (the translation makes 0 to 3, unchanged by it)
+    const uint32_t step = 1u << (d.size_shift & 31);
     uint32_t h = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + k * step);
     if constexpr (requires { d.has_secondary; }) {
         if (d.has_secondary) {
-            const uint32_t a = h << d.shift_left;
+            const uint32_t a = h << (d.shift_left & 31);
             const uint32_t b = stage_cbuf_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset + k * step)
-                               << d.secondary_shift_left;
+                               << (d.secondary_shift_left & 31);
             h = a | b;
         }
     }
@@ -3099,7 +3103,7 @@ bool handle_is_storage_pointer(const Shader::Info& info, const Shader::TextureDe
     static const bool off = getenv("RX_VK_HANDLE_POINTER") && getenv("RX_VK_HANDLE_POINTER")[0] == '1';
     if (off || d.handle_program != ~0U) return false;
     if (d.handle_is_pointer_word) return true;
-    const uint32_t at = d.cbuf_offset + (k << d.size_shift);
+    const uint32_t at = d.cbuf_offset + (k << (d.size_shift & 31));   // (as handle_of: the record's shift, mod 32)
     for (const auto& sb : info.storage_buffers_descriptors) {
         if (sb.cbuf_index != d.cbuf_index) continue;
         for (uint32_t j = 0; j < sb.count; j++) {
@@ -9755,6 +9759,9 @@ void predicted_check() {
         }
         fclose(f);
     }
+    // (hookshot) each note as the notes' own reader takes it (note_sane: targets, formats, counts, its flags made 0 or 1): the sample
+    // is a file's, and its notes went to build_graphics, and their formats to the driver, unchecked
+    std::erase_if(sample, [](PipeNote& n) { return !note_sane(n); });
     if (sample.empty()) return;
     std::thread([sample] {
         ub_thread_off();   // (a background thread: see ub_thread_off)

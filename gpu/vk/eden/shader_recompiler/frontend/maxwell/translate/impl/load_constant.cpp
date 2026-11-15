@@ -5,6 +5,7 @@
 #include "common/common_types.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/load_constant.h"
+#include "shader_recompiler/shader_info.h"
 
 namespace Shader::Maxwell {
 using namespace LDC;
@@ -33,6 +34,11 @@ std::pair<IR::U32, IR::U32> Slot(IR::IREmitter& ir, Mode mode, const IR::U32& im
 
 void TranslatorVisitor::LDC(u64 insn) {
     const Encoding ldc{insn};
+    // (hookshot) the index is 5 bits (0-31), the GPU has 18 constant buffers: one past them is a malformed program, and the info
+    // pass would write constant_buffer_used_sizes past its end (IS mode adds the address's top bits, so never less)
+    if (ldc.index >= Info::MAX_CBUFS) {
+        throw NotImplementedException("Out of bounds constant buffer binding {}", ldc.index.Value());
+    }
     const IR::U32 imm_index{ir.Imm32(static_cast<u32>(ldc.index))};
     const IR::U32 reg{X(ldc.src_reg)};
     const IR::U32 imm{ir.Imm32(static_cast<s32>(ldc.offset))};

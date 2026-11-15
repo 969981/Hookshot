@@ -453,6 +453,12 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     program.post_order_blocks = PostOrder(program.syntax_list.front());
     program.stage = env.ShaderStage();
     program.local_memory_size = env.LocalMemorySize();
+    // (hookshot) a program's memory sizes are its header's and control section's: past any GPU's (512 KB of local memory a
+    // thread, a few hundred KB shared), a malformed program, refused before they size arrays (DivCeil wrapped near 4 GB)
+    constexpr u32 kMaxMemory{1U << 20};
+    if (program.local_memory_size > kMaxMemory) {
+        throw NotImplementedException("Local memory of {} bytes", program.local_memory_size);
+    }
     switch (program.stage) {
     case Stage::TessellationControl: {
         const ProgramHeader& sph{env.SPH()};
@@ -481,6 +487,9 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     case Stage::Compute:
         program.workgroup_size = env.WorkgroupSize();
         program.shared_memory_size = env.SharedMemorySize();
+        if (program.shared_memory_size > kMaxMemory) {
+            throw NotImplementedException("Shared memory of {} bytes", program.shared_memory_size);
+        }
         break;
     case Stage::Task:
     case Stage::Mesh: {
@@ -497,6 +506,11 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
         if (program.stage == Stage::Mesh) {
+            // (hookshot) none of either: the outputs would be arrays of none, and their index clamped to count - 1, 0xFFFFFFFF
+            if (program.mesh.max_vertices == 0 || program.mesh.max_primitives == 0) {
+                throw NotImplementedException("Mesh output of {} vertices and {} primitives (SET_MESH_SHADER_A {:#010x})",
+                                              program.mesh.max_vertices, program.mesh.max_primitives, shader_a);
+            }
             if (program.mesh.topology != 4 && program.mesh.topology != 1 &&
                 program.mesh.topology != 0) {   // (GL's numbers: 0 points, 1 lines, 4 triangles)
                 throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",

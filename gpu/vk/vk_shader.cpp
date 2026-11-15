@@ -470,7 +470,10 @@ public:
         start_address = st == Shader::Stage::Compute ? static_cast<u32>(sizeof(Shader::ProgramHeader)) : 0;
         if (st != Shader::Stage::Compute) {
             std::memcpy(&sph, reinterpret_cast<const uint8_t*>(nvn.code.data()), sizeof sph);
-            local_memory = static_cast<uint32_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
+            // (hookshot) the header's size is 48 bits: summed whole and saturated, not truncated to a small value the
+            // recompiler would size its array by (it refuses one past any GPU's)
+            const uint64_t want = static_cast<uint64_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
+            local_memory = want > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(want);
         } else {
             local_memory = nvn.local_memory;   // (its control section's: a compute program has no header)
         }

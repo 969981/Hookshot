@@ -263,6 +263,17 @@ jobs:
           for module in "${{ runner.temp }}"/f2i/modules/*.spv; do
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
+      # (malformed shader input refused, not undefined: LDC's constant buffer index, ISBERD's shift and size, a transform
+      # feedback varying wider than its location; tests/malformed_shaders/README.md)
+      - name: Build the malformed shader input fixture
+        id: malformed
+        if: ${{ !cancelled() }}
+        run: |
+          CC=clang CXX=clang++ cmake -S tests/malformed_shaders -B "${{ runner.temp }}/malformed" -DREPO_ROOT="${{ github.workspace }}" -DSPIRV_HEADERS_ROOT="${{ github.workspace }}/_deps/spirv-headers"
+          cmake --build "${{ runner.temp }}/malformed" --parallel "$(nproc)"
+      - name: Malformed shader input is refused
+        if: ${{ !cancelled() && steps.malformed.outcome == 'success' }}
+        run: '"${{ runner.temp }}/malformed/malformed_shaders"'
       - name: Compiler cache statistics
         if: ${{ !cancelled() }}
         run: ccache --show-stats
