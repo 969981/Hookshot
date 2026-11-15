@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.25](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.24...v2.3.0-rc.25) (2026-11-15)
+
+
+### Features
+
+* **account:** as many users as the game profile says, and a user selector ([#11](https://github.com/notquiteog/Hookshot/issues/11)) ([1a75f74](https://github.com/notquiteog/Hookshot/commit/1a75f744a171f5b43df59f55db9c1b8ffb368414))
+
+
+### Bug Fixes
+
+* **build:** a game without Ocarina's icon font skips the button prompts with a line, not a traceback ([#68](https://github.com/notquiteog/Hookshot/issues/68)) ([9a8669b](https://github.com/notquiteog/Hookshot/commit/9a8669bf91d318e0ada756e291a07e861748864f))
+
 ## [2.3.0-rc.24](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.23...v2.3.0-rc.24) (2026-11-15)
 
 
