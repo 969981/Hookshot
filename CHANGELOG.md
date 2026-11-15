@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.0-rc.28](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.27...v2.3.0-rc.28) (2026-11-15)
+
+
+### Bug Fixes
+
+* **host:** a game's sizes and counts stay inside its memory, and file handles live until their last call ([#95](https://github.com/notquiteog/Hookshot/issues/95)) ([06d7b87](https://github.com/notquiteog/Hookshot/commit/06d7b876bec64bcc43d38841d0a2ce82258d9ff8))
+* **shaders:** malformed shader input is refused, not out-of-bounds access or undefined behaviour ([#94](https://github.com/notquiteog/Hookshot/issues/94)) ([171c855](https://github.com/notquiteog/Hookshot/commit/171c855c625517eb42272969c0514251da04026d))
+
 ## [2.3.0-rc.27](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.26...v2.3.0-rc.27) (2026-11-15)
 
 
