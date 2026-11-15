@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.20](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.19...v2.3.0-rc.20) (2026-11-15)
+
+
+### Features
+
+* **prepare:** Compile shaders All or Most, All the default (from Longshot) ([#69](https://github.com/notquiteog/Hookshot/issues/69)) ([aacff92](https://github.com/notquiteog/Hookshot/commit/aacff9289a1ab26191d9937b5a104ab8d221d7d5))
+
 ## [2.3.0-rc.19](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.18...v2.3.0-rc.19) (2026-11-15)
 
 
