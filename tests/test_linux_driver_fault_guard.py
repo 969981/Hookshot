@@ -49,6 +49,9 @@ void logf(const char *, ...) { ++logged; }
 static int faults_noted;
 void note_driver_fault() { ++faults_noted; }   /* (vk_draw.cpp: the preparation's watchdog counts them) */
 static void fault_now() { *(volatile int *)0x40 = 1; }
+namespace test_driver { enum class Kind { kNone, kHang, kFault, kSlow }; }   /* (gpu/vk/test_driver.h: RX_VK_TEST_DRIVER) */
+static bool inject;
+test_driver::Kind test_driver_now() { return inject ? (inject = false, test_driver::Kind::kFault) : test_driver::Kind::kNone; }
 VkResult vkCreateComputePipelines(uintptr_t device, VkPipelineCache cache, unsigned count,
                                   const VkComputePipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
     if (device != dev.device || cache != 0 || count != 1 || !ci || allocator || !out) return -1;
@@ -91,6 +94,10 @@ int main(int argc, char **argv) {
         mode = 2;
         if (guarded_graphics(0, &gci, &gpl) != DRIVER_FAULT) { std::printf("fail: the fault was not reported\n"); return 5; }
         if (gpl != VK_NULL_HANDLE) { std::printf("fail: a pipeline was published\n"); return 6; }
+    } else if (!std::strcmp(what, "injected")) {   // (RX_VK_TEST_DRIVER=fault@<n>: raised inside the guard, the driver not asked)
+        inject = true;
+        if (guarded_graphics(0, &gci, &gpl) != DRIVER_FAULT) { std::printf("fail: the injected fault was not reported\n"); return 5; }
+        if (gpl != VK_NULL_HANDLE || calls != 0) { std::printf("fail: the injected fault reached the driver\n"); return 6; }
     } else {
         std::printf("fail: unknown case %s\n", what);
         return 9;
@@ -132,10 +139,10 @@ def main():
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if build.returncode:
             raise SystemExit("the guard did not compile:\n" + build.stdout)
-        for case in ("ok", "fault", "fault-graphics", "fault-outside"):
+        for case in ("ok", "fault", "fault-graphics", "injected", "fault-outside"):
             run = subprocess.run([str(binary), case], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             killed = run.returncode == -signal.SIGSEGV
-            guarded_case = case in ("fault", "fault-graphics")
+            guarded_case = case in ("fault", "fault-graphics", "injected")
             if case == "fault-outside" or (args.expect_fault and guarded_case):
                 if not killed:
                     failures.append(case + ": the fault did not end the process: " + run.stdout.strip())

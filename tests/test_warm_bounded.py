@@ -29,6 +29,19 @@ def check_source():
             raise SystemExit("precompile_warm keeps what it builds: " + kept)
     if warm.index("build_graphics(") > warm.index("vkDestroyPipeline(dev.device, made, nullptr);"):
         raise SystemExit("precompile_warm does not destroy the pipeline it has just built")
+    # (the compute step's progress moves: one total for the notes and the computes, and a count that grows through the computes.
+    # Reported as (total, total), the bar sat at 100% and the preparation's watchdog, which stops a part whose count has not
+    # moved for 300 s (vk_main.cpp prepare_watchdog), stopped a compute step still building as a driver that stopped responding)
+    if "progress(total, total)" in warm:
+        raise SystemExit("precompile_warm reports the compute step as a count that never moves: the watchdog stops it")
+    notes_at = warm.index('prepare_progress_log("noted pipelines"')
+    computes_at = warm.index('prepare_progress_log("compute pipelines"')
+    if "progress(done.load(), all_total);" not in warm[:notes_at] or \
+            "progress(total + computes_done.load(), all_total);" not in warm[notes_at:computes_at]:
+        raise SystemExit("precompile_warm's notes and compute steps do not report one moving count of both")
+    if "const size_t all_total = total + compute_keys.size();" not in warm or \
+            warm.index("const size_t all_total") > warm.index("warm_bounded::run("):
+        raise SystemExit("precompile_warm does not count the compute pipelines before the notes' first progress")
     run = draw[draw.index("void precompile_run(void (*progress)(size_t done, size_t total)) {"):]
     run = run[:run.index("const auto t0 = std::chrono::steady_clock::now();")]
     if "if (!precompile_covers_notes()) precompile_warm(progress);" not in run:
