@@ -471,8 +471,11 @@ def vulkan_headers(work=None):
 
 
 def prebuilt_renderer():
-    # The AppImage's renderer has no NGX: an SDK build compiles its own instead.
-    return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    # The AppImage's renderer has no NGX: an SDK build compiles its own instead. Windows' release renderer (make_game.py's
+    # prebuilt_renderer, tools/prebuilt/hookshot_vk.dll) has NGX, Streamline and FSR 4 in it: kept with the SDK too, which
+    # then only brings NVIDIA's runtimes. A renderer compiled on a player's PC has no Streamline, so the Builder's DLSS tick
+    # took DLSS 5 neural rendering away while it added DLSS.
+    return "" if NGX_SDK and LINUX else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
 
 
 def cache_put(obj, key):

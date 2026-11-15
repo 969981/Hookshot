@@ -1050,6 +1050,8 @@ public partial class MainWindow : Window
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        // (the tick off here takes out the runtimes it placed; RecompLauncher's prepare (--cli) passes neither, and keeps them)
+        if (!dlss && !args.Contains("--no-dlss")) args.Add("--no-dlss");
         if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
         if (fsr && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
         runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);

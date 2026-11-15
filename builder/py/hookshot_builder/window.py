@@ -1455,6 +1455,8 @@ class Window(QWidget):
             args += ["--work", core.work()]
         if dlss and "--fetch-ngx-sdk" not in args:
             args += ["--fetch-ngx-sdk", "--accept-nvidia-license"]
+        elif not dlss and "--no-dlss" not in args:   # (the tick off: the runtimes it placed taken out; make_game.py keeps them else)
+            args += ["--no-dlss"]
         self.runner = core.Runner(tools, args, workers, core.ngx_sdk() if dlss else None,
                                   on_line=lambda l: self.post(self.line, l), on_finished=lambda f: self.post(self.ended, f))
         self.runner.start()

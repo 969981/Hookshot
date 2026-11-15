@@ -102,7 +102,8 @@ def folder_has_dlss(folder):
 
 
 def dlss_args(dlss):
-    return ["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else []
+    # (unticked: --no-dlss takes out the runtimes the tick placed; make_game.py keeps a folder's otherwise, RecompLauncher's way)
+    return ["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else ["--no-dlss"]
 
 
 COMPILE_LEVELS = ("all", "most")
@@ -1339,7 +1340,7 @@ class Builder(tk.Tk):
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
-            ["--compile-shaders", self.compile_level()] + (dlss_args(True) if dlss else [])
+            ["--compile-shaders", self.compile_level()] + dlss_args(dlss)
         slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
         if slow is not None and not messagebox.askokcancel("Hookshot", slow):
             return
