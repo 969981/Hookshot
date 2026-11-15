@@ -30,6 +30,10 @@ import struct
 import sys
 from time import monotonic
 
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # (loaded by its path in tests and tools: nx2/bounded.py beside it)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bounded  # noqa: E402
+
 
 ZSTD = b"\x28\xb5\x2f\xfd"
 ABSENT = 0xffffffff   # a title part (exefs or romfs) the package does not carry: an add-on content title has no exefs
@@ -217,7 +221,12 @@ class Nup:
         import zstandard
         self.f.seek(r[3])
         try:
-            return zstandard.ZstdDecompressor().decompressobj().decompress(self.f.read(min(r[2], 1 << 20)))[:4] == ZSTD
+            o, head, view = zstandard.ZstdDecompressor().decompressobj(), b"", memoryview(self.f.read(min(r[2], 1 << 20)))
+            for at in range(0, len(view), bounded.STEP):   # (in steps: a small frame can unpack to gigabytes, nx2/bounded.py)
+                head += o.decompress(view[at:at + bounded.STEP])[:4 - len(head)]
+                if len(head) >= 4 or o.eof:
+                    break
+            return head[:4] == ZSTD
         except zstandard.ZstdError:   # (made with one of the game's dictionaries: the game's own file)
             return False
 
@@ -245,7 +254,7 @@ class Nup:
         left = r[2]
         try:
             while left and got <= r[2] and not d.eof:
-                b = self.f.read(min(left, 1 << 20))
+                b = self.f.read(min(left, bounded.STEP))   # (in steps: nx2/bounded.py)
                 if not b:
                     break
                 left -= len(b)
@@ -266,19 +275,28 @@ class Nup:
             import zstandard
             d = zstandard.ZstdDecompressor().decompressobj()
             got = 0
-            while left and not getattr(d, "eof", False):
-                b = self.f.read(min(left, 8 << 20))
-                if not b:
+            stop = False
+            while left and not stop and not getattr(d, "eof", False):
+                block = self.f.read(min(left, 8 << 20))
+                if not block:
                     break
-                left -= len(b)
-                try:
-                    out = d.decompress(b)
-                except zstandard.ZstdError:   # (the end of the frame, and the next file's bytes after it)
-                    break
-                got += len(out)
-                if got > r[2]:
-                    raise SystemExit("a compressed file expanded past its declared size of %d bytes" % r[2])
-                g.write(out)
+                left -= len(block)
+                view = memoryview(block)
+                # (fed to the decompressor bounded.STEP bytes at a time: a crafted frame unpacks 8 MB to terabytes in one
+                # call, held at once before the size below is looked at. Each step is at most 256 MB, nx2/bounded.py)
+                for at in range(0, len(view), bounded.STEP):
+                    try:
+                        out = d.decompress(view[at:at + bounded.STEP])
+                    except zstandard.ZstdError:   # (the end of the frame, and the next file's bytes after it)
+                        stop = True
+                        break
+                    got += len(out)
+                    if got > r[2]:
+                        raise SystemExit("a compressed file expanded past its declared size of %d bytes" % r[2])
+                    g.write(out)
+                    if d.eof:
+                        left += len(view) - at - bounded.STEP if at + bounded.STEP < len(view) else 0
+                        break
             if exact and (left or d.unused_data):
                 raise SystemExit("a compressed extent has trailing bytes")
             if r[5] == 1 and not d.eof:
@@ -752,10 +770,16 @@ def main():
     if a.verify and a.extract:
         ap.error("--verify does not extract; run extraction separately")
     try:
-        nup = Nup(a.nup, strict=a.verify)
+        # (strict for every use: the TOC's SHA-256, its bounds and a tree with no cycle or record outside it, checked before
+        # any file is written. A package that does not pass was read as it came: names and extents outside its tables, a
+        # directory cycle walked for ever. 1-2 s on the 23 GB dumps)
+        nup = Nup(a.nup, strict=True)
     except (OSError, ValueError, struct.error, IndexError, SystemExit) as error:
         if not a.verify:
-            raise
+            if isinstance(error, SystemExit):
+                raise
+            raise SystemExit("%s: a damaged .nup, or not one a dumper wrote (%s). Dump the game again, or copy the file again"
+                             % (a.nup, error))
         print("BAD package: %s" % error)
         return 1
     if a.verify:

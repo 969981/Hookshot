@@ -77,12 +77,33 @@ def enumerate_step(romfs, out):
     return seed
 
 
+def default_build_dir():
+    """The translator's build folder: the user's own cache, not /tmp, where anyone on the PC could have made hookshot-ds
+    first and put a bake_ds in it that this then runs"""
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-ds")
+
+
+def own_file(path):
+    """(POSIX) path and its folder are this user's and no other user can write them: else it is not run. (Group write is
+    left alone: with a group of one's own, umask 002, every file one makes has it)"""
+    if os.name != "posix":
+        return True
+    for p in (path, os.path.dirname(os.path.abspath(path))):
+        st = os.stat(p)
+        if st.st_uid != os.getuid() or st.st_mode & 0o002:
+            return False
+    return True
+
+
 def build_tool(build_dir, tool):
     if tool and os.path.exists(tool):
         return tool
     exe = os.path.join(build_dir, "bake_ds")
     if not os.path.exists(exe):
+        os.makedirs(build_dir, mode=0o700, exist_ok=True)
         run([os.path.join(HERE, "build.sh")], env={**os.environ, "OUT": build_dir}, check=True)
+    if not own_file(exe):
+        raise SystemExit("bake_all: %s is not yours alone (another user owns it or its folder, or can write them): not run" % exe)
     return exe
 
 
@@ -197,8 +218,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("command", choices=["all", "enumerate", "translate", "verify", "fixture", "query"])
     p.add_argument("--romfs")
-    p.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "bake_ds_out"))
-    p.add_argument("--dir", dest="build_dir", default=os.path.join(tempfile.gettempdir(), "hookshot-ds"))
+    p.add_argument("--out", default=os.path.join(os.path.dirname(default_build_dir()), "bake_ds_out"))
+    p.add_argument("--dir", dest="build_dir", default=default_build_dir())
     p.add_argument("--tool")
     p.add_argument("--stamp")
     p.add_argument("--depth", type=int, default=0)

@@ -287,9 +287,21 @@ def python_packages(list_path, requirements, tools):
     py = os.path.join(tools, "python")
     n = extract(part, "HookshotBuilder/tools/python/", py)
     print("%d files of %s (Python %s) into %s, with %s" % (n, os.path.basename(part), version, py, ", ".join(missing)))
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
-                    "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
-                    "--implementation", "cp", "--target", os.path.join(py, "Lib", "site-packages")] + missing, check=True)
+    # (each file checked against its SHA-256: requirements-hashes.txt, scripts/lock_requirements.py; a pin alone takes
+    # whatever file the index serves)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import lock_requirements
+    import tempfile
+    fd, locked = tempfile.mkstemp(suffix=".txt", prefix="requirements-hashes-")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        f.write(lock_requirements.subset(missing))
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
+                        "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
+                        "--implementation", "cp", "--require-hashes", "-r", locked,
+                        "--target", os.path.join(py, "Lib", "site-packages")], check=True)
+    finally:
+        os.unlink(locked)
     return 0
 
 

@@ -83,6 +83,26 @@ def save(config):
         os.chmod(path, 0o600)
 
 
+BIDI = set("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f")
+
+
+def plain(text, keep=""):
+    """Text someone else wrote, for a terminal: control characters (an escape sequence that moves the cursor, clears the
+    screen or sets the title; a newline that forges a line of its own) and the bidirectional overrides shown as '?'.
+    keep: the controls kept (a diff's newlines and tabs)"""
+    return "".join(ch if ch in keep else "?" if ord(ch) < 0x20 or 0x7f <= ord(ch) < 0xa0 or ch in BIDI else ch
+                   for ch in str(text))
+
+
+def https_only(url):
+    """A URL the session's token may go to: https only, or this PC's own loopback (a server, or its .well-known answer,
+    naming http:// would have it sent in the clear)"""
+    loopback = urllib.parse.urlsplit(str(url)).hostname in ("127.0.0.1", "localhost", "::1")   # (never leaves the PC)
+    if not (str(url).startswith("https://") or (str(url).startswith("http://") and loopback)):
+        raise ChatError("%s is not https: the session's token is sent over https only" % str(url).split("?")[0])
+    return url
+
+
 def request(method, url, token=None, body=None, timeout=30):
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method)
@@ -92,7 +112,9 @@ def request(method, url, token=None, body=None, timeout=30):
     if data is not None:
         req.add_header("Content-Type", "application/json")
     if token:
-        req.add_header("Authorization", "Bearer " + token)
+        # (unredirected: urllib copies a request's headers to wherever a redirect points, so the token went to another host)
+        https_only(url)
+        req.add_unredirected_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
@@ -113,11 +135,11 @@ def request(method, url, token=None, body=None, timeout=30):
 def homeserver(server):
     """The client API's base URL, from the server name's .well-known file (the server itself when it has none)."""
     if server.startswith(("http://", "https://")):
-        return server.rstrip("/")
+        return https_only(server.rstrip("/"))
     try:
         found = request("GET", "https://%s/.well-known/matrix/client" % server)
-        return found["m.homeserver"]["base_url"].rstrip("/")
-    except (ChatError, KeyError, TypeError, ValueError):
+        return https_only(found["m.homeserver"]["base_url"].rstrip("/"))
+    except (ChatError, KeyError, TypeError, ValueError, AttributeError):
         return "https://" + server
 
 
@@ -305,7 +327,7 @@ def read(args):
         if event.get("type") != "m.room.message" or "body" not in content:
             continue
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(event.get("origin_server_ts", 0) / 1000))
-        print("%s %s: %s" % (when, event.get("sender"), content["body"]))
+        print("%s %s: %s" % (when, plain(event.get("sender")), plain(content["body"])))
 
 
 def unicode_output():

@@ -130,9 +130,11 @@ ARG = {"Who": "who", "GPU and driver": "gpu", "Build": "build", "Settings": "set
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def load(path, most=None):
+def load(path, most=SENT_MOST):
     """The list's bytes as the game reads them: unpacked when the file is xz. most: stops, before reading or unpacking more, on
-    a file or an unpacked list of more bytes than that (a list someone sent: read_sent)"""
+    a file or an unpacked list of more bytes than that. SENT_MOST unless said otherwise: every list read here may be someone
+    else's (a contributed one in the repository, a game folder's), and a small xz file can unpack to gigabytes; None reads
+    whatever there is"""
     if most is not None:
         if not os.path.isfile(path):
             raise SystemExit("%s: no such file" % path)

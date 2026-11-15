@@ -11,7 +11,7 @@
        tag <tag>
        part <sha256> <bytes> <folder under the install> <top folder in the zip to rename, or -> <new name, or -> <url>
        run <the builder, relative to the install>
-   Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o HookshotBuilder-Setup.exe */
+   Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -ladvapi32 -o HookshotBuilder-Setup.exe */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
 #define UNICODE
@@ -27,6 +27,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "portable_home.h"
+#include "shared_folder.h"
 
 #define WM_STATUS (WM_APP + 1)
 #define WM_DONE (WM_APP + 2)
@@ -128,6 +129,9 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
     uc.lpszHostName = host, uc.dwHostNameLength = 256;
     uc.lpszUrlPath = path, uc.dwUrlPathLength = 1024;
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return 0;
+    /* (https only, whatever names the URL: HOOKSHOT_SETUP_LIST=http://... fetched a list in clear text, and the list names
+       every part's checksum, so whoever sat on the way chose what was installed) */
+    if (uc.nScheme != INTERNET_SCHEME_HTTPS) return 0;
     HINTERNET s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     if (!s) s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!s) return 0;
@@ -527,7 +531,7 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
 
 static void w(const char *s8, wchar_t *out, int n) { MultiByteToWideChar(CP_UTF8, 0, s8, -1, out, n); }
 
-/* (HOOKSHOT_SETUP_LIST=<url>: another list, for testing a release before it is the latest) */
+/* (HOOKSHOT_SETUP_LIST=<https url>: another list, for testing a release before it is the latest; http is refused, http_get) */
 /* ---- The GitHub API's link for a release file (after PR 546 by nicholasgower, issue 544). GitHub answered the release
    page's cached link (releases/latest/download/...) with 504 for hours on 2026-11-08 while its API still answered: the API
    gives the file's own asset link, which redirects to a fresh download. Used when the release link fails. ---- */
@@ -1151,6 +1155,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
             return 1;
         }
         if (wcsstr(g_cmdline, L"--launch") && launch_installed(g_cmdline)) return 0;
+    }
+    if (g_home_ok && g_home.portable) {   /* (a portable home others can write: said once, recorded in it, nothing changed) */
+        wchar_t shared[1024];
+        if (hb_shared_warning_due(g_home.root, shared, 1024)) {
+            if (g_headless) {
+                char u[3072];
+                DWORD wrote;
+                const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+                const int len = WideCharToMultiByte(CP_UTF8, 0, shared, -1, u, (int)sizeof u - 1, NULL, NULL);
+                if (len > 0 && out && out != INVALID_HANDLE_VALUE)
+                    WriteFile(out, "warning ", 8, &wrote, NULL), WriteFile(out, u, len - 1, &wrote, NULL), WriteFile(out, "\n", 1, &wrote, NULL);
+            } else MessageBoxW(NULL, shared, L"Hookshot Builder setup", MB_OK | MB_ICONWARNING);
+        }
     }
     if (!g_home_ok) {
         const wchar_t *why = L"The Builder home is unavailable or its portable marker is invalid. For a new portable install, put this setup in a writable folder and start it with --portable.";

@@ -50,6 +50,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
+import bounded   # noqa: E402 (decompression with a ceiling)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
 KENNEY_KEYBOARD = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input_keyboard")   # (the keyboard face's)
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
@@ -83,9 +84,8 @@ STATIC = {0xE049: "dpad", 0xE064: "dpad_vertical_outline", 0xE065: "dpad_horizon
 
 def zs_dictionary(romfs):
     """zs.zsdic, out of Pack/ZsDic.pack.zs (a SARC, itself zstd without a dictionary)"""
-    import zstandard
     with open(os.path.join(romfs, "Pack", "ZsDic.pack.zs"), "rb") as f:
-        b = zstandard.ZstdDecompressor().decompressobj().decompress(f.read())
+        b = unpacked(f.read(), os.path.join("Pack", "ZsDic.pack.zs"))
     data, = struct.unpack_from("<I", b, 12)
     hl, = struct.unpack_from("<H", b, 4)
     n, = struct.unpack_from("<H", b, hl + 6)
@@ -98,11 +98,20 @@ def zs_dictionary(romfs):
     raise SystemExit("prompts: no zs.zsdic in Pack/ZsDic.pack.zs")
 
 
+ZS_MOST = 256 << 20   # (the game's files read here unpack to a few MB: the dictionary, the size table, a font)
+
+
+def unpacked(data, rel, dictionary=None):
+    """A game .zs file's bytes, no more than ZS_MOST (nx2/bounded.py: a small crafted frame unpacks to gigabytes)"""
+    try:
+        return bounded.zstd(data, ZS_MOST, dictionary)
+    except bounded.TooLarge:
+        raise SystemExit("prompts: %s unpacks to more than %d MB, more than any of the game's files" % (rel, ZS_MOST >> 20))
+
+
 def read_zs(romfs, rel, dictionary):
-    import zstandard
-    d = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(dictionary))
     with open(os.path.join(romfs, rel), "rb") as f:
-        return d.decompressobj().decompress(f.read())
+        return unpacked(f.read(), rel, dictionary)
 
 
 def size_table(romfs, dictionary, game_size, font_size):
@@ -1028,7 +1037,7 @@ def prompt_packages():
 
 def prompt_key(a):
     """Everything generate() reads; keep this list with its file opens/imports and tests/test_prompt_skip.py."""
-    source = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_assets.py", "prompt_draw.py")}
+    source = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_assets.py", "prompt_draw.py", "bounded.py")}
     tables = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_faces.py", "prompt_keys.py")}
     fonts = {FONT: prompt_file(os.path.join(a.romfs, FONT))}
     try:

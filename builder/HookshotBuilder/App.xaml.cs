@@ -25,11 +25,19 @@ public partial class App : Application
             Environment.Exit(1);
             return;
         }
+        // (a portable home other accounts can write: said once per folder, recorded in the home, nothing changed: SharedFolder)
+        var shared = BuilderHome.Portable ? SharedFolder.Due(BuilderHome.Base) : null;
         if (e.Args.Length > 0 && e.Args[0] == "--cli")
         {
+            if (shared != null)
+            {
+                using var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+                output.WriteLine("warning " + shared);
+            }
             Environment.Exit(Cli(e.Args.Skip(1).ToList()));
             return;
         }
+        if (shared != null) MessageBox.Show(shared, "Hookshot Builder", MessageBoxButton.OK, MessageBoxImage.Warning);
         base.OnStartup(e);
     }
 

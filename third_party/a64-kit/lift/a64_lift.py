@@ -1845,7 +1845,9 @@ class Lifter:
         self.refs = set()
         out = ["void f_%08x(Ctx *__restrict A64_NOESC c) {" % e]
         if e in self.names and self.comments:
-            out[0] = "/* %s */\n" % self.names[e] + out[0]
+            # (a name from the dump, in a comment: printable ASCII and no comment end, or it would be C)
+            name = "".join(ch if " " <= ch <= "~" else "?" for ch in str(self.names[e])).replace("*/", "* /")
+            out[0] = "/* %s */\n" % name + out[0]
         if e in self.plt:   # a PLT stub reached indirectly: x16 = GOT slot, x17 = target, as the stub leaves them
             t, slot = self.plt[e]
             name = self.fname(self.callee(t))

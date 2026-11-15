@@ -736,11 +736,33 @@ def test_old_client():
     print("LIST CALLS: main=%d branch=%d (two cards, one PR)" % (len(CALLS), len(new_calls)))
 
 
+def test_no_pr_no_claim():
+    """(audit F4) a request typed by hand with no PR link has nothing GitHub could approve: it is not claimable"""
+    now_min = int(tr.time.time() // 60)
+    events = [ev("ann", now_min - 9, "%s T-AAAD request: no link" % T)]
+    code, sent, out = run(events, "bob", "claim", "T-AAAD")
+    check(code == 3 and not sent, "a request with no PR is refused: %r %r" % (code, sent))
+
+
+def test_plain_text():
+    """(audit F1) what people wrote is shown with its control characters as '?': no escape sequence reaches the terminal,
+    and no newline forges a line"""
+    now_min = int(tr.time.time() // 60)
+    events = [ev("ann", now_min - 9, "%s T-AAAE request: a\x1b]0;owned\x07 title\n%s/pull/1\nNeeds: x\x1b[2Jy" % (T, tr.REPO))]
+    GITHUB.update({1: {"state": "open", "labels": [], "author": "x", "association": "OWNER", "head": HEAD}})
+    try:
+        code, _, out = run(events, "bob", "list")
+    finally:
+        GITHUB.clear()
+    check(code == 0 and "\x1b" not in out and "\x07" not in out, "no control character printed: %r" % out)
+    check(tr.team_chat.plain("a\nb\u202ec", keep="\n") == "a\nb?c", "plain keeps only what it is told")
+
+
 tests = (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval,
          test_request_head, test_moved_head, test_done_commit, test_explicit_commit, test_update_commit,
          test_old_card, test_list_calls, test_done_unreachable, test_request_unreachable, test_github_head,
          test_json_current_results, test_request_membership, test_verify_membership, test_claim_commit_lifetime,
-         test_request_note_fields)
+         test_request_note_fields, test_no_pr_no_claim, test_plain_text)
 if args.old_source:
     tests += (test_old_client,)
 if args.test:

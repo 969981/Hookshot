@@ -1,4 +1,4 @@
-"""Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (#2034), made by the game's menu
+"""Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (#84), made by the game's menu
 (gpu/vk/pipeline_share.h, vk_menu.cpp) and the builders (nx2/pipeline_share.py). Synthetic data only, no game:
 
   - the zip holds exactly hookshot_pipeline_states.bin (the bytes as the game wrote them) and hookshot_pipeline_report.txt, and
@@ -365,7 +365,15 @@ def check_sources():
     cs = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
     xaml = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml").read_text(encoding="utf-8")
     assert '"pipeline_share.py"' in cs and '"--json"' in cs and "Save my pipeline list" in xaml
-    assert share.ISSUE_URL in cs
+    # (the Windows Builder builds the issue's link from its repository, Repository.cs, as nx2/pipeline_share.py from
+    # nx2/version.py; the same issue number)
+    assert "const int ShareIssueNumber = %d;" % share.ISSUE in cs, "the Windows Builder names another issue"
+    assert '"https://github.com/" + Repository.Name + "/issues/" + ShareIssueNumber' in cs
+    # (the menu's own words name it too, keyed for translation: the same link as kIssueUrl)
+    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    assert share.ISSUE_URL.split("://", 1)[1] in menu and "issues/2034" not in menu
+    i18n = (ROOT / "gpu" / "vk" / "menu_i18n.h").read_text(encoding="utf-8")
+    assert "issues/2034" not in i18n and "Issue 2034" not in i18n
 
 
 def body_of(source, signature):
