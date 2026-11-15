@@ -445,6 +445,28 @@ HLE(_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13Streami
     if (!InterlockedExchange(&told, 1)) hos_log("streamplay: GameShare is not available: GetRequiredMemorySize -> 0");
     RET(0);
 }
+/* nn::streamplay::CreateIndividualDisplays(int count) / DestroyIndividualDisplays(): a display for each GameShare guest.
+   No guest ever joins here (GameShare is not available, above), so there is nothing to make: success. Left to the
+   lifted SDK it initialized the Switch 2 vi layer (nn::vi::sdk::Initialize), locked a mutex of a structure never set
+   up and read guest 0: Kirby Air Riders (Dragoon) makes three right after its audio starts. */
+HLE(_ZN2nn10streamplay24CreateIndividualDisplaysEi) {
+    static volatile LONG told;
+    if (!InterlockedExchange(&told, 1)) hos_log("streamplay: CreateIndividualDisplays(%d): no GameShare guests here", (int)ARG(0));
+    RET(0);
+}
+HLE(_ZN2nn10streamplay25DestroyIndividualDisplaysEv) { RET(0); }
+/* nn::streamplay::GetNativeWindowHandle(GuestId) -> the guest's native window: a window of its own for each guest id
+   (0x100 zeroed bytes, as nn_vi.c's own), which no guest ever draws to here */
+HLE(_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE) {
+    static uint64_t windows[8];
+    static SRWLOCK lock = SRWLOCK_INIT;
+    const uint64_t id = ARG(0) & 7;
+    AcquireSRWLockExclusive(&lock);
+    if (!windows[id]) windows[id] = hos_sys_alloc(0x100, 16);
+    const uint64_t w = windows[id];
+    ReleaseSRWLockExclusive(&lock);
+    RET(w);
+}
 
 /* ---- nn::time: the host clock --------------------------------------------------------------------------------- */
 HLE(_ZN2nn4time10InitializeEv) { RET(0); }

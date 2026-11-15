@@ -1421,6 +1421,13 @@ HLE(_ZN2nn5audio29InitializeAudioRendererConfigEPNS0_19AudioRendererConfigERKNS0
 /* The output device: one device, "MainAudioOut", stereo or 5.1 as the PC's default output (au_speakers).
    AudioDeviceName is char[256]. */
 HLE(_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE) { hos_system_event_init(ARG(0), 1); }
+/* (dragoon) AcquireAudioOutputDeviceNotification(SystemEvent*): the SDK 20 name of the one above (Kirby Air Riders).
+   Left to the generic stub the game's event was never made; a wait on it would have read its uninitialized object.
+   Made, and never signalled: the output device does not change under the game here. */
+HLE(_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE) { hos_system_event_init(ARG(0), 1); }
+/* SetDeviceOutputVolumeAutoTuneModeEnabled(bool): the console's automatic volume for its own speakers; the host's
+   mixer is the player's */
+HLE(_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb) {}
 HLE(_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv) { RET(au_speakers()); }
 HLE(_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE) {
     memset(GP(ARG(0)), 0, 256);
