@@ -12,9 +12,10 @@ Writes <out>/hookshot-setup.txt and one HookshotBuilder-<part>-<sha256 prefix>.z
 release lacks). Scripts the build does not use (.ps1, .bat, .js,
 .html: antivirus machine-learning guesses fire on them) are left out.
 
---reuse: a part whose tools/<name> folder the package lacks is taken from that list as it is (its line, with its URL), so a
+--reuse: a part whose tools/<name> folder the package lacks is taken from that list (its hash, size and file name), so a
 package made in CI (.github/workflows/windows-builder.yml) carries the Python, emsdk, CPM and wgpu-native parts the maintainer
-made. Without the folder and without the part in that list it is an error.
+made. Its URL is always --base's: every part, llvm-mingw's too, is served from this repository's builder-parts, never from where an
+earlier list named it. Without the folder and without the part in that list it is an error.
 """
 import argparse
 import concurrent.futures
@@ -30,9 +31,19 @@ TOOLS_PARTS = ("python", "emsdk", "cpm", "third_party", "wgpu-native")   # (tool
 # about 70 MB that changes only with AMD's SDK, so a part of its own the setup keeps in its cache. Without the folder it is
 # taken from --reuse when that list has it, and left out otherwise (the game then runs FSR 3.1 and not FSR 4)
 OPTIONAL_PARTS = ("amd-fsr",)
+# llvm-mingw's official release (github.com/mstorsjo/llvm-mingw, 20261104), served from this repository's builder-parts like
+# every other part, so an install depends on no other repository being there (its SHA-256 is the official zip's)
 LLVM = ("552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f", 191037046,
         "llvm-mingw-20261104-ucrt-x86_64",
-        "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip")
+        "https://github.com/notquiteog/Hookshot/releases/download/builder-parts/llvm-mingw-20261104-ucrt-x86_64.zip")
+
+
+def served_here(line, base):
+    """A reused part's line with its URL moved to base (this release's builder-parts): the part is the same file, by its SHA-256,
+    wherever it was served from before. Taken as it was, a line kept the repository it was first made in: rc.21's emsdk and
+    wgpu-native lines still named the deleted upstream repository, and a new install stopped at them"""
+    w = line.split()
+    return " ".join(w[:6] + ["%s/%s" % (base, w[6].rsplit("/", 1)[-1])])
 
 
 def files_under(root, top):
@@ -116,11 +127,11 @@ def main():
         if not parts.get(name):
             if name in OPTIONAL_PARTS:
                 if name in reuse:
-                    lines.append(reuse[name])
+                    lines.append(served_here(reuse[name], base))
                     print("%-12s (as in %s)" % (name, os.path.basename(a.reuse)), flush=True)
                 continue
             if a.reuse and name in TOOLS_PARTS:
-                lines.append(reuse[name])
+                lines.append(served_here(reuse[name], base))
                 print("%-12s (as in %s)" % (name, os.path.basename(a.reuse)), flush=True)
             continue
         zp = os.path.join(a.out, "HookshotBuilder-%s.zip" % name)
@@ -130,7 +141,8 @@ def main():
         zp = named
         lines.append("part %s %d . - - %s/%s" % (sha, size, base, os.path.basename(zp)))
         print("%-12s %5d files %5d MB  %s" % (name, len(parts[name]), size >> 20, sha[:16]), flush=True)
-    lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s" % LLVM)
+    lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s/%s" % (LLVM[0], LLVM[1], LLVM[2], base,
+                                                                         LLVM[3].rsplit("/", 1)[-1]))
     lines.append("run HookshotBuilder/HookshotBuilder.exe")
     with open(os.path.join(a.out, "hookshot-setup.txt"), "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")

@@ -439,6 +439,17 @@ jobs:
                 gh release view builder-parts --json assets --jq '.assets[].name' | grep -qxF "$(basename "$f")"
             fi
           done
+      # (every part the list names answers from where it says, before the list is published: rc.21's named two parts of the
+      # deleted upstream repository, and a new install stopped at them. A byte of each is asked for, not the whole file)
+      - name: Every part in the setup list downloads
+        run: |
+          bad=0
+          while read -r kind _ _ _ _ _ url; do
+            [ "$kind" = part ] || continue
+            code=$(curl -s -o /dev/null -w '%{http_code}' -L -r 0-0 --retry 3 --retry-delay 5 "$url")
+            case $code in 200|206) echo "ok   $url" ;; *) echo "::error::$code $url"; bad=1 ;; esac
+          done < dist/hookshot-setup.txt
+          exit $bad
       # (a tag pushed by hand and the nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's
       # publish job)
       - name: Setup and its list to the release
