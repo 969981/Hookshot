@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.0-rc.22](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.21...v2.3.0-rc.22) (2026-11-15)
+
+
+### Features
+
+* **launcher:** Mario Kart World and Donkey Kong Bananza in RecompLauncher, each game asking for its own copy ([#74](https://github.com/notquiteog/Hookshot/issues/74)) ([0f154a4](https://github.com/notquiteog/Hookshot/commit/0f154a49d15623e9edb097d7e8cd73c725c2e2cf))
+* **vk:** the program census counts the programs that read a texture handle from a table ([#75](https://github.com/notquiteog/Hookshot/issues/75)) ([cce324b](https://github.com/notquiteog/Hookshot/commit/cce324baacc6f5ffa8c025720d89e3060c87f6f3))
+
+
+### Bug Fixes
+
+* **vk:** the preparation's compute step counts, so the watchdog does not stop it as a stuck driver ([#73](https://github.com/notquiteog/Hookshot/issues/73)) ([8608a43](https://github.com/notquiteog/Hookshot/commit/8608a430e81700fb428408d9644a669719f9acea))
+
 ## [2.3.0-rc.21](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.20...v2.3.0-rc.21) (2026-11-15)
 
 
