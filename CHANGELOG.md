@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.0-rc.26](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.25...v2.3.0-rc.26) (2026-11-15)
+
+
+### Bug Fixes
+
+* **hid:** every GetTouchScreenState&lt;N&gt; and GetTouchScreenStates&lt;N&gt;, N 1 to 16, answered ([#88](https://github.com/notquiteog/Hookshot/issues/88)) ([2edac4e](https://github.com/notquiteog/Hookshot/commit/2edac4e2d9d884678356a9eb2d9788b28852f33b))
+* **svc:** GetInfo 16 answers the process's system resource size, so virtual address memory is on where the game has it ([#81](https://github.com/notquiteog/Hookshot/issues/81)) ([196efe5](https://github.com/notquiteog/Hookshot/commit/196efe562abb886aac82e8b04df8f58c85de35a5))
+
 ## [2.3.0-rc.25](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.24...v2.3.0-rc.25) (2026-11-15)
 
 
