@@ -106,7 +106,21 @@ For a portable install on an external SSD, run the downloaded setup with `--port
 Next time, start the game from the Hookshot shortcut, or `hookshot.exe` in the game folder. That is the launcher: it
 has **Play**, and **Update** when a newer release is out.
 
-The first start prepares the game's shaders, which takes a while. Later starts are faster.
+The build prepares the game's shaders at its end, which takes a while. Later starts are faster.
+
+**Compile shaders** (the Builder, the launcher's settings, `make_game.py --compile-shaders`) chooses what that
+preparation builds:
+
+- **All** (the default, as before): the predicted pipelines too, about 50,000 guesses at pipelines no list names. The preparation takes about 40%
+  longer (415 s against 292 s on an RTX 3090 with a 12-core CPU; 671 s against 546 s on an RTX 5060 Ti).
+- **Most**: every shader and the pipelines the game is known to use (the shipped list and what your own play noted),
+  without the predicted ones: 20-30% shorter. On one route it cost nothing in play, but more may be compiled the first
+  time you visit a place; until more of the game is measured, All stays the default.
+
+A preparation the game runs at a launch (after "Prepare shaders now" was unticked, or after an update or a new GPU driver
+changed what the shaders are translated for) follows the same choice, kept as `compile_shaders` in
+`hookshot_options.ini` (0 Most, 1 All). `--compile-shaders all` or `most` on the game's command line, or
+`RX_VK_COMPILE_SHADERS=all` or `most`, sets it for one run.
 
 ### On Linux
 
@@ -890,6 +904,7 @@ use them.
 | `--user <folder>` | Where the game keeps per-user data: saves, caches and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
 | `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
+| `--compile-shaders all` or `most` | What a preparation of this run builds, over `compile_shaders` in `hookshot_options.ini` (the same as `RX_VK_COMPILE_SHADERS`): `all` the predicted pipelines too, `most` without them. See Compile shaders above |
 
 For example, keep saves somewhere else:
 

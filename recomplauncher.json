@@ -497,6 +497,28 @@
       "defaults": {
         "mouse_camera": "0"
       }
+    },
+    {
+      "id": "compile_shaders",
+      "label": "Compile shaders",
+      "help": "All (the default): every shader, the pipelines the game is known to use and the predicted ones. Most: without the predicted pipelines, 20-30% shorter (19% on an RTX 5060 Ti, 30% on an RTX 3090); on one route it cost nothing in play, but more may be compiled the first time you visit a place. Applies at the next build, update or preparation.",
+      "choices": [
+        {
+          "label": "All",
+          "set": {
+            "compile_shaders": "1"
+          }
+        },
+        {
+          "label": "Most",
+          "set": {
+            "compile_shaders": "0"
+          }
+        }
+      ],
+      "defaults": {
+        "compile_shaders": "1"
+      }
     }
   ],
   "actions": [

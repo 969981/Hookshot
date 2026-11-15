@@ -194,10 +194,22 @@
                         AutomationProperties.Name="Update track" AutomationProperties.LabeledBy="{Binding ElementName=TrackLabel}"
                         ToolTip="Release: the tested versions. Release candidate: the next version, to try before it is released. Nightly: the newest development build, updated with every change."/>
             </StackPanel>
-            <!-- (make_game.py's last step, the game's prepare-shaders run: unticked, the game prepares them at its first start) -->
-            <CheckBox x:Name="PrepareTick" Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="3" Style="{StaticResource Tick}" Content="Prepare shaders now"
-                      IsChecked="True" Margin="0,12,0,0"
-                      ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
+            <StackPanel Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="3">
+              <!-- (make_game.py's last step, the game's prepare-shaders run: unticked, the game prepares them at its first start) -->
+              <CheckBox x:Name="PrepareTick" Style="{StaticResource Tick}" Content="Prepare shaders now"
+                        IsChecked="True" Margin="0,12,0,0"
+                        ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
+              <!-- (make_game.py's compile-shaders option: what that preparation builds, and every one the game runs later. ShaderStep.cs) -->
+              <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock x:Name="CompileLabel" Style="{StaticResource Label}" Text="COMPILE SHADERS" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <ComboBox x:Name="CompileBox" Width="170" Style="{StaticResource Choice}" IsEditable="False" SelectedIndex="0"
+                          AutomationProperties.Name="Compile shaders" AutomationProperties.LabeledBy="{Binding ElementName=CompileLabel}"
+                          ToolTip="All (the default): every shader, the pipelines the game is known to use and the predicted ones. Most: without the predicted pipelines, 20-30% shorter (19% on an RTX 5060 Ti, 30% on an RTX 3090); on one route it cost nothing in play, but more may be compiled the first time you visit a place.">
+                  <ComboBoxItem Content="All"/>
+                  <ComboBoxItem Content="Most"/>
+                </ComboBox>
+              </StackPanel>
+            </StackPanel>
           </Grid>
 
           <!-- NVIDIA DLSS: off unless ticked. Ticking it shows NVIDIA's license; the build downloads NVIDIA's SDK under it

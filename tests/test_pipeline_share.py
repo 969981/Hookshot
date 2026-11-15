@@ -387,7 +387,7 @@ def check_drawn_only():
     calls = [m.start() for m in re.finditer(r"(?<![\w:])state_record\(", draw)]
     defs = [m.start() for m in re.finditer(r"\nvoid state_record\(", draw)]
     callers = [c for c in calls if not any(d < c < d + 20 for d in defs)]
-    note = body_of(draw, "void pipeline_note(")
+    note = body_of(draw, "bool pipeline_note(")
     assert len(callers) == 1 and note.count("if (color_types) state_record(") == 1, \
         "state_record() is called from somewhere other than pipeline_note(), with the draw's colour types"
     # pipeline_note with colour types (a 6th argument): only graphics_pipeline()

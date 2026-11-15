@@ -440,6 +440,7 @@ public partial class MainWindow : Window
         s.Romfs = BuilderHome.LoadPath(s.Romfs);
         s.Exefs = BuilderHome.LoadPath(s.Exefs);
         PrepareTick.IsChecked = !s.PrepareLater;
+        CompileBox.SelectedIndex = Array.IndexOf(ShaderStep.Levels, ShaderStep.Level(s.CompileShaders));
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         dlssLicenseAccepted = s.DlssLicense;
@@ -474,6 +475,7 @@ public partial class MainWindow : Window
                                           Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
+                                          CompileShaders = ChosenLevel(),
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
@@ -895,7 +897,7 @@ public partial class MainWindow : Window
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
         if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
         prepareNow = PrepareTick.IsChecked == true;
-        Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true,
+        Run(tools, ShaderStep.Args(args, prepareNow, ChosenLevel()), dlss: DlssTick.IsChecked == true,
             fsr: FsrTick.IsChecked == true && fsrLicense);
     }
 
@@ -975,6 +977,7 @@ public partial class MainWindow : Window
     // (this build prepares the shaders: the tick for a build, the saved choice for an update. The game's @@stage shaders came, and
     // make_game's line when it left them to the first start: the row's end says which)
     bool prepareNow, shadersBegan;
+    string ChosenLevel() => ShaderStep.Levels[Math.Clamp(CompileBox.SelectedIndex, 0, ShaderStep.Levels.Length - 1)];
     string? shadersLater;
     TimeSpan? builtIn;   // (at @@times: the build without the shaders' minutes, as build_times.json keeps it)
 

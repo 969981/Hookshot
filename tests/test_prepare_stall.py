@@ -81,6 +81,7 @@ std::string predict_pending_path() {
     return path;
 }
 void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>&) {}
+void predicted_keys_write(std::vector<uint64_t>) {}
 void driver_cache_log(const char*) {}
 unsigned usable_cpus() { return std::max(1u, std::thread::hardware_concurrency()); }
 inline uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull; }

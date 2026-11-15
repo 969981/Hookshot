@@ -22,7 +22,10 @@ class RecompLauncherJsonTests(unittest.TestCase):
         rows |= set(re.findall(r'return "([a-z_0-9]+)";', ini_key))
         keys = {key for setting in manifest["settings"] for choice in setting["choices"] for key in choice["set"]}
         self.assertTrue(keys)
-        self.assertEqual(keys - rows, set())
+        # (keys the game reads that are no menu row: Compile shaders, which the preparation reads, vk_draw.cpp compile_all)
+        draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
+        read_elsewhere = {"compile_shaders"} if '"compile_shaders="' in draw else set()
+        self.assertEqual(keys - rows - read_elsewhere, set())
 
     def test_appimage_carries_it(self):
         self.assertIn('cp recomplauncher.json "$APPDIR/recomplauncher.json"',

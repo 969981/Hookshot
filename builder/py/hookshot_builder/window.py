@@ -31,6 +31,14 @@ WITHOUT_SHADERS = {"download": (0, 0.04), "read": (0.04, 0.04), "lift": (0.08, 0
 WITH_SHADERS = {"download": (0, 0.04), "read": (0.04, 0.04), "lift": (0.08, 0.14), "compile": (0.22, 0.68), "finish": (0.90, 0.02),
                 "shaders": (0.92, 0.08)}
 SHADERS_LATER = "--no-prepare-shaders"
+# (Compile shaders, make_game.py --compile-shaders: kept in the folder's hookshot_options.ini as compile_shaders=, which the
+# launcher's setting writes too. ShaderStep.cs)
+COMPILE_SHADERS = "--compile-shaders"
+COMPILE_LEVELS = ("all", "most")
+COMPILE_NAMES = ("All", "Most")
+COMPILE_TIP = ("All (the default): every shader, the pipelines the game is known to use and the predicted ones. Most: without "
+               "the predicted pipelines, 20-30% shorter (19% on an RTX 5060 Ti, 30% on an RTX 3090); on one route it cost nothing "
+               "in play, but more may be compiled the first time you visit a place.")
 NOT_PREPARED = re.compile(r"^the shaders were not prepared now \((.*)\): (.*)$")   # (make_game.py NOT_PREPARED)
 FIRST_START = "the game prepares them at its first start"   # (make_game.py FIRST_START)
 
@@ -742,7 +750,15 @@ class Window(QWidget):
         self.prepare_tick.setToolTip("Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, "
                                      "the game prepares them at its first start, behind a black window.")
         self.prepare_tick.clicked.connect(self.save_settings)
-        work_col = holder(vbox(section("BUILD WORKERS"), self.worker_box, 12, self.prepare_tick))
+        self.compile_box = Choice()
+        for name in COMPILE_NAMES:
+            self.compile_box.addItem(name)
+        self.compile_box.setCurrentIndex(1)
+        self.compile_box.setProperty("focus_ring", True)
+        self.compile_box.setToolTip(COMPILE_TIP)
+        self.compile_box.currentIndexChanged.connect(lambda _: self.save_settings())
+        work_col = holder(vbox(section("BUILD WORKERS"), self.worker_box, 12, self.prepare_tick, 12, section("COMPILE SHADERS"),
+                               self.compile_box))
         work_col.setFixedWidth(160)
         row4 = hbox(hbox(Glyph("info"), 8, self.tools_note), 20)
         row4.addWidget(work_col, 0, Qt.AlignmentFlag.AlignTop)
@@ -1076,6 +1092,10 @@ class Window(QWidget):
         self.dlss_tick.setChecked(bool(s.get("Dlss")))
         self.dlss_license = bool(s.get("DlssLicense"))
         self.prepare_tick.setChecked(not s.get("PrepareLater"))
+        self.compile_box.blockSignals(True)   # (not saved back from here: the rest of the settings are not applied yet)
+        self.compile_box.setCurrentIndex(COMPILE_LEVELS.index(s.get("CompileShaders") if s.get("CompileShaders") in COMPILE_LEVELS
+                                                              else "all"))
+        self.compile_box.blockSignals(False)
         r, x, n = s.get("Romfs"), s.get("Exefs"), s.get("Nup")
         if r and x and os.path.isdir(r) and os.path.isfile(os.path.join(x, "main")):
             self.romfs, self.exefs = r, x
@@ -1090,7 +1110,11 @@ class Window(QWidget):
         core.save_settings({"Out": self.out_path.text(), "Nup": None if self.romfs else self.chosen_nup, "Romfs": self.romfs,
                             "Exefs": self.exefs, "Dlss": self.dlss_tick.isChecked(),
                             "DlssLicense": getattr(self, "dlss_license", False) or bool(core.load_settings().get("DlssLicense")),
-                            "PrepareLater": not self.prepare_tick.isChecked()})
+                            "PrepareLater": not self.prepare_tick.isChecked(), "CompileShaders": self.chosen_level()})
+
+    def chosen_level(self):
+        """The Compile shaders box's choice, as make_game.py takes it"""
+        return COMPILE_LEVELS[max(0, self.compile_box.currentIndex())]
 
     def preview(self, what):
         """(development) HOOKSHOT_UI_PREVIEW=build|ready|problem|update|launch: one screen with made-up progress, nothing run"""
@@ -1361,6 +1385,7 @@ class Window(QWidget):
         self.prepare_now = self.prepare_tick.isChecked()
         if not self.prepare_now:
             args.append(SHADERS_LATER)
+        args += [COMPILE_SHADERS, self.chosen_level()]   # (make_game keeps it in the folder; an update passes none: the folder's)
         self.run(tools, args, dlss=self.dlss_tick.isChecked())
 
     def dlss_changed(self):
