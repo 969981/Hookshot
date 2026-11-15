@@ -247,11 +247,13 @@ HLE(_ZN2nn2os17SetMemoryHeapSizeEm) {
 
 /* nn::os::AllocateMemoryBlock(unsigned long*, unsigned long) -> Result: 2 MB-aligned blocks from the heap */
 HLE(_ZN2nn2os19AllocateMemoryBlockEPmm) {
-    uint64_t out = ARG(0), size = (ARG(1) + 0x1FFFFF) & ~0x1FFFFFULL;
+    /* (hookshot) the game's size rounded up to 2 MB only when it cannot wrap: one near 2^64 rounded to 0 and was
+       handed out as a block of nothing */
+    uint64_t out = ARG(0), size = ARG(1) > ~0ULL - 0x1FFFFF ? ~0ULL : (ARG(1) + 0x1FFFFF) & ~0x1FFFFFULL;
     HOS_TRACE_CALL("AllocateMemoryBlock");
     LOCK();
     uint64_t a = HOS_HEAP_BASE + hos_heap_used;
-    int ok = hos_heap_used + size <= hos_heap_size;
+    int ok = size <= hos_heap_size && hos_heap_used <= hos_heap_size - size;   /* (no wrap in the sum either) */
     if (ok) hos_heap_used += size;
     UNLOCK();
     if (!ok) {
@@ -259,7 +261,7 @@ HLE(_ZN2nn2os19AllocateMemoryBlockEPmm) {
         RET(0x1A01);   /* os::ResultOutOfMemory */
         return;
     }
-    G64(out) = a;
+    *(uint64_t *)GR(out, 8) = a;
     RET(0);
 }
 

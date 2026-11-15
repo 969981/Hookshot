@@ -209,6 +209,7 @@ typedef struct { char name[HOS_FS_PATH]; int is_dir; uint64_t size; } ExtraEntry
 typedef struct {
     HANDLE h; int writable; HANDLE find; WIN32_FIND_DATAA fd; int find_done, is_dir; char path[HOS_FS_PATH];
     ExtraEntry *extras; int nextras, extra_pos;
+    volatile LONG refs;   /* (a file's: 1 while open, +1 for each call using it; the last let go closes it) */
 } Handle;
 static Handle *handles[4096];
 static SRWLOCK handle_lock = SRWLOCK_INIT;
@@ -225,6 +226,23 @@ static Handle *get_handle(Ctx *c, uint64_t id) {
     Handle *h = id && id <= 4096 ? handles[id - 1] : NULL;
     if (!h) hos_fatal(c, "fs: bad handle %#llx", (unsigned long long)id);
     return h;
+}
+/* (hookshot) A file's handle for one call: taken under the table's lock with a reference, so a CloseFile on another
+   guest thread cannot free it under the call (directories have dir_lock); put_file lets it go, and the last reference
+   closes the host file and frees it. A bad handle is fatal, as get_handle's. */
+static Handle *get_file(Ctx *c, uint64_t id) {
+    AcquireSRWLockShared(&handle_lock);
+    Handle *h = id && id <= 4096 ? handles[id - 1] : NULL;
+    if (h) InterlockedIncrement(&h->refs);
+    ReleaseSRWLockShared(&handle_lock);
+    if (!h) hos_fatal(c, "fs: bad handle %#llx", (unsigned long long)id);
+    return h;
+}
+static void put_file(Handle *h) {
+    if (h && !InterlockedDecrement(&h->refs)) {
+        CloseHandle(h->h);
+        free(h);
+    }
 }
 static void free_handle(uint64_t id) {
     AcquireSRWLockExclusive(&handle_lock);
@@ -406,7 +424,11 @@ static int fs_trace(void) {
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     char path[HOS_FS_PATH];
     int writable = 0;
-    const char *g = gstr(ARG(1));
+    /* (hookshot) the game's path copied once: every use below (the mount, the redirects, the overlay, the log) reads
+       this copy, not guest memory the game may change meanwhile */
+    char g_copy[FS_PATH_MAX];
+    snprintf(g_copy, sizeof g_copy, "%s", gstr(ARG(1)));
+    const char *g = g_copy;
     /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
        Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms.)
        (hookshot, #1929) From before host_path: the first open of a button-prompt file builds it there (prompts.c,
@@ -466,6 +488,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         return;
     }
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
+    fh->refs = 1;
     fh->h = h;
     fh->writable = want_write;
     snprintf(fh->path, sizeof fh->path, "%s", g);
@@ -475,9 +498,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
 }
 
 static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t size) {
-    Handle *fh = get_handle(c, id);
-    uint64_t done = 0;
     if (!hos_guest_range(buf, size)) return 0;   /* (hookshot: the file's bytes go into guest memory only) */
+    Handle *fh = get_file(c, id);
+    uint64_t done = 0;
     static int64_t delay_ns = -1, delay_after_ns;   /* HOS_FS_DELAY_MS=<ms>[,<after s>] (experiment): slower reads */
     if (delay_ns < 0) {
         const char *e = getenv("HOS_FS_DELAY_MS");
@@ -509,6 +532,7 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
             hos_log("fs: read into watched memory: %s at %lld, %llu bytes to %#llx", fh->path, (long long)off,
                     (unsigned long long)done, (unsigned long long)buf);
     }
+    put_file(fh);
     return done;
 }
 
@@ -529,35 +553,46 @@ HLE(_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE) {
 /* GetFileSize(long*, FileHandle) */
 HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     LARGE_INTEGER sz = {0};   /* (hookshot: a folder's handle has no size: 0, not the host stack's bytes) */
-    GetFileSizeEx(get_handle(c, ARG(1))->h, &sz);
+    Handle *fh = get_file(c, ARG(1));
+    GetFileSizeEx(fh->h, &sz);
+    put_file(fh);
     G64(ARG(0)) = (uint64_t)sz.QuadPart;
     RET(0);
 }
 /* WriteFile(FileHandle, long offset, void const* buf, unsigned long size, WriteOption const&) */
 HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
-    Handle *fh = get_handle(c, ARG(0));
+    Handle *fh = get_file(c, ARG(0));
     OVERLAPPED ov = {0};
     ov.Offset = (DWORD)ARG(1);
     ov.OffsetHigh = (DWORD)(ARG(1) >> 32);
     DWORD put = 0;
     /* (hookshot) from guest memory only, and the whole size: a DWORD cut wrote less than asked and said so */
     if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
+    put_file(fh);
     RET(put == ARG(3) ? 0 : 0x2EE202);
 }
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
-    Handle *fh = get_handle(c, ARG(0));
+    Handle *fh = get_file(c, ARG(0));
     LARGE_INTEGER sz;
     sz.QuadPart = (LONGLONG)ARG(1);
     SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
     SetEndOfFile(fh->h);
+    put_file(fh);
     RET(0);
 }
-HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(0))->h); RET(0); }
+HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) {
+    Handle *fh = get_file(c, ARG(0));
+    FlushFileBuffers(fh->h);
+    put_file(fh);
+    RET(0);
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
-    Handle *fh = get_handle(c, ARG(0));
-    CloseHandle(fh->h);
+    /* (hookshot) out of the table first, then the open reference let go: a call on another thread still using it
+       closes and frees it when it is done (put_file) */
+    Handle *fh = get_file(c, ARG(0));
     free_handle(ARG(0));
-    free(fh);
+    InterlockedDecrement(&fh->refs);   /* (the open one; the one get_file took is put below) */
+    put_file(fh);
 }
 
 /* CreateFile(char const*, long size) */
@@ -706,7 +741,7 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
         int want = (isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2));
         if (strcmp(fd->cFileName, ".") && strcmp(fd->cFileName, "..") && want) {
             uint64_t e = ARG(1) + 0x310 * n;
-            memset(GP(e), 0, 0x310);
+            memset(GR(e, 0x310), 0, 0x310);   /* (hookshot: max is the game's; each entry in its memory) */
             snprintf((char *)GP(e), 0x301, "%s", fd->cFileName);
             *(uint8_t *)GP(e + 0x304) = isdir ? 0 : 1;
             G64(e + 0x308) = ((uint64_t)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
@@ -718,7 +753,7 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
         const ExtraEntry *x = &dh->extras[dh->extra_pos++];
         if (!((x->is_dir && (dh->is_dir & 1)) || (!x->is_dir && (dh->is_dir & 2)))) continue;
         uint64_t e = ARG(1) + 0x310 * n;
-        memset(GP(e), 0, 0x310);
+        memset(GR(e, 0x310), 0, 0x310);
         snprintf((char *)GP(e), 0x301, "%s", x->name);
         *(uint8_t *)GP(e + 0x304) = x->is_dir ? 0 : 1;
         G64(e + 0x308) = x->size;

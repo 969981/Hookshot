@@ -33,7 +33,9 @@
 
 #define DEPTH 256
 typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
-typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
+/* (spare: the slot every push past DEPTH gets; extra: how many of those are open. A slot already handed out never moves:
+   the caller's frame holds its buf until its pop, and a longjmp restores the host registers saved there) */
+typedef struct { SjSlot slot[DEPTH], spare; int depth, overflow, extra; } SjStack;
 static _Thread_local SjStack *stack;
 
 #ifdef _WIN32
@@ -145,10 +147,16 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
 void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
     (void)c;
     if (!stack) stack = (SjStack *)calloc(1, sizeof *stack);
-    if (stack->depth >= DEPTH) {   /* (too deep: the outermost slots go, as they are the least likely targets) */
-        memmove(&stack->slot[0], &stack->slot[1], sizeof stack->slot[0] * (DEPTH - 1));
-        stack->depth = DEPTH - 1;
-        if (!stack->overflow++) hos_log("setjmp: more than %d nested setjmp owners on this thread", DEPTH);
+    if (stack->depth >= DEPTH) {
+        /* (too deep: the spare slot, which no longjmp is ever taken to. The outermost slots used to be shifted out from
+           under the frames that held them: a longjmp to a slot that had moved restored another frame's host registers,
+           one already gone) */
+        if (!stack->overflow++) hos_log("setjmp: more than %d nested setjmp owners on this thread: the ones past it "
+                                        "are not longjmp targets", DEPTH);
+        stack->extra++;
+        SjSlot *s = &stack->spare;
+        s->rets[0] = s->rets[1] = s->rets[2] = s->rets[3] = 0, s->target = 0;
+        return s->buf;
     }
     SjSlot *s = &stack->slot[stack->depth++];
     s->rets[0] = r0, s->rets[1] = r1, s->rets[2] = r2, s->rets[3] = r3, s->target = 0;
@@ -159,8 +167,13 @@ uint64_t recomp_sj_target(void **buf) { return ((SjSlot *)((char *)buf - offseto
 
 void recomp_sj_pop(void **buf) {
     if (!stack) return;
-    const int i = (int)(((SjSlot *)((char *)buf - offsetof(SjSlot, buf))) - stack->slot);
-    if (i >= 0 && i < DEPTH && i < stack->depth) stack->depth = i;
+    SjSlot *slot = (SjSlot *)((char *)buf - offsetof(SjSlot, buf));
+    if (slot == &stack->spare) {   /* (one of the pushes past DEPTH: the table is as it was) */
+        if (stack->extra) stack->extra--;
+        return;
+    }
+    const int i = (int)(slot - stack->slot);
+    if (i >= 0 && i < DEPTH && i < stack->depth) stack->depth = i, stack->extra = 0;
 }
 
 /* a64_call_miss's first question: a longjmp to a pushed setjmp owner? (does not return when it is) */
@@ -174,7 +187,7 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
             hos_log("longjmp to %#llx (value %llu, %d slots above dropped)", (unsigned long long)target,
                     (unsigned long long)c->x[0], stack->depth - 1 - i);
         s->target = target;
-        stack->depth = i + 1;
+        stack->depth = i + 1, stack->extra = 0;
         recomp_sj_longjmp(s->buf, 1);
     }
 }

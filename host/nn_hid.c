@@ -1072,9 +1072,15 @@ volatile int64_t hos_hid_last_read;
 
 /* GetNpadStates(State* out, int count, unsigned int const& npadId): the latest state first */
 static void npad_states(Ctx *c) {
+    enum { NPAD_STATES_MAX = 16 };   /* (the SDK's lifo holds 16: NpadStateCountMax) */
     uint64_t out = ARG(0);
     int count = (int)ARG(1);
-    uint32_t id = G32(ARG(2));
+    /* (hookshot) the count is the game's: at most the 16 the console keeps, none below 0, and the states it asks for
+       wholly in its memory (a count of 0x7fffffff wrote states over the host's) */
+    if (count < 0) count = 0;
+    if (count > NPAD_STATES_MAX) count = NPAD_STATES_MAX;
+    if (count) GR(out, (uint64_t)count * STATE_SIZE);
+    uint32_t id = *(const uint32_t *)GR(ARG(2), 4);
     uint64_t buttons = 0;
     int32_t stick[4] = {0};
     int connected = id == NPAD_NO1;

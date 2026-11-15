@@ -66,12 +66,17 @@ extern uint8_t *zs_mem;
 #define GP(a) ((void *)(zs_mem + ((uint64_t)(a) - ZS_BASE)))
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
+#define ZS_SIZE 0x%xull
+/* (hos.h's range check, over the fixture's memory alone: stricter than the guest window) */
+static inline void *hos_guest_range(uint64_t a, uint64_t n) {
+    return a >= ZS_BASE && a - ZS_BASE <= ZS_SIZE && n <= ZS_SIZE - (a - ZS_BASE) ? GP(a) : (void *)0;
+}
 void zs_mark(const void *p, size_t n);
 #define HOS_WRITTEN(p, n) zs_mark((p), (n))
 int hos_vcore_away(void);
 void hos_vcore_back(void);
 void hos_log(const char *fmt, ...);
-''' % BASE
+''' % (BASE, SIZE)
 
 FIXTURE = r'''
 #include <stdio.h>

@@ -56,6 +56,7 @@ typedef struct { uint64_t x[32]; } Ctx;
 #define GP(a) ((void *)(uintptr_t)(a))
 #define G64(a) (*(uint64_t *)GP(a))
 #define HOS_FS_PATH 1024
+#define FS_PATH_MAX 0x302   /* (host/nn_fs.c's: OpenFile copies the game's path into one) */
 #define R_PATH_NOT_FOUND 0x202
 static int hos_trace;
 static int fs_trace(void) { return 0; }
@@ -83,7 +84,7 @@ static HANDLE CreateFileA(const char *p, DWORD a, DWORD s, void *sa, DWORD d, DW
     held_in_create = held;
     return create_ok ? (HANDLE)(intptr_t)0x1234 : INVALID_HANDLE_VALUE;
 }
-typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; } Handle;
+typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; volatile long refs; } Handle;
 static uint64_t new_handle(Handle *h) { free(h); return 7; }
 
 @OPEN@

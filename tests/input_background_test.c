@@ -1,5 +1,6 @@
 /* Authored memory, clock and API spies; input_actual.inc contains the unmodified production path. */
 #include <stdint.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -48,8 +49,17 @@ static long long logged_origin;
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
-static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
+#define MEMORY_SIZE 1024
+static void *at(uint64_t address) { CHECK(address <= MEMORY_SIZE - 8); return memory + address; }
 #define GP(a) at(a)
+/* (host/hos.h's GR: a range not wholly in the guest's memory stops the run; here hos_fatal jumps back to the case) */
+static jmp_buf fatal_jump;
+static int fatal_calls;
+static void *guest_need(uint64_t a, uint64_t n) {
+    if (a > MEMORY_SIZE || n > MEMORY_SIZE - a) { fatal_calls++; longjmp(fatal_jump, 1); }
+    return memory + a;
+}
+#define GR(a, n) guest_need((a), (n))
 #define G32(a) (*(uint32_t *)at(a))
 #define G64(a) (*(uint64_t *)at(a))
 #define ARG(n) (c->x[n])
@@ -204,12 +214,38 @@ int main(int argc, char **argv) {
     CHECK(pads_in_background(NULL, 1));    /* the menu's row */
     CHECK(pads_in_background("1", 0));     /* HOS_INPUT_BACKGROUND=1 without the menu */
     CHECK(!pads_in_background("0", 1));    /* HOS_INPUT_BACKGROUND=0 wins over the menu */
-    memory = calloc(512, 1); CHECK(memory);
+    memory = calloc(MEMORY_SIZE, 1); CHECK(memory);
     const char *name = argv[1];
     if (!strcmp(name, "frame-hold") || !strcmp(name, "live-frame") || !strcmp(name, "reuse-frame") ||
         !strcmp(name, "wall") || !strcmp(name, "zero") || !strcmp(name, "empty")) {
         frame_clock_case(name);
         printf("PASS: actual input frame clock %s\n", name);
+        free(memory);
+        return 0;
+    }
+    if (!strcmp(name, "count-bounds")) {
+        /* GetNpadStates' count is the game's: at most the 16 the console keeps, none below 0, and the states wholly in
+           the guest's memory (a count of 0x7fffffff wrote states over the host's) */
+        front = 1;
+        G32(16) = NPAD_NO1;
+        memset(memory + 64, 0xa5, MEMORY_SIZE - 64);
+        Ctx huge = {{0}};
+        huge.x[0] = 64; huge.x[1] = 0x7fffffff; huge.x[2] = 16; huge.x[30] = 0x1234;
+        npad_states(&huge);
+        CHECK(huge.x[0] == 16);
+        CHECK(memory[64 + 16 * STATE_SIZE] == 0xa5);   /* (nothing past the 16th) */
+        Ctx negative = {{0}};
+        negative.x[0] = 64; negative.x[1] = (uint64_t)-5; negative.x[2] = 16;
+        npad_states(&negative);
+        CHECK(negative.x[0] == 0);
+        Ctx past = {{0}};
+        past.x[0] = MEMORY_SIZE - 2 * STATE_SIZE; past.x[1] = 4; past.x[2] = 16;
+        if (!setjmp(fatal_jump)) {
+            npad_states(&past);
+            CHECK(!"four states past the end of the guest's memory were written");
+        }
+        CHECK(fatal_calls == 1);
+        printf("PASS: actual GetNpadStates count-bounds\n");
         free(memory);
         return 0;
     }

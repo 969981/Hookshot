@@ -89,6 +89,17 @@ void hos_log_flush(void);
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)
 void hos_fatal(Ctx *c, const char *fmt, ...);
+/* (hookshot) GR(a, n): the host pointer of the n guest bytes at a, for an HLE's writes and reads where the game gives the
+   address and the size. A range not wholly in the guest window stops the run (hos_fatal, with the file and line), as
+   nvn_native.c's gw() does: GP alone wraps around to any host address, and a size the game gets wrong (or a mod or a
+   crafted asset makes it get wrong) would turn one call into a host write anywhere. Needs the HLE's Ctx *c. */
+static inline void *hos_guest_need(Ctx *c, uint64_t a, uint64_t n, const char *file, int line) {
+    void *p = hos_guest_range(a, n);
+    if (!p) hos_fatal(c, "%s:%d: guest memory %#llx + %#llx is not the game's", file, line, (unsigned long long)a,
+                      (unsigned long long)n);
+    return p;
+}
+#define GR(a, n) hos_guest_need(c, (a), (n), __FILE__, __LINE__)
 
 /* ---- guest memory (hos_mem.c) */
 uint64_t hos_sys_alloc(uint64_t size, uint64_t align);     /* zeroed, from the system region, never freed */

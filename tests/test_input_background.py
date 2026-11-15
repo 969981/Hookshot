@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
          "pads-insert",
-         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "single-state")
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "single-state", "count-bounds")
 
 
 def main():

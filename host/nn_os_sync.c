@@ -1361,7 +1361,8 @@ HLE(_ZN2nn2os22StartOneShotTimerEventEPNS0_14TimerEventTypeENS_8TimeSpanE) {
 }
 /* GenerateRandomBytes(void*, size_t) */
 HLE(_ZN2nn2os19GenerateRandomBytesEPvm) {
-    uint8_t *p = (uint8_t *)GP(ARG(0));
+    if (!ARG(1)) return;
+    uint8_t *p = (uint8_t *)GR(ARG(0), ARG(1));   /* (hookshot: the game's size, wholly in its memory) */
     static volatile LONG64 state = 0x9E3779B97F4A7C15LL;
     for (uint64_t i = 0; i < ARG(1); i++) {
         const uint64_t x = (uint64_t)InterlockedAdd64(&state, 0x9E3779B97F4A7C15LL);
