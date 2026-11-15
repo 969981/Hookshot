@@ -112,6 +112,15 @@ class PromptSkipTests(unittest.TestCase):
         self.assertEqual(self.calls, 1, "unchanged finish must not draw the prompts twice")
         self.assertIn("prompts: unchanged, kept", self.log.getvalue())
 
+    def test_a_game_without_ocarinas_dictionary_skips_the_prompts(self):
+        # (Mario Kart World, Donkey Kong Bananza: no Pack/ZsDic.pack.zs. prompt_assets.py stopped there on a traceback)
+        (self.romfs / "Pack" / "ZsDic.pack.zs").unlink()
+        (self.out / "stale").mkdir(parents=True)
+        self.build()
+        self.assertEqual(self.calls, 0, "the prompts were drawn for a game without Ocarina's icon font")
+        self.assertFalse(self.out.exists(), "an earlier build's prompts were kept for a game that has none")
+        self.assertIn("made from Ocarina's icon font: this game has none", self.log.getvalue())
+
     def test_missing_stamp_is_a_normal_first_build(self):
         self.assertFalse(self.out.exists())
         self.build()

@@ -2652,6 +2652,12 @@ def main(a=None):
     if importlib.util.find_spec("fontTools") is None:
         shutil.rmtree(prompts, ignore_errors=True)
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
+    elif not os.path.isfile(os.path.join(romfs, "Pack", "ZsDic.pack.zs")):
+        # (hookshot) the prompts are drawn from Ocarina's icon font, read with Ocarina's zstd dictionaries: a game without
+        # them (Mario Kart World, Donkey Kong Bananza) has neither, and prompt_assets.py stopped on a traceback there
+        shutil.rmtree(prompts, ignore_errors=True)
+        print("the button prompts of other controllers are made from Ocarina's icon font: this game has none, and shows its own",
+              flush=True)
     elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts] +
              ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
