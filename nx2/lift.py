@@ -39,6 +39,7 @@ import standalone
 import game_profile
 import adr_entries  # noqa: E402
 import nso
+import nro
 import poll
 import nx_image
 import image as eden_image
@@ -133,6 +134,7 @@ def main():
     p.add_argument("--rechunk", action="store_true", help="chunk boundaries from the sizes again (nx2/chunks.py)")
     p.add_argument("--standalone", action="store_true", help="the standalone build's lift (nx2/standalone.py)")
     p.add_argument("--entries", help="extra entry addresses, one hex address a line (e.g. the misses ArmRecomp logged)")
+    p.add_argument("--no-nro", action="store_true", help="leave the romfs's NRO modules out (nx2/nro.py)")
     p.add_argument("--no-adr-entries", action="store_true",
                    help="no extra entries at the code addresses ADR / ADRP+ADD take (nx2/adr_entries.py)")
     a = p.parse_args()
@@ -145,11 +147,15 @@ def main():
         print("lift: %s in %.1fs (%.0fs)" % (what, now - last[0], now - t0), flush=True)
         last[0] = now
     hle = ()
+    nros = [] if a.no_nro else nro.find(a.exefs)   # (the dump's NROs: nx2/nro.py)
+    if nros:
+        print("nro: %d module%s from the romfs, lifted with the game: %s" % (
+            len(nros), "" if len(nros) == 1 else "s", ", ".join(os.path.basename(p) for p in nros)))
     if a.standalone:
-        hle, stubbed = standalone.hle_set(nso.load_exefs(a.exefs))
+        hle, stubbed = standalone.hle_set(nso.load_exefs(a.exefs) + nro.load(nros))
         print("standalone: %d HLE functions in host/, %d OS-facing imports stubbed" % (len(hle), len(stubbed)))
         hle = hle | stubbed
-    img = eden_image.EdenImage(a.exefs, a.aslr, hle=hle) if a.layout == "eden" else nx_image.NxImage(a.exefs)
+    img = eden_image.EdenImage(a.exefs, a.aslr, hle=hle, nros=nros) if a.layout == "eden" else nx_image.NxImage(a.exefs)
     out_dir = os.path.join(a.work, "sa") if a.standalone else a.work
     img_dir = os.path.join(out_dir, "image")
     meta = img.write(img_dir)

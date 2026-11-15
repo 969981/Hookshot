@@ -15,6 +15,7 @@ import struct
 import kit  # noqa: F401  (sys.path)
 import nso2  # noqa: F401  (DT_RELR)
 import nso
+import nro
 import nx_image
 
 PAGE = 0x1000
@@ -48,10 +49,11 @@ def eden_size(m):
 
 
 class EdenImage(nx_image.NxImage):
-    def __init__(self, exefs, aslr_offset=0, program_args=False, hle=()):
+    def __init__(self, exefs, aslr_offset=0, program_args=False, hle=(), nros=()):
         base = CODE_39BIT + aslr_offset
         nx_image.MAIN_BASE = base     # (NxImage's word/read/write index the image from this module global)
-        self.modules = nso.load_exefs(exefs)
+        # (the dump's NROs after sdk: linked against the rest and lifted with the game; nx2/nro.py, host/nn_ro.c)
+        self.modules = nso.load_exefs(exefs) + nro.load(nros)
         self.skipped = []
         for m in self.modules:
             m.base = base

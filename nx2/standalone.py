@@ -185,7 +185,9 @@ def write_image_c(gen, img, meta, exefs):
     """Boot constants for hos_main.c: the image span, each module's DT_INIT in rtld's order (rtld itself is not run:
     the image is already relocated), the entry points, and the main thread's stack, priority and core (main.npdm)"""
     ex = meta["exports"]
-    mods = [m for m in meta["modules"] if m["init"] and m["name"] != "rtld"]
+    mods = [m for m in meta["modules"] if m["init"] and m["name"] != "rtld" and not m["name"].endswith(".nro")]
+    # (the NROs' DT_INIT run when the game loads them, nn::ro::LoadModule: host/nn_ro.c; not at boot)
+    nros = [m for m in meta["modules"] if m["name"].endswith(".nro")]
     npdm = open(os.path.join(exefs, "main.npdm"), "rb").read()
     if npdm[:4] != b"META":
         sys.exit("main.npdm: no META header")
@@ -207,7 +209,12 @@ def write_image_c(gen, img, meta, exefs):
              "const uint64_t hos_entry_nnMain = %#xULL;" % ex.get("nnMain", 0),
              "const uint64_t hos_program_id = %#xULL;   /* (main.npdm's ACI0) */" % program_id,
              "const uint64_t hos_system_resource_size = %#xULL;   /* (main.npdm's system resource size) */" % system_resource,
-             'const char hos_main_build_id[] = "%s";' % main_build]
+             'const char hos_main_build_id[] = "%s";' % main_build,
+             "const int hos_nro_count = %d;   /* (the dump's NROs, lifted with the game: host/nn_ro.c) */" % len(nros),
+             "const char *const hos_nro_name[] = {%s};" % ", ".join(['"%s"' % m["name"] for m in nros] + ["0"]),
+             "const char *const hos_nro_build_id[] = {%s};" % ", ".join(['"%s"' % m["build_id"] for m in nros] + ["0"]),
+             "const uint64_t hos_nro_base[] = {%s};" % ", ".join(["%#xULL" % m["base"] for m in nros] + ["0"]),
+             "const uint64_t hos_nro_init[] = {%s};" % ", ".join(["%#xULL" % m["init"] for m in nros] + ["0"])]
     for sym in ("_init_libc0", "_init_libc1", "_init_libc2", "nnosInitialize", "nninitInitializeSdkModule",
                 "nvnBootstrapLoaderInternal"):
         lines.append("const uint64_t hos_entry_%s = %#xULL;" % (sym.lstrip("_"), ex.get(sym, 0)))
