@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.21](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.20...v2.3.0-rc.21) (2026-11-15)
+
+
+### Bug Fixes
+
+* **vk:** OoT's clustered lights sample their own shadow maps (handle tables as descriptor arrays, from Longshot) ([#57](https://github.com/notquiteog/Hookshot/issues/57)) ([932d225](https://github.com/notquiteog/Hookshot/commit/932d225e86f6d709555843e55c826b96dd4f165b))
+
 ## [2.3.0-rc.20](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.19...v2.3.0-rc.20) (2026-11-15)
 
 
