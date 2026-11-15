@@ -2474,6 +2474,15 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // alone, which drew none of its geometry and then lost the device, issue 640)
         if (p.fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)))
             continue;
+        // (hookshot) a pass-through geometry stage is translated for triangles (vk_shader.cpp translate_into): with another
+        // topology the pipeline would not match it, so none is made and its draws are left out (said once)
+        if (st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST &&
+            topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) {
+            static std::atomic<bool> said{false};
+            if (!said.exchange(true))
+                logf("vk: program %016llx: a geometry stage drawn with topology %d, not triangles: left out", (unsigned long long)p.key, (int)topo);
+            return VK_NULL_HANDLE;
+        }
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = st.vk_stage;
         si.module = st.module;
@@ -3751,7 +3760,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     if (const uint64_t end = gpu_pool_end(addr); end > addr)
                         size = std::min<uint64_t>(end - addr, d.is_written ? (1ull << 20) : bare_read) & ~3ull, bare = true;
                 // (EvilOOT) the pointer table's regions (c0+0x880, vk_bank.cpp pointer_table) are guesses too: GPU-only, as above
-                if (d.cbuf_index == 0 && d.cbuf_offset == 0x880 && d.count == 3) bare = true;
+                if (d.cbuf_index == 0 && d.cbuf_offset == 0x880 && (d.count == 3 || d.count == 8)) bare = true;   // (8: a vertex stage's)
                 // (Fritchii's storage buffer pass, Info::native_global_bounds) a program whose accesses pick among candidate
                 // pointers at run time: those are bare 8-byte arguments, the word after one another argument (a stride, a
                 // handle), not an NVN size. Unless that word looks like this pointer's size (its high half 0, inside the

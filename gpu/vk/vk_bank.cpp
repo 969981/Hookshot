@@ -252,8 +252,11 @@ void driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
 // gave 0: skinned and instanced models lost their bones and collapsed into spikes.
 struct PointerEntry { uint64_t addr, size; };
 constexpr uint32_t kPointerTable = 0x880, kPointerEntries = 3;
+// (hookshot) a vertex stage's table: up to 8 pools (Bananza's terrain reset reaches its records in 4)
+constexpr uint32_t kVertexPointerEntries = 8;
+uint32_t pointer_entries(int stage) { return stage == 0 ? kVertexPointerEntries : kPointerEntries; }
 const PointerEntry* pointer_table(const NvnState& s, int stage) {
-    thread_local PointerEntry e[kPointerEntries];
+    thread_local PointerEntry e[kVertexPointerEntries];
     thread_local uint64_t for_gen = ~0ull;
     thread_local const NvnState* for_state = nullptr;
     thread_local int for_stage = -1;
@@ -267,6 +270,30 @@ const PointerEntry* pointer_table(const NvnState& s, int stage) {
             if (b.addr && v >= b.addr && v < b.addr + b.size) return true;
         return false;
     };
+    if (stage == 0) {   // (hookshot) a vertex stage: every pool its storage buffers' pointers reach, up to 8, each whole
+        // Bananza's terrain reset (a point draw, one point a record) stores {0, 1, 0, 0, 0} through a list of 1,525 pointers
+        // in 4 pools: the first 32 of them reached one pool, and the records in the others stayed 0. The whole list is read
+        // (4,096 pointers at most), as far as it goes, and the pools it reaches are bound
+        const uint64_t most = std::min<uint64_t>(dev.props.limits.maxStorageBufferRange, 0xFFFFFF00ull) & ~0xFFull;
+        uint32_t regions = 0;
+        std::vector<uint64_t> w;
+        for (const nvn_p_bind_buf& b : s.ssbo[stage]) {
+            if (!b.addr || !b.size || regions >= kVertexPointerEntries) continue;
+            const uint32_t words = (uint32_t)std::min<uint64_t>(b.size / 8, 4096);
+            w.assign(words, 0);
+            if (!words || !memory_read_as_submitted(b.addr, w.data(), (uint64_t)words * 8)) continue;
+            for (uint32_t i = 0; i < words && regions < kVertexPointerEntries; i++) {
+                const uint64_t v = w[i];
+                if ((v & 3) || v < (1ull << 32) || v >= (1ull << 40) || !host->gpu_guest(v) || bound(v)) continue;
+                const uint64_t lo = gpu_pool_start(v), hi = gpu_pool_end(v);
+                if (!hi || hi <= lo) continue;
+                bool have = false;
+                for (uint32_t k = 0; k < regions; k++) have |= e[k].addr == lo;
+                if (!have) e[regions++] = {lo, std::min<uint64_t>(hi - lo, most)};
+            }
+        }
+        return e;
+    }
     for (const nvn_p_bind_buf& b : s.ssbo[stage]) {
         if (!b.addr || !b.size || b.size > 0x100) continue;
         uint64_t w[32]{};
@@ -358,9 +385,9 @@ void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32
     static constexpr uint32_t kSsboTable[kNvnStages] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
     if (const uint32_t base = kSsboTable[stage])
         for (uint32_t i = 0; i < 16 && base + 16 * i < n; i++) entry(base + 16 * i, s.ssbo[stage][i]);
-    if ((stage == 6 || stage == 7) && n > kPointerTable) {
+    if ((stage == 0 || stage == 6 || stage == 7) && n > kPointerTable) {   // (hookshot: vertex too, AddGlobalTables)
         const PointerEntry* e = pointer_table(s, stage);
-        for (uint32_t i = 0; i < kPointerEntries; i++) {
+        for (uint32_t i = 0; i < pointer_entries(stage); i++) {
             const uint32_t off = kPointerTable + 16 * i;
             put(off, (uint32_t)e[i].addr), put(off + 4, (uint32_t)(e[i].addr >> 32)), put(off + 8, (uint32_t)e[i].size);
         }
@@ -429,7 +456,7 @@ uint32_t driver_bank_word(const NvnState& s, int bank, int stage, uint32_t offse
         }
     };
     if (base && offset >= base && offset < base + 16 * 16) return table(s.ssbo[stage], base);
-    if ((stage == 6 || stage == 7) && offset >= kPointerTable && offset < kPointerTable + 16 * kPointerEntries) {
+    if ((stage == 0 || stage == 6 || stage == 7) && offset >= kPointerTable && offset < kPointerTable + 16 * pointer_entries(stage)) {
         const PointerEntry& e = pointer_table(s, stage)[(offset - kPointerTable) / 16];
         const uint32_t in = (offset - kPointerTable) % 16;
         return in == 0 ? lo(e.addr) : in == 4 ? hi(e.addr) : in == 8 ? (uint32_t)e.size : 0;

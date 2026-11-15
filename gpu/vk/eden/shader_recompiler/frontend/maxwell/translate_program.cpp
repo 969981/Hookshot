@@ -107,6 +107,13 @@ void AddGlobalTables(IR::Program& program) {
     // g_nvn2_compute_layout_end): OoT's culling passes reach their object lists through pointers in their records
     const bool compute_table{program.stage == Stage::Compute && Optimization::g_nvn2_compute_layout_end != 0 &&
                              Optimization::g_nvn2_compute_layout_end <= 0x880U};
+    // (hookshot) and vertex programs that store through such pointers: Donkey Kong Bananza resets its terrain's indirect
+    // draw records with a point draw whose vertex program loads each record's address from a list in a storage buffer and
+    // stores {0, 1, 0, 0, 0} there. No binding names those records: the stores went nowhere, the records stayed 0, the
+    // terrain's draws drew nothing and the cave's ground and walls stayed black. Stores only: vertex programs that only
+    // read through pointers keep the search as before
+    const bool vertex_table{(program.stage == Stage::VertexA || program.stage == Stage::VertexB) &&
+                            program.info.stores_global_memory};
     // (EvilOOT) the program's own tables first: the search takes the first buffer that holds an address, and the pointer
     // table's regions are whole pools for compute (vk_bank.cpp pointer_table), bound GPU-only. Searched before the precise
     // entries, the culling setup's count writes went through the pool's binding and the launches never saw them.
@@ -120,18 +127,20 @@ void AddGlobalTables(IR::Program& program) {
             .is_written = program.info.stores_global_memory,
         });
     }
-    if ((program.stage == Stage::Task || program.stage == Stage::Mesh || compute_table) && program.info.uses_global_memory &&
-        room()) {
+    if ((program.stage == Stage::Task || program.stage == Stage::Mesh || compute_table || vertex_table) &&
+        program.info.uses_global_memory && room()) {
+        // (hookshot) a vertex stage's table has 8 entries (vk_bank.cpp kVertexPointerEntries), the others 3
+        const u32 entries{vertex_table ? 8U : 3U};
         program.info.storage_buffers_descriptors.push_back({
             .cbuf_index = 0U,
             .cbuf_offset = 0x880U,
-            .count = 3U,
-            .is_written = compute_table && program.info.stores_global_memory,
+            .count = entries,
+            .is_written = (compute_table || vertex_table) && program.info.stores_global_memory,
         });
         // (EvilOOT) the global memory functions read the table's words from c0 in SPIR-V, not in the IR the bound size
         // comes from: c0 must reach past it, or those words read 0
         u32& used{program.info.constant_buffer_used_sizes[0]};
-        used = std::max<u32>(used, 0x880U + 16U * 3U);
+        used = std::max<u32>(used, 0x880U + 16U * entries);
     }
 }
 

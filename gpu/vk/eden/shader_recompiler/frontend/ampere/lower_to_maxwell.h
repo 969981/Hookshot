@@ -36,6 +36,10 @@ static_assert(sizeof(Instruction) == 16);
 // (vk_coopmat.cpp): HMMA.16816.F16 then lowers to the HMMA_nx2 pseudo instruction (one subgroup
 // matrix multiply on the host's tensor cores) instead of the shuffle expansion.
 inline thread_local bool native_matrix_multiply = false;
+// (hookshot) the program is a pass-through geometry stage (its header's geometry_passthrough bit; vk_shader.cpp sets it
+// around the lowering). Such a stage's exit handler (LEPC, 0x357, and the OUT and 0x957 it points to) is dropped, and
+// ISBERD of the map region gives the vertex index back, as Eden's Maxwell ISBERD does: see the cases below
+inline thread_local bool passthrough_geometry_stage = false;
 
 // (hookshot) Native programs whose GPRs reach the lowering's reserved registers (the uniform bank at R216-R245, R239's
 // uniform predicates, the scratch R246-R254): OoT's big vertex and mesh programs use ~249 GPRs. Their high GPRs (from
@@ -1585,6 +1589,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
             break;
         }
+        case 0x34e: case 0x357: case 0x324: case 0x957: {
+            // (hookshot) A pass-through geometry stage (Donkey Kong Bananza's destructible terrain, the cave's ground and
+            // walls) begins LEPC R0; MOV R3, <end>; IADD3 R0, R0, R3; ... 0x357 (R0 read, nothing written): the address
+            // of its epilogue, OUT RZ, R0, RZ; 0x957; EXIT, where its exits go. Eden's frontend emits a pass-through
+            // stage's vertices at the program's end itself (LowerGeometryPassthrough), so these four do nothing here; no
+            // branch reaches the epilogue. The body before them is what matters: it culls each triangle and appends the
+            // ones left to the terrain's index lists (ATOMG on the draw records, STG of the indices). Without it every
+            // record kept the count the reset gave it, 0, and the ground was not drawn. Other stages still fail
+            if (!passthrough_geometry_stage) return fail(index, "unsupported native opcode");
+            if (opcode == 0x34e ? (insn.words[0] & 0xff00ffffU) != 0x734e || insn.words[1] || insn.words[2]
+                                : opcode == 0x324 ? insn.words[0] != 0x00ff7324 || insn.words[1] != 0xff || insn.words[2]
+                                                  : insn.words[0] != (0x7000U | opcode) || insn.words[1] || insn.words[2])
+                return fail(index, "native exit handler mode");
+            if (opcode == 0x34e) mov_imm(dest, 0);   // (LEPC: the address is only the handler's, which is dropped)
+            break;
+        }
         case 0x918:
             if (insn.words[1] || insn.words[2]) return fail(index, "native NOP mode");
             emit(0x50b0000000000f00ULL | predicate);
@@ -2044,13 +2064,21 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
             // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1.
             const bool half = opcode == 0x305 && (mode & ~0x100U) == 0x0010f000;
-            const bool small = mode == 0x00212800;
+            // F2I.U16 (the size bits 75-76 = 1): Maxwell's F2I.U16. (hookshot) any rounding (bits 78-79), FTZ (bit 80) or
+            // not: Donkey Kong Bananza's terrain culling (a pass-through geometry stage) stores its indices from F2I.U16.TRUNC
+            const bool small = ((mode & ~0x1c000U) == 0x00202800);
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
             const bool ceil = (mode & ~0x10100U) == 0x0020b000;   // (hookshot) round up: Maxwell's mode 2
+            // (hookshot) an 8-bit destination (F2I.S8 / F2I.U8: the size bits 75-76 clear, bit 77 set as in the 32-bit
+            // forms), any rounding (bits 78-79: 0 nearest, 1 floor, 2 ceil, 3 truncate). Maxwell's F2I has no 8-bit
+            // form: converted to 32 bits, then clamped to the byte's range. Donkey Kong Bananza's vertex programs use
+            // F2I.S8.TRUNC (its terrain's reset among them: left out, the terrain's draws drew nothing and it stayed black)
+            const bool byte = opcode == 0x305 && ((mode & ~0x10100U) & ~0xc000U) == 0x00202000;
+            const u32 byte_rounding = (mode >> 14) & 3;
             // (hookshot) a negated or absolute register source (bits 63, 62), made first
             const bool source_mod = opcode == 0x305 && !half && (insn.words[1] & 0x3fffff00U) == 0;
-            if ((!half && !small && !floor && !nearest && !ceil && (mode & ~0x10100U) != 0x0020f000) ||
+            if ((!half && !small && !floor && !nearest && !ceil && !byte && (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && !immediate && !source_mod && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (immediate && insn.Bits(24, 8)) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
@@ -2082,12 +2110,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 }
                 source = 250;
             }
+            const u32 rounding = byte || small ? (mode >> 14) & 3 : nearest ? 0U : floor ? 1U : ceil ? 2U : 3U;
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : ceil ? 2U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{rounding} << 39) | (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
+            }
+            if (byte) {   // (hookshot) IMNMX Rd, Rd, R252: the minimum (PT), then the maximum (!PT), signed per bit 48
+                mov_imm(252, is_signed ? 127U : 255U);
+                emit(base(0x5c20000000000000ULL) | (dest << 8) | (u64{252} << 20) | (u64{7} << 39) |
+                     (u64{is_signed} << 48));
+                if (is_signed) {
+                    mov_imm(252, 0xffffff80U);
+                    emit(base(0x5c20000000000000ULL) | (dest << 8) | (u64{252} << 20) | (u64{7} << 39) |
+                         (u64{1} << 42) | (u64{1} << 48));
+                }
             }
             break;
         }
@@ -3475,6 +3514,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
+            // (hookshot) a pass-through geometry stage's ISBERD Rd, [Ra] of the map region: the handle of input vertex Ra
+            // for ALD. Eden's Maxwell ISBERD gives Ra back (its ALD takes a vertex index), so a MOV
+            if (passthrough_geometry_stage && !write && insn.words[2] == 0 && insn.Bits(40, 24) == 0 && dest != 255) {
+                emit(0x5c98000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 20) | (u64{15} << 39));
+                break;
+            }
             // (hookshot) a read may be of the output region (.O): the program reading back what it wrote (one of OoT's
             // task programs reads its payload so); a write is always to it
             if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || (write && !output) ||
