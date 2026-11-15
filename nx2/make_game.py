@@ -646,6 +646,36 @@ def game_folders_for_dump(a):
         print("%s: its own game folder %s" % (profile.game, a.out), file=sys.stderr if PREPARE else sys.stdout, flush=True)
 
 
+def copy_for_key(a, work):
+    """(--game-<key>) the copy is the game the launcher asked for: its build id is that key's profile. A copy of another game
+    (or another version) is refused in plain words before anything is built: the launcher's inputs carry no build check"""
+    want = game_profile.GAMES[a.expect_key]
+    bid = dump_build_id(a, work)
+    got = supported_build(bid)
+    if got is not want:
+        what = ("%s %s" % (got.game, got.version_name)) if got else "build %s, which Hookshot does not know" % bid[:8]
+        fail("The copy given for %s is %s. Choose your copy of %s %s (build %s): %s" % (
+            want.game, what, want.game, want.version_name, want.build_id[:8], a.game))
+
+
+def build_each(a):
+    """Several --game-<key> copies (a whole setup): each built in turn by a make_game of its own, with the other arguments
+    as given. The first that fails stops the rest, its message already said"""
+    rest, skip = [], False
+    for arg in sys.argv[1:]:
+        if skip:
+            skip = False
+        elif arg.startswith("--game-"):
+            skip = "=" not in arg
+        else:
+            rest.append(arg)
+    for key, copy in a.game_copies:
+        print("Building %s from %s" % (game_profile.GAMES[key].game, copy), file=sys.stderr if PREPARE else sys.stdout, flush=True)
+        r = subprocess.call(PY + [os.path.abspath(__file__)] + rest + ["--game-%s=%s" % (key, copy)])
+        if r:
+            sys.exit(r)
+
+
 def check(a, work):
     check_windows_sdk(work)   # (first: said in plain words when the game is chosen, not after it has been read)
     check_cpu()
@@ -2114,6 +2144,10 @@ def parse_args():
                                       "folder has; else the system's with --prepare; else en-US")
     p.add_argument("--check", action="store_true")
     p.add_argument("--game", help="your copy: a .nup file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
+    # (RecompLauncher's named inputs, one per game: --game-<key>=<copy>. Each copy must be that game's: copy_for_key)
+    for prof, _ in game_profile.known_builds():
+        p.add_argument("--game-" + prof.key, dest="game_" + prof.key, metavar="COPY",
+                       help="your copy of %s (%s): checked to be that game, built into its own folder" % (prof.game, prof.version_name))
     p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--no-prepare-shaders", action="store_true",
@@ -2141,7 +2175,16 @@ def parse_args():
         a.out = a.out or (os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
                           if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and
                           os.environ.get("HOOKSHOT_SETUP_BASE") else os.path.join(os.path.expanduser("~"), "Games", "Hookshot"))
-    if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
+    # (--game-<key>: one copy is that game's --game, its key kept to check the copy against; several are built one after
+    # another by main, each in a make_game of its own)
+    a.game_copies = [(prof.key, getattr(a, "game_" + prof.key)) for prof, _ in game_profile.known_builds()
+                     if getattr(a, "game_" + prof.key, None)]
+    a.expect_key = None
+    if a.game_copies and (a.game or a.nup or a.romfs or a.exefs or a.update):
+        fail("Give one copy with --game (or --nup, --romfs and --exefs, or --update), or one --game-<game> per game, not both.")
+    if len(a.game_copies) == 1:
+        a.expect_key, a.game = a.game_copies[0]
+    if a.game and not (len(a.game_copies) > 1):   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
         if os.path.isdir(a.game):
             a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
             if not (os.path.isdir(a.romfs) and os.path.isdir(a.exefs)):
@@ -2251,6 +2294,10 @@ def main(a=None):
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
         import ctypes
         ctypes.WinDLL("kernel32").SetThreadExecutionState(0x80000000 | 0x00000001)
+    if len(getattr(a, "game_copies", ())) > 1:
+        return build_each(a)
+    if getattr(a, "expect_key", None):
+        copy_for_key(a, a.work)
     if a.check:
         return check(a, a.work)
     if a.update:

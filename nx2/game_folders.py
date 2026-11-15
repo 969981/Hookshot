@@ -25,6 +25,7 @@ The places that apply it:
 
     python -I nx2/game_folders.py --folder ~/Games/Hookshot --key mkw   # ~/Games/Hookshot-mkw
     python -I nx2/game_folders.py --launcher-games                     # the games[] the released profiles give
+    python -I nx2/game_folders.py --write-launcher recomplauncher.json  # the entry with every released game in it
 """
 import argparse
 import json
@@ -58,30 +59,84 @@ def released():
     return [p for p in game_profile.GAMES.values() if p.build_id and getattr(p, "released", True)]
 
 
-def launcher_games(profiles=None, home="{home}/Games/Hookshot", local="{local}"):
+def copy_label(p):
+    """What the launcher says when it asks for this game's copy: the game, its exact version and main's build"""
+    return ("Your copy of %s for Nintendo Switch 2, %s (build %s): the .nup file, or the folder that holds its romfs and "
+            "exefs." % (p.game, p.version_name, p.build_id[:8]))
+
+
+def launcher_inputs(profiles=None, named=None):
+    """recomplauncher.json's inputs[]: one named input per game (its id the profile key), for the games in named
+    (default: every released one). RecompLauncher's per-game setup asks each game's tile for its own input only
+    (games[].inputs), and prepare gets it as --game-<key>={input:<key>}. Inputs take no nup_build_id: the builder checks
+    each copy against its profile (make_game.py --game-<key>)."""
+    profiles = released() if profiles is None else list(profiles)
+    named = {p.key for p in profiles} if named is None else set(named)
+    return [{"id": p.key, "label": copy_label(p), "role": "game",
+             "formats": [{"type": "file", "extensions": ["nup"]}, {"type": "folder"}]}
+            for p in profiles if p.key in named]
+
+
+def prepare_args(profiles=None, named=None):
+    """prepare.args' per-game part: each named copy in one argument, so a game whose input is absent (another game's
+    setup) drops out whole rather than leaving a flag behind (RecompLauncher SETUP-INPUTS.md)"""
+    profiles = released() if profiles is None else list(profiles)
+    named = {p.key for p in profiles} if named is None else set(named)
+    return ["--game-%s={input:%s}" % (p.key, p.key) for p in profiles if p.key in named]
+
+
+def launcher_games(profiles=None, home="{home}/Games/Hookshot", local="{local}", named=None):
     """recomplauncher.json's games[] for these profiles (default: released()), or None when there is only one game.
 
-    RecompLauncher's schema wants two games or more in games[]; with one, the recomp shows as one game, which is
-    Hookshot today. Each game's args add `--game <key>` after start.args (Play only: games[].args are not passed to
-    prepare). Each game's saves are its own: on Linux the profile's GAME_SAVES_DIR under {local}, on Windows its game
-    folder's user/. The default game's are the paths the entry's top-level saves have always named, so nothing moves.
-
-    Not here, because the schema has no place for it yet: a per-game copy check. inputs[] items take no
-    nup_build_id (only the top-level game.check does), and prepare is one step for the release. Until the launcher
-    can check each game's input, the builder checks the copy itself (make_game.py check_supported_build), and a
-    second game joining the release needs that settled first (docs/one-engine.md)."""
+    RecompLauncher's schema wants two games or more in games[]; with one, the recomp shows as one game. Each game's
+    args add `--game <key>` after start.args (Play only: games[].args are not passed to prepare). Each game's saves
+    are its own: on Linux the profile's GAME_SAVES_DIR under {local}, on Windows its game folder's user/. The default
+    game's are the paths the entry's top-level saves have always named, so nothing moves. Each game in named (default:
+    all) lists its own input (launcher_inputs), so its tile asks for its copy alone."""
     profiles = released() if profiles is None else list(profiles)
     if len(profiles) < 2:
         return None
+    named = {p.key for p in profiles} if named is None else set(named)
     games = []
     for p in profiles:
-        games.append({
-            "id": p.key,
-            "name": p.game,
-            "args": ["--game", p.key],
-            "saves": ["%s/%s" % (local, game_profile.saves_dir(p)), "%s/user" % folder(home, p.key)],
-        })
+        g = {"id": p.key, "name": p.game, "args": ["--game", p.key]}
+        if p.key in named:
+            g["inputs"] = [p.key]
+        g["saves"] = ["%s/%s" % (local, game_profile.saves_dir(p)), "%s/user" % folder(home, p.key)]
+        games.append(g)
     return games
+
+
+# The oldest RecompLauncher whose per-game setup this entry needs: games[] with each game's own inputs and saves, and
+# named inputs in prepare.args (0.90 Beta 36: games.rs inputs_for / scope / each game's inputs_ready)
+LAUNCHER_MIN = "0.90.0-beta.36"
+
+
+def launcher_entry(entry, profiles=None):
+    """recomplauncher.json with every released game in it: its copy as a named input (no legacy `game`: the launcher
+    would then ask every game's tile for that one copy too), its tile in games[], and its copy in prepare.args in one
+    argument each. What the entry holds besides is left as it is. A player's old setup (the legacy copy) does not carry
+    over to the named input: RecompLauncher asks for the Ocarina copy once more after the update
+    (.github/release-notice.md)."""
+    profiles = released() if profiles is None else list(profiles)
+    out = {}
+    for k, v in entry.items():
+        if k == "game":   # (the legacy single copy: its place in the file goes to inputs)
+            out["inputs"] = launcher_inputs(profiles)
+            continue
+        out[k] = v
+        if k == "repo":
+            out["min"] = LAUNCHER_MIN
+    out.setdefault("min", LAUNCHER_MIN)
+    out["inputs"] = launcher_inputs(profiles) + [i for i in entry.get("inputs", []) if i["id"] not in {p.key for p in profiles}]
+    args = [a for a in out["prepare"]["args"] if a not in ("--game", "{game}") and not a.startswith("--game-")]
+    out["prepare"] = dict(out["prepare"], args=args + prepare_args(profiles))
+    games = launcher_games(profiles)
+    if games:
+        out["games"] = games
+    else:
+        out.pop("games", None)
+    return out
 
 
 def main(argv=None):
@@ -89,7 +144,14 @@ def main(argv=None):
     ap.add_argument("--folder", help="a base folder: the game's own folder for --key is printed")
     ap.add_argument("--key", help="a game profile key")
     ap.add_argument("--launcher-games", action="store_true", help="print the games[] the released profiles give")
+    ap.add_argument("--write-launcher", metavar="JSON", help="rewrite this recomplauncher.json with the released games in it")
     a = ap.parse_args(argv)
+    if a.write_launcher:
+        with open(a.write_launcher, encoding="utf-8") as f:
+            entry = json.load(f)
+        with open(a.write_launcher, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(launcher_entry(entry), indent=2, ensure_ascii=False) + "\n")
+        return 0
     if a.launcher_games:
         print(json.dumps(launcher_games(), indent=2))
         return 0

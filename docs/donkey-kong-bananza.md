@@ -1,8 +1,9 @@
 # Donkey Kong Bananza on this engine
 
 *Donkey Kong Bananza* (Switch 2) builds and plays from this repository with its own game profile (`dkb` in
-`nx2/game_profile.py`, chosen by main's build id). It is not offered by the release yet (`released=False`: see
-[one-engine.md](one-engine.md) step 5). Game data never enters this repository: the dump is read where it lies, and the
+`nx2/game_profile.py`, chosen by main's build id). It is in the release: RecompLauncher shows it as a
+tile of its own, which asks for its own copy, and the builder checks that copy against the profile
+(`make_game.py --game-dkb=<copy>`). Game data never enters this repository: the dump is read where it lies, and the
 extraction, the lift and the builds stay in the gitignored `work/`. Where a value comes from the game, this page says
 how it was found.
 

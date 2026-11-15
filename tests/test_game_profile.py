@@ -101,19 +101,20 @@ def check_choice():
     mkw = game_profile.GAMES["mkw"]
     check(game_profile.for_build(mkw.build_id) is mkw and game_profile.for_build("9e244438c3d8ef1c") is mkw
           and mkw.main_base == 0x80020000, "Mario Kart World 1.0.0's build id does not choose its profile")
-    # (built from main, not in the release's launcher entry until it joins; its saves of its own; the parallel replay
+    # (in the release, with its own tile and copy; its saves of its own; the parallel replay
     # its race was measured with, #55)
-    check(mkw.released is False and game_profile.saves_dir(mkw) == "hookshot-mkw" and mkw.vk_parallel == 4
+    check(mkw.released is True and game_profile.saves_dir(mkw) == "hookshot-mkw" and mkw.vk_parallel == 4
           and "#define GAME_VK_PARALLEL 4" in game_profile.emit_header(mkw),
-          "Mario Kart World's profile is offered by the release, shares a save folder, or lost its parallel replay")
+          "Mario Kart World's profile is not offered by the release, shares a save folder, or lost its parallel replay")
     dkb = game_profile.GAMES["dkb"]
     check(game_profile.for_build(dkb.build_id) is dkb and dkb.main_base == 0x80020000,
           "Donkey Kong Bananza's build id does not choose its profile")
     # (its guide player counts every picture: the catch-up's skips abort it; Ocarina's intro keeps the catch-up)
     check(dkb.video_catchup is False and oot.video_catchup is True and game_profile.GAMES["none"].video_catchup is True,
           "the movie catch-up is not off for Bananza alone")
-    # (built from main, not in the release's launcher entry until it joins: one-engine.md step 5)
-    check(dkb.released is False and oot.released is True, "Bananza is offered by the release before it joins")
+    # (all three in the release: each its own tile and copy in recomplauncher.json, the builder checking each copy)
+    check(dkb.released is True and oot.released is True and game_profile.GAMES["none"].build_id is None,
+          "a game with a profile is not offered by the release")
     check("#define GAME_VIDEO_CATCHUP 0" in game_profile.emit_header(dkb) and
           "#define GAME_VIDEO_CATCHUP 1" in game_profile.emit_header(oot), "the header does not carry GAME_VIDEO_CATCHUP")
     # (Bananza draws at its full size with 0; every other profile keeps the host's answer)

@@ -6,9 +6,9 @@ four games**, and a general improvement made for one game reaches the other thre
 | Game | Repository | Profile key | State (2026-11-13) |
 |---|---|---|---|
 | The Legend of Zelda: Ocarina of Time | `notquiteog/Hookshot` (this one) | `oot` | released (v2.3.0-rc.1) |
-| Mario Kart World | this one ([its page](mario-kart-world.md)); `notquiteog/Lakitu` keeps only what is in review | `mkw` | 1.0.0 plays from `main`: the menus, Grand Prix, the Mushroom Cup's races; not released yet |
+| Mario Kart World | this one ([its page](mario-kart-world.md)); `notquiteog/Lakitu` keeps only what is in review | `mkw` | 1.0.0 plays from `main`: the menus, Grand Prix, the Mushroom Cup's races; in the release |
 | Kirby Air Riders | `notquiteog/Dragoon`, branch `fork/kirby-air-riders` | `kar` | lifts, boots to NVN, crashes in a PhysX worker |
-| Donkey Kong Bananza | this one ([its page](donkey-kong-bananza.md)); `~/Projects/hookshot-dkb` keeps only what is in review | `dkb` | 3.2.0 plays from `main`: the opening, the mining tunnel, the guide movies; not released yet |
+| Donkey Kong Bananza | this one ([its page](donkey-kong-bananza.md)); `~/Projects/hookshot-dkb` keeps only what is in review | `dkb` | 3.2.0 plays from `main`: the opening, the mining tunnel, the guide movies; in the release |
 
 This page has the target, the rules that keep it reachable, and the order of the work. It is for the people and the
 agents who work on any of the four.
@@ -89,7 +89,13 @@ With Ocarina's dump, a build with the seam must lift the same code and run the s
    repository the entry and the update checks name. They still name `NotRexed/Hookshot`, which is gone, in
    `recomplauncher.json`, `nx2/version.py`, `builder/` and `scripts/`.
 5. **A game joins the release** once it is folded into `main`: its profile, its patches, its row in `games[]`. That
-   happens when it boots to gameplay on the engine in `main`. Until then it stays in its fork.
+   happens when it boots to gameplay on the engine in `main`. Until then it stays in its fork. In the release each game
+   is a RecompLauncher tile (`games[]`) with its own copy (a named input in `inputs[]`, role game, which only its
+   tile asks for); `prepare.args` passes each copy as `--game-<key>={input:<key>}` in one argument, and
+   `make_game.py` checks it against that game's profile, since an input carries no build check. `python -I
+   nx2/game_folders.py --write-launcher recomplauncher.json` writes all of it from the released profiles. Ocarina's
+   copy moved from the legacy `game` to the named input `oot` with it: RecompLauncher asks for it once more after
+   that update (`.github/release-notice.md`).
 
 ## Telling the others
 

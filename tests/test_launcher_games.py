@@ -79,8 +79,9 @@ class LauncherEntry(unittest.TestCase):
         self.assertEqual([g["id"] for g in games], [DEFAULT, "zz"])
         for g in games:
             self.assertRegex(g["id"], r"^[a-z0-9]{1,16}$")   # (RecompLauncher's games[].id)
-            self.assertEqual(set(g), {"id", "name", "args", "saves"})
+            self.assertEqual(set(g), {"id", "name", "args", "inputs", "saves"})
             self.assertEqual(g["args"], ["--game", g["id"]])
+            self.assertEqual(g["inputs"], [g["id"]], "a game's tile does not ask for its own copy alone")
         self.assertEqual(games[0]["saves"], self.entry["saves"],
                          "the default game's saves in games[] are not the entry's own: they would move")
         self.assertEqual(games[1]["saves"], ["{local}/%s" % game_profile.saves_dir(other_profile()),
@@ -88,6 +89,41 @@ class LauncherEntry(unittest.TestCase):
         self.assertNotEqual(games[0]["saves"], games[1]["saves"])
         # (and the default game's folder is still the one start.args and the folders name)
         self.assertIn("{home}/Games/Hookshot", self.entry["start"]["args"])
+
+
+class ThreeGames(unittest.TestCase):
+    """recomplauncher.json carries every released game: its tile (games[]), its copy (inputs[], unless it is the default
+    game on the legacy `game` copy) and that copy in prepare.args in one argument, all as nx2/game_folders.py makes them"""
+    def setUp(self):
+        self.entry = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        self.named = {i["id"] for i in self.entry.get("inputs", []) if i["id"] in game_profile.GAMES}
+
+    def test_every_released_game_has_a_tile(self):
+        self.assertEqual([p.key for p in game_folders.released()], ["oot", "dkb", "mkw"])
+        self.assertEqual(self.entry["games"], game_folders.launcher_games(named=self.named))
+
+    def test_each_copy_is_asked_for_by_its_own_game(self):
+        games = game_folders.released()
+        self.assertEqual([i for i in self.entry.get("inputs", []) if i["id"] in self.named],
+                         game_folders.launcher_inputs(named=self.named))
+        for p in games:
+            if p.key not in self.named:   # (only the default game may stay on the legacy copy, which the launcher checks)
+                self.assertEqual(p.key, DEFAULT)
+                self.assertIn(p.build_id[:8], json.dumps(self.entry["game"]["check"]))
+        for i in game_folders.launcher_inputs(named=self.named):
+            p = game_profile.GAMES[i["id"]]
+            self.assertIn(p.game, i["label"])
+            self.assertIn(p.version_name, i["label"])
+            self.assertIn(p.build_id[:8], i["label"])
+            self.assertEqual({f["type"] for f in i["formats"]}, {"file", "folder"})
+
+    def test_prepare_gets_each_copy_in_one_argument(self):
+        args = self.entry["prepare"]["args"]
+        for a in game_folders.prepare_args(named=self.named):
+            self.assertIn(a, args)
+            self.assertRegex(a, r"^--game-[a-z0-9]+=\{input:[a-z0-9]+\}$")
+        tokens = set(re.findall(r"\{input:([A-Za-z0-9_-]+)\}", json.dumps(self.entry)))
+        self.assertLessEqual(tokens, {i["id"] for i in self.entry.get("inputs", [])}, "a placeholder names no input")
 
 
 class Prepare(unittest.TestCase):
@@ -122,6 +158,52 @@ class Prepare(unittest.TestCase):
 
     def test_a_copy_no_profile_knows_is_left_to_the_check(self):
         self.assertEqual(self.run_for(None)[:2], (os.path.join("Games", "Hookshot"), "hookshot-builder"))
+
+    def copy_for(self, key, bid):
+        mg = self.load()
+        mg.dump_build_id = lambda a, work: bid
+        a = types.SimpleNamespace(expect_key=key, game="/copies/the copy.nup")
+        out = []
+        mg.say = lambda *w: out.append(" ".join(str(x) for x in w))
+        try:
+            mg.copy_for_key(a, "/work")
+        except SystemExit:
+            return out
+        return None
+
+    def test_each_key_takes_only_its_own_copy(self):
+        for p in game_folders.released():
+            self.assertIsNone(self.copy_for(p.key, p.build_id), "%s's own copy was refused" % p.key)
+            for other in game_folders.released():
+                if other is not p:
+                    said = self.copy_for(p.key, other.build_id)
+                    self.assertTrue(said, "%s took %s's copy" % (p.key, other.key))
+                    self.assertIn("%s %s" % (other.game, other.version_name), said[-1])
+                    self.assertIn(p.build_id[:8], said[-1])
+            self.assertIn("does not know", self.copy_for(p.key, "0123456789abcdef0123456789abcdef01234567")[-1])
+
+    def test_the_options_are_one_per_game(self):
+        mg = self.load()
+        argv = sys.argv
+        tmp = tempfile.TemporaryDirectory(prefix="launcher-games-")
+        self.addCleanup(tmp.cleanup)
+        copy = os.path.join(tmp.name, "mkw copy.nup")
+        Path(copy).write_bytes(b"authored")
+        try:
+            sys.argv = ["make_game.py", "--check", "--game-mkw=" + copy]
+            a = mg.parse_args()
+            self.assertEqual((a.expect_key, a.game_copies, a.nup), ("mkw", [("mkw", copy)], copy))
+            sys.argv = ["make_game.py", "--game-mkw=/a.nup", "--game-dkb=/b.nup"]
+            a = mg.parse_args()
+            self.assertEqual((a.expect_key, len(a.game_copies)), (None, 2))
+            said = []
+            mg.say = lambda *w: said.append(" ".join(str(x) for x in w))
+            sys.argv = ["make_game.py", "--game-mkw=/a.nup", "--game", "/b.nup"]
+            with self.assertRaises(SystemExit):
+                mg.parse_args()
+            self.assertIn("not both", said[-1])
+        finally:
+            sys.argv = argv
 
     def test_main_asks_only_without_out(self):
         source = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")

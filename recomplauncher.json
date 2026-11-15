@@ -3,13 +3,57 @@
   "format": 1,
   "name": "Hookshot",
   "repo": "notquiteog/Hookshot",
-  "game": {
-    "kind": "iso_or_folder",
-    "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs.",
-    "check": {
-      "nup_build_id": "e0f3ccfa"
+  "min": "0.90.0-beta.36",
+  "inputs": [
+    {
+      "id": "oot",
+      "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs.",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "nup"
+          ]
+        },
+        {
+          "type": "folder"
+        }
+      ]
+    },
+    {
+      "id": "dkb",
+      "label": "Your copy of Donkey Kong Bananza for Nintendo Switch 2, 3.2.0 (build e25c90c1): the .nup file, or the folder that holds its romfs and exefs.",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "nup"
+          ]
+        },
+        {
+          "type": "folder"
+        }
+      ]
+    },
+    {
+      "id": "mkw",
+      "label": "Your copy of Mario Kart World for Nintendo Switch 2, 1.0.0 (build 9e244438): the .nup file, or the folder that holds its romfs and exefs.",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "nup"
+          ]
+        },
+        {
+          "type": "folder"
+        }
+      ]
     }
-  },
+  ],
   "start": {
     "program": [
       "Hookshot.AppImage",
@@ -28,8 +72,9 @@
     "args": [
       "--cli",
       "--prepare",
-      "--game",
-      "{game}"
+      "--game-oot={input:oot}",
+      "--game-dkb={input:dkb}",
+      "--game-mkw={input:mkw}"
     ],
     "label": "Building the game from your copy (10 to 45 minutes)",
     "timeout": 7200
@@ -533,6 +578,53 @@
       "label": "Game folder",
       "help": "The built game, with its log and mods folder.",
       "open": "game"
+    }
+  ],
+  "games": [
+    {
+      "id": "oot",
+      "name": "The Legend of Zelda: Ocarina of Time",
+      "args": [
+        "--game",
+        "oot"
+      ],
+      "inputs": [
+        "oot"
+      ],
+      "saves": [
+        "{local}/hookshot",
+        "{home}/Games/Hookshot/user"
+      ]
+    },
+    {
+      "id": "dkb",
+      "name": "Donkey Kong Bananza",
+      "args": [
+        "--game",
+        "dkb"
+      ],
+      "inputs": [
+        "dkb"
+      ],
+      "saves": [
+        "{local}/hookshot-dkb",
+        "{home}/Games/Hookshot-dkb/user"
+      ]
+    },
+    {
+      "id": "mkw",
+      "name": "Mario Kart World",
+      "args": [
+        "--game",
+        "mkw"
+      ],
+      "inputs": [
+        "mkw"
+      ],
+      "saves": [
+        "{local}/hookshot-mkw",
+        "{home}/Games/Hookshot-mkw/user"
+      ]
     }
   ]
 }

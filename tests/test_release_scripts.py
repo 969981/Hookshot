@@ -659,6 +659,23 @@ class ReleaseScripts(unittest.TestCase):
         self.assertIn("`%s` (the setup and its `recomplauncher.json`) for RecompLauncher" % zip_name, body)
         self.assertLess(body.index("notes"), body.index("Which file do I download?"))
 
+    def test_finish_says_the_release_notice_first_and_once(self):
+        # (.github/release-notice.md: what every player must know before anything else, as the release that moved
+        # Ocarina's copy to RecompLauncher's named inputs does)
+        notice_file = ROOT / ".github" / "release-notice.md"
+        if not notice_file.is_file():
+            self.skipTest("no release notice in this tree")
+        notice = notice_file.read_text(encoding="utf-8").strip()
+        self.given([rel(5, "v2.1.0", True, False, "notes", assets=["HookshotBuilder.exe", "Hookshot-v2.1.0-x86_64.AppImage"])])
+        for _ in range(2):
+            r = self.run_script("release_files.sh", "finish", "v2.1.0")
+            self.assertEqual(r.returncode, 0, r.stderr)
+        body = self.state()["releases"][0]["body"]
+        self.assertEqual(body.count(notice), 1)
+        self.assertTrue(body.startswith("<!-- release-links -->\n" + notice + "\n"), body[:300])
+        self.assertLess(body.index(notice), body.index("Download for Windows"))
+        self.assertLess(body.index("Download for Windows"), body.index("notes"))
+
     def test_publish_refuses_a_rolling_release(self):
         for tag in ("rc", "nightly"):
             with self.subTest(tag=tag):

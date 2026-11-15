@@ -118,14 +118,23 @@ You need your own copy of the game. \`hookshot-setup.txt\`, \`hookshot-linux.txt
 EOF
 }
 
-links() {   # tag [id] -> big links to the Windows setup and the Linux AppImage on the release (what is there of them)
-    local id=${2:-} names exe appimage base="https://github.com/$GH_REPO/releases/download/$1"
+notice() {   # the repository's release notice (.github/release-notice.md), when it has one: what every player must know first
+    local f
+    f="$(dirname "${BASH_SOURCE[0]}")/../.github/release-notice.md"
+    if [[ -s $f ]]; then cat "$f"; fi
+}
+
+links() {   # tag [id] -> the release notice, then big links to the Windows setup and the Linux AppImage (what is there of them)
+    local id=${2:-} names exe appimage note base="https://github.com/$GH_REPO/releases/download/$1"
     [[ -n $id ]] || id=$(id_of "$1")
     names=$(assets "$id" | jq -r '.[].name')
     exe=$(grep -xF HookshotBuilder.exe <<<"$names" || true)
     appimage=$(grep -E '\.AppImage$' <<<"$names" | head -n1 || true)
-    [[ -n $exe || -n $appimage ]] || return 0
+    note=$(notice)
+    [[ -n $exe || -n $appimage || -n $note ]] || return 0
     echo "$LINKS"
+    # (inside the links' block, which finish makes again each time: the notice is never said twice)
+    if [[ -n $note ]]; then printf '%s\n\n' "$note"; fi
     if [[ -n $exe ]]; then echo "## [⬇ Download for Windows]($base/$exe)"; fi
     if [[ -n $appimage ]]; then echo "## [⬇ Download for Linux / Steam Deck]($base/$appimage)"; fi
     echo
