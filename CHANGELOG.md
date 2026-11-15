@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.19](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.18...v2.3.0-rc.19) (2026-11-15)
+
+
+### Features
+
+* **vk:** quick pipelines for draws whose full build is not done (from Longshot) ([#62](https://github.com/notquiteog/Hookshot/issues/62)) ([b806813](https://github.com/notquiteog/Hookshot/commit/b80681335cc70f9455384e13a3637f0aae26e5e8))
+
+
+### Documentation
+
+* **worklist:** adult Link near-black for a moment in Zora's Domain, under the shadow row ([#66](https://github.com/notquiteog/Hookshot/issues/66)) ([dadc389](https://github.com/notquiteog/Hookshot/commit/dadc389b7d44e6c419d6f347ee54a47c38b71d26))
+
 ## [2.3.0-rc.18](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.17...v2.3.0-rc.18) (2026-11-14)
 
 
