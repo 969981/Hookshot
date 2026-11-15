@@ -369,6 +369,9 @@ Shader::HostTranslateInfo make_host() {
     h.min_ssbo_alignment = 16;
     h.support_geometry_shader_passthrough = false;
     h.support_conditional_barrier = true;
+    // (live: handle_tables_on(), on where the GPU indexes sampled image arrays nonuniformly: the modules with a handle
+    // table's array are the ones scripts/validate_spirv.py should see)
+    h.support_handle_table_arrays = true;
     return h;
 }
 

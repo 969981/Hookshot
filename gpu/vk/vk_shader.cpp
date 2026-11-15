@@ -561,6 +561,41 @@ private:
     std::unordered_map<uint64_t, bool> pointer_answers;   // (IsCbufStorageBufferPointer's)
 };
 
+/// (Lichii bd0171f7) Handle tables as descriptor arrays: a texture handle the shader reads from a table at an index of its
+/// own (OoT's clustered lights: each light's shadow map, read per pixel from the light table) becomes an array of the
+/// table's first entries, which the shader indexes per pixel. Without them those samples took a constant word on their
+/// path for the handle (the light table's address), bound no texture, and the lights' shadow tests read nothing: dark
+/// and green blocks on Zora's Domain's ice and snow (https://git.magicbean.dev/MagicBeanDev/Longshot/issues/52,
+/// https://github.com/NotRexed/Hookshot/issues/2509). Needs nonuniform sampled image array indexing (Vulkan 1.2's descriptor
+/// indexing) and room for the arrays in the descriptor limits. RX_VK_HANDLE_TABLES=0: off, the translation as without them
+/// (a test; in the cache's stamp). The log line names the check that turned them off
+bool handle_tables_on() {
+    static const bool on = [] {
+        const VkPhysicalDeviceLimits& l = dev.props.limits;
+        // (the first check that fails, with the device's value, so a tester's log says which; empty when all pass)
+        char why[160] = "";
+        const auto need = [&why](const char* what, uint64_t have, uint64_t least) {
+            if (!why[0] && have < least)
+                snprintf(why, sizeof why, "%s is %llu, under %llu", what, (unsigned long long)have, (unsigned long long)least);
+        };
+        if (!dev.vk12.shaderSampledImageArrayNonUniformIndexing)
+            snprintf(why, sizeof why, "no shaderSampledImageArrayNonUniformIndexing");
+        need("maxPerStageDescriptorSampledImages", l.maxPerStageDescriptorSampledImages, 256);
+        need("maxPerStageDescriptorSamplers", l.maxPerStageDescriptorSamplers, 256);
+        need("maxPerStageResources", l.maxPerStageResources, 256);
+        need("maxDescriptorSetSampledImages", l.maxDescriptorSetSampledImages, 512);
+        need("maxDescriptorSetSamplers", l.maxDescriptorSetSamplers, 512);
+        const bool can = !why[0];
+        const char* e = getenv("RX_VK_HANDLE_TABLES");
+        const bool want = !e || atoi(e) != 0;
+        if (!want) logf("vk: handle tables as descriptor arrays: off (RX_VK_HANDLE_TABLES=0)");
+        else if (can) logf("vk: handle tables as descriptor arrays: on");
+        else logf("vk: handle tables as descriptor arrays: off (%s)", why);
+        return want && can;
+    }();
+    return on;
+}
+
 Shader::Profile make_profile() {
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;
@@ -615,6 +650,7 @@ Shader::Profile make_profile() {
 
 Shader::HostTranslateInfo host_info() {
     Shader::HostTranslateInfo h{};
+    h.support_handle_table_arrays = handle_tables_on();
     h.support_float64 = true;
     // (RX_VK_NO_F16, a test: the game's f16 math lowered to f32, as a card without f16 shaders would need (GTX 10xx, issue 98). Eden's
     // lowering made a picture of noise of Kokiri on an RTX card, so it is not used by itself)
@@ -722,25 +758,61 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
     return 0;
 }
 
-uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program) {
+namespace {
+/// Storage buffer `binding` of a stage: its address, as the stage's constant bank has it (0: none)
+uint64_t stage_storage_base(const NvnState& s, const Stage& st, uint32_t binding) {
+    if (binding >= st.info.storage_buffers_descriptors.size()) return 0;
+    const auto& d = st.info.storage_buffers_descriptors[binding];
+    return stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
+           (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
+}
+uint32_t stage_storage_word(uint64_t base, uint32_t offset) {
+    uint32_t v = 0;
+    static const bool live = env_on("RX_VK_HANDLES_LIVE");
+    if (base) {
+        if (live) host->gpu_read(base + offset, &v, 4);
+        else ub_read(base + offset, &v, 4);
+    }
+    return v;
+}
+} // namespace
+
+uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program, uint32_t element) {
     if (program >= st.info.handle_programs.size()) return 0;
     return Shader::EvaluateHandleProgram(
                st.info.handle_programs[program],
                [&](u32 index, u32 offset) -> u32 { return stage_cbuf_word(s, st, index, offset); },
-               [&](u32 binding, u32 offset) -> u32 {
-                   if (binding >= st.info.storage_buffers_descriptors.size()) return 0U;
-                   const auto& d = st.info.storage_buffers_descriptors[binding];
-                   const uint64_t base = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
-                                         (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
-                   uint32_t v = 0;
-                   static const bool live = env_on("RX_VK_HANDLES_LIVE");
-                   if (base) {
-                       if (live) host->gpu_read(base + offset, &v, 4);
-                       else ub_read(base + offset, &v, 4);
-                   }
-                   return v;
-               })
+               [&](u32 binding, u32 offset) -> u32 { return stage_storage_word(stage_storage_base(s, st, binding), offset); },
+               element)
         .value_or(0U);
+}
+
+void stage_handles(const NvnState& s, const Stage& st, uint32_t program, uint32_t count, uint32_t* out) {
+    if (program >= st.info.handle_programs.size()) {
+        std::fill(out, out + count, 0u);
+        return;
+    }
+    // (the constant words and storage buffer addresses the program reads are the same for every element: read once)
+    struct Word { u32 index, offset, value; };
+    std::array<Word, 16> words;
+    size_t num_words = 0;
+    const auto read_cbuf = [&](u32 index, u32 offset) -> u32 {
+        for (size_t w = 0; w < num_words; w++)
+            if (words[w].index == index && words[w].offset == offset) return words[w].value;
+        const u32 value = stage_cbuf_word(s, st, index, offset);
+        if (num_words < words.size()) words[num_words++] = {index, offset, value};
+        return value;
+    };
+    static_assert(Shader::Info::MAX_SSBOS <= 64, "one bit a binding");
+    std::array<uint64_t, Shader::Info::MAX_SSBOS> bases;
+    uint64_t known = 0;
+    const auto read_storage = [&](u32 binding, u32 offset) -> u32 {
+        if (binding >= bases.size()) return 0U;
+        if (!(known >> binding & 1)) bases[binding] = stage_storage_base(s, st, binding), known |= uint64_t{1} << binding;
+        return stage_storage_word(bases[binding], offset);
+    };
+    const auto& code = st.info.handle_programs[program];
+    for (uint32_t k = 0; k < count; k++) out[k] = Shader::EvaluateHandleProgram(code, read_cbuf, read_storage, k).value_or(0U);
 }
 
 namespace {
@@ -1204,6 +1276,11 @@ uint64_t translator_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    // (and handle tables off, host_info: only then, so the GPUs that have them keep one cache)
+    if (!handle_tables_on()) {
+        const uint32_t no_tables = 0x6e687462u;   // ("nhtb")
+        add(&no_tables, sizeof no_tables);
+    }
     {   // (the translation's per-GPU settings, set by coopmat_init at device creation: AMD/Intel's invariant positions, the colour
         // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
         // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NAN_GUARD did nothing for programs already cached)
