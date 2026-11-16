@@ -1,4 +1,4 @@
-# Keep a non-fork mirror current with NotRexed/Hookshot without force-pushing over local changes.
+# Keep a non-fork mirror current with the verified notquiteog/Hookshot continuation without force-pushing over local changes.
 # GITHUB_TOKEN pushes do not trigger push workflows, so tag builds are explicitly dispatched.
 name: Sync upstream and publish
 
@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git remote add upstream https://github.com/NotRexed/Hookshot.git
+          git remote add upstream https://github.com/notquiteog/Hookshot.git
           git fetch --no-recurse-submodules --tags upstream main
           upstream_sha=$(git rev-parse refs/remotes/upstream/main)
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
