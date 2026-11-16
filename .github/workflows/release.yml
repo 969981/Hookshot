@@ -1,11 +1,12 @@
 # The version, tag and changelog entry for a push to main (stable) or next (release candidates). The tag starts the
 # Linux AppImage and Windows builder workflows, which publish the GitHub release with their files. The rules and the one-time v0.1.0 tag are in
 # docs/versioning.md. No game data is involved.
-name: Release
+# This legacy semantic-release workflow requires an npm package.json and issue
+# permissions the C++ Hookshot mirror does not provide. Automatic fork snapshots
+# are tagged by sync-upstream.yml and built by Linux/Windows release workflows.
+name: Legacy semantic-release (manual only)
 
 on:
-  push:
-    branches: [main, next]
   workflow_dispatch:
 
 permissions:
