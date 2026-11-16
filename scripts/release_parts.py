@@ -199,7 +199,7 @@ def package(a):
     # make_setup_parts.py includes non-builder root files in the dotnet part.
     copy(os.path.join(ROOT, "recomplauncher.json"), os.path.join(out, "recomplauncher.json"))
     tools = os.path.join(out, "tools")
-    for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):
+    for f in tracked("game", "gpu", "host", "nx2", "scripts", "third_party"):   # (game/: the game profile header)
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:
@@ -218,6 +218,30 @@ def package(a):
         print("no setup list: the package has no play profile and no prebuilt third_party files")
     if state_list(tools) != 0:
         return 1
+    # (hookshot) the renderer CI built with NVIDIA DLSS, DLSS 5 neural rendering and AMD FSR 4 in it, which nx2/make_game.py
+    # uses on the player's PC instead of compiling one without those (prebuilt_renderer), and AMD's FSR runtime beside it
+    # (the fork's options: a caller of package() without them, as tests/test_ship_state_list.py's, gets none of the three)
+    vk, amd_fsr, repository = getattr(a, "vk", None), getattr(a, "amd_fsr", None), getattr(a, "repository", None)
+    if vk:
+        copy(vk, os.path.join(tools, "prebuilt", "hookshot_vk.dll"))
+        print("prebuilt renderer: %s" % vk)
+    if amd_fsr:
+        n = 0
+        for f in sorted(os.listdir(amd_fsr)):
+            if f.lower().startswith("amd_fidelityfx_") and f.lower().endswith("_vk.dll"):
+                copy(os.path.join(amd_fsr, f), os.path.join(tools, "amd-fsr", f))
+                n += 1
+        # (LICENSE-AMD-FSR-SDK.md: AMD's license for the DLLs, the file scripts/ffx_sdk.py pins beside them, so that the
+        # Builder's AMD FSR 4 tick takes all three from here and downloads nothing: nx2/make_game.py seed_fsr_runtime)
+        for name in ("LICENSE.txt", "LICENSE-AMD-FSR-SDK.md"):
+            if os.path.isfile(os.path.join(amd_fsr, name)):
+                copy(os.path.join(amd_fsr, name), os.path.join(tools, "amd-fsr", name))
+        print("AMD FSR runtime: %d DLLs from %s" % (n, amd_fsr))
+    # (hookshot) the repository the release is from, for the Builder's updater and the game's update check (nx2/version.py)
+    if repository:
+        with open(os.path.join(tools, "repository.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(repository.strip() + "\n")
+        print("repository: %s" % repository.strip())
     print("package folder: %s" % out)
     return 0
 
@@ -266,9 +290,21 @@ def python_packages(list_path, requirements, tools):
     py = os.path.join(tools, "python")
     n = extract(part, "HookshotBuilder/tools/python/", py)
     print("%d files of %s (Python %s) into %s, with %s" % (n, os.path.basename(part), version, py, ", ".join(missing)))
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
-                    "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
-                    "--implementation", "cp", "--target", os.path.join(py, "Lib", "site-packages")] + missing, check=True)
+    # (each file checked against its SHA-256: requirements-hashes.txt, scripts/lock_requirements.py; a pin alone takes
+    # whatever file the index serves)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import lock_requirements
+    import tempfile
+    fd, locked = tempfile.mkstemp(suffix=".txt", prefix="requirements-hashes-")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        f.write(lock_requirements.subset(missing))
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
+                        "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
+                        "--implementation", "cp", "--require-hashes", "-r", locked,
+                        "--target", os.path.join(py, "Lib", "site-packages")], check=True)
+    finally:
+        os.unlink(locked)
     return 0
 
 
@@ -315,6 +351,9 @@ def main():
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
     s.add_argument("--python-packages")
+    s.add_argument("--vk", help="(hookshot) a hookshot_vk.dll built by CI, into tools/prebuilt")
+    s.add_argument("--amd-fsr", help="(hookshot) a folder holding AMD's amd_fidelityfx_*_vk.dll, into tools/amd-fsr")
+    s.add_argument("--repository", help="(hookshot) owner/name the release is from, into tools/repository.txt")
     s.add_argument("--cpm-add")
     a = p.parse_args()
     return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)

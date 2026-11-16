@@ -89,8 +89,8 @@ On every push to `main`:
 3. The same workflow calls the Linux AppImage and Windows builder workflows on the tag. The jobs that build the files
    sign their build provenance (below), and the release jobs attach them with `scripts/release_upload.sh`:
    `Hookshot-v<version>-x86_64.AppImage`, its `.zsync` and `hookshot-linux.txt`; `HookshotBuilder.exe` (the setup),
-   `hookshot-setup.txt` and the RecompLauncher zip. New update parts go to the `linux-parts` and `builder-parts`
-   releases.
+   `hookshot-setup.txt`, the full setup and the RecompLauncher zip. New update parts go to the `linux-parts` and
+   `builder-parts` releases.
 4. The publish job adds `SHA256SUMS` and the "Which file do I download?" table under the notes
    (`scripts/release_files.sh finish`), checks that all the files are there and that `SHA256SUMS` lists every file
    with its digest, and publishes the draft as a prerelease. It is never "latest". Players on the Release track do not
@@ -106,7 +106,7 @@ since `rc.1`. There is no step to start a series: the first fix after a release 
 
 When a release candidate is good, start the Release workflow by hand on `main` (Actions > Release > Run workflow), with
 its tag (`v2.0.8-rc.2`), or empty for the newest release candidate. From the GitHub CLI:
-`gh workflow run release.yml -R NotRexed/Hookshot -f rc=v2.0.8-rc.2`.
+`gh workflow run release.yml -R notquiteog/Hookshot -f rc=v2.0.8-rc.2`.
 
 Start it once. A Promote run is one at a time from its first job to its last, the builds and uploads included (the
 workflow's concurrency group): a second one started meanwhile waits, and once the first has published the version it
@@ -151,7 +151,7 @@ release". The release jobs of the Linux and Windows workflows never make a relea
 passed them: no draft there stops them.
 
 - **A tag has two releases** (a stray draft beside the published one, say): every script refuses it and names both ids.
-  Delete the one that is not meant (on its release page, or `gh api -X DELETE repos/NotRexed/Hookshot/releases/<id>`),
+  Delete the one that is not meant (on its release page, or `gh api -X DELETE repos/notquiteog/Hookshot/releases/<id>`),
   then re-run the failed jobs.
 - **Promote says the version is already published**: it is. Nothing is built again; check that the record job ran
   (next item). A fix after it goes to the next release candidate.
@@ -243,6 +243,7 @@ The names never change: the builder's update check, the setup and the Linux upda
 | `hookshot-setup.txt` | the setup's and the Windows builder's update list (`builder/setup/setup.c`, `builder/HookshotBuilder/Updater.cs`) |
 | `hookshot-linux.txt` | the Linux updater's list (`builder/linux/linux_update.py`) |
 | `Hookshot-v<version>-x86_64.AppImage.zsync` | AppImageUpdate and Gear Lever, which update the AppImage itself |
+| `Hookshot-v<version>-Windows-x64-full-setup.zip` | Windows, a new install with nothing to download: the setup, `hookshot-setup.txt` and every part it names (`scripts/make_full_setup.py`), each checked by its SHA-256 as a download is (`builder/setup/setup.c`). Releases only, not the nightly |
 | `Hookshot-v<version>-Windows-x64.zip` | RecompLauncher: `HookshotBuilder.exe` and its `recomplauncher.json` (`.github/workflows/windows-builder.yml`). Windows players download `HookshotBuilder.exe` |
 | `SHA256SUMS` | the SHA-256 of every other file, in `sha256sum`'s format |
 
@@ -250,7 +251,7 @@ The release notes end with a short table of which file to download, and what the
 (`scripts/release_files.sh table`).
 
 The AppImage carries update information (`scripts/linux/appimage.sh`):
-`gh-releases-zsync|NotRexed|Hookshot|latest|Hookshot-*-x86_64.AppImage.zsync` for a release, `rc` in place of `latest`
+`gh-releases-zsync|notquiteog|Hookshot|latest|Hookshot-*-x86_64.AppImage.zsync` for a release, `rc` in place of `latest`
 for a release candidate and `nightly` for the nightly, the repository being the one CI runs in. appimagetool writes it into the image and makes the `.zsync`, whose file URL is the AppImage's name beside it on the
 same release. `./Hookshot-v<version>-x86_64.AppImage --appimage-updateinformation` prints it.
 
@@ -259,7 +260,7 @@ To check a download, put it beside `SHA256SUMS` and run `sha256sum -c --ignore-m
 run that built it. With the GitHub CLI:
 
 ```
-gh attestation verify HookshotBuilder.exe -R NotRexed/Hookshot
+gh attestation verify HookshotBuilder.exe -R notquiteog/Hookshot
 ```
 
 It passes only for a file built by this repository's workflows, and shows the commit and the run.

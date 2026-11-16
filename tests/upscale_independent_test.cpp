@@ -43,6 +43,12 @@ struct VkImageBlit { Layers srcSubresource, dstSubresource; Offset srcOffsets[2]
 struct Extent { uint32_t width = 0, height = 0, depth = 0; };
 struct VkImageCopy { Layers srcSubresource; Offset srcOffset; Layers dstSubresource; Offset dstOffset; Extent extent; };
 struct { int upscale = 0, sharpness = 0, framegen = 0; } opts;
+// (hookshot) The Upscaling row carries two things: 0-2 filter the finished picture and 3-4 name a
+// scene upscaler. framegen_scale wants only the first half, exactly as the inline in vk_menu.h
+// gives it, so the spy mirrors that rather than reading opts.upscale raw.
+int window_filter() {
+    return opts.upscale >= 0 && opts.upscale <= 2 ? opts.upscale : 0;
+}
 struct SpyMutex {
     bool held = false;
     void lock() { CHECK(!held); held = true; }

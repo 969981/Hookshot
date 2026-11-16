@@ -1,5 +1,6 @@
 /* Authored memory, clock and API spies; input_actual.inc contains the unmodified production path. */
 #include <stdint.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -48,8 +49,17 @@ static long long logged_origin;
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
-static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
+#define MEMORY_SIZE 1024
+static void *at(uint64_t address) { CHECK(address <= MEMORY_SIZE - 8); return memory + address; }
 #define GP(a) at(a)
+/* (host/hos.h's GR: a range not wholly in the guest's memory stops the run; here hos_fatal jumps back to the case) */
+static jmp_buf fatal_jump;
+static int fatal_calls;
+static void *guest_need(uint64_t a, uint64_t n) {
+    if (a > MEMORY_SIZE || n > MEMORY_SIZE - a) { fatal_calls++; longjmp(fatal_jump, 1); }
+    return memory + a;
+}
+#define GR(a, n) guest_need((a), (n))
 #define G32(a) (*(uint32_t *)at(a))
 #define G64(a) (*(uint64_t *)at(a))
 #define ARG(n) (c->x[n])
@@ -204,12 +214,68 @@ int main(int argc, char **argv) {
     CHECK(pads_in_background(NULL, 1));    /* the menu's row */
     CHECK(pads_in_background("1", 0));     /* HOS_INPUT_BACKGROUND=1 without the menu */
     CHECK(!pads_in_background("0", 1));    /* HOS_INPUT_BACKGROUND=0 wins over the menu */
-    memory = calloc(512, 1); CHECK(memory);
+    memory = calloc(MEMORY_SIZE, 1); CHECK(memory);
     const char *name = argv[1];
     if (!strcmp(name, "frame-hold") || !strcmp(name, "live-frame") || !strcmp(name, "reuse-frame") ||
         !strcmp(name, "wall") || !strcmp(name, "zero") || !strcmp(name, "empty")) {
         frame_clock_case(name);
         printf("PASS: actual input frame clock %s\n", name);
+        free(memory);
+        return 0;
+    }
+    if (!strcmp(name, "count-bounds")) {
+        /* GetNpadStates' count is the game's: at most the 16 the console keeps, none below 0, and the states wholly in
+           the guest's memory (a count of 0x7fffffff wrote states over the host's) */
+        front = 1;
+        G32(16) = NPAD_NO1;
+        memset(memory + 64, 0xa5, MEMORY_SIZE - 64);
+        Ctx huge = {{0}};
+        huge.x[0] = 64; huge.x[1] = 0x7fffffff; huge.x[2] = 16; huge.x[30] = 0x1234;
+        npad_states(&huge);
+        CHECK(huge.x[0] == 16);
+        CHECK(memory[64 + 16 * STATE_SIZE] == 0xa5);   /* (nothing past the 16th) */
+        Ctx negative = {{0}};
+        negative.x[0] = 64; negative.x[1] = (uint64_t)-5; negative.x[2] = 16;
+        npad_states(&negative);
+        CHECK(negative.x[0] == 0);
+        Ctx past = {{0}};
+        past.x[0] = MEMORY_SIZE - 2 * STATE_SIZE; past.x[1] = 4; past.x[2] = 16;
+        if (!setjmp(fatal_jump)) {
+            npad_states(&past);
+            CHECK(!"four states past the end of the guest's memory were written");
+        }
+        CHECK(fatal_calls == 1);
+        printf("PASS: actual GetNpadStates count-bounds\n");
+        free(memory);
+        return 0;
+    }
+    if (!strcmp(name, "single-state")) {
+        /* GetNpadState, the single-state form: the same state GetNpadStates writes, one of them, for the same pad */
+        front = 1;
+        Ctx many = {{0}};
+        many.x[0] = 64; many.x[1] = 1; many.x[2] = 16; many.x[30] = 0x1234;
+        G32(16) = NPAD_NO1;
+        memset(memory + 64, 0xa5, 2 * STATE_SIZE);
+        npad_states(&many);
+        Ctx one = {{0}};
+        one.x[0] = 256; one.x[1] = 16; one.x[30] = 0x1234;   /* (out, &npadId: no count) */
+        memset(memory + 256, 0xa5, STATE_SIZE + 8);
+        npad_state_one(&one);
+        CHECK(G64(256) == G64(64) + 1);                                       /* the next sample */
+        CHECK(!memcmp(memory + 256 + 8, memory + 64 + 8, STATE_SIZE - 8));    /* the same buttons, sticks, attributes */
+        CHECK(G64(256 + 8) & (1ULL << B_A));                                  /* the script's A */
+        for (int i = 0; i < 8; i++) CHECK(memory[256 + STATE_SIZE + i] == 0xa5);   /* one state, nothing past it */
+        /* another style's single state (Handheld, JoyDual, JoyLeft, JoyRight): a pad that is not there, and the input
+           not read again for it (the sampling number stays the last reading's) */
+        const int64_t before = sampling;
+        Ctx other = {{0}};
+        other.x[0] = 384; other.x[1] = 16; other.x[30] = 0x1234;
+        memset(memory + 384, 0xa5, STATE_SIZE + 8);
+        npad_state_absent(&other);
+        CHECK(sampling == before && G64(384) == (uint64_t)before);
+        for (int i = 8; i < STATE_SIZE; i++) CHECK(memory[384 + i] == 0);   /* no buttons, sticks or attributes */
+        for (int i = 0; i < 8; i++) CHECK(memory[384 + STATE_SIZE + i] == 0xa5);
+        printf("PASS: actual GetNpadState single-state\n");
         free(memory);
         return 0;
     }

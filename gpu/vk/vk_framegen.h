@@ -1,18 +1,29 @@
 // Frame interpolation (vk_framegen.cpp): made frames shown between the game's (in a window; RX_VK_FRAMEGEN=0: off).
 #pragma once
 
+#include "framegen_methods.h"
 #include "vk_internal.h"
 
 namespace mkwvk {
 
 bool framegen_on();
+/// (hookshot fork) Whether AMD FSR 4's frame generation, which takes the scene's depth, motion and camera
+/// (vk_fsr3_inputs.h), makes this run's sets: the Frame generation row at 2x to 8x, the Frame generation by row at AMD
+/// FSR 4, and a set of that size made whole here (framegen_methods.h). The scene's inputs are kept at the scene's draw then
+bool framegen_scene_inputs_wanted();
+/// (hookshot fork) What AMD's frame generation makes on this PC (framegen_methods.h Here): the most frames between two of
+/// the game's, 0 where it does not run. For the Insert menu's Frame generation by row and its hints
+framegen_methods::Here framegen_here();
+/// (hookshot fork) Whether the Frame generation by row in effect is Auto: chosen, or shown in place of a saved method that
+/// does not run on this PC (framegen_methods.h effective). NVIDIA DLSS Frame Generation runs at Auto
+bool framegen_by_auto();
 /// Records the frame's processing into the present's recording (src: the window texture's view, sw x sh, the crop
 /// x, y, w, h; cover: wide_sides_tick's, this frame's); false when interpolation cannot run (the present goes to the window
 /// as without it)
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], float cover);
 /// (hookshot) Who made the made frames of the sets shown lately (the last 64, about a second at 60): what the Insert menu's
 /// Frame generation by row and the FPS counter name. None: none made (Off, nothing to blend from, none for half a second)
-enum class FgMaker { None, BuiltIn, Dlss, Fsr3 };
+enum class FgMaker { None, BuiltIn, Dlss, Fsr3, Fsr4 };   // (Fsr4: the hookshot fork's AMD FSR 4 row)
 FgMaker framegen_maker();
 /// The first frame the last framegen_record made (null when it made none), w x h, GENERAL
 VkImage framegen_made_image(uint32_t* w, uint32_t* h);

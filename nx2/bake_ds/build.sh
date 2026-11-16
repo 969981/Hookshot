@@ -1,7 +1,8 @@
 #!/bin/bash
 # (bake-deepseek) Build the offline translator: Eden's recompiler + sirit + one driver. No Vulkan device.
 #
-#   nx2/bake_ds/build.sh                 -> $OUT/bake_ds (default ${TMPDIR:-/tmp}/hookshot-ds)
+#   nx2/bake_ds/build.sh                 -> $OUT/bake_ds (default ${XDG_CACHE_HOME:-~/.cache}/hookshot-ds: the user's own, not
+#                                           /tmp, where another user could have made the folder first)
 #   OUT=... EXT=... CXX=... JOBS=... nx2/bake_ds/build.sh
 #
 # Sources are compiled into $OUT/obj, never into the repository. Needs a C++23 compiler (the recompiler's
@@ -10,7 +11,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=${ROOT:-$(cd "$HERE/../.." && pwd)}
-OUT=${OUT:-${TMPDIR:-/tmp}/hookshot-ds}
+OUT=${OUT:-${XDG_CACHE_HOME:-$HOME/.cache}/hookshot-ds}
 CXX=${CXX:-g++}
 JOBS=${JOBS:-$(nproc)}
 EXT=${EXT:-}
@@ -23,7 +24,7 @@ if [ -z "${EXT:-}" ]; then
   echo "build.sh: no externals with spirv-headers (set EXT=... to a folder with spirv-headers, vulkan-headers, boost, fmt)" >&2
   exit 2
 fi
-mkdir -p "$OUT/obj"
+mkdir -p -m 700 "$OUT" && mkdir -p "$OUT/obj"
 INC=(-I"$ROOT/gpu/vk/compat" -I"$ROOT/gpu/compat" -I"$ROOT/gpu/vk/eden" -I"$ROOT/gpu/third_party/suyu"
      -I"$ROOT/gpu/vk/sirit/include" -I"$ROOT/gpu/vk/sirit/src"
      -I"$EXT/spirv-headers/include" -I"$EXT/spirv-headers/include/spirv/unified1"

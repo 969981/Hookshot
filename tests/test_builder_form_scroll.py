@@ -44,6 +44,7 @@ class FormScrollTests(unittest.TestCase):
         for name in ("kind", "nup", "romfs", "exefs", "out", "language", "track", "status", "check_text", "space_text"):
             setattr(win, name, tk.StringVar(win, value="nup" if name == "kind" else out.name if name == "out" else ""))
         win.prepare, win.dlss = tk.BooleanVar(win), tk.BooleanVar(win)
+        win.compile_shaders = tk.StringVar(win, value="All")   # (the Compile shaders choice under the prepare tick)
         win.page = win.build_button = win.launch_folder = None
         win.apply_mode = lambda: None
         win.show_form()

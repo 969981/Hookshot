@@ -31,7 +31,7 @@ def main():
     if set(re.findall(r"\bs\.(\w+)", c2)) - {"tex", "img", "samp"}:
         raise SystemExit("c2 is made from more than tex_gen covers: " + str(set(re.findall(r"\bs\.(\w+)", c2))))
     tail = fill[fill.index("static constexpr uint32_t kSsboTable"):]
-    if set(re.findall(r"\bs\.(\w+)", tail)) - {"ssbo"} or "pointer_table(s, stage)" not in block(tail, "if ((stage == 6 || stage == 7)"):
+    if set(re.findall(r"\bs\.(\w+)", tail)) - {"ssbo"} or "pointer_table(s, stage)" not in block(tail, "if ((stage == 0 || stage == 6 || stage == 7)"):
         raise SystemExit("a graphics stage's c0 is made from more than ssbo_gen covers")
     if "stage == 5" not in fill[: fill.index("static constexpr uint32_t kSsboTable")]:
         raise SystemExit("compute's c0 is no longer apart from the graphics stages'")

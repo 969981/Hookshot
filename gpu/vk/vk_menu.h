@@ -2,6 +2,7 @@
 #pragma once
 #include "auto_settings.h"
 
+#include "nr_plan.h"   // (hookshot fork: neural rendering's Passes row)
 #include "vk_internal.h"
 
 namespace mkwvk {
@@ -10,7 +11,8 @@ namespace mkwvk {
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
     int framegen_by = 0;  // (hookshot) who makes them at 2x and up: 0 Auto (NVIDIA DLSS Frame Generation where it runs, else the
-                          // renderer's own), 1 the renderer's own (vk_framegen.cpp; vk_dlss.cpp dlss_fg_wanted)
+                          // renderer's own), 1 the renderer's own (vk_framegen.cpp; vk_dlss.cpp dlss_fg_wanted); (hookshot fork)
+                          // 2 AMD FSR 4's frame generation, 3 AMD FSR 3.1's, where they run (framegen_methods.h)
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int vsync = 0;        // (hookshot) V-Sync, the swapchain's present mode (vk_main.cpp create_swapchain, made again at once): 0 Auto
                           // (mailbox where the driver has it), 1 On (FIFO), 2 Off (immediate). RX_VK_FIFO / RX_VK_IMMEDIATE over it
@@ -20,7 +22,7 @@ struct Options {
     int hdr_contrast = 100;   // HDR contrast in percent around mid grey, as RenoDX grades it; 100 none (vk_framegen.cpp framegen_hdr)
     int hdr_tonemap = 0;  // (hookshot) the scene's tone mapper with Native HDR: 0 the game's (Vanilla), 1 PsychoV35, as RenoDX's zelda-oot-oz
                           // (ir_opt/scene_tonemap_pass.h; vk_shader.cpp scene_tonemap_for)
-    int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240, 6 Uncapped (host/nn_vi.c reads frame_rate_cap= at the start)
+    int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240, 6 Uncapped, 7 30 (host/nn_vi.c: frame_rate_cap= at the start, then HOS_OPT_FPS_CAP in play)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, then the sizes the screen offers (vk_menu.cpp outputs,
@@ -57,12 +59,13 @@ struct Options {
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
-    int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
+    int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick; 2: off (never captured)
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
     int auto_run = 0;  // (hookshot) Auto run: A (the sprint) kept held after it is let go (host/auto_run.h)
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
+    int damage_taken = 1; // 0 Half, 1 Normal, 2 Double, 3 Quadruple (host/oot_damage.c)
     int fov = 100;        // vertical gameplay field of view, 50..150% of the game's current angle (host/oot_fov.c)
     int text_size = 0;    // dialogue and signs' text size: 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% (host/oot_text_size.c,
                           // nx2/oot_patches.py; HOS_TEXT_SIZE)
@@ -93,6 +96,22 @@ struct Options {
     // (hookshot) the VRAM budget row: 0 Auto (the renderer's own rule), 1..7 a texture budget of 2.2, 3.6, 4.8, 6, 7.5, 9 or 11 GB
     // and its mirrors (vram_mb, mirror_mb come from it). A preset sets it; set on the row it is the player's (budget 0)
     int vram_budget = 0;
+    // (hookshot) DLSS 5 neural rendering (gpu/vk/vk_dlssnr.h). Off out of the box, like every other
+    // feature here. The model's own knobs are percentages because that is what a slider can say; the
+    // backend divides by 100 for the float Streamline wants.
+    int nr = 0;                 // 0 off, 1 on
+    int nr_backend = 0;         // 0 Auto (Streamline where it is attached, else NGX direct), 1 Streamline, 2 NGX direct (vk_dlssnr_ngx.h)
+    int nr_model = 2;           // 0 Performance, 1 Balanced, 2 Quality, 3 DLAA
+    int nr_style = 0;           // 0 Default, 1 Natural, 2 Cinematic
+    int nr_preset = 0;          // 0 the plugin's default model, 1 to 7 pin presets A to G
+    int nr_intensity = 100;     // how much of the uplift is mixed in, percent
+    int nr_local_tone = 100;    // local tone strength, percent
+    int nr_local_structure = 100;   // local structure strength, percent
+    int nr_global_tone = 100;   // global tone strength, percent
+    int nr_skin = 100;          // skin structure strength, percent (Auto mask decides where)
+    int nr_auto_mask = 0;       // the model picks what to leave alone
+    int nr_passes = 1;          // how many times the model goes over each frame, 1 to 10 (nr_plan.h)
+    int nr_scale = 100;         // the size the model works at, percent of the frame's sides, 50 to 100 (vk_nr_scale.h)
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
@@ -105,6 +124,45 @@ struct Options {
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;
+
+// (hookshot) The Window scaling filter (opts.upscale) is a filter over the finished picture, 0-2; the
+// Upscaler row (opts.dlss, gpu/vk/upscaler_rows.h) is what resolves the 3D scene itself in the game's
+// own upscaler's place. A saved options file from before the two were separate rows can still hold
+// 3 or 4 in upscale (FSR 3.1 and DLSS were on that row): load_options moves them over, and these two
+// keep such a value from ever reaching the filter's shader as a mode it does not have.
+inline int window_filter() {
+    return opts.upscale >= 0 && opts.upscale <= 2 ? opts.upscale : 0;
+}
+/// AMD's scene upscaler the Upscaler row asks for: 0 none of AMD's (the game's own, DLSS or DLAA), 3
+/// FSR 3.1 or 4 FSR 4 -- upscaler_rows.h's FSR3 and FSR4. Whether it runs is the backend's to say.
+inline int scene_upscaler() {
+    return opts.dlss == 3 || opts.dlss == 4 ? opts.dlss : 0;
+}
+/// (hookshot) DLSS 5 neural rendering's settings as the backend wants them, read live so that a
+/// change in the menu reaches the next frame. The quality field is an sl::DLSSMode, which is what
+/// DLSS-NR takes: 1 performance, 2 balanced, 3 quality, 6 DLAA.
+struct NrSettings {
+    bool on;
+    unsigned quality;
+    unsigned style;
+    unsigned preset;
+    float intensity, local_tone, local_structure, global_tone, skin;
+    bool auto_mask;
+    unsigned passes;   ///< 1 to nr_plan::kMaxPasses: the Passes row
+    bool operator==(const NrSettings&) const = default;
+};
+inline NrSettings nr_settings() {
+    const unsigned quality = opts.nr_model == 0 ? 1u : opts.nr_model == 1 ? 2u
+                           : opts.nr_model == 3 ? 6u : 3u;
+    return NrSettings{
+        opts.nr != 0, quality, (unsigned)(opts.nr_style < 0 ? 0 : opts.nr_style),
+        (unsigned)(opts.nr_preset < 0 ? 0 : opts.nr_preset),
+        (float)opts.nr_intensity / 100.0f, (float)opts.nr_local_tone / 100.0f,
+        (float)opts.nr_local_structure / 100.0f, (float)opts.nr_global_tone / 100.0f,
+        (float)opts.nr_skin / 100.0f, opts.nr_auto_mask != 0, (unsigned)nr_plan::passes(opts.nr_passes),
+    };
+}
+
 constexpr int kAutoPreset = 6;   // (the Quality preset Auto (this PC): menu_auto_for_gpu, auto_settings.h)
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
 /// video memory than the preset is for. A 4GB preset on an 8 GB card kept 256 MB of mirrors and 2.2 GB of textures: the
@@ -132,6 +190,7 @@ int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
+int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter

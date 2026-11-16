@@ -32,6 +32,9 @@ namespace mkwvk {
 extern std::vector<std::string> gpu_device_names;
 extern const MkwVkHost* host;
 void logf(const char* fmt, ...);
+// (hookshot) A line at another level than info, as host/hos.h's hos_log_at: "[trace] " leads its text, after the host's thread tag
+enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };
+void logf_at(LogLevel level, const char* fmt, ...);
 void queue_flush_locked();   // (vk_replay.cpp, RX_VK_BATCH: held submits out; dev.present_mu held)
 void queue_flush();          // (the same, taking dev.present_mu)
 // (hookshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's
@@ -51,7 +54,7 @@ struct Device {
     bool mesh_shader = false, mesh_queries = false, external_memory_host = false, external_memory_fd = false, dma_buf_import = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
-         conditional_rendering = false, provoking_vertex = false, vertex_divisor = false, stencil_export = false, memory_budget = false,
+         conditional_rendering = false, occlusion_precise = false, host_query_reset = false, provoking_vertex = false, vertex_divisor = false, stencil_export = false, memory_budget = false,
          checkpoints = false,   // (RX_VK_CHECKPOINTS: VK_NV_device_diagnostic_checkpoints)
          buffer_marker = false, // (RX_VK_CHECKPOINTS=1 without the NV extension: VK_AMD_buffer_marker, AMD and Intel)
          device_fault = false,  // (VK_EXT_device_fault: what a lost device faulted on)
@@ -192,15 +195,31 @@ extern std::atomic<bool> par_active;
 extern std::atomic<int64_t> par_lock_wait_ns, par_locks;   // (contention: the time threads waited for it)
 std::recursive_mutex& par_mutex();
 int64_t par_now_ns();
+/// (hookshot) Which site took the lock, and how long it waited there. The report says the threads
+/// take this lock hundreds of times per command buffer and wait milliseconds on it, which is why
+/// parallel replay is slower than the serial path -- but "739 times somewhere" cannot be acted on.
+/// Counted by file and line, with no call site changed, so the next question (which of the
+/// seventeen sites) has an answer. Free when parallel replay is off, because nothing below runs.
+void par_lock_seen(const char* file, int line, int64_t waited_ns);
+/// The sites that took it most since the last report, worst first; logged with the parallel line.
+void par_sites_report();
+
 struct ParLock {
     bool on;
-    explicit ParLock(bool want = true) : on(want && par_active.load(std::memory_order_relaxed)) {
+    explicit ParLock(bool want = true, const char* file = __builtin_FILE(),
+                     int line = __builtin_LINE())
+        : on(want && par_active.load(std::memory_order_relaxed)) {
         if (!on) return;
         par_locks.fetch_add(1, std::memory_order_relaxed);
-        if (par_mutex().try_lock()) return;
+        if (par_mutex().try_lock()) {
+            par_lock_seen(file, line, 0);
+            return;
+        }
         const int64_t t0 = par_now_ns();
         par_mutex().lock();
-        par_lock_wait_ns.fetch_add(par_now_ns() - t0, std::memory_order_relaxed);
+        const int64_t waited = par_now_ns() - t0;
+        par_lock_wait_ns.fetch_add(waited, std::memory_order_relaxed);
+        par_lock_seen(file, line, waited);
     }
     ~ParLock() {
         if (on) par_mutex().unlock();
@@ -208,6 +227,9 @@ struct ParLock {
     ParLock(const ParLock&) = delete;
     ParLock& operator=(const ParLock&) = delete;
 };
+/// (diagnostics) Why bindings had to take ParLock in the pool lookup, and reset: a written binding,
+/// a thread-cache miss, or the mirror state. Each wants a different fix, so they are counted apart.
+void memory_pool_lock_reasons(int64_t* written, int64_t* cache_miss, int64_t* mirror);
 void memory_pool_created(uint64_t gpu, uint64_t size);
 /// Whether guest memory in [lo, hi) is in an imported pool, live or retired (the GPU may read or write it)
 int memory_guest_imported(uint64_t lo, uint64_t hi);
@@ -276,6 +298,8 @@ void memory_note_gpu_write(uint64_t gpu, uint64_t size);
 uint64_t vk_timeline_completed();
 /// A future submission completion covering images retired during replay; zero: no safe value.
 uint64_t vk_retirement_value();
+/// The newest value handed out to a submission or a present: no recording begun so far has a later one
+uint64_t vk_values_handed_out();
 void vk_timeline_wait(uint64_t v);
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
@@ -363,6 +387,10 @@ void state_list_run();                        // (an update: the state list's pi
 /// (hookshot) A prediction a start began and did not finish (closed, or ended in it): the next start runs it again
 bool predict_pending();   // vk_draw.cpp
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
+/// (hookshot) Compile shaders: whether a preparation builds the predicted pipelines too (All, the
+/// default), or leaves them out (Most). RX_VK_COMPILE_SHADERS=all or most (the game's --compile-shaders), else compile_shaders= in hookshot_options.ini
+/// (1 All, 0 Most)
+bool compile_all();   // vk_draw.cpp
 /// (hookshot) The CPUs this process may run on: its affinity mask (sched_getaffinity on Linux, through host/posix), not every CPU
 /// the PC has. The prepare's pools are sized from it: a process limited to 12 of 24 CPUs ran 24 threads on them
 unsigned usable_cpus();   // vk_progcache.cpp
@@ -383,6 +411,8 @@ int driver_faults();   // (hookshot, vk_draw.cpp) the driver faults the pipeline
 void prepare_left_workers_note();   // (hookshot, vk_draw.cpp) predict_run or precompile_run left workers inside the driver
 bool prepare_left_workers();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp
+// the game profile's program keys: the runtime's (HOOKSHOT_PROFILE_*), else the built-in header's (vk_draw.cpp)
+const char* profile_keys(const char* runtime, const char* built);
 
 } // namespace mkwvk
 

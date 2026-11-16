@@ -4,6 +4,7 @@ python -I -B tests/test_lift_cache.py
 """
 import importlib.util
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -184,7 +185,16 @@ def check_lift_sources():
     import re
     dynamic = [f for f in sorted(sources) if f.endswith(".py") and re.search(r"\b__import__\(|\bimport_module\(|\bimportlib\b",
                                                                             open(f, encoding="utf-8", errors="replace").read())]
-    check("no module of the lift imports by a name made at run time, which lift_sources' walk cannot see (%s)" % dynamic, not dynamic)
+    # (nx2/game_profile.py load_module is the one that does, by the names its profiles hold; lift_sources takes every
+    # profile's modules as roots instead, which the check below holds it to)
+    check("no module of the lift imports by a name made at run time, which lift_sources' walk cannot see (%s)" % dynamic,
+          dynamic == [str(ROOT / "nx2" / "game_profile.py")])
+    sys.path.insert(0, str(ROOT / "nx2"))
+    import game_profile
+    named = {str(ROOT / "nx2" / (m + ".py")) for p in game_profile.GAMES.values()
+             for m in p.patch_modules + ((p.code_patch_module,) if p.code_patch_module else ())}
+    check("every game profile's patch modules are in the lift's key (missing: %s)" % sorted(named - sources),
+          named and named <= sources)
 
 
 

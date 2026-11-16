@@ -154,6 +154,8 @@ static UINT window_dpi(HWND w) {
 }
 
 static void mouse_capture(HWND w, int on) {
+    int rx_option(int id, int otherwise);
+    if (on && rx_option(6, 0) == 2) return;   /* (Mouse camera Off: the mouse plays no part) */
     if (on == (int)mouse_captured) return;
     mouse_captured = on;
     InterlockedExchange(&mouse_dx, 0);

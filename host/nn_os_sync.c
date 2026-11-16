@@ -891,6 +891,7 @@ HLE(_ZN2nn2os19TimedWaitLightEventEPNS0_14LightEventTypeENS_8TimeSpanE) {
 /* System events are created by other HLE APIs (vsync, audio device changes ...) with hos_system_event_init. */
 void hos_system_event_init(uint64_t key, int autoclear) { event_init(key, 0, autoclear); }
 void hos_system_event_signal(uint64_t key) { event_signal(obj(key, K_EVENT)); }
+void hos_system_event_clear(uint64_t key) { event_clear(obj(key, K_EVENT)); }   /* (nn_video.c: a decoder that is full) */
 HLE(_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE) { drop(ARG(0)); }
 HLE(_ZN2nn2os16ClearSystemEventEPNS0_15SystemEventTypeE) { event_clear(obj(ARG(0), K_EVENT)); }
 HLE(_ZN2nn2os15WaitSystemEventEPNS0_15SystemEventTypeE) { logged_wait(c, obj(ARG(0), K_EVENT), 0, 0, "system"); }
@@ -1360,7 +1361,8 @@ HLE(_ZN2nn2os22StartOneShotTimerEventEPNS0_14TimerEventTypeENS_8TimeSpanE) {
 }
 /* GenerateRandomBytes(void*, size_t) */
 HLE(_ZN2nn2os19GenerateRandomBytesEPvm) {
-    uint8_t *p = (uint8_t *)GP(ARG(0));
+    if (!ARG(1)) return;
+    uint8_t *p = (uint8_t *)GR(ARG(0), ARG(1));   /* (hookshot: the game's size, wholly in its memory) */
     static volatile LONG64 state = 0x9E3779B97F4A7C15LL;
     for (uint64_t i = 0; i < ARG(1); i++) {
         const uint64_t x = (uint64_t)InterlockedAdd64(&state, 0x9E3779B97F4A7C15LL);

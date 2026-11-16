@@ -21,12 +21,14 @@
 
 #include "common/alignment.h"
 #include "shader_recompiler/environment.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/breadth_first_search.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/passes.h"
+#include "shader_recompiler/shader_info.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -469,6 +471,11 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
         if (!offset.IsImmediate()) {
             // TODO: Support SSBO arrays
             return std::nullopt;
+        }
+        // (hookshot) an immediate index past the 18 buffers (LDC .IS from RZ folds to 0xFFFF + its bank) is a malformed program:
+        // tracked, it became a storage buffer whose cbuf_index the back end looks up in an array of 18
+        if (index.U32() >= Info::MAX_CBUFS) {
+            throw NotImplementedException("Out of bounds constant buffer binding {}", index.U32());
         }
         const StorageBufferAddr storage_buffer{
             .index = index.U32(),

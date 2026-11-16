@@ -15,7 +15,7 @@ namespace HookshotBuilder;
 /// folder keeps).
 static class Updater
 {
-    const string Latest = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest";
+    static string Latest => "https://api.github.com/repos/" + Repository.Name + "/releases/latest";
     const string Asset = "HookshotBuilder.zip";
     const string SetupAsset = "HookshotBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
     const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
@@ -39,7 +39,7 @@ static class Updater
     // ---- the update tracks (the Track menu; by default the track of these tools). builder/setup/setup.c and
     // builder/linux/linux_update.py have the same rules ----
     public const string Release = "release", Candidate = "rc", Nightly = "nightly";
-    const string Releases = "https://api.github.com/repos/NotRexed/Hookshot/releases";
+    static string Releases => "https://api.github.com/repos/" + Repository.Name + "/releases";   // (hookshot: the repository these tools are from)
     static readonly System.Text.RegularExpressions.Regex NightlyName = new(@"-\d+-g[0-9a-f]+(-dirty)?$");
     static readonly System.Text.RegularExpressions.Regex ReleaseName = new(@"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$");
 
@@ -94,7 +94,7 @@ static class Updater
             {
                 try
                 {
-                    var list = await http.GetStringAsync("https://github.com/NotRexed/Hookshot/releases/download/nightly/" + SetupList);
+                    var list = await http.GetStringAsync("https://github.com/" + Repository.Name + "/releases/download/nightly/" + SetupList);
                     foreach (var line in list.Split('\n'))
                         if (line.StartsWith("tag ")) return line[4..].Trim();
                 }
@@ -153,7 +153,7 @@ static class Updater
         {
             try
             {
-                var list = await http.GetStringAsync("https://github.com/NotRexed/Hookshot/releases/latest/download/" + SetupList);
+                var list = await http.GetStringAsync("https://github.com/" + Repository.Name + "/releases/latest/download/" + SetupList);
                 foreach (var line in list.Split('\n'))
                     if (line.StartsWith("tag ")) return line[4..].Trim();
             }

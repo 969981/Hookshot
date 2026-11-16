@@ -32,7 +32,8 @@ ALIGN = 0x100000
 
 
 def c_ident(sym):
-    return "imp_" + "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in sym)
+    # (ASCII only: str.isalnum() is true of any letter or digit in Unicode, which a C name may not hold)
+    return "imp_" + "".join(ch if ch.isascii() and (ch.isalnum() or ch == "_") else "_" for ch in sym)
 
 
 class NxImage:

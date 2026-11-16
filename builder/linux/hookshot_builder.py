@@ -102,7 +102,15 @@ def folder_has_dlss(folder):
 
 
 def dlss_args(dlss):
-    return ["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else []
+    # (unticked: --no-dlss takes out the runtimes the tick placed; make_game.py keeps a folder's otherwise, RecompLauncher's way)
+    return ["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else ["--no-dlss"]
+
+
+COMPILE_LEVELS = ("all", "most")
+COMPILE_NAMES = ("All", "Most")
+COMPILE_TIP = ("All (the default): every shader, the pipelines the game is known to use and the predicted ones. Most: without "
+               "the predicted pipelines, 20-30% shorter (19% on an RTX 5060 Ti, 30% on an RTX 3090); on one route it cost nothing "
+               "in play, but more may be compiled the first time you visit a place.")
 
 
 def make_game_env(dlss, environ=None):
@@ -150,6 +158,13 @@ def save_config(cfg):
 
 def game_ready(folder):
     return linux_update.game_exe(folder) is not None
+
+
+def your_games(out):
+    """The "Your games" list: each game that builds, in its own folder by nx2/game_folders.py's rule from the Builder's game
+    folder (out), when that folder holds a built game (game_folders.built_games). The Windows Builder's Games.cs keeps the same"""
+    import game_folders
+    return game_folders.built_games(out, linux_update.game_exe)
 
 
 def read_cgroup(path):
@@ -528,6 +543,9 @@ class Builder(tk.Tk):
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
+        # (Compile shaders, make_game.py --compile-shaders, kept in the folder's hookshot_options.ini)
+        self.compile_shaders = tk.StringVar(value=COMPILE_NAMES[COMPILE_LEVELS.index(
+            self.cfg.get("compile_shaders") if self.cfg.get("compile_shaders") in COMPILE_LEVELS else "all")])
         self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
@@ -612,7 +630,7 @@ class Builder(tk.Tk):
                               ("Status.TLabel", {"foreground": BRAND_INK, "font": "HsNote"}),
                               ("Stage.TLabel", {"background": GLASS, "font": "HsStrong"}),
                               ("Bad.Stage.TLabel", {"foreground": BAD}), ("Go.Stage.TLabel", {"foreground": GO}),
-                              ("Card.Note.TLabel", {"background": GLASS})):
+                              ("Card.Note.TLabel", {"background": GLASS}), ("Game.TLabel", {"font": "HsStrong"})):
             s.configure(name, **options)
 
         # buttons: Quiet (also every plain ttk button, the dialogs' among them), Primary (blue: the step's action), Go (green: Play)
@@ -857,12 +875,9 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Build your game", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        if game_ready(self.cfg.get("out")):
-            played = ttk.Frame(f)
-            played.grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
-            ttk.Button(played, text="Play the game built in %s" % self.cfg["out"],
-                       command=lambda: self.play_and_close(self.cfg["out"])).pack(side="left")
-            self.share_row(played, self.cfg["out"], wrap=px(360)).pack(side="left", padx=(px(12), 0))
+        games = your_games(self.cfg.get("out"))
+        if games:
+            self.games_list(f, games).grid(row=2, column=0, columnspan=3, sticky="we")
         self.section(f, "Game files", 3, columnspan=3)
         kinds = ttk.Frame(f, style="Card.TFrame", padding=px(5))
         kinds.grid(row=4, column=0, columnspan=3, sticky="we")
@@ -907,6 +922,12 @@ class Builder(tk.Tk):
         ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, cursor="hand2").pack(anchor="w")
         ttk.Label(options, text="A few minutes at the end of the build. Unticked, the game prepares them at its first start, "
                   "behind a black window.", style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+        level = ttk.Frame(options)
+        level.pack(anchor="w", pady=(px(12), 0))
+        ttk.Label(level, text="Compile shaders").pack(side="left")
+        ttk.Combobox(level, textvariable=self.compile_shaders, values=list(COMPILE_NAMES), state="readonly", width=18,
+                     cursor="hand2").pack(side="left", padx=(px(10), 0))
+        ttk.Label(options, text=COMPILE_TIP, style="Small.TLabel", wraplength=px(540)).pack(anchor="w", pady=(px(2), 0))
         ttk.Checkbutton(options, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)", variable=self.dlss,
                         command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
         ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
@@ -928,6 +949,35 @@ class Builder(tk.Tk):
         self.update_space()
         self.apply_mode()
         scrolls()
+
+    def games_list(self, parent, games):
+        """"Your games" (your_games): a row for each built game, its name and folder, with Open folder and Play. Play starts it
+        as `--play <base> --game <key>` does (play_folder_for), the path the launcher's tiles take. Built again with the form,
+        so a build's new game is in it when the form comes back"""
+        px = self.px
+        box = ttk.Frame(parent)
+        box.columnconfigure(0, weight=1)
+        self.section(box, "Your games", 0, top=16)
+        rows = ttk.Frame(box)
+        rows.grid(row=1, column=0, sticky="we")
+        rows.columnconfigure(0, weight=1)
+        for i, g in enumerate(games):
+            if i:
+                tk.Frame(rows, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i - 1, column=0, columnspan=3, sticky="we",
+                                                                                pady=px(6))
+            texts = ttk.Frame(rows)
+            texts.grid(row=2 * i, column=0, sticky="we")
+            ttk.Label(texts, text=g["name"], style="Game.TLabel").pack(anchor="w")
+            home = os.path.expanduser("~").rstrip("/")
+            shown = "~" + g["folder"][len(home):] if home and g["folder"].startswith(home + "/") else g["folder"]
+            ttk.Label(texts, text=shown, style="Small.TLabel").pack(anchor="w")
+            ttk.Button(rows, text="Open folder", cursor="hand2",
+                       command=lambda f=g["folder"]: subprocess.Popen(["xdg-open", f])).grid(row=2 * i, column=1, padx=px(8))
+            ttk.Button(rows, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
+                       command=lambda g=g: self.play_and_close(play_folder_for(g["base"], g["key"]))).grid(row=2 * i, column=2)
+        if game_ready(self.cfg.get("out")):   # (the pipeline list of the folder built last, as beside its Play before)
+            self.share_row(box, self.cfg["out"], wrap=px(560)).grid(row=2, column=0, sticky="w", pady=(px(10), 0))
+        return box
 
     def scrolled(self, parent, padding):
         """a page's body that scrolls when the window is shorter than it: by the wheel or trackpad, the scroll bar (shown only
@@ -1041,6 +1091,11 @@ class Builder(tk.Tk):
         except tk.TclError:
             pass
         self.apply_mode()
+
+    def compile_level(self):
+        """The Compile shaders box's choice, as make_game.py takes it"""
+        name = self.compile_shaders.get()
+        return COMPILE_LEVELS[COMPILE_NAMES.index(name)] if name in COMPILE_NAMES else "all"
 
     def on_dlss_changed(self):
         if self.dlss.get() and not messagebox.askyesno("NVIDIA DLSS", DLSS_LICENSE):
@@ -1311,13 +1366,14 @@ class Builder(tk.Tk):
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
         dlss = bool(self.dlss.get()) if hasattr(self, "dlss") else False
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
-                        prepare="1" if self.prepare.get() else "0", **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
+                        prepare="1" if self.prepare.get() else "0", compile_shaders=self.compile_level(),
+                        **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
-            (dlss_args(True) if dlss else [])
+            ["--compile-shaders", self.compile_level()] + dlss_args(dlss)
         slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
         if slow is not None and not messagebox.askokcancel("Hookshot", slow):
             return
@@ -1542,9 +1598,21 @@ class Builder(tk.Tk):
         self.destroy()
 
 
+def play_folder_for(folder, game):
+    """--play <folder> --game <key>: that game's own folder, <folder> for the default game and <folder>-<key> for another
+    (nx2/game_folders.py, the rule builder/linux/hookshot-launch and builder/setup/setup.c keep too)"""
+    if not game or not folder:
+        return folder
+    sys.path.insert(0, os.path.join(ROOT, "nx2"))
+    import game_folders
+    return game_folders.folder(folder, game)
+
+
 def main():
     if "--play" in sys.argv[1:]:
-        folder = _arg("--play") or load_config().get("out")
+        given = _arg("--play")
+        given = None if given and given.startswith("--") else given   # (--play --game <key>: the saved folder, that game's)
+        folder = play_folder_for(given or load_config().get("out"), _arg("--game"))
         if game_ready(folder):
             play(folder)
             return

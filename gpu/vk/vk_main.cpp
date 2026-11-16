@@ -6,6 +6,9 @@
 
 #include <atomic>
 #include <chrono>
+
+#include "vk_dlss.h"    // (the device extensions DLSS needs, asked of NGX before the device is made)
+#include "vk_dlssnr_ngx.h"   // (and DLSS 5 neural rendering through NGX for its own)
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -25,6 +28,9 @@
 static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_streamline.h"
+#include "vk_ffx.h"
+#include "vk_opennr.h"   // (hookshot: open neural rendering's extensions, only when it is the selected backend)
 #include "auto_settings.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
@@ -108,14 +114,25 @@ int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
-void logf(const char* fmt, ...) {
+static void vlogf(LogLevel level, const char* fmt, std::va_list a) {
+    static const char* const tags[] = {"[error] ", "[warn] ", "", "[debug] ", "[trace] "};
     char b[1024];
-    std::va_list a;
-    va_start(a, fmt);
-    std::vsnprintf(b, sizeof b, fmt, a);
-    va_end(a);
+    const int n = std::snprintf(b, sizeof b, "%s", tags[level >= log_error && level <= log_trace ? level : log_info]);
+    std::vsnprintf(b + n, sizeof b - n, fmt, a);
     last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
+}
+void logf(const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(log_info, fmt, a);
+    va_end(a);
+}
+void logf_at(LogLevel level, const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(level, fmt, a);
+    va_end(a);
 }
 
 namespace {
@@ -149,25 +166,49 @@ bool create_instance() {
             if (has_extension(all, want)) exts[n_exts++] = want;
     }
 #endif
+    // (hookshot) DLSS 5 neural rendering comes through NVIDIA Streamline, and Streamline has to be
+    // started before the instance exists: what it loads decides which instance and device
+    // extensions this instance and device must be created with. It answers "no" on a build without
+    // its headers, on a PC without sl.interposer.dll, and whenever the player has it switched off,
+    // and then nothing below changes. gpu/vk/vk_streamline.h says why it is a second NVIDIA path.
+    std::vector<const char*> inst_exts(exts, exts + n_exts);
+    if (streamline::start()) {
+        const char* sl_want[16] = {};
+        const size_t sl_n = streamline::instance_extensions(sl_want, 16);
+        uint32_t n_all = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n_all, nullptr);
+        std::vector<VkExtensionProperties> all(n_all);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n_all, all.data());
+        for (size_t i = 0; i < sl_n; i++) {
+            if (!has_extension(all, sl_want[i])) {
+                logf("vk: streamline wants the instance extension %s, which this loader does not "
+                     "have: DLSS 5 neural rendering will be unavailable", sl_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : inst_exts) already = already || strcmp(have, sl_want[i]) == 0;
+            if (!already) inst_exts.push_back(sl_want[i]),
+                logf("vk: streamline wants the instance extension %s: enabled", sl_want[i]);
+        }
+    }
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mkw-recomp";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    std::vector<const char*> ext_list(exts, exts + n_exts);
     {   // (hookshot) what NVIDIA DLSS needs (vk_dlss.cpp; nothing in a build without it)
         uint32_t n = 0;
         vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
         std::vector<VkExtensionProperties> all(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
-        dlss_instance_extensions(ext_list, all);
+        dlss_instance_extensions(inst_exts, all);
         // (hookshot) the HDR10 colour space for the Insert menu's HDR (the menu's settings are read after the instance is made, so
         // whenever the driver has it; the SDR choice in create_swapchain keeps to the sRGB surface)
         if (has_extension(all, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
-            ext_list.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME), dev.swapchain_colorspace = true;
+            inst_exts.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME), dev.swapchain_colorspace = true;
     }
-    ci.enabledExtensionCount = (uint32_t)ext_list.size();
-    ci.ppEnabledExtensionNames = ext_list.data();
+    ci.enabledExtensionCount = (uint32_t)inst_exts.size();
+    ci.ppEnabledExtensionNames = inst_exts.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (env_on("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -341,6 +382,7 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    opennr::device_extensions(want, exts);   // (hookshot: open neural rendering's, vk_opennr.cpp; nothing unless selected)
     // (hookshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
     // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
     // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver only (native_fadd_wanted);
@@ -363,6 +405,42 @@ bool create_device() {
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
     antilag_device_extensions(want, exts);   // (hookshot: AMD Anti-Lag 2's, vk_antilag.cpp)
 
+    // (hookshot fork) DLSS 5 neural rendering through NGX directly (vk_dlssnr_ngx.h) asks NGX for feature 18's set: a device
+    // made without a feature's extensions is where NGX creates the feature and fails (FAIL_PlatformError) while still
+    // reporting it available. An extension this GPU does not have is named in the log and left out.
+    {
+        const char* nr_want[16] = {};
+        const size_t nr_n = dlssnr_ngx::device_extensions(dev.instance, dev.physical, nr_want, sizeof nr_want / sizeof *nr_want);
+        for (size_t i = 0; i < nr_n; i++) {
+            if (!has_extension(exts, nr_want[i])) {
+                logf("vk: dlss-nr wants %s, which this GPU does not have: NGX direct will be unavailable", nr_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, nr_want[i]) == 0;
+            if (!already) want.push_back(nr_want[i]), logf("vk: dlss-nr wants %s: enabled", nr_want[i]);
+        }
+    }
+
+    // (hookshot) And what Streamline's neural rendering plugin needs, asked of Streamline for the
+    // same reason: the set is the plugin's to state. Same handling as the NGX features above -- an
+    // extension this GPU does not have is named in the log and left out, and the feature then
+    // reports itself unavailable rather than taking vkCreateDevice down with it.
+    {
+        const char* sl_want[16] = {};
+        const size_t sl_n = streamline::device_extensions(sl_want, 16);
+        for (size_t i = 0; i < sl_n; i++) {
+            if (!has_extension(exts, sl_want[i])) {
+                logf("vk: streamline wants %s, which this GPU does not have: DLSS 5 neural "
+                     "rendering will be unavailable", sl_want[i]);
+                continue;
+            }
+            bool already = false;
+            for (const char* have : want) already = already || strcmp(have, sl_want[i]) == 0;
+            if (!already) want.push_back(sl_want[i]), logf("vk: streamline wants %s: enabled", sl_want[i]);
+        }
+    }
+
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
     std::vector<VkQueueFamilyProperties> families(n);
@@ -373,11 +451,22 @@ bool create_device() {
             (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
             dev.queue_family = i;
     if (dev.queue_family == UINT32_MAX) return false;
-    const float priority = 1.0f;
+    // (hookshot) Streamline's own queues follow the renderer's in the graphics family. It asks for
+    // none for neural rendering today, but it is asked rather than assumed: a plugin that wants one
+    // and does not get it fails inside a frame, which is the worst place to find out. Whatever the
+    // family cannot give is reported to streamline::attach_device, which turns the feature off
+    // cleanly instead.
+    const uint32_t sl_queues_wanted = streamline::extra_queues();
+    const uint32_t sl_queues =
+        std::min(sl_queues_wanted, families[dev.queue_family].queueCount - 1);
+    if (sl_queues != sl_queues_wanted)
+        logf("vk: streamline wants %u queues of the graphics family and it has room for %u",
+             sl_queues_wanted, sl_queues);
+    const float priority[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     q.queueFamilyIndex = dev.queue_family;
-    q.queueCount = 1;
-    q.pQueuePriorities = &priority;
+    q.queueCount = 1 + std::min(sl_queues, 7u);
+    q.pQueuePriorities = priority;
     // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
     // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
     // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
@@ -414,8 +503,15 @@ bool create_device() {
         for (uint32_t i = 0; i < n; i++) qf[i] = {(uint32_t)families[i].queueFlags, families[i].queueCount};
         if (!presenter_queue_pick(qf.data(), n, dev.queue_family, compute_family, presenter_family, presenter_index))
             presenter_family = UINT32_MAX;
+        // (hookshot fork: Streamline's own queues come right after the replay's in its family, q.queueCount above. The
+        // presenter's goes after those, or there is none: two owners of one queue is what presenter_queue.h rules out)
+        if (presenter_family == dev.queue_family) {
+            presenter_index += q.queueCount - 1;
+            if (presenter_index >= families[dev.queue_family].queueCount) presenter_family = UINT32_MAX;
+        }
     }
-    static const float priorities[2] = {1.0f, 1.0f};
+    static const float priorities[16] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                         1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     std::vector<VkDeviceQueueCreateInfo> qs;
     auto queues = [&](uint32_t family, uint32_t count) {
         for (auto& x : qs)
@@ -424,9 +520,10 @@ bool create_device() {
         x.queueFamilyIndex = family, x.queueCount = count, x.pQueuePriorities = priorities;
         qs.push_back(x);
     };
-    queues(dev.queue_family, 1);
+    queues(dev.queue_family, q.queueCount);   // (hookshot fork: the replay's, and Streamline's after it)
     if (compute_family != UINT32_MAX) queues(compute_family, 1);
-    if (presenter_family != UINT32_MAX) queues(presenter_family, presenter_index + 1);
+    if (presenter_family != UINT32_MAX && presenter_index < 16) queues(presenter_family, presenter_index + 1);
+    else presenter_family = UINT32_MAX;   // (past the priorities above: none)
     (void)q;
     // (and the presenter's waits for its presents to be shown: VK_KHR_present_id + VK_KHR_present_wait, where the driver has them)
     const bool want_present_wait = presenter_family != UINT32_MAX && has_extension(exts, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
@@ -480,6 +577,7 @@ bool create_device() {
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
+    opennr::device_features(tail);   // (hookshot: the network's matrix, float8 and CUDA launch features, when selected)
     VkPhysicalDevicePresentIdFeaturesKHR present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
     VkPhysicalDevicePresentWaitFeaturesKHR present_wait{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
     if (want_present_wait) {
@@ -538,6 +636,10 @@ bool create_device() {
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     dev.provoking_vertex = dev.provoking_vertex && pv.provokingVertexLast;
     dev.conditional_rendering = dev.conditional_rendering && cond.conditionalRendering;
+    // (hookshot) the occlusion queries' real counts (vk_replay.cpp, RX_VK_OCC_QUERIES): a sample count, not only "any", and
+    // their reset from the CPU once read (both on when the device has them: the queried chain is what it is created with)
+    dev.occlusion_precise = f.features.occlusionQueryPrecise == VK_TRUE;
+    dev.host_query_reset = f12.hostQueryReset == VK_TRUE;
     dev.custom_border_color = dev.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
     dev.depth_clip_control = dev.depth_clip_control && clip.depthClipControl;
     dev.graphics_pipeline_library = dev.graphics_pipeline_library && gpl.graphicsPipelineLibrary;
@@ -648,6 +750,12 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
+    // (hookshot) The device goes to Streamline before anything is recorded with it: this is where
+    // it says whether DLSS 5 neural rendering can really run here. It is deliberately after the
+    // queues are fetched, because it reports how many of the queues it asked for actually exist.
+    // A false here is not an error -- it is the ordinary case on every card that is not NVIDIA's,
+    // and the renderer carries on without the feature.
+    streamline::attach_device(dev.instance, dev.physical, dev.device, dev.queue_family, sl_queues);
     dev.presenter_queue = VK_NULL_HANDLE;
     if (presenter_family != UINT32_MAX) {
         vkGetDeviceQueue(dev.device, presenter_family, presenter_index, &dev.presenter_queue), dev.presenter_family = presenter_family;
@@ -661,6 +769,8 @@ bool create_device() {
     }
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    opennr::device_created();   // (hookshot: whether open neural rendering can run here, said in the log)
+    ffx::probe();   // (hookshot: what AMD's FSR 4 runtime offers here, asked once, now: gpu/vk/vk_ffx.h)
     reflex_device_created();
     antilag_device_created();
     if (dev.push_descriptor) {
@@ -1162,7 +1272,7 @@ void prepare_with_screen() {
         const bool prepared = !update && prepare_run(prep_progress, false);
         if (!prepared) prep_skip[0].store(true);
         // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache)
-        if ((prepared || (!update && predict_pending())) && !prepare_stopped()) {
+        if ((prepared || (!update && predict_pending())) && compile_all() && !prepare_stopped()) {
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
             predict_run(prep_progress);
@@ -1299,11 +1409,12 @@ bool started_up() {
         }
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
-        const bool predict = prepared || predict_pending();   // (or the last run did not finish the prediction)
-        if (!prepared) {
-            if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
-            if (!predict) bar.skip(1);
-        }
+        // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
+        const bool predict = (prepared || predict_pending()) && compile_all();
+        if (!prepared && !bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
+        // (no prediction: its part of the bar goes. On Most after a preparation too: left in, the step to the noted pipelines
+        // counted it done at its guess, and the bar jumped by the prediction's share, about half of it)
+        if (!predict) bar.skip(1);
         part = 1;
         prepare_moved(1, 0, 0);
         if (predict) predict_run(progress);
@@ -1371,7 +1482,7 @@ bool started_up() {
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
         const bool update = prepare_is_update();   // (an update: what the notes name now, the rest in play)
-        if (!update && (prepare_run(progress, false) || predict_pending())) predict_run(progress);
+        if (!update && (prepare_run(progress, false) || predict_pending()) && compile_all()) predict_run(progress);
         if (update) state_list_run();
         precompile_run(progress);
         if (update) prepare_background();
@@ -1458,16 +1569,21 @@ void auto_profile() {
     mi.cbSize = sizeof mi;
     DEVMODEW dm{};
     dm.dmSize = sizeof dm;
-    if (main_window && GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+    // (no window, the Builder's shader preparation and a headless start: the primary monitor, MonitorFromWindow(NULL, ...).
+    // A 0x0 screen made a fingerprint no options file had, so such a run chose Auto again for no screen and wrote it over
+    // the player's settings: issue 165)
+    if (GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
         hw.screen_w = (int)dm.dmPelsWidth, hw.screen_h = (int)dm.dmPelsHeight;
+        if (!main_window && dm.dmDisplayFrequency > 1) hw.refresh_hz = (int)dm.dmDisplayFrequency;   // (as display_refresh_mhz)
+    }
 #else
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     if (pages > 0 && page > 0) hw.ram_mb = (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20);
     const MkwVkWindow* w = (const MkwVkWindow*)main_window;
     if (w && w->version >= 3 && w->desktop_size) w->desktop_size(w->window, &hw.screen_w, &hw.screen_h);
 #endif
-    hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
+    if (main_window || !hw.refresh_hz) hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
     menu_auto_for_gpu(p, hw);
 }
 

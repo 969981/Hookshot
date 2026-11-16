@@ -21,7 +21,12 @@ BUILD_SCRIPT = ROOT / "nx2" / "build.py"
 
 def production_code(path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    names = {"tree_headers", "vk_sources", "flag_text", "object_key", "zstd_jobs"}
+    # (hookshot) streamline_sdk_path decides a compile flag, so the object key depends on it: it belongs
+    # here -- it gates -DRX_VK_STREAMLINE and an include path.
+    # (opennr_jobs: open neural rendering's sources, which the branch adds; without third_party/opendlss-nr, as in
+    # this fixture's tree, it adds none)
+    names = {"tree_headers", "vk_sources", "flag_text", "object_key", "streamline_sdk_path", "opennr_jobs",
+             "zstd_jobs"}
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {n.name for n in functions} == names
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
@@ -110,6 +115,8 @@ class ShaderStampCacheTests(unittest.TestCase):
             # (the back end's branch makes its logo header and fonts file itself since #1567: no files written here)
             "logo_rgba": SimpleNamespace(write=lambda path: ""),
             "ui_fonts": SimpleNamespace(write=lambda path: None),
+            # (the ImGui back end's copy with nx2/imgui_backend.py's changes: here the fixture's file, copied as it is)
+            "imgui_backend": SimpleNamespace(write=self.imgui_backend_copy),
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
             "FSR": fsr,   # (HOOKSHOT_FSR=1: vk_fsr4.cpp built with AMD FSR 4)
@@ -121,6 +128,12 @@ class ShaderStampCacheTests(unittest.TestCase):
             return {str(Path(src).relative_to(self.root)).replace("\\", "/"):
                     {"key": namespace["object_key"](src, flags, deps), "flags": flags}
                     for _, src, _, flags, deps in namespace["vk_jobs"]}
+
+    def imgui_backend_copy(self, out_dir):
+        out = Path(out_dir) / "imgui_impl_vulkan.cpp"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes((self.root / "third_party/imgui/backends/imgui_impl_vulkan.cpp").read_bytes())
+        return str(out)
 
     def changed(self, before, after):
         self.assertEqual(before.keys(), after.keys())

@@ -260,20 +260,23 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'gpu/vk/vk_draw.cpp')
     parser.add_argument('--cxx', default='clang++')
     args = parser.parse_args()
-    body = block(args.source.read_text(encoding='utf-8'), 'bool upscale_stub(')
+    text = args.source.read_text(encoding='utf-8')
+    # the game profile's keys, as production reads them: its helpers and the committed game/game_profile.h
+    body = '\n'.join((block(text, 'const char* profile_keys('), block(text, 'static bool key_listed('),
+                      block(text, 'bool upscale_stub(')))
     env = os.environ.copy()
     env.pop('RX_VK_NO_UPSCALE_STUB', None)
     with tempfile.TemporaryDirectory(prefix='upscale-fallback-') as tmp:
         tmp = Path(tmp)
         source = tmp / 'check.cpp'
         exe = tmp / ('check.exe' if os.name == 'nt' else 'check')
-        source.write_text(PREFIX + body + SUFFIX, encoding='utf-8')
+        source.write_text('#include "game_profile.h"\n' + PREFIX + body + SUFFIX, encoding='utf-8')
         if Path(args.cxx).name.lower() in ('cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'):
-            command = [args.cxx, '/nologo', '/std:c++20', "/FI" + ENV_ON_H, '/EHsc', '/UNDEBUG', str(source),
+            command = [args.cxx, '/nologo', '/std:c++20', "/FI" + ENV_ON_H, '/I' + str(ROOT / 'game'), '/EHsc', '/UNDEBUG', str(source),
                        '/Fo' + str(tmp / 'check.obj'), '/Fe' + str(exe)]
             cwd = tmp
         else:
-            command = [args.cxx, '-std=c++20', '-include', ENV_ON_H, '-UNDEBUG', str(source), '-o', str(exe)]
+            command = [args.cxx, '-std=c++20', '-include', ENV_ON_H, '-I' + str(ROOT / 'game'), '-UNDEBUG', str(source), '-o', str(exe)]
             cwd = None
         subprocess.run(command, cwd=cwd, env=env, check=True)
         cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', 'fd-r11',

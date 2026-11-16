@@ -52,6 +52,9 @@ struct DrawArgs {
     bool mesh = false;
     int groups[3] = {0, 1, 1};
     uint32_t first_task = 0;   // (hookshot: a direct mesh draw's first task workgroup, NVN's DrawMeshTasks(first, count))
+    // (hookshot) an occlusion query around the draw, inside its pass (vk_replay.cpp, RX_VK_OCC_QUERIES); none when null
+    VkQueryPool occ_pool = VK_NULL_HANDLE;
+    uint32_t occ_query = 0;
 };
 
 /// A recording starts (its slot's descriptor pool and upload stream are reset); value: the timeline value it signals
@@ -63,6 +66,9 @@ bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
 /// The open render pass ends (before transfers, clears, barriers and the recording's end)
 void end_pass(VkCommandBuffer cmd);
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d);
+/// (hookshot) the occlusion queries draw() left unbegun since the last call, by why: the draw returned before drawing, its
+/// vertex input was not all bound, a mesh fallback's task batches (vk_replay.cpp's RX_VK_OCC_LOG line)
+void occ_draw_counts(uint64_t out[3]);
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
@@ -76,8 +82,10 @@ void draw_stats(int64_t* draws, int64_t* skipped, int64_t* dispatches, int64_t* 
 void draw_stats2(int64_t* passes, int64_t* mesh, double* pipeline_ms);
 void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
 /// (hookshot) pipelines linked from stage libraries in the draw, and the libraries asked of the driver for them: had, and cold;
-/// of the cold, those a worker has built since, and the workers' time in them. False: no stage libraries (RX_VK_GPL)
-bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms);
+/// of the cold, those a worker has built since, and the workers' time in them; the linked pipelines the full builds replaced, and
+/// those given back since (fast_retire). False: no stage libraries (RX_VK_GPL)
+bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms,
+                 int64_t* fast_replaced, int64_t* fast_given_back);
 void draw_skip_report(double frames);   // (hookshot) skips by the line that made them
 int64_t draw_desc_reused();
 /// (Descriptor reuse) Of those, the reuses the global registrations' generation check would have rebuilt for
@@ -92,6 +100,8 @@ uint64_t ub_generation();
 void ub_thread_off();
 /// The pipeline cache to disk (force: whatever was built since the last save; else only after a few new ones)
 void pipeline_cache_save(bool force);
+/// (hookshot) the Debug tab's Descriptor reuse and Sampler cache rows as the menu has them: they apply in play
+void menu_debug_rows(int descriptor_reuse, int sampler_cache);
 void pipeline_cache_save_play();   // what play made since the last save, into a play file now
 // (the window closed: what play made since the last save, a few ms; the start's cache is not written there, as before)
 void pipeline_cache_close();

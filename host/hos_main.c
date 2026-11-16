@@ -5,10 +5,15 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]
+   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders] [--compile-shaders all|most]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#include "game_profile.h"   /* (the game this runtime is compiled for) */
+#ifndef GAME_SAVES_DIR   /* (a header from before the saves had a folder per game: two games would share one) */
+#error "game_profile.h has no GAME_SAVES_DIR: emit it again (python -I nx2/game_profile.py --emit-header), or lift again"
+#endif
+#include "game_profile_check.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -76,6 +81,61 @@ static void no_power_throttling(void) {
 
 int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
 
+/* Whether the image this runs is the build the game profile was compiled for (game_profile.h, from
+   nx2/game_profile.py; a lift writes the dump's own). Every return address and offset the profile names is that
+   build's, so none of them is recognised in any other: a runtime built for one game and started on another, or built
+   from the committed header without a lift, recognises nothing rather than something that only looks the same. The
+   build ids are compared as far as the image's goes (gen/hos_image.c's is main's NSO build id, which may be shorter
+   than the 40 digits nx2/dump.py prints), and at least 16 digits of it. */
+int hos_game_profile_live(void) {
+    static int live = -1;
+    if (live < 0) {
+        size_t n = strlen(hos_main_build_id);
+        if (n > sizeof GAME_BUILD_ID - 1) n = sizeof GAME_BUILD_ID - 1;
+        live = GAME_HAVE_BUILD_ID && n >= 16 && !strncmp(hos_main_build_id, GAME_BUILD_ID, n);
+    }
+    return live;
+}
+
+/* (its own line, after the log's first: hos_game_profile_live is first asked in game_profile_env, before stderr is
+   hookshot_log.txt, and a line written then never reached a player's log) */
+static void game_profile_log(void) {
+    hos_log(hos_game_profile_live() ? "game profile: %s (%s), main %s"
+                                    : "game profile: %s (%s) is not for main %s: none of its addresses, offsets or "
+                                      "program keys are used",
+            GAME_PROFILE_KEY, GAME_NAME, hos_main_build_id);
+}
+
+/* The renderer is built once for every game (the AppImage's and a build's alike) with the committed
+   profile's program keys as its defaults; the runtime is compiled for its game. So the runtime hands the renderer its
+   profile's keys before the renderer reads any: HOOKSHOT_PROFILE_* are not switches a player sets (hookshot_env.txt's
+   RX_VK_TAAU_KEYS and RX_VK_NETWORK_KEEP still stand over them), only this channel. An image the profile is not for
+   gets no keys at all. "None" is written "-", which every reader of these lists takes as none: an empty value would
+   do on Linux, but on Windows _putenv("X=") removes X, and the renderer then took its built-in (Ocarina's) keys. */
+static void game_profile_env(void) {
+    const int live = hos_game_profile_live();
+    char gameplay[18 * (GAME_GAMEPLAY_NETWORK_KEY_COUNT + 1)] = "";
+    static const unsigned long long keys[] = GAME_GAMEPLAY_NETWORK_KEYS;
+    for (int i = 0, at = 0; live && i < GAME_GAMEPLAY_NETWORK_KEY_COUNT; i++)
+        at += snprintf(gameplay + at, sizeof gameplay - at, "%s%016llx", i ? "," : "", keys[i]);
+    char parallel[12] = "";   /* (the renderer's parallel replay threads; none: its own default) */
+    if (live && GAME_VK_PARALLEL >= 0) snprintf(parallel, sizeof parallel, "%d", GAME_VK_PARALLEL);
+    const char *const vars[][2] = {{"HOOKSHOT_PROFILE_TAAU_KEYS", live ? GAME_UPSCALE_TAAU_KEYS : ""},
+                                   {"HOOKSHOT_PROFILE_NETWORK_KEEP", live ? GAME_NETWORK_KEEP_KEYS : ""},
+                                   {"HOOKSHOT_PROFILE_GAMEPLAY_KEYS", gameplay},
+                                   {"HOOKSHOT_PROFILE_VK_PARALLEL", parallel}};
+    for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) {
+        const char *value = *vars[i][1] ? vars[i][1] : "-";
+#ifdef _WIN32
+        char line[512];
+        snprintf(line, sizeof line, "%s=%s", vars[i][0], value);
+        _putenv(line);
+#else
+        setenv(vars[i][0], value, 1);
+#endif
+    }
+}
+
 /* gen/hos_image.c (build.py lift) */
 extern const uint64_t hos_main_stack_size;
 extern const int hos_main_priority, hos_main_core, hos_module_count;
@@ -120,6 +180,18 @@ static void *reserve_large(SIZE_T size) {
 
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
 extern int hos_guest_memfd;   /* (below) */
+#ifndef _WIN32
+/* (linux) Guest addresses below 1 MB fault, as on Windows (mkw_glue.c commit_on_touch leaves them uncommitted: "a null
+   pointer: the game's own fault") and as on the console, where nothing is mapped there. The window is mapped readable and
+   writable whole, so before this a game's null-pointer reads and writes went into guest page 0 without a word, and its
+   crash came later and elsewhere, through whatever had been left there: Kirby Air Riders' first boot (Dragoon) read a
+   "pointer" 0x3feb3100500 out of guest 0x68 in a job worker, where the fault was a null object read at guest 0x58.
+   Nothing is handed out below HOS_SYSTEM_BASE (16 MB). */
+static void guest_null_guard(void) {
+    if (mprotect((void *)A64_HOST_BASE, 0x100000, PROT_NONE) != 0)
+        hos_log("mem: guest addresses below 1 MB stay accessible (mprotect: errno %d): a null pointer does not fault", errno);
+}
+#endif
 static int startup_stderr = -1;   /* (keep startup warnings visible if stderr becomes hookshot_log.txt) */
 #endif
 /* The guest window lives at the constant A64_HOST_BASE (rt/a64.h), so lifted code never loads its base. */
@@ -197,6 +269,7 @@ static int reserve_guest(void) {
                 void *p = mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
                                MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);
                 if (p == (void *)A64_HOST_BASE) {
+                    guest_null_guard();
                     hos_guest_memfd = fd;
                     hos_log("mem: the guest window is a memfd's (%d), shared with the GPU as dma-bufs", fd);
                     return 1;
@@ -210,6 +283,7 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
+    guest_null_guard();
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
@@ -255,7 +329,8 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 #ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
+/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot; another game's in hookshot-<key>, below), so a
+   rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
    cannot be moved keeps the old place. --user still wins.
    A symbolic link in it, to saves the player keeps elsewhere (a synced folder, another drive), is made again in the
@@ -361,6 +436,14 @@ static void delete_tree(const char *p) {
     }
     RemoveDirectoryA(p);
 }
+/* Each game's saves in a folder of its own: game_profile.h's GAME_SAVES_DIR, Ocarina's "hookshot" and any other game's
+   "hookshot-<profile key>". The save folder has no word of which game wrote it, and the forks of this engine all used
+   "hookshot", so a second game's first run wrote into Ocarina's saves (DK Bananza fork, 4f417fd7 and 58d94fb4). The
+   fallback is for tests/test_linux_saves_move.py, which compiles this code alone; the runtime's own build stops above
+   on a header without the name. */
+#ifndef GAME_SAVES_DIR
+#define GAME_SAVES_DIR "hookshot"
+#endif
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -372,7 +455,7 @@ static const char *saves_dir(const char *beside) {
         snprintf(dir, sizeof dir, "%s/.local/share", home);
     } else return beside;
     CreateDirectoryA(dir, NULL);
-    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
+    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/" GAME_SAVES_DIR);
     CreateDirectoryA(dir, NULL);
     if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
     char pattern[MAX_PATH];
@@ -1706,11 +1789,22 @@ static void occlusion_switch(void) {
     hos_occlusion_off = e && e[0] == '1';
     if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
 }
-/* (hookshot, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
-   and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
-   a message says it once at boot; the game starts anyway. The text, or 0 when there is enough */
+/* (hookshot, issues 1241, 2838) Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
+   Warn below the existing 10 GiB floor in physical RAM there too; this is not a promise that 10 GiB is enough.
+   The game starts anyway, and headless runs only log the warning. Windows keeps its commit-limit check. */
 #define HOS_MEMORY_NEEDED_MB 10240ull
 static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap_mb, char *out, size_t cap) {
+#if defined(__linux__) && !defined(_WIN32)
+    if (ram_mb < HOS_MEMORY_NEEDED_MB) {
+        snprintf(out, cap,
+                 "This PC has %.1f GiB of RAM and %.1f GiB of swap. Hookshot recommends 16 GB of RAM or more; "
+                 "the game alone can use more than 13 GiB.\n\n"
+                 "Swap can prevent an out-of-memory exit, but heavy swapping can make the game and desktop unresponsive. "
+                 "Close other programs before playing. More swap is not a replacement for RAM. The game starts anyway.",
+                 ram_mb / 1024.0, swap_mb / 1024.0);
+        return 1;
+    }
+#endif
     if (ram_mb + swap_mb >= HOS_MEMORY_NEEDED_MB) return 0;
     snprintf(out, cap,
              "This PC has %.1f GB of memory and %.1f GB of swap (the page file on Windows). The game needs about %llu GB of the "
@@ -1739,7 +1833,12 @@ static void memory_notice(void) {
         hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);
         return;
     }
+#if defined(__linux__) && !defined(_WIN32)
+    hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap; below %llu MB of physical RAM: heavy swapping can make "
+            "the game and desktop unresponsive (16 GB RAM or more recommended)", ram, swap, HOS_MEMORY_NEEDED_MB);
+#else
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
+#endif
     if (env_on("HOS_HEADLESS")) return;
 #ifndef _WIN32
     int hos_sdl_load(void);
@@ -1794,6 +1893,7 @@ static int game_main(int argc, char **argv) {
         hos_relaunch_keep_env();
     }
     load_hookshot_env();
+    game_profile_env();
 #endif
     occlusion_switch();
     {
@@ -1843,12 +1943,26 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    game_profile_log();
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
     const char *image = NULL;
+    /* (hookshot) --compile-shaders all or most: what a preparation of this run builds (gpu/vk/vk_draw.cpp compile_all), over
+       compile_shaders= in hookshot_options.ini; as RX_VK_COMPILE_SHADERS, set before --prepare-shaders runs, wherever it stands */
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--compile-shaders")) {
+#ifdef _WIN32
+            char set[64];
+            snprintf(set, sizeof set, "RX_VK_COMPILE_SHADERS=%s", argv[i + 1]);
+            _putenv(set);
+#else
+            setenv("RX_VK_COMPILE_SHADERS", argv[i + 1], 1);
+#endif
+        }
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
+        else if (!strcmp(argv[i], "--compile-shaders") && i + 1 < argc) i++;   /* (taken above) */
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
@@ -1897,7 +2011,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders] [--compile-shaders all|most]\n",
                 argv[0]);
         return 2;
     }
@@ -2098,13 +2212,14 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_hookshot_env();
+    game_profile_env();
     driver_cache_room();
     driver_cache_folder();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
-        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user") || !strcmp(argv[i], "--compile-shaders")) i++;
     }
     /* The builder's preparation worker needs Vulkan, but no SDL display. */
     const int window = prepare_shaders ? 0 : hos_display_init();

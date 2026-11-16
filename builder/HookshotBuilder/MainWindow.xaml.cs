@@ -336,7 +336,9 @@ public partial class MainWindow : Window
     // ---- Save my pipeline list: the game folder's pipeline list and the "Submit your pipelines" issue's template, filled in,
     // zipped into the Downloads folder by nx2/pipeline_share.py (as the Linux builder and the game's menu do), then the template
     // on the clipboard, the zip shown in its folder and the issue opened. Nothing is uploaded: the player attaches the zip ----
-    const string ShareIssue = "https://github.com/NotRexed/Hookshot/issues/2034";
+    // (the repository's pinned "Submit your pipeline lists here" issue, in the repository these tools are from)
+    const int ShareIssueNumber = 84;
+    static string ShareIssue => "https://github.com/" + Repository.Name + "/issues/" + ShareIssueNumber;
 
     async void LaunchShareClick(object sender, RoutedEventArgs e)
     {
@@ -365,7 +367,7 @@ public partial class MainWindow : Window
         try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
         LaunchShareStatus.Text = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +
             (copied ? "The report is copied. " : "The report is in the zip. ") +
-            (opened ? "Issue #2034 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
+            (opened ? $"Issue #{ShareIssueNumber} is open in your browser: attach" : $"Open {ShareIssue} and attach") +
             " the zip to a comment, then paste the report and say where you played.";
     }
 
@@ -440,6 +442,7 @@ public partial class MainWindow : Window
         s.Romfs = BuilderHome.LoadPath(s.Romfs);
         s.Exefs = BuilderHome.LoadPath(s.Exefs);
         PrepareTick.IsChecked = !s.PrepareLater;
+        CompileBox.SelectedIndex = Array.IndexOf(ShaderStep.Levels, ShaderStep.Level(s.CompileShaders));
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         dlssLicenseAccepted = s.DlssLicense;
@@ -474,6 +477,7 @@ public partial class MainWindow : Window
                                           Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
+                                          CompileShaders = ChosenLevel(),
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
@@ -639,6 +643,58 @@ public partial class MainWindow : Window
         }
     }
 
+    // ================= "Your games" (Games.cs): the games built beside the game folder, each with Open folder and Play =================
+
+    /// The list, from the game folder in the form: filled again when that folder changes and when a build ends, so a game just built
+    /// is in it when the form comes back. Hidden while there is none
+    void FillGames()
+    {
+        if (GameList == null) return;
+        GameList.Children.Clear();
+        var games = Games.Built(OutPath.Text.Length > 2 ? OutPath.Text : null);
+        GamesBox.Visibility = games.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        for (var i = 0; i < games.Count; i++)
+        {
+            var g = games[i];
+            if (i > 0) GameList.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("GlassLine") });
+            var name = new TextBlock { Text = g.Name, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+            var where = new TextBlock { Text = g.Folder, Style = (Style)FindResource("Faint"), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = g.Folder };
+            var texts = new StackPanel { Children = { name, where }, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+            var open = new Button { Style = (Style)FindResource("Quiet"), Height = 36, Content = T(S.OpenFolder), Margin = new Thickness(0, 0, 10, 0) };
+            open.Click += (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{g.Folder}\"") { UseShellExecute = true });
+            var play = new Button
+            {
+                Style = (Style)FindResource("GoButton"), Height = 36, Padding = new Thickness(20, 0, 20, 0),
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Children =
+                    {
+                        new Path { Data = Geometry.Parse("M0,0 L9,6 L0,12 Z"), Fill = (Brush)FindResource("GoInk"), VerticalAlignment = VerticalAlignment.Center,
+                                   Margin = new Thickness(0, 0, 8, 0) },
+                        new TextBlock { Text = T(S.Play), FontSize = 14, FontWeight = FontWeights.Bold, Foreground = (Brush)FindResource("GoInk") },
+                    },
+                },
+            };
+            System.Windows.Automation.AutomationProperties.SetName(play, $"{T(S.Play)} {g.Name}");
+            // (as `--play <base> --game <key>` starts it, builder/setup/setup.c play_target: the folder by the rule, its game, no
+            // update question; the launcher's tiles take the same path)
+            play.Click += (_, _) =>
+            {
+                StartGame(Games.Folder(g.Base, g.Key));
+                WindowState = WindowState.Minimized;
+            };
+            var row = new Grid { Margin = new Thickness(16, 10, 12, 10),
+                                 ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition { Width = GridLength.Auto } } };
+            Grid.SetColumn(open, 1);
+            Grid.SetColumn(play, 2);
+            row.Children.Add(texts);
+            row.Children.Add(open);
+            row.Children.Add(play);
+            GameList.Children.Add(row);
+        }
+    }
+
     Border Chip(string path)
     {
         checks.TryGetValue(path, out var c);
@@ -727,6 +783,7 @@ public partial class MainWindow : Window
             SpaceText.Text = "Needs 45 GB";
         }
         RefreshMode();
+        FillGames();
     }
 
     /// The game folder or the build files folder on a hard drive: the build works, but much more slowly than on an SSD. Null
@@ -895,7 +952,7 @@ public partial class MainWindow : Window
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
         if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
         prepareNow = PrepareTick.IsChecked == true;
-        Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true,
+        Run(tools, ShaderStep.Args(args, prepareNow, ChosenLevel()), dlss: DlssTick.IsChecked == true,
             fsr: FsrTick.IsChecked == true && fsrLicense);
     }
 
@@ -975,6 +1032,7 @@ public partial class MainWindow : Window
     // (this build prepares the shaders: the tick for a build, the saved choice for an update. The game's @@stage shaders came, and
     // make_game's line when it left them to the first start: the row's end says which)
     bool prepareNow, shadersBegan;
+    string ChosenLevel() => ShaderStep.Levels[Math.Clamp(CompileBox.SelectedIndex, 0, ShaderStep.Levels.Length - 1)];
     string? shadersLater;
     TimeSpan? builtIn;   // (at @@times: the build without the shaders' minutes, as build_times.json keeps it)
 
@@ -1047,6 +1105,8 @@ public partial class MainWindow : Window
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        // (the tick off here takes out the runtimes it placed; RecompLauncher's prepare (--cli) passes neither, and keeps them)
+        if (!dlss && !args.Contains("--no-dlss")) args.Add("--no-dlss");
         if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
         if (fsr && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
         runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);
@@ -1245,6 +1305,7 @@ public partial class MainWindow : Window
             Finder.RefreshShortcuts(finished);
         }
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
+        FillGames();   // (the game just built is in "Your games" when the form comes back)
         ShowPage(ReadyPage);
         _ = FreeAfterBuild();
     }
@@ -1389,7 +1450,7 @@ public partial class MainWindow : Window
             Application.Current.Shutdown();
             return;
         }
-        Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo("https://github.com/" + Repository.Name + "/releases/latest") { UseShellExecute = true });
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================

@@ -139,6 +139,8 @@ static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_s
    the capture that comes back when the menu closes. Spent by the next capture or menu */
 static int esc_had_capture;
 static void mouse_capture(int on) {
+    int rx_option(int id, int otherwise);
+    if (on && rx_option(6, 0) == 2) return;   /* (Mouse camera Off: the mouse plays no part) */
     if (on == (int)mouse_captured) return;
     mouse_captured = on;
     InterlockedExchange(&mouse_dx, 0);

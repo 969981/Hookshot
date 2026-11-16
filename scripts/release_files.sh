@@ -100,10 +100,12 @@ publish() {   # tag -> its release published
 }
 
 table() {
-    local appimage="the \`.AppImage\`" zip="the \`-Windows-x64.zip\`"
+    local appimage="the \`.AppImage\`" zip="the \`-Windows-x64.zip\`" full=""
     if [[ $1 =~ ^v[0-9] ]]; then
-        appimage="\`Hookshot-$1-x86_64.AppImage\`"
+        appimage="\`$("$(dirname "${BASH_SOURCE[0]}")/product_name.sh")-$1-x86_64.AppImage\`"
         zip="\`Hookshot-$1-Windows-x64.zip\`"
+        # (a release's full setup, scripts/make_full_setup.py: the nightly has none)
+        full="| Windows, installing with nothing to download | \`Hookshot-$1-Windows-x64-full-setup.zip\`: unzip it and run \`HookshotBuilder.exe\` in its folder |"$'\n'
     fi
     cat <<EOF
 $MARK
@@ -112,20 +114,29 @@ $MARK
 | On | Download |
 |---|---|
 | Windows | \`HookshotBuilder.exe\`, the setup |
-| Linux, Steam Deck | $appimage |
+${full}| Linux, Steam Deck | $appimage |
 
 You need your own copy of the game. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` and the \`.zsync\` are for the updaters, and $zip (the setup and its \`recomplauncher.json\`) for RecompLauncher: on Windows, download \`HookshotBuilder.exe\` instead. To check a download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
 EOF
 }
 
-links() {   # tag [id] -> big links to the Windows setup and the Linux AppImage on the release (what is there of them)
-    local id=${2:-} names exe appimage base="https://github.com/$GH_REPO/releases/download/$1"
+notice() {   # the repository's release notice (.github/release-notice.md), when it has one: what every player must know first
+    local f
+    f="$(dirname "${BASH_SOURCE[0]}")/../.github/release-notice.md"
+    if [[ -s $f ]]; then cat "$f"; fi
+}
+
+links() {   # tag [id] -> the release notice, then big links to the Windows setup and the Linux AppImage (what is there of them)
+    local id=${2:-} names exe appimage note base="https://github.com/$GH_REPO/releases/download/$1"
     [[ -n $id ]] || id=$(id_of "$1")
     names=$(assets "$id" | jq -r '.[].name')
     exe=$(grep -xF HookshotBuilder.exe <<<"$names" || true)
     appimage=$(grep -E '\.AppImage$' <<<"$names" | head -n1 || true)
-    [[ -n $exe || -n $appimage ]] || return 0
+    note=$(notice)
+    [[ -n $exe || -n $appimage || -n $note ]] || return 0
     echo "$LINKS"
+    # (inside the links' block, which finish makes again each time: the notice is never said twice)
+    if [[ -n $note ]]; then printf '%s\n\n' "$note"; fi
     if [[ -n $exe ]]; then echo "## [⬇ Download for Windows]($base/$exe)"; fi
     if [[ -n $appimage ]]; then echo "## [⬇ Download for Linux / Steam Deck]($base/$appimage)"; fi
     echo
@@ -134,12 +145,21 @@ links() {   # tag [id] -> big links to the Windows setup and the Linux AppImage 
 
 sums() {   # release id -> SHA256SUMS of the release's other files, sorted by name
     local list name digest asset dir
-    list=$(assets "$1" | jq -r '.[] | select(.name != "SHA256SUMS") | "\(.name)\t\(.digest // "")\t\(.id)"' | LC_ALL=C sort)
+    # (fields split by the unit separator, not tabs: a tab is whitespace to read, so the two of a file with no digest
+    # yet were one, the id read as its digest and the id left empty, and the read of releases/assets/ was a 404 that
+    # ended the run with its files uploaded: CI runs 43619534643 and 43625307765, each a file just uploaded)
+    list=$(assets "$1" | jq -r '.[] | select(.name != "SHA256SUMS") | "\(.name)\u001f\(.digest // "")\u001f\(.id)"' |
+        LC_ALL=C sort)
     [[ -n $list ]] || return 0
-    while IFS=$'\t' read -r name digest asset; do
+    while IFS=$'\x1f' read -r name digest asset; do
         if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
             dir=$(mktemp -d)
-            gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" >"$dir/file"
+            # (left out when it is gone since the listing: the nightly's other platform's run replaces its files, under
+            # new ids, while this one lists them; finish's next round lists the new one)
+            if ! gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" >"$dir/file"; then
+                rm -rf "$dir"
+                continue
+            fi
             digest=sha256:$(sha256sum "$dir/file" | cut -d' ' -f1)
             rm -rf "$dir"
         fi

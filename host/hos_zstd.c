@@ -223,6 +223,9 @@ static void zs_drop(uint64_t g) {   /* (stream object g's context, if it has one
 static size_t zs_continue(ZSTD_DCtx *z, uint64_t g, uint64_t src, size_t n) {
     const uint64_t dst = S_DST(g);
     const size_t room = (size_t)(int64_t)(int32_t)S_ROOM(g);
+    /* (hookshot) the output room and the input are the game's sizes: both wholly in its memory, or an error (as a
+       corrupt stream is; the game's own decoder then runs, hos_zstd_stream's callers) */
+    if (!hos_guest_range(dst, room) || !hos_guest_range(src, n)) return (size_t)-1;
     const size_t r = ZSTD_decompressContinue(z, GP(dst), room, GP(src), n);
     /* (marked also when it fails: a block that ran out of room was partly written. libzstd may keep a block's literals in
        the output room past the block, up to two blocks on: marked too) */
@@ -249,6 +252,8 @@ static int32_t zs_chunk(ZSTD_DCtx *z, uint64_t g, uint64_t src, int32_t n) {
         if (staged >= 1) {   /* a piece begun in an earlier chunk: the staging buffer filled up to it */
             if (w > staged) {
                 const int32_t need = w - staged, take = need < n ? need : n;
+                if (staged < 0 || take < 0 || !hos_guest_range(S_STAGE(g) + (uint32_t)staged, (uint32_t)take) ||
+                    !hos_guest_range(src, (uint32_t)take)) goto fail;   /* (hookshot: the staging buffer in the game's memory) */
                 memcpy(GP(S_STAGE(g) + (uint32_t)staged), GP(src), (uint32_t)take);
                 HOS_WRITTEN(GP(S_STAGE(g) + (uint32_t)staged), (uint32_t)take);
                 staged += take;
@@ -272,6 +277,7 @@ static int32_t zs_chunk(ZSTD_DCtx *z, uint64_t g, uint64_t src, int32_t n) {
                 S_STATE(g) = 3;
                 return -1;
             }
+            if (n < 0 || !hos_guest_range(S_STAGE(g), (uint32_t)n) || !hos_guest_range(src, (uint32_t)n)) goto fail;
             memcpy(GP(S_STAGE(g)), GP(src), (uint32_t)n);
             HOS_WRITTEN(GP(S_STAGE(g)), (uint32_t)n);
             S_STAGED(g) = (uint32_t)n;

@@ -16,6 +16,7 @@ static void hos_log(const char *format, ...) { (void)format; }
 #define ARG(n) (c->x[n])
 #define RET(value) (c->x[0] = (uint64_t)(value))
 #define GP(value) ((void *)(uintptr_t)(value))
+#define GR(value, n) ((void)(n), GP(value))   /* (host/hos.h's range check: here every address is the host's own) */
 #define G64(value) (*(uint64_t *)GP(value))
 #define G32(value) (*(uint32_t *)GP(value))
 #include "audio_aux.inc"

@@ -21,6 +21,8 @@ import sys
 
 import lz4.block
 
+MAX_IMAGE = 1 << 30   # (a module's whole image, its segments' end: 1 GiB)
+
 DT = {1: "NEEDED", 2: "PLTRELSZ", 3: "PLTGOT", 4: "HASH", 5: "STRTAB", 6: "SYMTAB", 7: "RELA", 8: "RELASZ",
       9: "RELAENT", 10: "STRSZ", 11: "SYMENT", 12: "INIT", 13: "FINI", 20: "PLTREL", 23: "JMPREL",
       25: "INIT_ARRAY", 26: "FINI_ARRAY", 27: "INIT_ARRAYSZ", 28: "FINI_ARRAYSZ", 30: "FLAGS",
@@ -43,6 +45,13 @@ class Nso:
         csize = struct.unpack_from("<III", raw, 0x60)
         self.bss_size = struct.unpack_from("<I", raw, 0x3C)[0]
         self.build_id = raw[0x40:0x60].rstrip(b"\0").hex()
+        # (the header's sizes say what is allocated: an image larger than any game's (Kirby Air Riders' main is 147 MB) or a
+        # segment outside the file is refused before anything is, not 8 GB allocated for a crafted header)
+        for i, ((foff, moff, size), cs) in enumerate(zip(segs, csize)):
+            if moff + size > MAX_IMAGE or foff + cs > len(raw) or (not flags & (1 << i) and cs < size):
+                raise ValueError(f"{path}: segment {i} is outside the file or larger than any module ({size} bytes at {moff:#x})")
+        if self.bss_size > MAX_IMAGE:
+            raise ValueError(f"{path}: a bss of {self.bss_size} bytes, larger than any module")
         self.segments = []
         end = 0
         for i, ((foff, moff, size), cs) in enumerate(zip(segs, csize)):

@@ -1,0 +1,1 @@
+**After updating, RecompLauncher asks once more for your Ocarina copy; your saves and game folder are unchanged.** Mario Kart World 1.0.0 and Donkey Kong Bananza 3.2.0 now have tiles of their own: each asks for its own copy.

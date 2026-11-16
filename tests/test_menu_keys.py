@@ -199,6 +199,7 @@ static struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and 
 static std::string mic_key(const char* name) { return name; }
 static void mic_tell_host() {}
 static int rumble_step(int v) { return v; }
+static void fork_options_moved(int, bool, int, bool) {}   // (hookshot fork: two of its rows that moved; not this row)
 struct Row { int tab; const char* name; int* value; int lo, hi; };
 // INI_KEY
 static Row rows[] = {{0, "Menu shortcut", &opts.menu_shortcut, 0, 2}};

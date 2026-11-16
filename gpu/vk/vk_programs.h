@@ -103,6 +103,9 @@ struct ProgramCensus {
     std::atomic<int64_t> load_unlisted{0};      // (graphics programs loaded that no note names: no pipeline is known for them)
     std::atomic<int64_t> load_ns{0}, load_bytes{0};
     std::atomic<int64_t> pipes_taken{0};        // (pipelines made at create that a draw then took)
+    // programs that read a texture handle from a table (handle tables as descriptor arrays, vk_shader.cpp handle_tables_on): counted
+    // when their layout is made (vk_draw.cpp ensure_layout), so a game's log says whether its shaders take that path at all
+    std::atomic<int64_t> handle_tables{0};
 };
 extern ProgramCensus census;
 /// One line of the census (every 600 presents with RX_VK_LOG_PROGRAM_LIFE=1, and when the window closes)

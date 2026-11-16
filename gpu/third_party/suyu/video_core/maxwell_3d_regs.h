@@ -2228,7 +2228,7 @@ public:
                 case IndexFormat::UnsignedInt:
                     return 4;
                 }
-                UNREACHABLE();
+                ASSERT_MSG(false, "index format");   // (hookshot: a game's value, not UNREACHABLE, which throws now)
                 return 1;
             }
 

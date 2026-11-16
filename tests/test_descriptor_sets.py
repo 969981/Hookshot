@@ -37,7 +37,7 @@ def main():
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
-struct Descriptor { uint32_t count; };
+struct Descriptor { uint32_t count; uint32_t handle_program = ~0U; };
 struct Info {
     std::vector<Descriptor> constant_buffer_descriptors, storage_buffers_descriptors,
         texture_buffer_descriptors, image_buffer_descriptors, texture_descriptors, image_descriptors;
@@ -51,7 +51,11 @@ struct Program {
     std::vector<VkDescriptorType> binding_types;
     VkShaderStageFlags push_stages = 0;
     bool push = false, uses_render_area = false, uses_push = false, fallback = false;
+    uint64_t key = 0;
 };
+struct { std::atomic<int64_t> handle_tables{0}; } census;   // (vk_programs.h: the programs that read a handle from a table)
+int told = 0;
+void logf(const char*, ...) { ++told; }
 struct Device { VkDevice device{}; bool push_descriptor = true; uint32_t max_push_descriptors = 32; } dev;
 bool vkCmdPushDescriptorSetKHR = true;
 constexpr uint32_t kPushSize = 64;
@@ -104,6 +108,19 @@ int main(int argc, char** argv) {
     dev.push_descriptor = false; check(false);
     dev.push_descriptor = true;
     vkCmdPushDescriptorSetKHR = false; check(false);
+    // (a texture descriptor that is a handle table: the program is counted once, the first said; the ones above are not)
+    assert(census.handle_tables == 0 && told == 0);
+    for (int k = 0; k < 2; k++) {
+        Program p;
+        Stage s{}; s.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        s.info.constant_buffer_descriptors.push_back({2});
+        s.info.texture_descriptors.push_back({3, 0});
+        s.info.uses_render_area = true;
+        p.stages.push_back(s);
+        ensure_layout(p);
+        ensure_layout(p);
+    }
+    assert(census.handle_tables == 2 && told == 1);
 }
 '''
     with tempfile.TemporaryDirectory(prefix="descriptor-sets-") as tmp:

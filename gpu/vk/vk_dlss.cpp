@@ -35,6 +35,7 @@
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
 #include "vk_menu.h"
+#include "vk_framegen.h"   // (hookshot fork: framegen_by_auto, the Frame generation by row in effect)
 #include "vk_paths.h"
 #include "vk_reactive.h"
 #include "vk_temporal.h"
@@ -82,12 +83,14 @@ namespace {
 struct State {
     std::mutex mu;
     bool ngx_tried = false, ngx_ok = false;
+    bool ngx_started = false;   // (hookshot: NVSDK_NGX_VULKAN_Init succeeded, whether or not super resolution is available)
     NVSDK_NGX_Parameter* caps = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
+    dlss_checks::PresetSettle settle;   // (... once the row has held it a moment: not one for each preset stepped past)
     // (made for the game's native HDR (the game presenting its own HDR10 picture: present_native_pq): its scene colour goes
     // past 1 there, and an LDR feature fed the colour clamped to 1 cut every highlight at the paper white, a flat, SDR-looking
     // picture. Then the feature takes HDR colour, linear, with its own exposure, and the chain does not clamp it: hdr())
@@ -260,6 +263,7 @@ bool ngx_init() {
         g_why = DLSS_NEEDS_RTX;
         return false;
     }
+    s.ngx_started = true;
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&s.caps)) || !s.caps) {
         logf("vk: NVIDIA DLSS: NGX has no capabilities for this device");
         g_why = DLSS_NEEDS_RTX;
@@ -322,7 +326,12 @@ unsigned wanted_preset() {
 int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool native_aa,
             uint32_t* in_w, uint32_t* in_h, const char** fail) {
     State& s = st();
-    const unsigned preset = wanted_preset();
+    // (the DLSS model row's preset once it has held it for half a second at 60 fps: stepping K to L (past M) makes L's
+    // feature alone, not M's too, whose video memory NGX would keep for seconds (issue 17). The feature drawing meanwhile
+    // keeps its own preset; the first feature, or one made again after being let go, takes the row's at once)
+    static constexpr uint64_t kPresetSettle = 30;
+    const unsigned preset = s.settle.pick(wanted_preset(), s.feature_preset, s.feature != nullptr, texture_frame_no(),
+                                          kPresetSettle);
     // (the game's native HDR: State::feature_hdr. What the game presents, not the option and the swapchain: with Native
     // picked and the game's picture not PQ, the scene is LDR, and an HDR feature would get LDR colour)
     // (RX_VK_DLSS_HDR=0: the LDR feature and the clamped colour with Native too, as before this; for comparisons)
@@ -536,6 +545,48 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     if (!both) g_why = DLSS_NEEDS_RTX;
 }
 
+bool dlss_ngx_session() {
+    if (!dlss_built() || dlss_why() == DLSS_ENV_OFF || !dev.device) return false;
+    ngx_init();   // (it takes the lock itself, and does nothing the second time)
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    return s.ngx_started;
+}
+
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    bool have = false;
+    std::error_code ec;
+    // (and the game folder itself, after them: NGX looks there too, which its own log shows with RX_VK_DLSS_LOG=1, and
+    // it is where the DLSS SDK's runtimes are usually put)
+    const fs::path game = game_dir();
+    if (game.empty() || game.is_relative()) return false;   // (as ngx_init: no game folder, no NGX)
+    std::vector<fs::path> dirs = runtime_dirs(game);
+    dirs.push_back(game);
+    for (const fs::path& d : dirs) {
+        if (where) *where += (where->empty() ? "" : ", ") + shown(d);
+        if (have) continue;
+        for (const auto& f : fs::directory_iterator(d, ec)) {
+            const std::string file = shown(f.path().filename());
+            if (file.rfind(name, 0) != 0) continue;
+            have = true;
+            if (found) *found = shown(f.path());
+            break;
+        }
+    }
+    return have;
+}
+
+const wchar_t* dlss_ngx_data_path() {
+    static const std::wstring path = [] {
+        const fs::path game = game_dir();
+        if (game.empty() || game.is_relative()) return std::wstring(L".");
+        return wide(game / "ngx");
+    }();
+    return path.c_str();
+}
+
 void dlss_retry() { st().refused = 0; }
 
 void dlss_probe() {
@@ -620,7 +671,9 @@ bool fg_possible() {
 /// while the game runs)
 bool fg_asked() {
     static const bool forced = env_switch("RX_VK_DLSS_FG") > 0;
-    return fg_possible() && (forced || opts.framegen_by == 0);
+    // (hookshot fork: Auto as the row shows it, vk_framegen.cpp framegen_by_auto: a saved AMD method that does not run on
+    // this PC is Auto too, where the raw value left every set to the renderer's own under a row reading "Auto")
+    return fg_possible() && (forced || framegen_by_auto());
 }
 
 /// A 4x4 inverse in doubles (a float one of a projection with a far plane in the thousands loses what reprojection needs)
@@ -1139,6 +1192,13 @@ void dlss_fg_close() {
 #else  // (no NGX SDK in this build: DLSS is not there)
 
 bool dlss_built() { return false; }
+bool dlss_ngx_session() { return false; }
+const wchar_t* dlss_ngx_data_path() { return L"."; }
+bool dlss_ngx_runtime(const char*, std::string* where, std::string* found) {
+    if (where) where->clear();
+    if (found) found->clear();
+    return false;
+}
 const TemporalEngine* dlss_engine() { return nullptr; }
 void dlss_probe() {}
 void dlss_retry() {}

@@ -207,7 +207,9 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
     }
     const ScaledOutputs scaled{ScaleNoPerspectiveOutputs(ctx)};
     if (!ctx.profile.support_geometry_streams) {
-        throw NotImplementedException("Geometry streams");
+        // (hookshot) without streams (no VK_EXT_transform_feedback): stream 0's vertex is an ordinary one
+        if (!stream.IsImmediate() || stream.U32() != 0) throw NotImplementedException("Geometry streams");
+        ctx.OpEmitVertex();
     } else if (stream.IsImmediate()) {
         ctx.OpEmitStreamVertex(ctx.Def(stream));
     } else {
@@ -221,7 +223,9 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
 
 void EmitEndPrimitive(EmitContext& ctx, const IR::Value& stream) {
     if (!ctx.profile.support_geometry_streams) {
-        throw NotImplementedException("Geometry streams");
+        // (hookshot) as EmitEmitVertex: stream 0's primitive
+        if (!stream.IsImmediate() || stream.U32() != 0) throw NotImplementedException("Geometry streams");
+        ctx.OpEndPrimitive();
     } else if (stream.IsImmediate()) {
         ctx.OpEndStreamPrimitive(ctx.Def(stream));
     } else {

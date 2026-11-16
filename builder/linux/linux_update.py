@@ -23,9 +23,27 @@ import zipfile
 from part_links import SYSROOT_PART, is_absolute_link, relative_sysroot_link
 
 LIST_NAME = "hookshot-linux.txt"
-LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
-LATEST_API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
-RELEASES_API = "https://api.github.com/repos/NotRexed/Hookshot/releases?per_page=20"
+
+
+def _repository():
+    """(hookshot) owner/name of the repository releases come from: repository.txt in the AppImage's tools (written by
+    scripts/linux/appimage.sh from the repository its CI ran in), else notquiteog/Hookshot. nx2/version.py's rule"""
+    import re
+    here = os.environ.get("HOOKSHOT_TOOLS") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    try:
+        with open(os.path.join(here, "repository.txt"), encoding="utf-8") as f:
+            name = f.readline().strip()
+        if re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", name):
+            return name
+    except OSError:
+        pass
+    return "notquiteog/Hookshot"
+
+
+REPOSITORY = _repository()
+LATEST_LIST = "https://github.com/%s/releases/latest/download/%s" % (REPOSITORY, LIST_NAME)
+LATEST_API = "https://api.github.com/repos/%s/releases/latest" % REPOSITORY
+RELEASES_API = "https://api.github.com/repos/%s/releases?per_page=20" % REPOSITORY
 # (the update tracks: the builder's Track choice, by default the track of the build installed. The setup,
 # builder/setup/setup.c, and the Windows builder, Updater.cs, use the same rules)
 TRACKS = ("release", "rc", "nightly")
@@ -130,7 +148,7 @@ def release_of(tag):
 def list_url(tag=None):
     if not tag:
         return LATEST_LIST
-    return "https://github.com/NotRexed/Hookshot/releases/download/%s/%s" % (release_of(tag), LIST_NAME)
+    return "https://github.com/%s/releases/download/%s/%s" % (REPOSITORY, release_of(tag), LIST_NAME)
 
 
 def newest_release(tags):

@@ -12,9 +12,10 @@ Writes <out>/hookshot-setup.txt and one HookshotBuilder-<part>-<sha256 prefix>.z
 release lacks). Scripts the build does not use (.ps1, .bat, .js,
 .html: antivirus machine-learning guesses fire on them) are left out.
 
---reuse: a part whose tools/<name> folder the package lacks is taken from that list as it is (its line, with its URL), so a
+--reuse: a part whose tools/<name> folder the package lacks is taken from that list (its hash, size and file name), so a
 package made in CI (.github/workflows/windows-builder.yml) carries the Python, emsdk, CPM and wgpu-native parts the maintainer
-made. Without the folder and without the part in that list it is an error.
+made. Its URL is always --base's: every part, llvm-mingw's too, is served from this repository's builder-parts, never from where an
+earlier list named it. Without the folder and without the part in that list it is an error.
 """
 import argparse
 import concurrent.futures
@@ -26,9 +27,23 @@ import zipfile
 SKIP_EXT = {".ps1", ".psm1", ".bat", ".cmd", ".js", ".vbs", ".html", ".htm", ".hta", ".wsf", ".pyc"}
 SKIP_DIRS = {"__pycache__"}
 TOOLS_PARTS = ("python", "emsdk", "cpm", "third_party", "wgpu-native")   # (tools/<name>: each its own part)
+# (hookshot) parts a package may have or not: AMD's FSR runtime (tools/amd-fsr, scripts/release_parts.py package --amd-fsr),
+# about 70 MB that changes only with AMD's SDK, so a part of its own the setup keeps in its cache. Without the folder it is
+# taken from --reuse when that list has it, and left out otherwise (the game then runs FSR 3.1 and not FSR 4)
+OPTIONAL_PARTS = ("amd-fsr",)
+# llvm-mingw's official release (github.com/mstorsjo/llvm-mingw, 20261104), served from this repository's builder-parts like
+# every other part, so an install depends on no other repository being there (its SHA-256 is the official zip's)
 LLVM = ("552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f", 191037046,
         "llvm-mingw-20261104-ucrt-x86_64",
-        "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip")
+        "https://github.com/notquiteog/Hookshot/releases/download/builder-parts/llvm-mingw-20261104-ucrt-x86_64.zip")
+
+
+def served_here(line, base):
+    """A reused part's line with its URL moved to base (this release's builder-parts): the part is the same file, by its SHA-256,
+    wherever it was served from before. Taken as it was, a line kept the repository it was first made in: rc.21's emsdk and
+    wgpu-native lines still named the deleted upstream repository, and a new install stopped at them"""
+    w = line.split()
+    return " ".join(w[:6] + ["%s/%s" % (base, w[6].rsplit("/", 1)[-1])])
 
 
 def files_under(root, top):
@@ -71,7 +86,7 @@ def main():
         sys.exit("not a Hookshot Builder package folder: %s" % root)
     # (the parts live in one release of their own, named by their checksum: a part that did not change is not uploaded again, and a
     # release itself holds only HookshotBuilder.exe (the setup) and the list it reads)
-    base = (a.base or "https://github.com/NotRexed/Hookshot/releases/download/builder-parts").rstrip("/")
+    base = (a.base or "https://github.com/notquiteog/Hookshot/releases/download/builder-parts").rstrip("/")
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(root, "tools", "version.txt"), "w", newline="\n") as f:
         f.write(a.tag + "\n")
@@ -83,11 +98,11 @@ def main():
     runtime_dirs = [n for n in top if os.path.isdir(os.path.join(root, n)) and n != "tools"]
     tools = sorted(os.listdir(os.path.join(root, "tools")))
     parts = {
-        "app": builder_files + [n for t in tools if t not in TOOLS_PARTS and t != "llvm-mingw"
+        "app": builder_files + [n for t in tools if t not in TOOLS_PARTS + OPTIONAL_PARTS and t != "llvm-mingw"
                                 for n in (["tools/" + t] if os.path.isfile(os.path.join(root, "tools", t)) else files_under(root, "tools/" + t))],
         "dotnet": runtime_files + [n for d in runtime_dirs for n in files_under(root, d)],
     }
-    for t in TOOLS_PARTS:
+    for t in TOOLS_PARTS + OPTIONAL_PARTS:
         if os.path.isdir(os.path.join(root, "tools", t)):
             parts[t] = files_under(root, "tools/" + t)
     reuse = {}
@@ -98,7 +113,7 @@ def main():
                 if len(w) == 7 and w[0] == "part" and w[6].rsplit("/", 1)[-1].startswith("HookshotBuilder-"):
                     reuse[w[6].rsplit("/", 1)[-1][len("HookshotBuilder-"):].rsplit("-", 1)[0]] = line
     lines = ["tag %s" % a.tag]
-    names = ("app", "dotnet") + TOOLS_PARTS
+    names = ("app", "dotnet") + TOOLS_PARTS + OPTIONAL_PARTS   # (hookshot fork: AMD's runtime, when the package has it)
     for name in names:
         if not parts.get(name) and a.reuse and name in TOOLS_PARTS and name not in reuse:
             sys.exit("no tools/%s in the package and no %s part in %s" % (name, name, a.reuse))
@@ -110,8 +125,13 @@ def main():
                                          todo)))
     for name in names:
         if not parts.get(name):
+            if name in OPTIONAL_PARTS:
+                if name in reuse:
+                    lines.append(served_here(reuse[name], base))
+                    print("%-12s (as in %s)" % (name, os.path.basename(a.reuse)), flush=True)
+                continue
             if a.reuse and name in TOOLS_PARTS:
-                lines.append(reuse[name])
+                lines.append(served_here(reuse[name], base))
                 print("%-12s (as in %s)" % (name, os.path.basename(a.reuse)), flush=True)
             continue
         zp = os.path.join(a.out, "HookshotBuilder-%s.zip" % name)
@@ -121,7 +141,8 @@ def main():
         zp = named
         lines.append("part %s %d . - - %s/%s" % (sha, size, base, os.path.basename(zp)))
         print("%-12s %5d files %5d MB  %s" % (name, len(parts[name]), size >> 20, sha[:16]), flush=True)
-    lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s" % LLVM)
+    lines.append("part %s %d HookshotBuilder/tools %s llvm-mingw %s/%s" % (LLVM[0], LLVM[1], LLVM[2], base,
+                                                                         LLVM[3].rsplit("/", 1)[-1]))
     lines.append("run HookshotBuilder/HookshotBuilder.exe")
     with open(os.path.join(a.out, "hookshot-setup.txt"), "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")

@@ -84,14 +84,16 @@ def patch_life(source):
     end = source.find("\n}", start)
     if end < 0 or source[start:end].count(LIFE_CAS) != 2:
         return None
-    # x19 is the actor. Confirm its type and life pointer before protecting this write.
-    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] && hos_oot_hearts_enabled() &&\n"
+    if "hos_oot_damage(" in source[start:end]:
+        return source
+    # x19 is the actor. Confirm its type and life pointer before scaling this write.
+    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] &&\n"
              "        hos_oot_is_player(c, c->x[19]) &&\n"
              "        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n"
-             "        c->x[12] = c->x[11];\n")
+             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12]);\n")
     body = source[start:end].replace(LIFE_CAS, guard + LIFE_CAS)
     return (source[:start] + body + source[end:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_oot_hearts_enabled(void);\n'
+        '#include "a64.h"\n', '#include "a64.h"\nextern uint32_t hos_oot_damage(uint32_t old, uint32_t next);\n'
         'extern int hos_oot_is_player(Ctx *c, uint64_t actor);\n', 1)
 
 
@@ -452,6 +454,12 @@ def patch_movie_frames(s):
 # - f_803edf70, the time of day: each frame it adds (int)(2 * step) game seconds (+60) to the seconds of the day (+40, a day of
 #   86400, then the day count +44). Cut, it added 1 a frame below 120 fps (the day slower: 83% at 100) and 0 above 120, where
 #   the clock stood still and the sun swung back and forth over the frozen hour.
+# - f_832b32b0, Scarecrow's Song playback: elapsed frames (+0x265fc) advance the saved note delays. Cut to 0, the song
+#   waits on the same note until a slow frame lets the counter move (issue 2668).
+# - f_832b6840, the eight-note recording (mode 10): the same elapsed counter is reset between notes and gaps, then saved
+#   as their lengths. Cut to 0, their timing is lost even though the eight pitches are recorded. The mode-13 cut is separate.
+# - f_832b2690, recording completion: after the eighth note starts, it times that note and writes its final delay into
+#   the same recording. Its unsigned cut must carry too, or the saved eighth note has zero length and is not played.
 # hos_frame_whole carries the fractions per counter while the frames' own time is the step, so each moves at the game's rate;
 # otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, its code to
 # replace, and the counter's address for its remainder.)
@@ -475,6 +483,17 @@ WHOLE_SITES = (
     ("void f_80652cb0(Ctx *__restrict A64_NOESC c) {@",
      "    c->x[22]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
      "c->x[19] + 2296"),
+    ("void f_832b32b0(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 0x265fc"),
+    # (the unsigned cut with the x10 addition: the other recording mode uses the same cut followed by an x12 addition)
+    ("void f_832b6840(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@"
+     "    { uint64_t _a=c->x[10],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }@",
+     "c->x[9]"),
+    ("void f_832b2690(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 0x265fc"),
 )
 WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
@@ -540,6 +559,22 @@ SOLVER_NEW = SOLVER_OLD.replace(
     "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
     "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
 SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+# Floors that carry Link (host/oot_high_fps.h oot_floor_cut has why): the character controller's three follow-surface updates,
+# f_8015d490 (CharacterUpdateFollowSurface), f_80159dc0 (CharacterUpdateFollowSurfaceExtension) and f_838baa40
+# (CharacterUpdateDynamicFollowSurface), each compare the physics' inverse step (s0) with 100.0 and, above it, keep a tenth of
+# the floor's velocity (the goto). The 100.0 they compare with becomes hos_oot_floor_cut's; x8 keeps the game's value. After
+# NX2navi (chrg6) commit c84724d, used with its author's permission. (A site's function and the label of its tenth.)
+FLOOR_SITES = (("void f_8015d490(Ctx *__restrict A64_NOESC c) {\n", "L_8015dad4"),
+               ("void f_80159dc0(Ctx *__restrict A64_NOESC c) {\n", "L_8015a39c"),
+               ("void f_838baa40(Ctx *__restrict A64_NOESC c) {\n", "L_838baf24"))
+FLOOR_OLD = ("    c->x[8] = 0x42c80000ULL;\n"
+             "    c->x[8] &= 0xFFFFFFFFULL;\n"
+             "    { a64_vset64(c->vreg[1],0); memcpy(&c->vreg[1][0],&c->x[8],4); }\n")
+FLOOR_NEW = ("    c->x[8] = 0x42c80000ULL;\n"
+             "    c->x[8] &= 0xFFFFFFFFULL;\n"
+             "    { a64_vset64(c->vreg[1],0); const uint32_t _cut = hos_oot_floor_cut((uint32_t)c->vreg[0][0]); "
+             "memcpy(&c->vreg[1][0],&_cut,4); }   /* (nx2/oot_patches.py: a moving floor carries Link above 100 fps) */\n")
+FLOOR_DECL = "extern uint32_t hos_oot_floor_cut(uint32_t inverse_step_bits);\n"
 
 
 def _function(s, head_text):
@@ -587,6 +622,32 @@ def patch_solver_steps(s):
             done += 1
     if done and SOLVER_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
+def patch_floor_carry(s):
+    """The floor-carry gates of FLOOR_SITES: (s, how many of them are in s with the hook, made now or before). A site whose
+    function is not here, or whose code differs (another game version), is left as it is."""
+    done = 0
+    for head_text, label in FLOOR_SITES:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(FLOOR_NEW) == 1:
+            done += 1
+            continue
+        if body.count(FLOOR_OLD) != 1:
+            continue
+        i = body.index(FLOOR_OLD) + len(FLOOR_OLD)
+        after = body[i:body.find("\n", body.find("\n", i) + 1) + 1]   # (the fcmp, then the branch to the tenth)
+        if "a64_fcmp32(c,c->vreg[0],c->vreg[1])" not in after or "{ goto %s; }" % label not in after:
+            continue
+        s = s[:head] + body.replace(FLOOR_OLD, FLOOR_NEW, 1) + s[end:]
+        done += 1
+    if done and FLOOR_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + FLOOR_DECL, 1)
     return s, done
 
 
@@ -939,6 +1000,11 @@ def patch_file(s, name, protect_hearts=False):
     if solver != out:
         lines.append("oot_patches: the solver steps rounded up above 60 fps in " + name)
     out = solver
+    floor, found = patch_floor_carry(out)
+    counts["floor sites"] += found
+    if floor != out:
+        lines.append("oot_patches: %d floor-carry gate(s) follow the frame rate in %s" % (found, name))
+    out = floor
     return out, counts, lines
 
 
@@ -979,6 +1045,8 @@ def report(paths, counts, protect_hearts=False):
         print("oot_patches: WARNING: the sound job was found %d times, not once" % total["sound jobs"])
     if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
         print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
+    if total["floor sites"] != len(FLOOR_SITES):   # (without them, above 100 fps a moving floor leaves Link behind)
+        print("oot_patches: WARNING: the floor-carry gate was found at %d of %d places" % (total["floor sites"], len(FLOOR_SITES)))
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
@@ -1000,7 +1068,7 @@ def report(paths, counts, protect_hearts=False):
               "keeps the game's own step)" % (step_sites, len(STEP_SITES)))
     elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
-              "the pick-up indicator, the water ripples, the time of day)" % (whole_sites, len(WHOLE_SITES)))
+              "the pick-up indicator, the water ripples, the time of day, Scarecrow's Song)" % (whole_sites, len(WHOLE_SITES)))
 
 
 def apply(gen, *, protect_hearts=False, required=False):

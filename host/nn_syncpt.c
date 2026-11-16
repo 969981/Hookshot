@@ -22,8 +22,8 @@ HLE(_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE) {
     RET(0);
 }
 HLE(_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE) {}
-/* (hookshot) except for the handle nn_video.c gives a buffer an idle video decoder will not fill: its event is
-   signalled at the next submission (hos_video_sync_defer). A cancelled event is cleared, as a new request starts over:
+/* (hookshot) except for the handle nn_video.c gives a buffer it reserved for a picture not decoded yet: its event is
+   signalled once that picture is in the buffer, or the buffer is released (hos_video_sync_defer). A cancelled event is cleared, as a new request starts over:
    left signalled, the request after it was signalled already, whatever its handle. */
 int hos_video_sync_defer(uint64_t event, uint64_t handle);
 void hos_video_sync_cancel(uint64_t event);

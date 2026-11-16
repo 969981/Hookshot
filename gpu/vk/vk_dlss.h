@@ -3,6 +3,7 @@
 // game's network runs.
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "vk_internal.h"
@@ -24,6 +25,20 @@ void dlss_probe();
 /// changed a row the feature is made from (vk_temporal.cpp temporal_reset_failure, with the chain's lock held, as prepare
 /// has it)
 void dlss_retry();
+/// (hookshot) NGX started on this device, by this file, for NGX's other features to use the same session: DLSS 5 neural
+/// rendering through NGX (vk_ngx.cpp, vk_dlssnr_ngx.cpp). NGX is initialized once per device and shut down once; a second
+/// NVSDK_NGX_VULKAN_Init_with_ProjectID beside this one is what it avoids. True even where super resolution itself is not
+/// available, since the session is. Starts it if dlss_probe has not yet (and RX_VK_DLSS is not 0)
+bool dlss_ngx_session();
+/// (hookshot) Whether a file whose name begins `name` ("nvngx_dlssnr.dll", "libnvidia-ngx-dlssnr.so") is in one of the folders
+/// NGX is told to look for its features' runtimes in (ngx_init's: RX_VK_DLSS_DIR, the game folder's ngx, then
+/// %LOCALAPPDATA%\Hookshot\ngx or $XDG_DATA_HOME/hookshot/ngx), or the game folder itself, which NGX also searches. `where`
+/// gets the folders, in UTF-8 for the log; `found` the first such file's path. False and both empty in a build without DLSS
+bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found);
+/// (hookshot) NGX's application data path as ngx_init gives it (the game folder's ngx, as NGX takes a path: vk_dlss.cpp
+/// wide), for the questions asked of NGX before the device exists (vk_ngx.cpp discovery_info: a feature's extensions).
+/// L"." where the game folder is not known, and in a build without DLSS
+const wchar_t* dlss_ngx_data_path();
 /// The instance's extensions DLSS needs, added to `want` when the loader has them (all: what it has)
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The device's extensions DLSS needs, added to `want` when the device has them

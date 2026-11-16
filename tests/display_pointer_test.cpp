@@ -86,6 +86,7 @@ static int show(BOOL){return 0;}
 #define IsIconic minimized
 #define GetCapture capture
 #define WindowFromPoint under_cursor
+int rx_option(int, int otherwise) { return otherwise; }   // (the menu's options: defaults; mouse_capture asks Mouse camera, 6)
 /* ACTUAL_WINDOWS */
 /* ACTUAL_MOVE */
 /* ACTUAL_WHEEL */
@@ -127,6 +128,7 @@ constexpr uint32_t WM_APP=0x8000;
 #ifndef WM_CLOSE
 constexpr uint32_t WM_CLOSE=0x0010;
 #endif
+int rx_option(int, int otherwise) { return otherwise; }   // (the menu's options: defaults; mouse_capture asks Mouse camera, 6)
 /* ACTUAL_SDL */
 static void request_menu(bool open, bool escape) {
     hos_posix_post_message(WM_APP+8,open,escape);
@@ -303,14 +305,18 @@ int main() {
     // Concurrent resize/scale samples are never torn. All button edges and wheel steps are drained once.
     HosPointer state = HOS_POINTER_INIT;
     std::atomic<bool> done{false}; std::atomic<int> reads{0};
+    // (done is read before each take, so the last take is always after the last publish: read after the take, a reader
+    // descheduled between a take before the first publish and that read saw done and left with no read, CI run 43635055883)
     std::thread reader([&] {
         MkwVkPointer p{};
-        do {
+        for (;;) {
+            const bool last = done.load(std::memory_order_acquire);
             if (hos_pointer_take(&state, &p)) {
                 CHECK(p.y == p.x * 2 && p.width == p.x * 3 && p.height == p.x * 4);
                 ++reads;
             }
-        } while (!done.load(std::memory_order_acquire));
+            if (last) break;
+        }
     });
     for (int i = 1; i <= 100000; ++i) {
         MkwVkPointer p{}; p.x = i, p.y = i * 2, p.width = i * 3, p.height = i * 4;

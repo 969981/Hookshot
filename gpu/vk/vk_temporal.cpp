@@ -25,6 +25,9 @@
 //    network's output.
 // Anything unexpected (no camera this frame, other sizes, the engine not there or failing) leaves the network to run, the
 // reason in the log when it changes.
+// RX_VK_PSYCHOV35_DLSS=1 also takes Native PsychoV35's RGBA16F input/output with DLSS/DLAA and AMD FSR 4 / its native AA
+// (upscaler_rows.h takes_psychov35: the engines given linear light in an HDR context). The network's perceptual
+// encoding is unchanged: the HDR prep still squares it to linear, and a typed RGBA16F output pass writes it back as is.
 //
 // The Insert menu's Upscaler row (opts.dlss, upscaler_rows.h) chooses the engine; RX_VK_DLSS=1 / 2 (DLSS, DLAA) or
 // RX_VK_FSR4=1 / 2 (FSR 4, its native anti-aliasing) over it, and =0 takes that engine out for the run. AMD FSR 3.1
@@ -66,6 +69,7 @@
 #include "shaders/dlss_actor_frag_spv.h"
 #include "shaders/dlss_actor_vert_spv.h"
 #include "shaders/dlss_out_comp_spv.h"
+#include "shaders/dlss_out_rgba_comp_spv.h"
 #include "shaders/dlss_prep_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -132,6 +136,7 @@ struct Camera {
     Texture* depth = nullptr;
     uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
     uint64_t frame = 0;       // (texture_frame_no when taken)
+    VkFormat scene_format = VK_FORMAT_UNDEFINED;
     bool valid = false;
 };
 
@@ -158,7 +163,12 @@ struct State {
     VkDescriptorSetLayout prep_hdr_set = VK_NULL_HANDLE, out_hdr_set = VK_NULL_HANDLE;
     VkPipelineLayout prep_hdr_layout = VK_NULL_HANDLE, out_hdr_layout = VK_NULL_HANDLE;
     VkPipeline prep_hdr = VK_NULL_HANDLE, out_hdr = VK_NULL_HANDLE;
+    VkDescriptorSetLayout out_rgba_set = VK_NULL_HANDLE;
+    VkPipelineLayout out_rgba_layout = VK_NULL_HANDLE;
+    VkPipeline out_rgba = VK_NULL_HANDLE;
     VkSampler point = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
+    bool psycho_last = false; // A tone mapper or input encoding change discards temporal history.
+    VkFormat history_input = VK_FORMAT_UNDEFINED;
     Camera cam;               // (this frame's, since the last upscale)
     // (the gameplay upscale's output, as last seen: the scene sizes the upscaler can take follow from it,
     // temporal_scene_size. Read on the game's draws without the lock)
@@ -392,6 +402,18 @@ bool make_pipelines() {
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     if (!s.linear && vkCreateSampler(dev.device, &si, nullptr, &s.linear) != VK_SUCCESS) return s.linear = VK_NULL_HANDLE, false;
     return true;
+}
+
+// Made only when the opt-in RGBA16F route actually draws; no extra pipeline on the default path.
+bool make_rgba_output() {
+    State& s = st();
+    if (s.out_rgba) return true;
+    const VkDescriptorType types[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+    static const VkBool32 square = VK_FALSE; // HDR prep already decoded the network colour to linear.
+    static const VkSpecializationMapEntry entry{0, 0, sizeof square};
+    static const VkSpecializationInfo spec{1, &entry, sizeof square, &square};
+    return make_pipeline(DLSS_OUT_RGBA_COMP_SPV, sizeof DLSS_OUT_RGBA_COMP_SPV, types, 2, 8,
+                         s.out_rgba_set, s.out_rgba_layout, s.out_rgba, &spec);
 }
 
 /// A view of a depth texture's depth alone, for sampling (made once per image)
@@ -755,6 +777,18 @@ void drop_all() {
 
 void temporal_later(std::function<void()> f) { later(std::move(f)); }
 
+bool temporal_scene_format(VkFormat format) {
+    if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) return true;
+    static const bool enabled = env_switch("RX_VK_PSYCHOV35_DLSS") == 1;
+    return enabled && format == VK_FORMAT_R16G16B16A16_SFLOAT && scene_tonemap_on() && ur::takes_psychov35(temporal_mode());
+}
+
+bool temporal_colour_pair(VkFormat input, VkFormat output) {
+    if (input == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && output == VK_FORMAT_B10G11R11_UFLOAT_PACK32) return true;
+    return input == VK_FORMAT_R16G16B16A16_SFLOAT && output == VK_FORMAT_R16G16B16A16_SFLOAT &&
+           temporal_scene_format(input);
+}
+
 void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                               uint64_t camera_size) {
     // (only a size the gameplay upscale's output can come from: 1 to 3 times smaller. A smaller target with a camera (the
@@ -762,7 +796,7 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     // below: the format, the camera's own size and perspective, the largest in the frame, and the upscale's input)
     if (!color0 || !depth || !camera || camera_size < 0x230 || !temporal_scene_size(width, height)) return;
     // (with the Upscaler Off too: its stretch takes the fixed shares' networks only with the frame's scene as their input)
-    if (color0->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || (!temporal_wanted() && !temporal_off())) return;
+    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off())) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
@@ -787,6 +821,7 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     k.near_z = plain ? n : 0.0f, k.far_z = plain ? (std::isfinite(f) ? f : 1e9f) : 0.0f;
     k.fov_y = plain ? 2.0f * std::atan(1.0f / p11) : 0.0f;
     k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
+    k.scene_format = color0->format;
     k.valid = true;
 }
 
@@ -983,7 +1018,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         const Camera& c = s.cam;
         // (the gameplay networks' own formats: they sample the scene's B10G11R11 colour and write the B10G11R11 picture.
         // Other cooperative-matrix networks of the same shape (one RGBA8 into A2B10G10R10, RGB9E5 into B10G11R11) are not it)
-        if (!in || !out || in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+        if (!in || !out || !temporal_colour_pair(in->format, out->format) ||
             (out->width >> out_level) <= in->width)
             return false;
         note_output(out, out_level);
@@ -996,7 +1031,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
                                             out->height >> out_level);
     }
     free_dead(false);
-    if (known && out && out->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) note_output(out, out_level);
+    if (known && in && out && temporal_colour_pair(in->format, out->format)) note_output(out, out_level);
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
     struct SkinsDone {     // (the skinned draws, each frame's own too: actor_motion takes them, or they go here)
@@ -1009,6 +1044,10 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     s.asked = texture_frame_no(), s.holding = true;   // (not after a failure: what it holds is let go, temporal_idle)
     if (!in || !in_view || !out || !out_view) return fail("no input or output view");
     if (!cam.valid || texture_frame_no() - cam.frame > 1) return fail("no scene camera this frame");
+    if (!temporal_scene_format(cam.scene_format) || !temporal_scene_format(in->format))
+        return fail("unexpected scene colour format");
+    const bool psycho = scene_tonemap_on() && ur::takes_psychov35(mode) &&
+                        temporal_scene_format(VK_FORMAT_R16G16B16A16_SFLOAT);
     if (cam.depth_gen != texture_destroy_generation()) return fail("the scene depth may be gone");
     const uint32_t rw = in->width, rh = in->height;
     const uint32_t ow = std::max(1u, out->width >> out_level), oh = std::max(1u, out->height >> out_level);
@@ -1016,7 +1055,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (cam.depth->width != rw || cam.depth->height != rh || !(cam.depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
         cam.depth->samples != VK_SAMPLE_COUNT_1_BIT || !(cam.depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         return fail("unexpected scene depth");
-    if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !dlss_checks::scene_size_fits(rw, rh, ow, oh))
+    if (!temporal_colour_pair(in->format, out->format) || !dlss_checks::scene_size_fits(rw, rh, ow, oh))
         return fail("unexpected output");
     if (!engine.started) engine.started = true, engine.ok = engine.e->start();
     if (!engine.ok) {
@@ -1068,6 +1107,18 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         return fail(why ? why : "it could not be made");
     }
     if (ready == 0) return fail(why ? why : "not this frame");
+    if (psycho && (!engine.e->hdr || !engine.e->hdr()))
+        return fail(ur::is_fsr4(mode) ? "PsychoV35 waits for the native HDR FSR 4 context"
+                                       : "PsychoV35 waits for the native HDR DLSS feature");
+    const bool rgba = psycho && in->format == VK_FORMAT_R16G16B16A16_SFLOAT && out->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (s.psycho_last != psycho || s.history_input != in->format) {
+        if (psycho || s.psycho_last || s.history_input == VK_FORMAT_R16G16B16A16_SFLOAT)
+            logf("vk: PsychoV35 %s: %s route; scene format %u, network input %u, output %u", ur::is_fsr4(mode) ? "FSR 4" : "DLSS",
+                 rgba ? "RGBA16F linear" : "packed", (unsigned)cam.scene_format, (unsigned)in->format, (unsigned)out->format);
+        s.psycho_last = psycho;
+        s.history_input = in->format;
+        s.last_frame = 0;
+    }
     if (ready == 2) s.engines_made++, s.last_frame = 0;   // (made just now: a new history)
     // (NVIDIA DLSS Frame Generation through NGX copies the depth and the motion each frame, vk_dlss.cpp dlss_fg_inputs: a
     // transfer's source too, always, so the Frame generation by row can turn it on at any time)
@@ -1133,8 +1184,12 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     // (an engine made for HDR colour, as prepare made it this frame: the game's native HDR goes past 1, and the LDR pass's
     // clamp cut every highlight at the paper white, a flat picture. It is given linear light and gives it back: the HDR pair)
     const bool hdr = engine.e->hdr && engine.e->hdr();
-    const VkPipeline prep_pipe = hdr ? s.prep_hdr : s.prep, out_pipe = hdr ? s.out_hdr : s.out;
-    const VkPipelineLayout prep_layout = hdr ? s.prep_hdr_layout : s.prep_layout, out_layout = hdr ? s.out_hdr_layout : s.out_layout;
+    // The network receives perceptual colour after the scene pass: decode it even when its storage is RGBA16F.
+    if (rgba && !make_rgba_output()) return fail("the RGBA16F output shader was not made");
+    const VkPipeline prep_pipe = hdr ? s.prep_hdr : s.prep;
+    const VkPipeline out_pipe = rgba ? s.out_rgba : hdr ? s.out_hdr : s.out;
+    const VkPipelineLayout prep_layout = hdr ? s.prep_hdr_layout : s.prep_layout;
+    const VkPipelineLayout out_layout = rgba ? s.out_rgba_layout : hdr ? s.out_hdr_layout : s.out_layout;
 
     const auto prep = [&] {
         const VkDescriptorImageInfo info[5] = {{s.point, in_view, VK_IMAGE_LAYOUT_GENERAL},

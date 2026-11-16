@@ -55,6 +55,7 @@ FakePipeline the_pipeline;
 
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
+void predicted_use_log() {}   // (vk_draw.cpp: the predicted pipelines play met, after each play file)
 void logf(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);

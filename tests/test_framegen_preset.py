@@ -51,6 +51,7 @@ Options opts;
 int saves = 0;
 void save() { ++saves; }
 void apply_pad_layout(int) {}
+int detect_pad_layout() { return opts.pad_layout; }
 void sync_preset_budgets(int) {}
 constexpr int kAutoPreset = 6;   /* (the Quality preset Auto (this PC): apply_auto, not reached here) */
 void apply_auto(bool) {}
@@ -61,6 +62,8 @@ bool row_fixed(const int*) { return false; }
 namespace ur = mkwvk::upscaler_rows;
 int upscaler() { return opts.dlss; }
 unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::dlss_bits(true); }
+// (hookshot fork: the Frame generation by row's choice, which set_row calls: upstream's two values here)
+int framegen_by_pick(int, int want, int) { return want & 1; }
 namespace mr { constexpr int kMax = 8; }
 /* (the Game language row's hook in set_row: language.txt, not written here) */
 namespace i18n { inline void set_game_language(int) {} }
@@ -69,6 +72,7 @@ struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
 void samplers_changed() {}
+void menu_debug_rows(int, int) {}   // (the Debug rows that apply in play: vk_draw.cpp)
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}

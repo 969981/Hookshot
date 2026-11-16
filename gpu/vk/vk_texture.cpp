@@ -669,7 +669,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
         // out, and a scene change made several right after the idle ones were freed)
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_make).count();
         static int slow_logged;
-        if (ms > 5 && slow_logged++ < 24) logf("vk: a staging arena of %llu MB took %.1f ms to make", (unsigned long long)(a.size >> 20), ms);
+        if (ms > 5 && slow_logged++ < 24) logf_at(log_debug, "vk: a staging arena of %llu MB took %.1f ms to make", (unsigned long long)(a.size >> 20), ms);
     }
     a.value = rec_value, a.used = n;
     a.used_at = std::chrono::steady_clock::now();
@@ -1288,11 +1288,21 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         return false;
     }
     std::vector<uint8_t> scratch;
+    // (hookshot, smoothness) the BC1/BC3 choice below reads the blocks where they came from, as they are copied: the staging
+    // arena is write-combined memory (or VRAM through the BAR), and reading it back on the CPU took 10-160 ms for one 1-2K
+    // texture and 12-14 s for a 2048 x 2048 x 68 array (Mario Kart World's races and course loads, the replay thread)
+    const bool choose_bc = tex.bc && !tex.bc_resized && linear_twin(tex.format) != VK_FORMAT_BC7_UNORM_BLOCK && bc1_on();
+    astc_opaque::Scan sc;
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
         if (at >= total) continue;
         const uint64_t n = std::min(tail, total - at);
-        std::memcpy(s.data + k * tail, guest_bytes(tex.gpu + at, n, scratch), n);
+        const uint8_t* src = guest_bytes(tex.gpu + at, n, scratch);
+        std::memcpy(s.data + k * tail, src, n);
+        if (choose_bc && !sc.alpha) {
+            const astc_opaque::Scan part = astc_opaque::scan(src, n);
+            sc.opaque += part.opaque, sc.empty += part.empty, sc.alpha += part.alpha;
+        }
     }
     const uint64_t staged = tail * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
@@ -1300,10 +1310,9 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
-    if (tex.bc && !tex.bc_resized && linear_twin(tex.format) != VK_FORMAT_BC7_UNORM_BLOCK && bc1_on()) {   // (hookshot: BC1 for a
-        // texture whose blocks are all opaque, astc_opaque.h; a BC7 image, RX_VK_ASTC_BC7's, stays BC7)
+    if (choose_bc) {   // (hookshot: BC1 for a texture whose blocks are all opaque, astc_opaque.h; a BC7 image, RX_VK_ASTC_BC7's,
+        // stays BC7; sc: its blocks, read as they were copied above)
         const bool is_bc1 = tex.format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-        const astc_opaque::Scan sc = astc_opaque::scan(s.data, staged);
         if (is_bc1 && sc.alpha) {   // (new contents with alpha: BC3 again, every layer uploaded into it)
             if (bc_reformat(tex, VK_FORMAT_BC3_UNORM_BLOCK)) {
                 tex.bc1 = 1;
@@ -3920,7 +3929,7 @@ void texture_written(Texture* tex, const char* why) {
     tex->only_cleared = false;
     if (tex->sparse && !tex->gpu_written) {
         static int logged;
-        if (logged++ < 20) logf("vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
+        if (logged++ < 20) logf_at(log_debug, "vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
     }
     watch_tex(tex, "written");
     if (!tex->gpu_written || tex->released) tex->first_written = frame_no, drawn_writeback_note(tex);
@@ -3944,13 +3953,30 @@ void texture_written(Texture* tex, const char* why) {
 }
 
 
+/// (hookshot, diagnostics) Why the quick path gave up, counted. It is the busiest ParLock site in
+/// the renderer (352 locks a command buffer under parallel replay), and "it misses" is not a thing
+/// anyone can act on -- whether it is the upload check or the once-an-epoch check decides whether
+/// there is anything to win here at all. Read by texture_touch_misses().
+std::atomic<int64_t> touch_miss_upload{0}, touch_miss_epoch{0}, touch_miss_unuploaded{0};
+
 bool texture_touch_quick(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
     tex->last_value = rec_value;
     if (!for_sampling) return true;
     if (tex->gpu_written && !tex->released && !tex->only_cleared) return true;
-    if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) return false;
-    return tex->uploaded && tex->checked_epoch == epoch;
+    if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {
+        touch_miss_upload.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (tex->uploaded && tex->checked_epoch == epoch) return true;
+    (tex->uploaded ? touch_miss_epoch : touch_miss_unuploaded).fetch_add(1, std::memory_order_relaxed);
+    return false;
+}
+
+void texture_touch_misses(int64_t* upload, int64_t* epoch_out, int64_t* unuploaded) {
+    *upload = touch_miss_upload.exchange(0, std::memory_order_relaxed);
+    *epoch_out = touch_miss_epoch.exchange(0, std::memory_order_relaxed);
+    *unuploaded = touch_miss_unuploaded.exchange(0, std::memory_order_relaxed);
 }
 void texture_gpu_wrote(uint64_t gpu, uint64_t size) {
     if (!gpu || !size) return;
@@ -4700,7 +4726,7 @@ void texture_frame(uint64_t completed) {
             }
 
             budget = std::max<uint64_t>(budget, 1024ull << 20);  // Minimum 1 GB
-            budget = std::min(budget, driver_budget);  // Don't exceed driver's limit
+            budget = std::min<uint64_t>(budget, driver_budget);  // Don't exceed driver's limit
             own = budget;
 
             if (!told) {

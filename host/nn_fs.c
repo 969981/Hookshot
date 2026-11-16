@@ -209,6 +209,7 @@ typedef struct { char name[HOS_FS_PATH]; int is_dir; uint64_t size; } ExtraEntry
 typedef struct {
     HANDLE h; int writable; HANDLE find; WIN32_FIND_DATAA fd; int find_done, is_dir; char path[HOS_FS_PATH];
     ExtraEntry *extras; int nextras, extra_pos;
+    volatile LONG refs;   /* (a file's: 1 while open, +1 for each call using it; the last let go closes it) */
 } Handle;
 static Handle *handles[4096];
 static SRWLOCK handle_lock = SRWLOCK_INIT;
@@ -225,6 +226,23 @@ static Handle *get_handle(Ctx *c, uint64_t id) {
     Handle *h = id && id <= 4096 ? handles[id - 1] : NULL;
     if (!h) hos_fatal(c, "fs: bad handle %#llx", (unsigned long long)id);
     return h;
+}
+/* (hookshot) A file's handle for one call: taken under the table's lock with a reference, so a CloseFile on another
+   guest thread cannot free it under the call (directories have dir_lock); put_file lets it go, and the last reference
+   closes the host file and frees it. A bad handle is fatal, as get_handle's. */
+static Handle *get_file(Ctx *c, uint64_t id) {
+    AcquireSRWLockShared(&handle_lock);
+    Handle *h = id && id <= 4096 ? handles[id - 1] : NULL;
+    if (h) InterlockedIncrement(&h->refs);
+    ReleaseSRWLockShared(&handle_lock);
+    if (!h) hos_fatal(c, "fs: bad handle %#llx", (unsigned long long)id);
+    return h;
+}
+static void put_file(Handle *h) {
+    if (h && !InterlockedDecrement(&h->refs)) {
+        CloseHandle(h->h);
+        free(h);
+    }
 }
 static void free_handle(uint64_t id) {
     AcquireSRWLockExclusive(&handle_lock);
@@ -276,6 +294,66 @@ HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
              (unsigned long long)G64(ARG(1)));
     RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
 }
+/* (hookshot) nn::fs::EnsureSaveData(account::Uid const&) -> Result: the user's save data is made if it is not there, as
+   MountSaveData's folder. Left to the lifted SDK it asked for the fs service proxy, which the runtime does not have (fs is
+   answered above IPC), and read through the null it got: Donkey Kong Bananza's nnMain (main+0x5c29a4) calls it before
+   its first mount, and with null guest reads faulting (#20, as on Windows and the console) it crashed at boot.
+   dkb-pc-recomp (github.com/Lucas-blip-png/dkb-pc-recomp, GPL-3.0-or-later) answers it the same way; the code is ours. */
+HLE(_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE) {
+    char root[HOS_FS_PATH];
+    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx\\", hos_user_dir, (unsigned long long)G64(ARG(0) + 8),
+             (unsigned long long)G64(ARG(0)));
+    make_dirs(root);
+    RET(0);
+}
+/* nn::fs::GetSaveDataSize(long* size, long* journalSize, account::Uid const&) -> Result: the user's save data's size and
+   its journal's. On the console they are what the save was made with (the game's control data, which the dump here
+   does not carry); here a save is a host folder with no size of its own, so both are answered as a generous 1 GiB:
+   a game that checks for room finds it, one that only shows the sizes shows a plausible one. Left to the lifted SDK it
+   asked the fs service proxy the runtime does not have (fs is answered above IPC) and read through the null it got:
+   Kirby Air Riders (Dragoon) asks it right after its first save mount. */
+HLE(_ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE) {
+    const int64_t size = 1LL << 30, journal = 1LL << 30;
+    static int told;
+    if (!told++) hos_log("fs: GetSaveDataSize: %lld MB, journal %lld MB (a host folder has no size of its own; lr %#llx)",
+                         (long long)(size >> 20), (long long)(journal >> 20), (unsigned long long)c->x[30]);
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = (uint64_t)size;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = (uint64_t)journal;
+    RET(0);
+}
+/* nn::fs::GetCacheStorageSize(long* size, long* journalSize, int index) -> Result: as GetSaveDataSize, for a cache
+   storage (a host folder too). Kirby Air Riders asks it right after mounting its cache; the lifted SDK aborted. */
+HLE(_ZN2nn2fs19GetCacheStorageSizeEPlS1_i) {
+    const int64_t size = 1LL << 30, journal = 1LL << 30;
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = (uint64_t)size;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = (uint64_t)journal;
+    RET(0);
+}
+/* nn::fs::GetSaveDataSizeMax(long* size, long* journalSize) -> Result: the most a save may be extended to, at least the
+   size GetSaveDataSize answers: 2 GiB each */
+HLE(_ZN2nn2fs18GetSaveDataSizeMaxEPlS1_) {
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = 2ULL << 30;
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = 2ULL << 30;
+    RET(0);
+}
+/* nn::fs::ExtendSaveData(account::Uid const&, long size, long journalSize) -> Result: a host folder grows by itself */
+HLE(_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll) { RET(0); }
+/* nn::fs::GetFreeSpaceSize(long* out, char const* path) -> Result: the room a mount has. Its host folder takes what the
+   disk has; answered as a generous 4 GiB (what a game checks it against is a save's size) */
+HLE(_ZN2nn2fs16GetFreeSpaceSizeEPlPKc) {
+    if (ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = 4ULL << 30;
+    RET(0);
+}
+/* nn::fs::IsMounted(char const* name) -> bool: in this file's mount table (the lifted SDK's own one is never filled:
+   every mount is answered here) */
+HLE(_ZN2nn2fs9IsMountedEPKc) {
+    const char *name = gstr(ARG(0));
+    int found = 0;
+    AcquireSRWLockShared(&mount_lock);
+    for (int i = 0; i < nmounts && !found; i++) found = !strcmp(mounts[i].name, name);
+    ReleaseSRWLockShared(&mount_lock);
+    RET(found);
+}
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
@@ -295,6 +373,10 @@ HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
     snprintf(sub, sizeof sub, "cache\\%d", (int)ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
+/* MountCacheStorage(char const*): the cache storage of index 0, as the indexed form's. Left to the lifted SDK it asked
+   the fs service proxy through sm: (answered empty) and aborted: Kirby Air Riders (Dragoon) mounts its cache this way
+   right after its save. */
+HLE(_ZN2nn2fs17MountCacheStorageEPKc) { RET(user_mount(gstr(ARG(0)), "cache\\0") ? 0 : R_NOT_MOUNTED); }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
     char root[HOS_FS_PATH];
@@ -342,7 +424,11 @@ static int fs_trace(void) {
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     char path[HOS_FS_PATH];
     int writable = 0;
-    const char *g = gstr(ARG(1));
+    /* (hookshot) the game's path copied once: every use below (the mount, the redirects, the overlay, the log) reads
+       this copy, not guest memory the game may change meanwhile */
+    char g_copy[FS_PATH_MAX];
+    snprintf(g_copy, sizeof g_copy, "%s", gstr(ARG(1)));
+    const char *g = g_copy;
     /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
        Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms.)
        (hookshot, #1929) From before host_path: the first open of a button-prompt file builds it there (prompts.c,
@@ -402,6 +488,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         return;
     }
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
+    fh->refs = 1;
     fh->h = h;
     fh->writable = want_write;
     snprintf(fh->path, sizeof fh->path, "%s", g);
@@ -411,9 +498,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
 }
 
 static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t size) {
-    Handle *fh = get_handle(c, id);
-    uint64_t done = 0;
     if (!hos_guest_range(buf, size)) return 0;   /* (hookshot: the file's bytes go into guest memory only) */
+    Handle *fh = get_file(c, id);
+    uint64_t done = 0;
     static int64_t delay_ns = -1, delay_after_ns;   /* HOS_FS_DELAY_MS=<ms>[,<after s>] (experiment): slower reads */
     if (delay_ns < 0) {
         const char *e = getenv("HOS_FS_DELAY_MS");
@@ -445,6 +532,7 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
             hos_log("fs: read into watched memory: %s at %lld, %llu bytes to %#llx", fh->path, (long long)off,
                     (unsigned long long)done, (unsigned long long)buf);
     }
+    put_file(fh);
     return done;
 }
 
@@ -465,35 +553,46 @@ HLE(_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE) {
 /* GetFileSize(long*, FileHandle) */
 HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     LARGE_INTEGER sz = {0};   /* (hookshot: a folder's handle has no size: 0, not the host stack's bytes) */
-    GetFileSizeEx(get_handle(c, ARG(1))->h, &sz);
+    Handle *fh = get_file(c, ARG(1));
+    GetFileSizeEx(fh->h, &sz);
+    put_file(fh);
     G64(ARG(0)) = (uint64_t)sz.QuadPart;
     RET(0);
 }
 /* WriteFile(FileHandle, long offset, void const* buf, unsigned long size, WriteOption const&) */
 HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
-    Handle *fh = get_handle(c, ARG(0));
+    Handle *fh = get_file(c, ARG(0));
     OVERLAPPED ov = {0};
     ov.Offset = (DWORD)ARG(1);
     ov.OffsetHigh = (DWORD)(ARG(1) >> 32);
     DWORD put = 0;
     /* (hookshot) from guest memory only, and the whole size: a DWORD cut wrote less than asked and said so */
     if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
+    put_file(fh);
     RET(put == ARG(3) ? 0 : 0x2EE202);
 }
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
-    Handle *fh = get_handle(c, ARG(0));
+    Handle *fh = get_file(c, ARG(0));
     LARGE_INTEGER sz;
     sz.QuadPart = (LONGLONG)ARG(1);
     SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
     SetEndOfFile(fh->h);
+    put_file(fh);
     RET(0);
 }
-HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(0))->h); RET(0); }
+HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) {
+    Handle *fh = get_file(c, ARG(0));
+    FlushFileBuffers(fh->h);
+    put_file(fh);
+    RET(0);
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
-    Handle *fh = get_handle(c, ARG(0));
-    CloseHandle(fh->h);
+    /* (hookshot) out of the table first, then the open reference let go: a call on another thread still using it
+       closes and frees it when it is done (put_file) */
+    Handle *fh = get_file(c, ARG(0));
     free_handle(ARG(0));
-    free(fh);
+    InterlockedDecrement(&fh->refs);   /* (the open one; the one get_file took is put below) */
+    put_file(fh);
 }
 
 /* CreateFile(char const*, long size) */
@@ -642,7 +741,7 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
         int want = (isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2));
         if (strcmp(fd->cFileName, ".") && strcmp(fd->cFileName, "..") && want) {
             uint64_t e = ARG(1) + 0x310 * n;
-            memset(GP(e), 0, 0x310);
+            memset(GR(e, 0x310), 0, 0x310);   /* (hookshot: max is the game's; each entry in its memory) */
             snprintf((char *)GP(e), 0x301, "%s", fd->cFileName);
             *(uint8_t *)GP(e + 0x304) = isdir ? 0 : 1;
             G64(e + 0x308) = ((uint64_t)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
@@ -654,7 +753,7 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
         const ExtraEntry *x = &dh->extras[dh->extra_pos++];
         if (!((x->is_dir && (dh->is_dir & 1)) || (!x->is_dir && (dh->is_dir & 2)))) continue;
         uint64_t e = ARG(1) + 0x310 * n;
-        memset(GP(e), 0, 0x310);
+        memset(GR(e, 0x310), 0, 0x310);
         snprintf((char *)GP(e), 0x301, "%s", x->name);
         *(uint8_t *)GP(e + 0x304) = x->is_dir ? 0 : 1;
         G64(e + 0x308) = x->size;

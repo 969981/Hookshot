@@ -1,6 +1,8 @@
-/* (hookshot) The sound manager's job at up to 60 Hz and the physics solver's steps rounded up, with a measured frame step: the
-   lifted f_80435300, f_838ceb80 and f_838cfc10 call these (nx2/oot_patches.py); host/oot_high_fps.h has why and the logic.
-   HOS_FPS_LOG (on, by the switches' rule: =0 is off): what they do, every 600 calls. */
+/* (hookshot) The sound manager's job at up to 60 Hz, the physics solver's steps rounded up and the floor-carry gate, with a
+   measured frame step: the lifted f_80435300, f_838ceb80, f_838cfc10 and the three follow-surface updates call these
+   (nx2/oot_patches.py); host/oot_high_fps.h has why and the logic.
+   HOS_FPS_LOG (on, by the switches' rule: =0 is off): what they do, every 600 calls. HOS_FPS_FLOOR=0: the game's floor-carry
+   gate at every frame rate (for comparisons). */
 #include "hos.h"
 #include "oot_high_fps.h"
 #define WIN32_LEAN_AND_MEAN
@@ -65,4 +67,25 @@ uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_
                     (oot_bits_float(scaled_bits) - 0.001f) / oot_bits_float(per_frame_bits), oot_bits_float(per_frame_bits));
     }
     return (uint32_t)steps;
+}
+
+/* The number the follow-surface updates compare the physics' inverse step with (its float's bits): the game's 100, or 100 over
+   the frame step while that is under 1 */
+uint32_t hos_oot_floor_cut(uint32_t inverse_step_bits) {
+    static int on = -1;   /* (read by the physics' job threads) */
+    int v = __atomic_load_n(&on, __ATOMIC_RELAXED);
+    if (v < 0) v = !(getenv("HOS_FPS_FLOOR") && !atoi(getenv("HOS_FPS_FLOOR"))), __atomic_store_n(&on, v, __ATOMIC_RELAXED);
+    const float cut = v ? oot_floor_cut(__atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED)) : 100.0f;
+    if (fps_log()) {   /* (of every 600 updates: how many kept a tenth, and how many the game's gate would have cut) */
+        static volatile LONG64 calls, tenths, game_tenths;
+        const float inverse = oot_bits_float(inverse_step_bits);
+        if (inverse > cut) InterlockedIncrement64(&tenths);
+        if (inverse > 100.0f) InterlockedIncrement64(&game_tenths);
+        const LONG64 n = InterlockedIncrement64(&calls);
+        if (n % 600 == 0)
+            hos_log("oot: floor carry: %lld of the last 600 updates kept a tenth of the floor's velocity (the game's gate: %lld); "
+                    "inverse step %.1f, cut at %.1f%s", (long long)InterlockedExchange64(&tenths, 0),
+                    (long long)InterlockedExchange64(&game_tenths, 0), inverse, cut, v ? "" : " (HOS_FPS_FLOOR=0: the game's gate)");
+    }
+    return oot_float_bits(cut);
 }

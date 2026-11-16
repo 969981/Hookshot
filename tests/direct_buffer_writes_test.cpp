@@ -67,6 +67,8 @@ static uint64_t gpu_guest(uint64_t gpu) { return gpu >= virtual_base ? pool.lo +
 struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_guest)(uint64_t); };
 static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
+// (hookshot fork: gpu_buffer_bind counts why its lock-free path did not answer, vk_memory.cpp pool_lock_*)
+static std::atomic<int64_t> pool_lock_written{0}, pool_lock_cache_miss{0}, pool_lock_mirror{0};
 
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 #include "direct_write_actual.inc"

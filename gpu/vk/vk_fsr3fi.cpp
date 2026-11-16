@@ -20,6 +20,7 @@
 
 #include "vk_fsr3fi.h"
 #include "vk_menu.h"    // (the Frame generation row)
+#include "framegen_methods.h"   // (hookshot fork: the Frame generation by row's AMD FSR 3.1)
 #include "vk_gprof.h"   // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_texture.h"
 
@@ -323,7 +324,10 @@ uint32_t asked() {
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
-    return 0u;   // (opt-in: the renderer's own blend at 2x, see above)
+    // (opt-in: the renderer's own blend at 2x, see above. hookshot fork: the Frame generation by row's AMD FSR 3.1 is that
+    // choice made in the menu, framegen_methods.h. Only at 2x, the one set it makes: at Off, Auto and 3x and up the scene's
+    // inputs are not kept for nothing)
+    return opts.framegen_by == framegen_methods::FSR3 && opts.framegen == 2 ? 1u : 0u;
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.

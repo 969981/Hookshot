@@ -12,7 +12,9 @@ namespace Common {
 template <typename N, typename D>
     requires std::is_integral_v<N> && std::is_unsigned_v<D>
 [[nodiscard]] constexpr N DivCeil(N number, D divisor) {
-    return static_cast<N>((static_cast<D>(number) + divisor - 1) / divisor);
+    // (hookshot) without number + divisor - 1, which wrapped to a small result near the type's top (as gpu/vk/compat's copy)
+    const D n{static_cast<D>(number)};
+    return static_cast<N>(n / divisor + (n % divisor != 0 ? 1 : 0));
 }
 
 /// Ceiled integer division with logarithmic divisor in base 2

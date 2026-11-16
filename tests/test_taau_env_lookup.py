@@ -21,7 +21,9 @@ def block(source, marker):
 
 
 def fixture(source):
-    return (PREFIX + block(source, 'bool taau_key(uint64_t key) {') + '\n' +
+    # the game profile's keys, as production reads them: its helper and the committed game/game_profile.h
+    return ('#include "game_profile.h"\n' + PREFIX + block(source, 'const char* profile_keys(') + '\n' +
+            block(source, 'bool taau_key(uint64_t key) {') + '\n' +
             block(source, 'bool taau_stand_in(VkCommandBuffer cmd,') + '\n' + SUFFIX)
 
 
@@ -157,10 +159,10 @@ def main():
         source.write_text(cpp, encoding='utf-8')
         if Path(args.cxx).name.lower() in ('cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'):
             # (/FI, -include: env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
-            command = [args.cxx, '/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', '/FI' + ENV_ON_H, str(source),
+            command = [args.cxx, '/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', '/FI' + ENV_ON_H, '/I' + str(ROOT / 'game'), str(source),
                        '/Fo' + str(folder / 'fixture.obj'), '/Fe' + str(exe), *args.cxx_arg]
         else:
-            command = [args.cxx, '-std=c++17', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', *args.cxx_arg, str(source), '-o',
+            command = [args.cxx, '-std=c++17', '-include', ENV_ON_H, '-I' + str(ROOT / 'game'), '-Wall', '-Wextra', '-Werror', *args.cxx_arg, str(source), '-o',
                        str(exe)]
         subprocess.run(command, cwd=folder, check=True)
         failed = False

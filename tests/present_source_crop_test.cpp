@@ -42,7 +42,7 @@ int dlss_fg_frames(VkCommandBuffer, VkImage, VkImageView, uint32_t, uint32_t, in
                    uint64_t) { return 0; }   // (asked every present at 2x and up: makes none here)
 uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: NVIDIA Reflex not on here)
 // (who made each set's frames, for the Insert menu's Frame generation by row: the last one noted)
-enum class FgMaker { None, BuiltIn, Dlss, Fsr3 };
+enum class FgMaker { None, BuiltIn, Dlss, Fsr3, Fsr4 };
 FgMaker last_maker = FgMaker::Dlss;
 void note_maker(FgMaker m) { last_maker = m; }
 uint64_t antilag_frame() { return 0; }   // (vk_antilag.cpp: AMD Anti-Lag 2 not on here)
@@ -51,6 +51,10 @@ int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t
     CHECK(w == allocated_w && h == allocated_h && sequence > 0);
     ++fsr_calls; return fsr_result;
 }
+// (hookshot fork: AMD FSR 4's frame generation, vk_ffx.h: not chosen here, so no set is its own)
+namespace ffx { void reset() {} }
+bool ffx_set_wanted(int) { return false; }
+int ffx_frames(VkCommandBuffer, OutSet&, int, uint32_t, uint32_t, int, uint64_t) { std::abort(); }
 VkImageBlit last_blit{};
 struct { int32_t rect[4]; float x0, cover; int32_t pq; } copy{};
 std::atomic<bool> present_native_pq{false};

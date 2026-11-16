@@ -8,6 +8,9 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 static int version;   /* 3, 2, or 0 none */
 static struct {
@@ -122,6 +125,14 @@ int hos_sdl_load(void) {
         if (m && get_all(m, 1)) version = 3;
         else if ((m = load_one("SDL2.dll")) && get_all(m, 0)) version = 2;
         hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
+        /* (with no window nothing reads SDL's quit event, and SDL's SIGINT/SIGTERM handlers turn those signals into it:
+           the run went on until SIGKILL. SDL installs them at the first start of any subsystem that brings its events,
+           sound included (nn_audio.c asks for the speakers' layout before the controllers start, HOS_AUDIO=0 or not), so
+           the hint goes here, before any of them; pads_start's own is too late for that) */
+        if (version && env_on("HOS_HEADLESS")) {   /* (SetHint itself: hos_sdl_hint would wait here for this load) */
+            if (version == 3) CALL(_Bool (*)(const char *, const char *), SetHint)("SDL_NO_SIGNAL_HANDLERS", "1");
+            else CALL(int (*)(const char *, const char *), SetHint)("SDL_NO_SIGNAL_HANDLERS", "1");
+        }
         InterlockedExchange(&state, 2);
     }
     while (state != 2) Sleep(0);
@@ -183,6 +194,23 @@ void hos_sdl_relative_mouse(void *window, int on) {
     if (version == 3) CALL(_Bool (*)(void *, _Bool), SetRelativeMouseMode)(window, on != 0);
     else CALL(int (*)(int), SetRelativeMouseMode)(on);
 }
+/* (hookshot) The desktop display's refresh rate in Hz, or 0 when SDL cannot say. Read from the same
+   SDL_DisplayMode the size comes from: SDL3 keeps refresh_rate as a float at offset 20, after
+   pixel_density; SDL2 keeps it as an int after w and h. */
+int hos_sdl_refresh_hz(void) {
+    if (!version) return 0;
+    if (version == 3) {
+        const uint8_t *m = CALL(const uint8_t *(*)(uint32_t), GetDesktopDisplayMode)(CALL(uint32_t (*)(void), GetPrimaryDisplay)());
+        if (!m) return 0;
+        float hz = 0;
+        memcpy(&hz, m + 20, 4);
+        return hz > 0 ? (int)(hz + 0.5f) : 0;
+    }
+    struct { uint32_t format; int w, h, refresh_rate; void *driverdata; } m;
+    if (CALL(int (*)(int, void *), GetDesktopDisplayMode)(0, &m)) return 0;
+    return m.refresh_rate > 0 ? m.refresh_rate : 0;
+}
+
 int hos_sdl_desktop_size(int *width, int *height) {
     /* (hookshot) no SDL loaded (a windowless start: HOS_HEADLESS), so the screen is unknown. The menu asks while it runs
        (MkwVkHost.screen_size, rx_backend.c), and SDL2's branch below would call an empty slot */

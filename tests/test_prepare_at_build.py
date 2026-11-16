@@ -168,6 +168,49 @@ class SkipTests(unittest.TestCase):
         self.assertLess(main.index("prepare_skipped(a)"), main.index('say("done", out)'))
 
 
+class CompileShadersTests(unittest.TestCase):
+    """Compile shaders: --compile-shaders kept in the folder's hookshot_options.ini as compile_shaders= (0 Most, 1 All), the
+    game's other lines as they are"""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hookshot-compile-shaders-")
+        self.addCleanup(self.temporary.cleanup)
+        self.out = self.temporary.name
+
+    def ini(self):
+        with open(os.path.join(self.out, "hookshot_options.ini"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_all_written_to_a_new_folder(self):
+        self.assertIsNone(make_game.folder_compile_level(self.out))
+        make_game.write_compile_level(self.out, "all")
+        self.assertEqual(self.ini(), "compile_shaders=1\n")
+        self.assertEqual(make_game.folder_compile_level(self.out), "all")
+
+    def test_the_other_lines_kept_and_the_choice_replaced(self):
+        with open(os.path.join(self.out, "hookshot_options.ini"), "w", encoding="utf-8") as f:
+            f.write("options_version=6\ncompile_shaders=0\nfullscreen=1\n")
+        make_game.write_compile_level(self.out, "all")
+        self.assertEqual(self.ini(), "options_version=6\nfullscreen=1\ncompile_shaders=1\n")
+        self.assertEqual(make_game.folder_compile_level(self.out), "all")
+
+    def test_the_level_given_else_the_folders_else_all(self):
+        # (hookshot: All, as before the choice, until Most is measured in play)
+        a = SimpleNamespace(no_prepare_shaders=False, compile_shaders=None)
+        self.assertEqual(make_game.compile_level(a, self.out), "all")
+        make_game.write_compile_level(self.out, "most")
+        self.assertEqual(make_game.compile_level(a, self.out), "most")
+        make_game.write_compile_level(self.out, "all")
+        self.assertEqual(make_game.compile_level(a, self.out), "all")
+        a.compile_shaders = "most"
+        self.assertEqual(make_game.compile_level(a, self.out), "most")
+        self.assertIsNone(make_game.prepare_skipped(a, {}))
+
+    def test_the_preparation_is_told_the_level(self):
+        main = SOURCE.read_text(encoding="utf-8").split("\ndef main(", 1)[1]
+        self.assertIn('"--prepare-shaders", "--compile-shaders", level]', main)
+        self.assertLess(main.index("write_compile_level(out, a.compile_shaders)"), main.index("prepare_skipped(a)"))
+
+
 def builder_method(name):
     """One method of the Linux builder's window, compiled alone (no Tk)"""
     tree = ast.parse(BUILDER.read_text(encoding="utf-8"))

@@ -107,6 +107,13 @@ void AddGlobalTables(IR::Program& program) {
     // g_nvn2_compute_layout_end): OoT's culling passes reach their object lists through pointers in their records
     const bool compute_table{program.stage == Stage::Compute && Optimization::g_nvn2_compute_layout_end != 0 &&
                              Optimization::g_nvn2_compute_layout_end <= 0x880U};
+    // (hookshot) and vertex programs that store through such pointers: Donkey Kong Bananza resets its terrain's indirect
+    // draw records with a point draw whose vertex program loads each record's address from a list in a storage buffer and
+    // stores {0, 1, 0, 0, 0} there. No binding names those records: the stores went nowhere, the records stayed 0, the
+    // terrain's draws drew nothing and the cave's ground and walls stayed black. Stores only: vertex programs that only
+    // read through pointers keep the search as before
+    const bool vertex_table{(program.stage == Stage::VertexA || program.stage == Stage::VertexB) &&
+                            program.info.stores_global_memory};
     // (EvilOOT) the program's own tables first: the search takes the first buffer that holds an address, and the pointer
     // table's regions are whole pools for compute (vk_bank.cpp pointer_table), bound GPU-only. Searched before the precise
     // entries, the culling setup's count writes went through the pool's binding and the launches never saw them.
@@ -120,18 +127,20 @@ void AddGlobalTables(IR::Program& program) {
             .is_written = program.info.stores_global_memory,
         });
     }
-    if ((program.stage == Stage::Task || program.stage == Stage::Mesh || compute_table) && program.info.uses_global_memory &&
-        room()) {
+    if ((program.stage == Stage::Task || program.stage == Stage::Mesh || compute_table || vertex_table) &&
+        program.info.uses_global_memory && room()) {
+        // (hookshot) a vertex stage's table has 8 entries (vk_bank.cpp kVertexPointerEntries), the others 3
+        const u32 entries{vertex_table ? 8U : 3U};
         program.info.storage_buffers_descriptors.push_back({
             .cbuf_index = 0U,
             .cbuf_offset = 0x880U,
-            .count = 3U,
-            .is_written = compute_table && program.info.stores_global_memory,
+            .count = entries,
+            .is_written = (compute_table || vertex_table) && program.info.stores_global_memory,
         });
         // (EvilOOT) the global memory functions read the table's words from c0 in SPIR-V, not in the IR the bound size
         // comes from: c0 must reach past it, or those words read 0
         u32& used{program.info.constant_buffer_used_sizes[0]};
-        used = std::max<u32>(used, 0x880U + 16U * 3U);
+        used = std::max<u32>(used, 0x880U + 16U * entries);
     }
 }
 
@@ -444,6 +453,12 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     program.post_order_blocks = PostOrder(program.syntax_list.front());
     program.stage = env.ShaderStage();
     program.local_memory_size = env.LocalMemorySize();
+    // (hookshot) a program's memory sizes are its header's and control section's: past any GPU's (512 KB of local memory a
+    // thread, a few hundred KB shared), a malformed program, refused before they size arrays (DivCeil wrapped near 4 GB)
+    constexpr u32 kMaxMemory{1U << 20};
+    if (program.local_memory_size > kMaxMemory) {
+        throw NotImplementedException("Local memory of {} bytes", program.local_memory_size);
+    }
     switch (program.stage) {
     case Stage::TessellationControl: {
         const ProgramHeader& sph{env.SPH()};
@@ -472,6 +487,9 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     case Stage::Compute:
         program.workgroup_size = env.WorkgroupSize();
         program.shared_memory_size = env.SharedMemorySize();
+        if (program.shared_memory_size > kMaxMemory) {
+            throw NotImplementedException("Shared memory of {} bytes", program.shared_memory_size);
+        }
         break;
     case Stage::Task:
     case Stage::Mesh: {
@@ -488,6 +506,11 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
         if (program.stage == Stage::Mesh) {
+            // (hookshot) none of either: the outputs would be arrays of none, and their index clamped to count - 1, 0xFFFFFFFF
+            if (program.mesh.max_vertices == 0 || program.mesh.max_primitives == 0) {
+                throw NotImplementedException("Mesh output of {} vertices and {} primitives (SET_MESH_SHADER_A {:#010x})",
+                                              program.mesh.max_vertices, program.mesh.max_primitives, shader_a);
+            }
             if (program.mesh.topology != 4 && program.mesh.topology != 1 &&
                 program.mesh.topology != 0) {   // (GL's numbers: 0 points, 1 lines, 4 triangles)
                 throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",

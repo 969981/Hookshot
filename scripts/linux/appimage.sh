@@ -18,6 +18,9 @@ APPDIR=$B/AppDir
 # (--long: a nightly built on a tagged commit is v2.1.0-rc.1-0-g1a2b3c4, so the updaters know it is the nightly:
 # builder/linux/linux_update.py track_of)
 VERSION=${HOOKSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9]*" 2>/dev/null || echo dev)}
+# The project's name, which names the AppImage: from the one place that holds it (nx2/game_profile.py, through
+# scripts/product_name.sh, which the checks and the release scripts that find the image read too)
+PRODUCT=$(scripts/product_name.sh)
 export EMSDK=$DEPS/emsdk RX_CPM=$DEPS/cpm
 PY=$DEPS/python/bin/python3
 
@@ -43,9 +46,12 @@ T=$APPDIR/usr/share/hookshot
 L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
-cp -a nx2 host scripts LICENSE readme.md assets "$T/"
+# (game/: the game profile's C view, nx2/game_profile.py, which the runtime and the back end compile with)
+cp -a nx2 host game scripts LICENSE readme.md assets "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
+# (hookshot) the repository releases come from, for the update checks (nx2/version.py repository, builder/linux/linux_update.py)
+printf '%s\n' "${GITHUB_REPOSITORY:-notquiteog/Hookshot}" > "$T/repository.txt"
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
@@ -154,17 +160,17 @@ cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.pn
 
 # (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
 # (the parts are served from the linux-parts release of the repository this is built in, where
-# scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
+# scripts/linux/publish_parts.sh uploads them: without --base the list named notquiteog/Hookshot's release, which a fork's
 # CI does not upload to, so a fork's update list named parts that were not there)
 python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
-    --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
+    --base "https://github.com/${GITHUB_REPOSITORY:-notquiteog/Hookshot}/releases/download/linux-parts"
 
 # The update information AppImageUpdate and Gear Lever read: the newest .zsync of this repository's latest release (or of
 # the release HOOKSHOT_UPDATE_RELEASE names). appimagetool writes it into the image and makes the .zsync beside it with
 # its bundled zsyncmake, which names the AppImage by its file name, next to the .zsync on the same release.
-UPDATE_REPO=${GITHUB_REPOSITORY:-NotRexed/Hookshot}
-UPDATE_INFO=${HOOKSHOT_UPDATE_INFO:-"gh-releases-zsync|${UPDATE_REPO%%/*}|${UPDATE_REPO#*/}|${HOOKSHOT_UPDATE_RELEASE:-latest}|Hookshot-*-x86_64.AppImage.zsync"}
-OUT=$B/Hookshot-$VERSION-x86_64.AppImage
+UPDATE_REPO=${GITHUB_REPOSITORY:-notquiteog/Hookshot}
+UPDATE_INFO=${HOOKSHOT_UPDATE_INFO:-"gh-releases-zsync|${UPDATE_REPO%%/*}|${UPDATE_REPO#*/}|${HOOKSHOT_UPDATE_RELEASE:-latest}|$PRODUCT-*-x86_64.AppImage.zsync"}
+OUT=$B/$PRODUCT-$VERSION-x86_64.AppImage
 rm -f "$OUT" "$OUT.zsync"
 # (from build-linux/: appimagetool writes the .zsync into the current folder)
 (cd "$B" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-x86_64" \

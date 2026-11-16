@@ -19,6 +19,12 @@ mode; selecting them explicitly creates shortcuts on that PC.
 
 ![Portable destination and build-files folders, shown in an isolated layout check](images/windows-portable-folders.png)
 
+If other accounts on the PC can change files in the data folder (it sits where Everyone, Users or Authenticated Users may
+write, such as a folder at the root of C:), the setup and the Builder say so once: "Other accounts on this PC can change
+files in <folder>. If you share this PC, move the Builder to a folder only you can write." They change nothing, so the
+folder still works on another PC, and they note it in `.hookshot-shared-folder.txt` in the data folder. A removable
+drive, or one formatted FAT or exFAT (no permissions to speak of), is not looked at.
+
 The original setup can be opened again without the flag while its marked data folder is beside it. The installed
 Builder also discovers its marked home when opened directly. Updates, repair and the older ZIP update fallback use
 that same home. No user/system environment variables or registry configuration are installed. Windows, .NET and

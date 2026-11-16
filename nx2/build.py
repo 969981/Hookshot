@@ -45,6 +45,7 @@ import kit
 import lifted_c
 import rtgen
 import logo_rgba
+import imgui_backend
 import ui_fonts
 import toolchain
 import version
@@ -52,6 +53,10 @@ import win_manifest
 
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
+# game/: the game profile's C view (game/game_profile.h, generated from nx2/game_profile.py; Ocarina's). A
+# standalone lift writes the dump's own profile to <work>/sa/game, which the runtime reads first: the runtime is compiled
+# for the game it runs. The renderer is built once for every game, with game/'s, and is handed the runtime's keys.
+GAME = os.path.join(kit.HERE, "..", "game")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
 ZSTD_HOST = ("prompts.c", "hos_zstd.c")   # (the host files that use it: a mod's size table; the game's stream decode)
@@ -109,6 +114,45 @@ def check_vk_symbols(so):
     print("  a host function wants __attribute__((weak)); one of our own globals wants an extern at")
     print("  namespace scope, not inside an anonymous namespace")
     return False
+
+def streamline_sdk_path():
+    """(hookshot) NVIDIA Streamline's public headers, for DLSS 5 neural rendering, or None.
+
+    DLSS-NR is not an NGX feature a program can create for itself: the only way in is Streamline's
+    sl.dlss_nr plugin, reached through sl.interposer.dll at run time. Only Streamline's headers are
+    compiled in -- they are MIT-licensed, and none of them is in this repository (CONTRIBUTING.md):
+    RX_VK_STREAMLINE_SDK names the builder's own copy, failing that a `streamline-sdk` folder
+    beside the repository or in the work folder.
+
+    Windows only, and that is Streamline's limit rather than ours: the interposer and every sl.*
+    plugin ship as DLLs and the headers pull in <windows.h>. A player on Linux gets DLSS-NR by
+    running the Windows build under Proton, which is where it was measured.
+    """
+    named = os.environ.get("RX_VK_STREAMLINE_SDK")
+    root = os.path.normpath(os.path.join(kit.HERE, ".."))
+    places = [named] if named else [os.path.join(root, "streamline-sdk"),
+                                    os.path.join(os.path.dirname(root), "streamline-sdk"),
+                                    os.path.join(os.environ.get("OOT_WORK", ""), "streamline-sdk")]
+    for d in places:
+        if d and os.path.isfile(os.path.join(d, "include", "sl.h")):
+            return d
+    if named:
+        print("RX_VK_STREAMLINE_SDK=%s has no include/sl.h; DLSS 5 neural rendering is left out" % named)
+    return None
+
+
+def streamline_link():
+    """(hookshot) What a Windows build with Streamline's headers links for the interposer check.
+
+    Nothing of Streamline's and nothing of NVIDIA's: sl.interposer.dll is loaded at run time. These
+    two are Windows' own, and they are what gpu/vk/vk_streamline.cpp's signed_by_nvidia calls --
+    WinVerifyTrust from wintrust and the certificate walk from crypt32. A build without Streamline's
+    headers does not compile that function and links neither.
+    """
+    if LINUX or not streamline_sdk_path():
+        return []
+    return ["-lwintrust", "-lcrypt32", "-ladvapi32"]   # (advapi32: the NGX signature override, read for the log)
+
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
@@ -330,6 +374,35 @@ def vk_sources():
     return sorted(out)
 
 
+def opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps):
+    """(hookshot) Open neural rendering (gpu/vk/vk_opennr.h): OpenDLSS-NR's host sources and the adapter around them,
+    as deliberate jobs rather than through vk_sources(). Upstream's files are compiled from a copy in gen_dir with the
+    portability patches of scripts/opennr_kernels.py (third_party stays upstream's, byte for byte); its PTX kernels are
+    generated there from its Python generators and embedded as gen_dir/opennr_ptx.h. Returns the jobs, the bytes
+    vk_opennr.cpp depends on (the PTX header) and the PTX kernel count; ([], b"", 0) without the vendored folder."""
+    root = os.path.join(kit.HERE, "..")
+    adapter = os.path.join(vk, "opennr")
+    if not os.path.isdir(os.path.join(root, "third_party", "opendlss-nr", "src")) or not os.path.isdir(adapter):
+        return [], b"", 0
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("opennr_kernels", os.path.join(root, "scripts", "opennr_kernels.py"))
+    kernels = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kernels)
+    src = str(kernels.prepare_sources(os.path.join(gen_dir, "opendlss-nr", "src")))
+    ptx = os.path.join(gen_dir, "opennr-ptx")
+    kernels.generate_ptx(ptx)
+    header = os.path.join(gen_dir, "opennr_ptx.h")
+    count = kernels.write_ptx_header(ptx, header)
+    # (upstream's <volk.h> is the shim in gpu/vk/opennr, so it goes first; VK_NV_cuda_kernel_launch is a beta extension)
+    flags = vflags + ["-DVK_ENABLE_BETA_EXTENSIONS", "-I" + adapter, "-I" + src]
+    deps = vdeps + tree_headers(src)
+    jobs = [(cxx, os.path.join(src, f), os.path.join(obj_dir, "vk_opennr_upstream_" + f[:-4] + ".o"), flags, deps)
+            for f in kernels.RENDERER_SOURCES]
+    jobs += [(cxx, os.path.join(adapter, f), os.path.join(obj_dir, "vk_opennr_" + f[:-4] + ".o"), flags, deps)
+             for f in sorted(os.listdir(adapter)) if f.endswith(".cpp")]
+    return jobs, open(header, "rb").read(), count
+
+
 def zstd_jobs(cc, flags, obj_dir, prefix):
     """zstd's decoder (third_party/zstd, plain C) as compile jobs, objects <prefix><name>.o: in the Vulkan back end (the game's
     fonts, vk_imgui.cpp) and in the runtime (a mod's resource size table, host/prompts.c)"""
@@ -398,8 +471,11 @@ def vulkan_headers(work=None):
 
 
 def prebuilt_renderer():
-    # The AppImage's renderer has no NGX: an SDK build compiles its own instead.
-    return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    # The AppImage's renderer has no NGX: an SDK build compiles its own instead. Windows' release renderer (make_game.py's
+    # prebuilt_renderer, tools/prebuilt/hookshot_vk.dll) has NGX, Streamline and FSR 4 in it: kept with the SDK too, which
+    # then only brings NVIDIA's runtimes. A renderer compiled on a player's PC has no Streamline, so the Builder's DLSS tick
+    # took DLSS 5 neural rendering away while it added DLSS.
+    return "" if NGX_SDK and LINUX else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
 
 
 def cache_put(obj, key):
@@ -1092,6 +1168,12 @@ def compile_one(job):
     return src, time.time() - t, None
 
 
+def game_profile_bytes(folder):
+    """a game profile header as a dependency: a profile change rebuilds what reads it, and nothing else"""
+    with open(os.path.join(folder, "game_profile.h"), "rb") as f:
+        return f.read()
+
+
 def main():
     kit.wait_for_quiet('the compile')
     p = argparse.ArgumentParser()
@@ -1109,6 +1191,10 @@ def main():
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
     gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
+    game_dir = os.path.join(sa, "game") if a.standalone else GAME   # (the lift's game profile, else game/'s)
+    if not os.path.isfile(os.path.join(game_dir, "game_profile.h")):
+        game_dir = GAME
+    print("game profile: %s" % os.path.normpath(os.path.join(game_dir, "game_profile.h")), flush=True)
     os.makedirs(obj_dir, exist_ok=True)
     load_hashes(out)
     if kit.env_on("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
@@ -1199,9 +1285,10 @@ def main():
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+        ["-I" + HOST, "-I" + game_dir, "-I" + GAME, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16",
+         "-DA64_POLLING"] + WRITE_TRACK
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
-                                if f.endswith(".h"))
+                                if f.endswith(".h")) + game_profile_bytes(game_dir)
     if LINUX:
         host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
     host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()   # (the renderer ABI used by host/rx_backend.c)
@@ -1286,12 +1373,32 @@ def main():
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
         shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
+        # (hookshot) Say what this back end is being built with: "is DLSS actually in this release?"
+        # has been asked of a build three times and guessed at twice, and the answer belongs in the
+        # build log and so in CI's.
+        #
+        # Inside this branch, deliberately. It was put just above it, as its own `if`, to keep it
+        # out of the region tests/test_shader_stamp_cache.py execs -- and that made it the head of
+        # this if/elif chain, so the whole Vulkan build was skipped and a Windows run reported
+        # "compiled in 0s" and produced no DLL. Two printed lines are not worth a branch.
+        print("vk: DLSS (NGX): %s" % (("compiled in, from " + NGX_SDK) if NGX_SDK
+                                      else "left out (no HOOKSHOT_NGX_SDK; see readme.md)"))
+        print("vk: DLSS 5 neural rendering (Streamline): %s"
+              % (("compiled in, from " + streamline_sdk_path())
+                 if (not LINUX and streamline_sdk_path())
+                 else ("left out: Windows only" if LINUX else
+                       "left out (no Streamline headers found; see readme.md)")))
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+            # (hookshot) RX_VK_STREAMLINE_SDK=<path to Streamline> compiles DLSS 5 neural rendering
+            # against Streamline's MIT-licensed headers. Nothing is linked: sl.interposer.dll is
+            # loaded from the player's own PC at run time. Windows only (streamline_sdk_path).
+            *((["-DRX_VK_STREAMLINE=1", "-I" + os.path.join(streamline_sdk_path(), "include")])
+              if (not LINUX and streamline_sdk_path()) else []),
             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
             # object keys, which leave the include folders out, when this order changes)
@@ -1301,11 +1408,14 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
-            "-I" + vk, "-I" + gen_dir,
+            "-I" + vk, "-I" + gen_dir, "-I" + os.path.join(kit.ROOT, "game"),   # (game/game_profile.h, GAME)
             "-I" + os.path.join(kit.ROOT, "third_party", "zbic")]
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
+        # (hookshot) the files that see NVIDIA's headers: DLSS super resolution, and DLSS frame generation and DLSS 5 neural
+        # rendering over the same NGX session (vk_ngx.cpp, vk_dlssnr_ngx.cpp)
+        ngx_files = ("vk_dlss.cpp", "vk_ngx.cpp", "vk_dlssnr_ngx.cpp")
         ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
@@ -1319,7 +1429,10 @@ def main():
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
                                    os.path.join(GPU, "compat"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
-                             os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+                             os.path.join(GPU, "third_party", "suyu", "video_core", "textures"), os.path.join(kit.ROOT, "game"))
+        opennr, opennr_ptx, opennr_count = opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps)
+        print("vk: open neural rendering (OpenDLSS-NR): %s" % (("compiled in, %d PTX kernels" % opennr_count) if opennr
+                                                               else "left out (no third_party/opendlss-nr)"))
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
@@ -1329,9 +1442,13 @@ def main():
         imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zbic)
                               for f in sorted(os.listdir(d)) if f.endswith(".h"))
         imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
-        for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
-            vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
-                            os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
+        for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp"):
+            vk_jobs.append((cxx, os.path.join(imgui, f), os.path.join(obj_dir, "vk_imgui_" + f[:-4] + ".o"), vflags + imgui_flags,
+                            imgui_deps))
+        # (its Vulkan back end from a copy of the build's own with nx2/imgui_backend.py's changes: third_party stays upstream's)
+        vk_jobs.append((cxx, imgui_backend.write(os.path.join(gen_dir, "imgui")),
+                        os.path.join(obj_dir, "vk_imgui_imgui_impl_vulkan.o"),
+                        vflags + imgui_flags + ["-I" + os.path.join(imgui, "backends")], imgui_deps))
         # (zstd's decoder and encoder: third_party/zbic's single file, built below with the program cache's zstd; it serves
         # the game's font files too, so the decompression-only third_party/zstd is not built as well)
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
@@ -1343,12 +1460,14 @@ def main():
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
-                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
+                            (ngx_flags if os.path.basename(src) in ngx_files else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
-                            (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
-                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
+                            (ngx_deps if os.path.basename(src) in ngx_files else b"") +
+                            (imgui_deps if os.path.basename(src) in imgui_users else b"") +
+                            (opennr_ptx if os.path.basename(src) == "vk_opennr.cpp" else b"")))
+        vk_jobs += opennr
         # (hookshot) the program cache's zstd compression (RX_VK_PROGRAM_CACHE_ZSTD): third_party/zbic's single-file
         # zstd, built as C into the same DLL. Its headers are the object's dependencies.
         zstd_src = os.path.join(kit.ROOT, "third_party", "zbic", "zstd.c")
@@ -1519,7 +1638,7 @@ def main():
                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll] + linker("/map:" + vdll[:-4] + ".map") + ["@" + vrsp, "-luser32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
+                ["-shared", "-o", vdll] + linker("/map:" + vdll[:-4] + ".map") + ["@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw()) + streamline_link()
         r = run_link(link, vdll)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

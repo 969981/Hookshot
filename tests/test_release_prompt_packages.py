@@ -38,11 +38,15 @@ class PromptPackages(unittest.TestCase):
                     metadata += "Requires-Dist: archspec >=0.2\n"
                 archive.writestr(prefix + "Lib/site-packages/" + folder + "/METADATA", metadata)
 
+    def record(self, command, **kw):
+        """pip's stand-in: what the requirements file it is given (-r, deleted after the run) asks for"""
+        self.requested_text = Path(command[command.index("-r") + 1]).read_text(encoding="utf-8")
+
     def package(self):
         with patch.object(release_parts, "named_part", return_value=str(self.part)), \
                 patch.object(release_parts, "get", side_effect=AssertionError("no network in this fixture")), \
                 patch.object(release_parts, "extract", wraps=release_parts.extract) as extracted, \
-                patch.object(release_parts.subprocess, "run") as pip, redirect_stdout(io.StringIO()):
+                patch.object(release_parts.subprocess, "run", side_effect=self.record) as pip, redirect_stdout(io.StringIO()):
             self.assertEqual(release_parts.python_packages("authored-setup.txt", str(REQUIREMENTS), str(self.tools)), 0)
             return pip, extracted
 
@@ -58,8 +62,12 @@ class PromptPackages(unittest.TestCase):
         self.assertEqual(command[command.index("--python-version") + 1], "3.14")
         target = command.index("--target")
         self.assertEqual(Path(command[target + 1]), self.tools / "python/Lib/site-packages")
-        requested = command[target + 2:]
-        self.assertEqual(len(requested), 1)
+        # (each pin by its SHA-256s: requirements-hashes.txt through a requirements file, scripts/lock_requirements.py)
+        self.assertIn("--require-hashes", command)
+        lines = [l for l in self.requested_text.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("--hash=sha256:", lines[0])
+        requested = [lines[0].split()[0]]
         name, version = requested[0].split("==")
         self.assertEqual(name, "archspec")
         self.assertGreaterEqual(tuple(map(int, version.split("."))), (0, 2))

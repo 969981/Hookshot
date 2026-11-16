@@ -1,5 +1,5 @@
 /* (hookshot) Save my pipeline list (the Insert menu's Debug tab, vk_menu.cpp): the zip a player attaches to the "Submit your
-   pipelines" issue (#2034), as plain functions. No Vulkan, no menu, no files: tests/test_pipeline_share.py compiles this header.
+   pipelines" issue (kIssueUrl), as plain functions. No Vulkan, no menu, no files: tests/test_pipeline_share.py compiles this header.
    The builders make the same zip with nx2/pipeline_share.py: the same two files, the same checks of the list (nx2/pipeline_states.py
    --check), the same template lines.
 
@@ -15,7 +15,12 @@
 
 namespace mkwvk::pipeline_share {
 
-constexpr const char* kIssueUrl = "https://github.com/NotRexed/Hookshot/issues/2034";
+// (the repository's pinned "Submit your pipeline lists here" issue: HOOKSHOT_REPOSITORY when the build names one, as the
+// setup's builder/setup/setup.c, else this repository; nx2/pipeline_share.py ISSUE_URL builds the same from nx2/version.py)
+#ifndef HOOKSHOT_REPOSITORY
+#define HOOKSHOT_REPOSITORY "notquiteog/Hookshot"
+#endif
+constexpr const char* kIssueUrl = "https://github.com/" HOOKSHOT_REPOSITORY "/issues/84";
 constexpr const char* kListName = "hookshot_pipeline_states.bin";
 constexpr const char* kReportName = "hookshot_pipeline_report.txt";
 // (the issue's template, its lines in its order: nx2/pipeline_share.py FIELDS, the same)

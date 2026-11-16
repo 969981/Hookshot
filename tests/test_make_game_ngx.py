@@ -94,11 +94,61 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")
         self.assertTrue((self.out / "ngx" / "libnvidia-ngx-dlssg.so.310.9.16").is_file())
 
-    def test_rebuilding_without_dlss_removes_stale_runtime(self):
+    def builders_hashes(self, platform):
+        """the pinned SHA-256s of scripts/ngx_sdk.py, as this test's runtimes' own: what the DLSS tick would have fetched"""
+        import hashlib
+        spec = {k: (v[0], hashlib.sha256(b"runtime" if k == "runtime" else b"framegen").hexdigest())
+                for k, v in self.ngx.PLATFORMS[platform].items() if k != "library"}
+        return mock.patch.dict(self.ngx.PLATFORMS[platform], spec)
+
+    def place_with(self, platform, sdk, drop, said=None):
+        env = {"HOOKSHOT_NGX_SDK": sdk}
+        with mock.patch.object(make_game, "LINUX", platform == "linux"), mock.patch.dict(os.environ, env), \
+                mock.patch.object(make_game, "ngx_script", return_value=self.ngx), \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            dst = make_game.place_ngx_runtime(str(self.out), drop=drop)
+        if said is not None:
+            said.append(out.getvalue())
+        return dst
+
+    def test_a_build_without_the_sdk_keeps_the_folders_runtimes(self):
+        # (RecompLauncher's prepare is HookshotBuilder --cli, with no SDK: it took DLSS out of every game it prepared)
+        self.sdk_files("windows")
+        self.assertTrue(Path(self.place("windows")).is_file())
+        said = []
+        self.assertIsNone(self.place_with("windows", "", drop=False, said=said))
+        self.assertEqual(sorted(p.name for p in (self.out / "ngx").iterdir()), ["nvngx_dlss.dll", "nvngx_dlssg.dll"])
+        self.assertIn("kept", said[0])
+
+    def test_no_dlss_takes_out_the_builders_runtimes_only(self):
         self.sdk_files("linux")
         self.assertTrue((Path(self.place("linux"))).is_file())
-        self.assertIsNone(self.place("linux", sdk=""))
+        with self.builders_hashes("linux"):
+            self.assertIsNone(self.place_with("linux", "", drop=True))
         self.assertFalse((self.out / "ngx").exists())   # (both runtimes gone, and the folder)
+
+    def test_no_dlss_keeps_the_players_own_copy(self):
+        (self.out / "ngx").mkdir()
+        own = self.out / "ngx" / "nvngx_dlss.dll"
+        own.write_bytes(b"another version, from another game")
+        said = []
+        with self.builders_hashes("windows"):
+            self.assertIsNone(self.place_with("windows", "", drop=True, said=said))
+        self.assertEqual(own.read_bytes(), b"another version, from another game")
+        self.assertIn("the player's own", said[0])
+
+    def test_no_dlss_flag_and_who_passes_it(self):
+        with mock.patch("sys.argv", ["make_game.py", "--no-dlss"]):
+            self.assertTrue(make_game.parse_args().no_dlss)
+        call = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        self.assertIn('place_ngx_runtime(out, drop=getattr(a, "no_dlss", False))', call)
+        # (the builders' windows pass it with the tick off; the Windows Builder's --cli, RecompLauncher's prepare, does not)
+        win = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        self.assertIn('if (!dlss && !args.Contains("--no-dlss")) args.Add("--no-dlss");', win)
+        cli = (ROOT / "builder" / "HookshotBuilder" / "App.xaml.cs").read_text(encoding="utf-8")
+        self.assertNotIn("--no-dlss", cli)
+        py = (ROOT / "builder" / "py" / "hookshot_builder" / "window.py").read_text(encoding="utf-8")
+        self.assertIn('args += ["--no-dlss"]', py)
 
     def test_an_older_sdk_folder_says_how_to_get_frame_generations_runtime(self):
         self.sdk_files("windows", framegen=False)
@@ -212,7 +262,7 @@ class LinuxBuilderDlssTests(unittest.TestCase):
             env_off = self.builder.make_game_env(False, {"HOOKSHOT_NGX_SDK": "/stale", "HOOKSHOT_VK_PREBUILT": "/app/hookshot_vk.so"})
             self.assertNotIn("HOOKSHOT_NGX_SDK", env_off)
             self.assertEqual(env_off["HOOKSHOT_VK_PREBUILT"], "/app/hookshot_vk.so")
-            self.assertEqual(self.builder.dlss_args(False), [])
+            self.assertEqual(self.builder.dlss_args(False), ["--no-dlss"])
             env_on = self.builder.make_game_env(True, {"HOOKSHOT_VK_PREBUILT": "/app/hookshot_vk.so"})
             self.assertEqual(env_on["HOOKSHOT_NGX_SDK"], sdk)
             self.assertNotIn("HOOKSHOT_VK_PREBUILT", env_on)
@@ -302,7 +352,15 @@ class LinuxBuilderDlssTests(unittest.TestCase):
 
     def test_build_and_appimage_package_dlss_sources(self):
         build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        self.assertIn('return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")', build_py)
+        # (only Linux compiles its own with the SDK: the AppImage's renderer has no NGX, Windows' release one has NGX and
+        # Streamline, which a renderer compiled on a player's PC lacks)
+        self.assertIn('return "" if NGX_SDK and LINUX else os.environ.get("HOOKSHOT_VK_PREBUILT", "")', build_py)
+        cut = build_py[build_py.index("def prebuilt_renderer():"):]
+        cut = cut[:cut.index("\n\n\n")]
+        for linux, sdk, want in ((True, "/sdk", ""), (False, "/sdk", "/release/hookshot_vk.dll"), (False, "", "/release/hookshot_vk.dll")):
+            env = {"NGX_SDK": sdk, "LINUX": linux, "os": SimpleNamespace(environ={"HOOKSHOT_VK_PREBUILT": "/release/hookshot_vk.dll"})}
+            exec(cut, env)
+            self.assertEqual(env["prebuilt_renderer"](), want, (linux, sdk))
         self.assertIn('vk_prebuilt = prebuilt_renderer()', build_py)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         for piece in ("cp scripts/ngx_sdk.py", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui", "libstdc++.a"):

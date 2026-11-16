@@ -243,6 +243,7 @@ def show(a, reply, plain):
 
 def run(a):
     if a.command == "launch":
+        sigterm_ends_run()   # (killed while it waits for the bridge: the game it started goes too)
         return launch(a)
     if a.command == "mem":
         a.addr = addr_of(a.addr)
@@ -467,6 +468,36 @@ def copy_save(src, data, slot=None):
     return dest
 
 
+def kill_game(pid):
+    """Ends a game this client started, at once and with nothing it can ignore: SIGKILL to its process group (launch starts it
+    in a session of its own) on Linux, TerminateProcess on Windows. A headless game could ignore SIGTERM (SDL's handlers turned
+    it into a quit event nothing read), so a `timeout` or a `kill` left it running on the GPU. True when one was ended"""
+    if not pid:
+        return False
+    try:
+        if WINDOWS:
+            return subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True).returncode == 0
+        import signal
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def sigterm_ends_run():
+    """SIGTERM (a `timeout`, which signals its whole process group, or a service manager) raises SystemExit as Ctrl+C raises
+    KeyboardInterrupt, so cleanup runs: launch kills the game it started, the bench quits its game and kills it if it stays.
+    Python's default for SIGTERM ends at once, finally blocks and all, and left the game running on the GPU"""
+    import signal
+    if hasattr(signal, "SIGTERM"):
+        def stop(signum, frame):
+            raise SystemExit(128 + signum)
+        signal.signal(signal.SIGTERM, stop)
+
+
 def launch(a):
     """The game in GAME_DIR with HOS_CONTROL set, its socket in a run folder of its own; waits until it answers"""
     game = os.path.abspath(a.game_dir)
@@ -476,6 +507,8 @@ def launch(a):
     run_dir = os.path.abspath(a.run) if a.run else tempfile.mkdtemp(prefix="hookshot-control-",
                                                                      dir=os.environ.get("XDG_RUNTIME_DIR") or None)
     os.makedirs(run_dir, mode=0o700, exist_ok=True)
+    if not WINDOWS:   # (the game serves its socket only from a folder no one else can write: a folder made beforehand
+        os.chmod(run_dir, 0o700)   # under a umask of 002 was 775, the bridge stayed off and a client waited for hours)
     sock = a.sock or ("hookshot-control-%d" % os.getpid() if WINDOWS else os.path.join(run_dir, "control.sock"))
     if not WINDOWS:
         sock = os.path.abspath(sock)   # (the game runs in its own folder: a relative path would be bound there)
@@ -501,20 +534,28 @@ def launch(a):
         kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
         p = subprocess.Popen([exe], cwd=game, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kw)
     deadline = time.monotonic() + a.timeout
-    while True:
-        if p.poll() is not None:
-            raise Failed("the game ended (%d) before its bridge answered: %s" % (p.returncode, log), 2)
-        try:
-            b = Bridge(sock, 5)
-            r = b.request("status")
-            b.close()
-            if r.get("ok"):
-                break
-        except Failed:
-            pass
-        if time.monotonic() > deadline:
-            raise Failed("the game's bridge did not answer in %.0f s: %s" % (a.timeout, log), 3)
-        time.sleep(0.2)
+    try:
+        while True:
+            if p.poll() is not None:
+                raise Failed("the game ended (%d) before its bridge answered: %s" % (p.returncode, log), 2)
+            try:
+                b = Bridge(sock, 5)
+                r = b.request("status")
+                b.close()
+                if r.get("ok"):
+                    break
+            except Failed:
+                pass
+            with open(log, "rb") as f:   # (the game says when it cannot serve the bridge: nothing would answer)
+                if b"control: off" in f.read():
+                    raise Failed("the game could not serve its bridge (the log's control: line says why): %s" % log, 2)
+            if time.monotonic() > deadline:
+                raise Failed("the game's bridge did not answer in %.0f s: %s" % (a.timeout, log), 3)
+            time.sleep(0.2)
+    except BaseException:   # (no bridge, a timeout, Ctrl+C or SIGTERM: the game started here is not left running)
+        if p.poll() is None:
+            kill_game(p.pid)
+        raise
     info = {"socket": sock, "pid": p.pid, "run": run_dir, "log": log}
     print(json.dumps(info) if a.json else sock)
     return 0

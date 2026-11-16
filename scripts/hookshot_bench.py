@@ -256,7 +256,7 @@ def grep_log(path, needles, keep=3):
 
 def run(a):
     out = os.path.abspath(a.out or os.path.join("bench-runs", time.strftime("%Y%m%d-%H%M%S") + "-" + a.name))
-    os.makedirs(out, exist_ok=True)
+    os.makedirs(out, mode=0o700, exist_ok=True)   # (the bridge's socket is made here: launch makes it 0700 on Linux)
     cmd = [sys.executable, "-I", os.path.join(HERE, "hookshot_ctl.py"), "--json", "launch", a.game_dir, "--run", out,
            "--timeout", "1800"] + (["--headless"] if a.headless else []) + sum((["--env", e] for e in a.env), [])
     put_back = None
@@ -311,9 +311,15 @@ def measure(a, cmd, out):
             json.dump(summary, f, indent=2)
         try:
             bridge.request("quit", timeout=10)
-        except ctl.Failed:
+        except (ctl.Failed, OSError):
             pass
         wait_exit(info["pid"], 60)   # (before the saves are put back: the game writes as it closes)
+        if process_alive(info["pid"]):   # (it did not close: the game is not left running on the GPU after its run)
+            summary["killed"] = ctl.kill_game(info["pid"])
+            wait_exit(info["pid"], 10)
+            with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+            print("the game did not close within 60 s of quit: killed", flush=True)
     print(out)
     return 0
 
@@ -347,6 +353,7 @@ def wait_exit(pid, seconds):
 
 
 def main(argv=None):
+    ctl.sigterm_ends_run()   # (a timeout's SIGTERM goes through measure's finally: the game quit, else killed)
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("game_dir", help="the game folder (hookshot.exe or hookshot beside image.bin)")
     p.add_argument("--name", required=True, help="a short name for the run, in its folder's name")

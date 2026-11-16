@@ -50,6 +50,9 @@
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
 
+// the cooperative-matrix programs this game keeps: the game profile's, not literals here
+#include "game_profile.h"
+
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_jobs.h"
@@ -155,6 +158,16 @@ uint64_t code_key(const uint8_t* ctl, const uint8_t* area, uint32_t end) {
     return hash_bytes(area, end, hash_bytes(ctl, kControlSize));
 }
 Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area);
+
+/// (hookshot) A graphics program header (0x80 bytes, Maxwell's layout) of a geometry stage (shader_type 4, bits 10-13) with
+/// geometry_passthrough set (bit 24 of the first word): such a stage forwards its input vertices as they are
+bool passthrough_geometry(const uint8_t* sph) {
+    uint32_t w0;
+    std::memcpy(&w0, sph, 4);
+    return ((w0 >> 10) & 15) == 4 && ((w0 >> 24) & 1) == 1;
+}
+/// (hookshot) the body a pass-through geometry stage gets when its own does not lower: an EXIT (Maxwell, always)
+std::vector<uint64_t> passthrough_geometry_body() { return {0xE30000000007000FULL}; }
 
 Code read_code(const nvn_stage_data& sd) {
     uint8_t ctl[kControlSize];
@@ -278,7 +291,16 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
             }
         }
     }
+    // (hookshot) a pass-through geometry stage is lowered as one (lower_to_maxwell.h passthrough_geometry_stage: its exit
+    // handler dropped, ISBERD giving the vertex index back)
+    const bool passthrough = graphics && area.size() >= sizeof(Shader::ProgramHeader) && passthrough_geometry(area.data());
+    Shader::Ampere::passthrough_geometry_stage = passthrough;
     const auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    Shader::Ampere::passthrough_geometry_stage = false;
+    // (hookshot) A pass-through geometry stage whose body still does not lower is built as the header and an EXIT: the
+    // frontend forwards every input vertex as it is, and only what the body does besides is lost (its per-primitive writes,
+    // its stores). Left out instead, its draws were not drawn at all. RX_VK_NO_GS_STUB=1: left out, as before
+    const bool gs_stub = !lowered && passthrough && !env_on("RX_VK_NO_GS_STUB");
     if (lowered && lowered.register_map_words) {   // (hookshot) which programs run with extended registers
         static std::atomic<int> logged{0};
         if (logged++ < 64)
@@ -302,16 +324,17 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
             q = *e ? e + 1 : e;
         }
     }
-    if (!lowered) {   // (hookshot: each program once, up to 400, with the native opcode it stopped at)
+    if (!lowered) {   // (hookshot: each program once, up to 400, with the native opcode it stopped at; and whether it is stubbed)
         static std::mutex mu;
         static std::unordered_set<uint64_t> seen;
         std::lock_guard lk(mu);
         if (seen.size() < 400 && seen.insert(c.key).second) {
             const uint32_t at = lowered.error_offset / (uint32_t)sizeof(Instruction);
             const uint32_t op = at < native.size() ? (uint32_t)native[at].Bits(0, 12) : 0xFFFFFFFFu;
-            logf("vk: NVN2 program %016llx (stage %u) does not lower at +%#x: %s (native op %#x, %08x %08x %08x %08x)", (unsigned long long)c.key,
+            logf("vk: NVN2 program %016llx (stage %u) does not lower at +%#x: %s (native op %#x, %08x %08x %08x %08x)%s", (unsigned long long)c.key,
                  st, lowered.error_offset, std::string(lowered.error).c_str(), op, at < native.size() ? native[at].words[0] : 0,
-                 at < native.size() ? native[at].words[1] : 0, at < native.size() ? native[at].words[2] : 0, at < native.size() ? native[at].words[3] : 0);
+                 at < native.size() ? native[at].words[1] : 0, at < native.size() ? native[at].words[2] : 0, at < native.size() ? native[at].words[3] : 0,
+                 gs_stub ? ": a pass-through geometry stage, drawn as one with no body" : "");
             // (RX_VK_DUMP_FAILED=<folder>: the native code, for nx2/lowering tests: <stage>_<key>.bin, 16-byte words)
             if (const char* dir = getenv("RX_VK_DUMP_FAILED")) {
                 char path[512];
@@ -322,20 +345,25 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
                 }
             }
         }
-        char why[160];
-        snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
-        c.why = why;
-        return c;
+        if (!gs_stub) {
+            char why[160];
+            snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
+            c.why = why;
+            return c;
+        }
     }
-    c.texture_bound = lowered.required_texture_buffer;
+    static const std::vector<uint64_t> gs_stub_body{passthrough_geometry_body()};
+    static const std::vector<uint32_t> no_offsets;
+    const std::vector<uint64_t>& body = gs_stub ? gs_stub_body : lowered.instructions;
+    c.texture_bound = gs_stub ? ~0U : lowered.required_texture_buffer;
     c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
     if (graphics) std::memcpy(c.code.data(), area.data(), sizeof(Shader::ProgramHeader));
-    for (const uint64_t instruction : lowered.instructions) {
+    for (const uint64_t instruction : body) {
         if (c.code.size() * 8 % 32 == 0) c.code.push_back(0);   // (the Maxwell scheduling word)
         c.code.push_back(instruction);
     }
     c.code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(c.code, lowered.source_instruction_offsets);
+    Shader::Ampere::AppendNativeAddressMap(c.code, gs_stub ? no_offsets : lowered.source_instruction_offsets);
     c.c1.assign(area.begin() + c1o, area.end());
     if (!graphics) {
         std::memcpy(c.local, ctl + 0x58, 12);
@@ -442,11 +470,21 @@ public:
         start_address = st == Shader::Stage::Compute ? static_cast<u32>(sizeof(Shader::ProgramHeader)) : 0;
         if (st != Shader::Stage::Compute) {
             std::memcpy(&sph, reinterpret_cast<const uint8_t*>(nvn.code.data()), sizeof sph);
-            local_memory = static_cast<uint32_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
+            // (hookshot) the header's size is 48 bits: summed whole and saturated, not truncated to a small value the
+            // recompiler would size its array by (it refuses one past any GPU's)
+            const uint64_t want = static_cast<uint64_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
+            local_memory = want > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(want);
         } else {
             local_memory = nvn.local_memory;   // (its control section's: a compute program has no header)
         }
         is_proprietary_driver = true;
+    }
+    /// (hookshot) a pass-through geometry stage forwards what the vertex stage writes and nothing else (Maxwell's mask: a bit
+    /// set is an attribute not passed through; Eden reads it in translate_program.cpp). Left 0, every generic would be an
+    /// input, past what a geometry stage may read on some GPUs
+    void pass_through(const Shader::VaryingState& vertex_stores) {
+        for (size_t i = 0; i < gp_passthrough_mask.size() * 32; i++)
+            if (!vertex_stores.mask[i]) gp_passthrough_mask[i / 32] |= 1u << (i % 32);
     }
     u64 ReadInstruction(u32 address) override {
         return address / 8 < nvn.code.size() ? nvn.code[address / 8] : 0;
@@ -558,6 +596,41 @@ private:
     std::unordered_map<uint64_t, bool> pointer_answers;   // (IsCbufStorageBufferPointer's)
 };
 
+/// (Lichii bd0171f7) Handle tables as descriptor arrays: a texture handle the shader reads from a table at an index of its
+/// own (OoT's clustered lights: each light's shadow map, read per pixel from the light table) becomes an array of the
+/// table's first entries, which the shader indexes per pixel. Without them those samples took a constant word on their
+/// path for the handle (the light table's address), bound no texture, and the lights' shadow tests read nothing: dark
+/// and green blocks on Zora's Domain's ice and snow (https://git.magicbean.dev/MagicBeanDev/Longshot/issues/52,
+/// https://github.com/NotRexed/Hookshot/issues/2509). Needs nonuniform sampled image array indexing (Vulkan 1.2's descriptor
+/// indexing) and room for the arrays in the descriptor limits. RX_VK_HANDLE_TABLES=0: off, the translation as without them
+/// (a test; in the cache's stamp). The log line names the check that turned them off
+bool handle_tables_on() {
+    static const bool on = [] {
+        const VkPhysicalDeviceLimits& l = dev.props.limits;
+        // (the first check that fails, with the device's value, so a tester's log says which; empty when all pass)
+        char why[160] = "";
+        const auto need = [&why](const char* what, uint64_t have, uint64_t least) {
+            if (!why[0] && have < least)
+                snprintf(why, sizeof why, "%s is %llu, under %llu", what, (unsigned long long)have, (unsigned long long)least);
+        };
+        if (!dev.vk12.shaderSampledImageArrayNonUniformIndexing)
+            snprintf(why, sizeof why, "no shaderSampledImageArrayNonUniformIndexing");
+        need("maxPerStageDescriptorSampledImages", l.maxPerStageDescriptorSampledImages, 256);
+        need("maxPerStageDescriptorSamplers", l.maxPerStageDescriptorSamplers, 256);
+        need("maxPerStageResources", l.maxPerStageResources, 256);
+        need("maxDescriptorSetSampledImages", l.maxDescriptorSetSampledImages, 512);
+        need("maxDescriptorSetSamplers", l.maxDescriptorSetSamplers, 512);
+        const bool can = !why[0];
+        const char* e = getenv("RX_VK_HANDLE_TABLES");
+        const bool want = !e || atoi(e) != 0;
+        if (!want) logf("vk: handle tables as descriptor arrays: off (RX_VK_HANDLE_TABLES=0)");
+        else if (can) logf("vk: handle tables as descriptor arrays: on");
+        else logf("vk: handle tables as descriptor arrays: off (%s)", why);
+        return want && can;
+    }();
+    return on;
+}
+
 Shader::Profile make_profile() {
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;
@@ -612,6 +685,7 @@ Shader::Profile make_profile() {
 
 Shader::HostTranslateInfo host_info() {
     Shader::HostTranslateInfo h{};
+    h.support_handle_table_arrays = handle_tables_on();
     h.support_float64 = true;
     // (RX_VK_NO_F16, a test: the game's f16 math lowered to f32, as a card without f16 shaders would need (GTX 10xx, issue 98). Eden's
     // lowering made a picture of noise of Kokiri on an RTX card, so it is not used by itself)
@@ -719,25 +793,61 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
     return 0;
 }
 
-uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program) {
+namespace {
+/// Storage buffer `binding` of a stage: its address, as the stage's constant bank has it (0: none)
+uint64_t stage_storage_base(const NvnState& s, const Stage& st, uint32_t binding) {
+    if (binding >= st.info.storage_buffers_descriptors.size()) return 0;
+    const auto& d = st.info.storage_buffers_descriptors[binding];
+    return stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
+           (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
+}
+uint32_t stage_storage_word(uint64_t base, uint32_t offset) {
+    uint32_t v = 0;
+    static const bool live = env_on("RX_VK_HANDLES_LIVE");
+    if (base) {
+        if (live) host->gpu_read(base + offset, &v, 4);
+        else ub_read(base + offset, &v, 4);
+    }
+    return v;
+}
+} // namespace
+
+uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program, uint32_t element) {
     if (program >= st.info.handle_programs.size()) return 0;
     return Shader::EvaluateHandleProgram(
                st.info.handle_programs[program],
                [&](u32 index, u32 offset) -> u32 { return stage_cbuf_word(s, st, index, offset); },
-               [&](u32 binding, u32 offset) -> u32 {
-                   if (binding >= st.info.storage_buffers_descriptors.size()) return 0U;
-                   const auto& d = st.info.storage_buffers_descriptors[binding];
-                   const uint64_t base = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
-                                         (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
-                   uint32_t v = 0;
-                   static const bool live = env_on("RX_VK_HANDLES_LIVE");
-                   if (base) {
-                       if (live) host->gpu_read(base + offset, &v, 4);
-                       else ub_read(base + offset, &v, 4);
-                   }
-                   return v;
-               })
+               [&](u32 binding, u32 offset) -> u32 { return stage_storage_word(stage_storage_base(s, st, binding), offset); },
+               element)
         .value_or(0U);
+}
+
+void stage_handles(const NvnState& s, const Stage& st, uint32_t program, uint32_t count, uint32_t* out) {
+    if (program >= st.info.handle_programs.size()) {
+        std::fill(out, out + count, 0u);
+        return;
+    }
+    // (the constant words and storage buffer addresses the program reads are the same for every element: read once)
+    struct Word { u32 index, offset, value; };
+    std::array<Word, 16> words;
+    size_t num_words = 0;
+    const auto read_cbuf = [&](u32 index, u32 offset) -> u32 {
+        for (size_t w = 0; w < num_words; w++)
+            if (words[w].index == index && words[w].offset == offset) return words[w].value;
+        const u32 value = stage_cbuf_word(s, st, index, offset);
+        if (num_words < words.size()) words[num_words++] = {index, offset, value};
+        return value;
+    };
+    static_assert(Shader::Info::MAX_SSBOS <= 64, "one bit a binding");
+    std::array<uint64_t, Shader::Info::MAX_SSBOS> bases;
+    uint64_t known = 0;
+    const auto read_storage = [&](u32 binding, u32 offset) -> u32 {
+        if (binding >= bases.size()) return 0U;
+        if (!(known >> binding & 1)) bases[binding] = stage_storage_base(s, st, binding), known |= uint64_t{1} << binding;
+        return stage_storage_word(bases[binding], offset);
+    };
+    const auto& code = st.info.handle_programs[program];
+    for (uint32_t k = 0; k < count; k++) out[k] = Shader::EvaluateHandleProgram(code, read_cbuf, read_storage, k).value_or(0U);
 }
 
 namespace {
@@ -1201,6 +1311,11 @@ uint64_t translator_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    // (and handle tables off, host_info: only then, so the GPUs that have them keep one cache)
+    if (!handle_tables_on()) {
+        const uint32_t no_tables = 0x6e687462u;   // ("nhtb")
+        add(&no_tables, sizeof no_tables);
+    }
     {   // (the translation's per-GPU settings, set by coopmat_init at device creation: AMD/Intel's invariant positions, the colour
         // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
         // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NAN_GUARD did nothing for programs already cached)
@@ -1233,7 +1348,7 @@ uint64_t translator_stamp() {
 namespace {
 
 void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* fsc, const Code* csc,
-                    const uint8_t color_types[8]) {
+                    const uint8_t color_types[8], const Code* gsc = nullptr) {
     const auto t0 = std::chrono::steady_clock::now();
     QuestionsNoted noted{p};
     ptr_diag_reset();
@@ -1289,7 +1404,11 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             // (issues 38, 43). Left out, the last pass becomes a linear upscale of the movie (upscale_stub in vk_draw.cpp): the same picture at 60
             // fps, a little softer. The gameplay TAAU network stays. RX_VK_NETWORK_KEEP=<key prefixes>, "all": every one runs
             if (t->program.info.uses_cooperative_matrix) {
-                static const std::string keep = getenv("RX_VK_NETWORK_KEEP") ? getenv("RX_VK_NETWORK_KEEP") : "fd029a317a9a4b94,9dc98871eb7fc101";   // (amd-fix: 9dc98871 resolves the dynamic-resolution scene to 2048x1152; left out, the 3D picture is black under the HUD)
+                // the game profile's keys (the runtime's, else game/game_profile.h's: Ocarina's fd029a317a9a4b94, and
+                // 9dc98871eb7fc101, which resolves the dynamic-resolution scene to 2048x1152 -- left out, the 3D picture is black
+                // under the HUD). A profile that names none keeps none, which is what an unlisted key already meant
+                static const std::string keep = getenv("RX_VK_NETWORK_KEEP") ? getenv("RX_VK_NETWORK_KEEP")
+                                                : profile_keys("HOOKSHOT_PROFILE_NETWORK_KEEP", GAME_NETWORK_KEEP_KEYS);
                 char hex[24];
                 snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
                 bool kept_one = keep == "all";
@@ -1330,6 +1449,16 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             Env vs_env{s, *vsc, Shader::Stage::VertexB};
             auto vs = translate(vs_env, true);
             questions += vs_env.texture_questions;
+            // (hookshot) a pass-through geometry stage (program_pick takes one only so), between them: it forwards the vertex
+            // stage's outputs, and its body runs for each triangle (Donkey Kong Bananza's terrain culls there and writes
+            // the index lists its draws read)
+            std::unique_ptr<Translation> gs;
+            if (gsc) {
+                Env gs_env{s, *gsc, Shader::Stage::Geometry};
+                gs_env.pass_through(vs->program.info.stores);
+                gs = translate(gs_env, true);
+                questions += gs_env.texture_questions;
+            }
             std::unique_ptr<Translation> fs;
             if (fsc) {
                 Env fs_env{s, *fsc, Shader::Stage::Fragment};
@@ -1362,6 +1491,15 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                 }
                 frt.scaled_noperspective_inputs = vrt.noperspective_outputs.any();
             }
+            Shader::RuntimeInfo grt{};
+            if (gs) {   // (the last stage before the rasterizer converts depth and scales the noperspective outputs: once)
+                grt.input_topology = Shader::InputTopology::Triangles;   // (vk_draw.cpp draws it with triangles only)
+                grt.previous_stage_stores = vs->program.info.stores;
+                grt.convert_depth_mode = vrt.convert_depth_mode;
+                grt.noperspective_outputs = vrt.noperspective_outputs;
+                vrt.convert_depth_mode = false;
+                vrt.noperspective_outputs.reset();
+            }
             Stage v;
             v.nvn_stage = 0;
             const std::vector<uint32_t> vspirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), vrt, vs->program, bindings);
@@ -1381,8 +1519,20 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             v.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
             v.c1 = vsc->c1;
             p.stages.push_back(std::move(v));
+            if (gs) {
+                const std::vector<uint32_t> gspirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_GEOMETRY_BIT), grt, gs->program, bindings);
+                dump_ir(p, "geometry", gs->program);
+                Stage g;
+                g.nvn_stage = 2;
+                g.info = gs->program.info;
+                g.module = make_module(gspirv);
+                kept.push_back(gspirv);
+                g.vk_stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+                g.c1 = gsc->c1;
+                p.stages.push_back(std::move(g));
+            }
             if (fs) {
-                frt.previous_stage_stores = vs->program.info.stores;
+                frt.previous_stage_stores = gs ? gs->program.info.stores : vs->program.info.stores;
                 for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
                 if (p.scene_tonemap) {   // (the HDR tone mapper row: PsychoV35; before the NaN guard, which then guards it)
                     const char* why = Shader::Optimization::SceneToneMapPass(fs->program);
@@ -1424,8 +1574,8 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             if (!said.exchange(true))
                 logf("vk: the game's networks this card does not run are left out (the first: program %016llx), not an error: a "
                      "linear upscale takes their place", (unsigned long long)p.key);
-            else if (getenv("RX_VK_IR"))
-                logf("vk: program %016llx: %s", (unsigned long long)p.key, e.what());
+            else if (getenv("RX_VK_IR"))   // (each of the others: a trace line, the log's detail)
+                logf_at(log_trace, "vk: program %016llx: %s", (unsigned long long)p.key, e.what());
         }
     } catch (const std::exception& e) {
         p.failed = true;
@@ -1950,13 +2100,24 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     for (const Code& c : cs)
         if (!c.header_only) stage_code[c.stage] = &c;
     if (compute ? !stage_code[5] : !stage_code[0]) return nullptr;
-    if (!compute && (stage_code[2] || stage_code[3] || stage_code[4])) {   // (geometry/tessellation: not translated)
+    // (hookshot) a pass-through geometry stage is translated (translate_into), where the GPU has geometry shaders; others, and
+    // tessellation, are not. RX_VK_NO_GEOMETRY=1: none, as before
+    const Code* gs = !compute && stage_code[2] && passthrough_geometry(reinterpret_cast<const uint8_t*>(stage_code[2]->code.data())) &&
+                     dev.features.geometryShader && !env_on("RX_VK_NO_GEOMETRY") ? stage_code[2] : nullptr;
+    if (!compute && ((stage_code[2] && !gs) || stage_code[3] || stage_code[4])) {   // (geometry/tessellation: not translated)
         static int logged;
         if (logged++ < 40) log_program_stages(s, "dropped stages");
     }
     // the variants of these stages, for these vertex input types and colour output types
     const bool tonemap = !compute && scene_tonemap_for(stage_code[1]);
-    const uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1], s.vattr, color_types, tonemap);
+    uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1], s.vattr, color_types, tonemap);
+    if (gs) {   // (its geometry stage in the key: the same stages without it are another program)
+        key = (key ^ gs->key) * 1099511628211ull ^ 0x4753ull;
+        static std::atomic<int> logged{0};
+        if (logged++ < 16)
+            logf("vk: program %016llx: vertex %016llx, pass-through geometry %016llx, fragment %016llx", (unsigned long long)key,
+                 (unsigned long long)stage_code[0]->key, (unsigned long long)gs->key, stage_code[1] ? (unsigned long long)stage_code[1]->key : 0ull);
+    }
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {stage_code[compute ? 5 : 0]->key, !compute && stage_code[1] ? stage_code[1]->key : 0, 0, 0};
@@ -1978,21 +2139,23 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     variants.push_back(std::move(p));
     static const bool sync = env_on("RX_VK_SYNC_SHADERS");
     if (compute || sync) {   // (compute: dispatches are never left out, so they are translated where they are)
-        translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types);
+        translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types, gs);
         return raw->failed ? nullptr : raw;
     }
     struct Job {
         Program* p;
         NvnState s;
-        Code vs, fs;
-        bool has_fs;
+        Code vs, fs, gs;
+        bool has_fs, has_gs;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
-    job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr;
+    job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr, job->has_gs = gs != nullptr;
     if (job->has_fs) job->fs = *stage_code[1];
+    if (job->has_gs) job->gs = *gs;
     std::memcpy(job->ct, color_types, 8);
-    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
+    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct,
+                                     job->has_gs ? &job->gs : nullptr); }, false,
               &raw->ready, [job]() noexcept {
                   job->p->failed = true;
                   job->p->ready.store(true, std::memory_order_release);

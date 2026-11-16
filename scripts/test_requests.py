@@ -22,7 +22,7 @@ with the request's ID and the action, so people can read it and type it by hand 
     🧪 T-7KQ2 claim: until 2026-11-12 16:40Z
     🧪 T-7KQ2 renew: until 2026-11-12 18:10Z
     🧪 T-7KQ2 release
-    🧪 T-7KQ2 done pass: https://github.com/NotRexed/Hookshot/pull/2711#issuecomment-123
+    🧪 T-7KQ2 done pass: https://github.com/notquiteog/Hookshot/pull/2711#issuecomment-123
     🧪 T-7KQ2 cancel
 
 The room's messages are the only record: list and every check below replay them in order. A request stays open until
@@ -65,12 +65,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import team_chat  # noqa: E402  (same folder; python -I does not add it to the path)
 
 ROOM = "#test-requests:magicbean.dev"
-REPO = "https://github.com/NotRexed/Hookshot"
+REPO = "https://github.com/notquiteog/Hookshot"
 MARK = "\N{TEST TUBE}"
 ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 DEFAULT_TTL = 90
 MAX_TTL = 480
-PR_API = "https://api.github.com/repos/NotRexed/Hookshot/pulls/%d"
+PR_API = "https://api.github.com/repos/notquiteog/Hookshot/pulls/%d"
 LABEL = "testing wanted"
 TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
 HISTORY_LIMIT = 50000  # messages read back; renews add one per tester every half hour
@@ -79,8 +79,8 @@ EXIT_REFUSED = team_chat.EXIT_REFUSED
 LINE = re.compile(r"^%s\s*(T-[%s]{4})\s+(request|claim|renew|release|done|cancel|update)\b(?:\s+(pass|fail|mixed))?\s*:?\s*(.*)$"
                   % (MARK, ID_CHARS))
 UNTIL = re.compile(r"until\s+(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d)Z", re.I)
-PR_URL = re.compile(r"https://github\.com/NotRexed/Hookshot/pull/(\d+)")
-COMMENT_URL = re.compile(r"^https://github\.com/NotRexed/Hookshot/pull/(\d+)"
+PR_URL = re.compile(r"https://github\.com/notquiteog/Hookshot/pull/(\d+)")
+COMMENT_URL = re.compile(r"^https://github\.com/notquiteog/Hookshot/pull/(\d+)"
                          r"#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$")
 COMMIT = re.compile(r"[0-9a-fA-F]{7,40}")
 
@@ -266,7 +266,7 @@ def github_json(url, number):
                                                            "User-Agent": team_chat.USER_AGENT})
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
-        req.add_header("Authorization", "Bearer " + token)
+        req.add_unredirected_header("Authorization", "Bearer " + token)   # (not to where a redirect points)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -298,7 +298,7 @@ def pr_commit(number, commit, head):
     """Resolve a non-head commit and require that it is an ancestor of the PR head."""
     if not commit or same_commit(commit, head):
         return head
-    url = "https://api.github.com/repos/NotRexed/Hookshot/compare/%s...%s?per_page=1" % (commit, head)
+    url = "https://api.github.com/repos/notquiteog/Hookshot/compare/%s...%s?per_page=1" % (commit, head)
     comparison = github_json(url, number)
     sha = (comparison.get("base_commit") or {}).get("sha", "")
     if comparison.get("status") not in ("ahead", "identical") or not isinstance(sha, str) \
@@ -391,17 +391,21 @@ def until_line():
 
 
 def describe(t, me=None):
+    # (what people wrote, and their names, through team_chat.plain: an escape sequence or a newline in a post was printed
+    # as it came, so it could clear the screen or forge a line of another request)
+    plain = team_chat.plain
+
     def who(user):
-        return "you" if user == me else user
-    head = "%s  %s  %s/pull/%s  %s" % (t["id"], t["status"].upper(), REPO, t["pr"], t["summary"])
+        return "you" if user == me else plain(user)
+    head = "%s  %s  %s/pull/%s  %s" % (plain(t["id"]), t["status"].upper(), REPO, t["pr"], plain(t["summary"]))
     lines = [head, "    asked by %s on %s" % (who(t["requester"]), stamp(t["requested"]))]
     if t.get("commit"):
-        lines.append("    commit: " + t["commit"][:8])
+        lines.append("    commit: " + plain(t["commit"][:8]))
     notice = commit_notice(t)
     if notice:
         lines.append("    " + notice)
     if t["needs"]:
-        lines.append("    needs: " + t["needs"])
+        lines.append("    needs: " + plain(t["needs"]))
     if t["claims"]:
         lines.append("    being tested by " + ", ".join(who(u) for u in sorted(t["claims"])))
     for user, r in sorted(t["results"].items(), key=lambda kv: kv[1]["time"]):
@@ -414,7 +418,7 @@ def describe(t, me=None):
                 detail += " (not the requested commit)"
         elif t.get("commit"):
             detail = " (commit not recorded)"
-        lines.append("    %s by %s%s: %s" % (r["result"], who(user), detail, r["comment"]))
+        lines.append("    %s by %s%s: %s" % (plain(r["result"]), who(user), detail, plain(r["comment"])))
     if t.get("approved") is False:
         lines.append('    waiting for a maintainer to add the "%s" label on GitHub: not claimable yet' % LABEL)
     elif not t["claims"] and not current_results(t) and t["status"] == "open":
@@ -422,7 +426,7 @@ def describe(t, me=None):
     if t.get("pr_state") in ("merged", "closed"):
         lines.append("    the PR is %s" % t["pr_state"])
     if t["notes"]:
-        lines += ["    " + line for line in t["notes"].splitlines()]
+        lines += ["    " + plain(line) for line in t["notes"].splitlines()]
     return "\n".join(lines)
 
 
@@ -526,6 +530,8 @@ def cmd_claim(args, config):
                       % (t["id"], results[me]["result"]))
     commit = t.get("claim_commits", {}).get(me) if me in t["claims"] else None
     text = "%s %s claim: %s" % (MARK, t["id"], until_line())
+    if not t["pr"]:   # (a request typed by hand with no PR link: nothing GitHub could approve, so nothing to claim)
+        return refuse("%s names no PR: only a request for an approved PR can be claimed" % t["id"])
     if t["pr"]:
         info = pr_info(t["pr"])  # no answer from GitHub: no claim
         if not approved(info):
@@ -591,7 +597,7 @@ def cmd_verify(args, config):
         send(config, rid, "%s %s release" % (MARK, t["id"]))
         return refuse("%s; released %s, do not build it" % (error, t["id"]))
     print("verified commit: %s (ancestor of PR #%d head %s)" % (pin, t["pr"], head))
-    print("Review this pinned commit's diff before checking it out or building:\n" + diff)
+    print("Review this pinned commit's diff before checking it out or building:\n" + team_chat.plain(diff, keep="\n\t"))
     return 0
 
 

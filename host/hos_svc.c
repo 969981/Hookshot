@@ -33,7 +33,15 @@ static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     case 13: return HOS_SPACE_END - 0x08000000ULL;         /* AslrRegionSize */
     case 14: return HOS_SYSTEM_BASE;                       /* StackRegionAddress */
     case 15: return HOS_SYSTEM_END - HOS_SYSTEM_BASE;      /* StackRegionSize */
-    case 16: case 17: return 0;                            /* SystemResourceSize total / used */
+    /* SystemResourceSize total / used: the memory the kernel sets aside for the process's own page tables and its
+       virtual address memory, main.npdm's system_resource_size. The SDK's nn::os::IsVirtualAddressMemoryEnabled is
+       this total being non-zero (VammManager: svcGetInfo(16, the process)), and with it 0 the virtual address memory
+       a game asks for (AllocateAddressRegion + AllocateMemoryPages, both answered by hos_mem.c, backed by
+       MapPhysicalMemory below) is refused before it is asked: Kirby Air Riders' GPU allocator made no memory pool at
+       all, a 64 MB buffer was refused, and a PhysX job read the null manager it was for. Used: none of it is spent
+       here (the host keeps no page tables in it). */
+    case 16: return hos_system_resource_size;
+    case 17: return 0;
     case 18: return hos_program_id;                        /* ProgramId (main.npdm's, gen/hos_image.c) */
     case 20: {   /* UserExceptionContextAddress: (hookshot) OoT's nn::os::SetDyingMessageRegionPrivate writes its
                     dying-message region into it; a zeroed page, made once */

@@ -25,6 +25,10 @@
 #include "vk_reflex.h"   // (NVIDIA Reflex: which game frame a set shows, reflex_frame / reflex_present_frame)
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
+// (hookshot fork: the Frame generation by row's AMD methods)
+#include "camera_vectors.h"   // (the scene's camera in the world, as AMD's runtime takes it)
+#include "framegen_methods.h"
+#include "vk_ffx.h"           // (AMD FSR 4 frame generation)
 #include "vk_menu.h"
 #include "vk_present_rect.h"
 #include "vk_texture.h"
@@ -547,7 +551,7 @@ void display_main() {
 // (hookshot) The last sets' makers (framegen_maker): each framegen_record notes its set's on the replay thread; the menu's
 // thread reads the counts. A ring of kMakerSets, the counts of each maker in it
 constexpr int kMakerSets = 64;
-std::atomic<int> maker_count[4] = {kMakerSets, 0, 0, 0};
+std::atomic<int> maker_count[5] = {kMakerSets, 0, 0, 0, 0};
 uint8_t maker_ring[kMakerSets] = {};
 int maker_pos = 0;
 std::atomic<int64_t> maker_at{0};
@@ -569,7 +573,9 @@ FgMaker framegen_maker() {
     const int b = maker_count[(int)FgMaker::BuiltIn].load(std::memory_order_relaxed);
     const int d = maker_count[(int)FgMaker::Dlss].load(std::memory_order_relaxed);
     const int f = maker_count[(int)FgMaker::Fsr3].load(std::memory_order_relaxed);
-    if (!b && !d && !f) return FgMaker::None;
+    const int a = maker_count[(int)FgMaker::Fsr4].load(std::memory_order_relaxed);   // (hookshot fork: the row's AMD FSR 4)
+    if (!b && !d && !f && !a) return FgMaker::None;
+    if (a > d && a > f && a > b) return FgMaker::Fsr4;
     return d >= b && d >= f ? FgMaker::Dlss : f >= b ? FgMaker::Fsr3 : FgMaker::BuiltIn;
 }
 
@@ -635,7 +641,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
                        bool pq) {
     WideSides wide = wide_now.load(std::memory_order_relaxed);   // (wide_sides_tick, each present)
     if (wide_cover_in_frame) wide.cover = 0;
-    if (!opts.upscale && !opts.sharpness && !wide.side && !wide.cover) return VK_NULL_HANDLE;
+    if (!window_filter() && !opts.sharpness && !wide.side && !wide.cover) return VK_NULL_HANDLE;   // (hookshot fork: window_filter, vk_menu.h)
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     if (!source.w || !source.h) return VK_NULL_HANDLE;
@@ -709,7 +715,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    struct { int mode; float sharp; float x0, x1; int side; float cover; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side,
+    struct { int mode; float sharp; float x0, x1; int side; float cover; } pc{window_filter(), opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side,
                                                                               wide.cover / 65535.0f};
     if (wide.side == 1) {   // (the blurred sides: first the picture at 1/8, each pixel the mean of its 8 x 8, which they blur)
         // (from #1448's checked source rectangle, as the crop above: the picture src now holds)
@@ -741,7 +747,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         reported = true;
         logf("vk: upscale dispatched: mode %d, sharpness %d%% (of RCAS's strongest, neighbours one source pixel apart), source %ux%u, "
              "crop request %d,%d %dx%d, destination %ux%u",
-             opts.upscale, opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
+             window_filter(), opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
              crop ? crop[2] : (int)sw, crop ? crop[3] : (int)sh, dw, dh);
     }
     return scale.scaled.image;
@@ -839,6 +845,98 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     return 1;
 }
 
+/// (hookshot fork) What the Frame generation by row can show here beside upstream's two (framegen_methods.h Here): asked
+/// of each backend, which keeps its own answer. The menu's row shows the same (vk_menu.cpp framegen_by_available)
+framegen_methods::Here framegen_here() {
+    namespace fgm = framegen_methods;
+    fgm::Here here;
+    here.most[fgm::FSR4] = (int)ffx::max_frames();
+    here.most[fgm::FSR3] = fsr3fi::capable() ? 1 : 0;   // (the midpoint only: vk_fsr3fi.h)
+    return here;
+}
+
+/// (hookshot fork) The row's value in effect (framegen_methods.h): opts.framegen_by, or for a run RX_VK_FG_METHOD=fsr4 /
+/// fsr3 / builtin / auto over it, of what runs here. Read every time: the row changes while the game runs. NVIDIA DLSS
+/// Frame Generation reads the row itself (vk_dlss.cpp fg_asked: Auto, RX_VK_DLSS_FG over it)
+int framegen_method() {
+    namespace fgm = framegen_methods;
+    static const int env_method = fgm::from_name(getenv("RX_VK_FG_METHOD"));
+    return fgm::effective(env_method >= 0 ? env_method : opts.framegen_by, fgm::available(framegen_here()));
+}
+
+/// (hookshot fork) Whether the row in effect is Auto, which is what NVIDIA DLSS Frame Generation runs at (vk_dlss.cpp
+/// fg_asked): Auto itself, or a saved AMD method that does not run on this PC, which the menu shows as Auto. The backends
+/// are asked only for such a saved choice, not at Auto or Built-in
+bool framegen_by_auto() {
+    namespace fgm = framegen_methods;
+    static const bool env_set = fgm::from_name(getenv("RX_VK_FG_METHOD")) >= 0;
+    if (!env_set && (opts.framegen_by == fgm::AUTO || opts.framegen_by == fgm::BUILTIN)) return opts.framegen_by == fgm::AUTO;
+    return framegen_method() == fgm::AUTO;
+}
+
+/// (hookshot fork) Whether AMD FSR 4's frame generation makes sets of multiplier m now: the row at AMD FSR 4, at a fixed
+/// multiplier it makes whole here (framegen_methods.h makes_set)
+bool ffx_set_wanted(int m) {
+    namespace fgm = framegen_methods;
+    return framegen_method() == fgm::FSR4 && fgm::makes_set(framegen_here(), fgm::FSR4, m);
+}
+
+/// (hookshot fork) The made frames of a set by AMD FSR 4's frame generation through AMD's runtime (gpu/vk/vk_ffx.h): the
+/// scene's depth and motion (vk_fsr3_inputs.h, as FSR 3.1's interpolation above takes them) handed over as images, and
+/// every made frame in one dispatch. `want` when it made them all into set.frame[0..want), else 0, which leaves the whole
+/// set to the interpolation below: a half-made set would show a stale image.
+int ffx_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, int want, uint64_t sequence) {
+    static uint64_t asked = 0, made = 0, no_inputs = 0;
+    if (++asked % 600 == 0)
+        logf("vk: amd fsr 4 frame generation: %llu of the last 600 sets, %llu without its inputs (the renderer's own made "
+             "them)", (unsigned long long)made, (unsigned long long)no_inputs),
+            made = no_inputs = 0;
+    fsr3_inputs::Frame f;
+    if (!fsr3_inputs::take(f)) return no_inputs++, 0;
+    camera_vectors::Vectors camera;
+    if (!camera_vectors::from(f.projection, f.view_projection, camera)) return no_inputs++, 0;
+    ffx::FrameInputs in;
+    in.color = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (ensure_size, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = f.depth_image, in.depth_format = VK_FORMAT_R32_SFLOAT;
+    in.motion = f.motion_image, in.motion_format = VK_FORMAT_R16G16_SFLOAT;
+    in.render_width = f.width, in.render_height = f.height;
+    in.motion_scale[0] = 1.0f, in.motion_scale[1] = 1.0f;   // (already render pixels, as AMD takes them)
+    in.jitter[0] = f.jitter[0], in.jitter[1] = f.jitter[1];
+    in.near_plane = f.camera.near_plane, in.far_plane = f.camera.far_plane, in.fov_y = f.camera.fov_y;
+    in.frame_time_ms = f.frame_ms;
+    for (int c = 0; c < 3; c++) {
+        in.camera_position[c] = camera.position[c], in.camera_right[c] = camera.right[c];
+        in.camera_up[c] = camera.up[c], in.camera_forward[c] = camera.forward[c];
+    }
+    in.reset = f.reset;
+    in.sequence = sequence;
+    in.frames = (uint32_t)want;
+    if (!ffx::generate(cmd, in)) return 0;
+    for (int k = 1; k <= want; k++)
+        if (!ffx::made_image((uint32_t)k)) return 0;
+    for (int k = 1; k <= want; k++) {
+        const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {uw, uh, 1}};
+        vkCmdCopyImage(cmd, ffx::made_image((uint32_t)k), VK_IMAGE_LAYOUT_GENERAL, set.frame[k - 1].image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
+    made++;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        logf("vk: amd fsr 4 frame generation: %d made frame(s) between each two of the game's at %ux%u (its depth and motion "
+             "%ux%u)", want, uw, uh, f.width, f.height);
+    }
+    return want;
+}
+
+/// (hookshot fork) Whether a draw should keep the scene's depth and motion for AMD FSR 4's frame generation
+/// (vk_fsr3_inputs.cpp wanted): the row at AMD FSR 4, at a fixed multiplier it makes here. The draws ask it, on their own
+/// threads: options and answers kept since the start, nothing of AMD's runtime
+bool framegen_scene_inputs_wanted() { return framegen_on() && opts.framegen >= 2 && ffx_set_wanted(opts.framegen); }
+
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], float cover) {
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     const int x0 = (int)source.x, y0 = (int)source.y, w = (int)source.w, h = (int)source.h;
@@ -869,6 +967,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     set->antilag_id = antilag_frame();   // (AMD Anti-Lag 2: the same, vk_antilag.cpp)
     static uint64_t sequence = 0;
     sequence++;
+    if (gap) ffx::reset();   // (hookshot fork: AMD FSR 4 frame generation's own history ends at a cut too)
     const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
     const uint32_t qw = (uw + 3) / 4, qh = (uh + 3) / 4, cw = (qw + 3) / 4, ch = (qh + 3) / 4;
     full_barrier(cmd);
@@ -955,6 +1054,12 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     if (set->made == 0 && blend && mk == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
     if (maker == FgMaker::None && set->made) maker = FgMaker::Fsr3;
+    // (hookshot fork) The row's AMD FSR 4 frame generation (vk_ffx.h), where AMD's runtime is here and makes a set of this
+    // size; any present it does not take stays with the interpolation below
+    if (set->made == 0 && blend && mk > 1 && ffx_set_wanted(mk)) {
+        set->made = ffx_frames(cmd, *set, cur, uw, uh, mk - 1, sequence);
+        if (set->made) maker = FgMaker::Fsr4;
+    }
     if (set->made == 0 && blend && mk > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);

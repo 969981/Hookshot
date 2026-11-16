@@ -491,6 +491,12 @@ void EmitContext::DefineGenericOutput(size_t index, u32 invocations) {
             xfb_varying = &runtime_info.xfb_varyings[xfb_varying_index];
             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
         }
+        // (hookshot) a transform feedback varying wider than what is left of its location (a broken or malicious
+        // varying table) would write past output_generics[index]'s 4 elements and ask for F32[n > 4]: rejected
+        if (xfb_varying && xfb_varying->components > remainder) {
+            throw NotImplementedException("Transform feedback varying of {} components at element {} of generic {}",
+                                          xfb_varying->components, element, index);
+        }
         const u32 num_components{xfb_varying ? xfb_varying->components : remainder};
         if (element > 0) {
             definition += fmt::format(",component={}", element);

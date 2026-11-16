@@ -199,8 +199,10 @@ static int16_t adpcm_sample(Voice *v, const WB *w, int64_t s) {
     if (nibble >= 8) nibble -= 16;
     const int idx = (header >> 4) & 7, scale = 1 << (header & 0xF);
     const int c1 = v->coefs[idx * 2], c2 = v->coefs[idx * 2 + 1];
-    int32_t val = ((nibble * scale) << 11) + c1 * v->yn1 + c2 * v->yn2;
-    val = (val + 1024) >> 11;
+    /* (hookshot) in 64 bits, multiplied rather than shifted: a negative nibble shifted left, and the sum of the two
+       history terms at a large scale, were undefined in 32 */
+    const int64_t sum = (int64_t)nibble * scale * 2048 + (int64_t)c1 * v->yn1 + (int64_t)c2 * v->yn2;
+    int64_t val = (sum + 1024) / 2048 - ((sum + 1024) % 2048 < 0);   /* (floor, as the arithmetic shift was) */
     if (val > 32767) val = 32767;
     if (val < -32768) val = -32768;
     v->yn2 = v->yn1;
@@ -1421,6 +1423,13 @@ HLE(_ZN2nn5audio29InitializeAudioRendererConfigEPNS0_19AudioRendererConfigERKNS0
 /* The output device: one device, "MainAudioOut", stereo or 5.1 as the PC's default output (au_speakers).
    AudioDeviceName is char[256]. */
 HLE(_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE) { hos_system_event_init(ARG(0), 1); }
+/* (dragoon) AcquireAudioOutputDeviceNotification(SystemEvent*): the SDK 20 name of the one above (Kirby Air Riders).
+   Left to the generic stub the game's event was never made; a wait on it would have read its uninitialized object.
+   Made, and never signalled: the output device does not change under the game here. */
+HLE(_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE) { hos_system_event_init(ARG(0), 1); }
+/* SetDeviceOutputVolumeAutoTuneModeEnabled(bool): the console's automatic volume for its own speakers; the host's
+   mixer is the player's */
+HLE(_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb) {}
 HLE(_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv) { RET(au_speakers()); }
 HLE(_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE) {
     memset(GP(ARG(0)), 0, 256);
@@ -1870,8 +1879,9 @@ static void add_aux(Ctx *c) {
     a->mix = m;
     a->order = ++effect_order;
     a->sample_count = (int)(((bytes - 128) / sizeof(int32_t)) & ~15ULL) / FRAME * FRAME;
-    memset(GP(ARG(3)), 0, (size_t)bytes);
-    memset(GP(ARG(4)), 0, (size_t)bytes);
+    /* (hookshot) both buffers wholly in the game's memory: the audio thread writes them for as long as the aux is on */
+    memset(GR(ARG(3), bytes), 0, (size_t)bytes);
+    memset(GR(ARG(4), bytes), 0, (size_t)bytes);
     a->send.data = (int32_t *)GP(ARG(3) + 128);
     a->ret.data = (int32_t *)GP(ARG(4) + 128);
     put_handle(ARG(1), K_AUX, e);

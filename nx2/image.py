@@ -10,14 +10,32 @@ the same offset.
 rtld is part of this image: in the emulator it runs first and binds the GOTs itself, to the same values this
 builder binds them to (same module order, same lookup).
 """
+import struct
+
 import kit  # noqa: F401  (sys.path)
 import nso2  # noqa: F401  (DT_RELR)
 import nso
+import nro
 import nx_image
 
 PAGE = 0x1000
 CODE_39BIT = 0x80000000
 ARGS_SIZE = 0x9000
+
+
+# R_AARCH64_TLSDESC: a thread-local variable reached through a descriptor, two words the dynamic linker fills
+# (a resolver the code calls, and its argument). Ocarina has none; Kirby Air Riders has one, in NVIDIA's DLSS library
+# for NVN (its subsdk1). a64-kit's loader stops at the first one ("relocation type 1031 ... not supported"), so the
+# game could not even be lifted. Thread-local storage descriptors are not implemented, and resolving one would need
+# the module's TLS block laid out as the console's loader does, which nobody here has checked. So each descriptor is
+# bound to a stop instead: its resolver is the host's hos_tlsdesc_unsupported (host/hos_thread.c), which names the
+# descriptor and stops the run the moment the game first uses it, and its argument is the descriptor's own address,
+# for that message. Not a guess at an offset, and not a jump to 0.
+# (a64-kit's own table, third_party/a64-kit/tools/nso.py R_AARCH64, names 1030 "TLSDESC"; 1030 is R_AARCH64_TLS_TPREL64
+# and TLSDESC is 1031, so a64-kit hands 1031 through as the bare number this matches. If a64-kit ever fixes its table
+# and names 1031, this check must still match it: tests/test_tlsdesc_stop.py reads a64-kit's table to hold it to that.)
+TLSDESC = 1031
+TLSDESC_STOP = "hos_tlsdesc_unsupported"
 
 
 def page_align(v):
@@ -31,10 +49,11 @@ def eden_size(m):
 
 
 class EdenImage(nx_image.NxImage):
-    def __init__(self, exefs, aslr_offset=0, program_args=False, hle=()):
+    def __init__(self, exefs, aslr_offset=0, program_args=False, hle=(), nros=()):
         base = CODE_39BIT + aslr_offset
         nx_image.MAIN_BASE = base     # (NxImage's word/read/write index the image from this module global)
-        self.modules = nso.load_exefs(exefs)
+        # (the dump's NROs after sdk: linked against the rest and lifted with the game; nx2/nro.py, host/nn_ro.c)
+        self.modules = nso.load_exefs(exefs) + nro.load(nros)
         self.skipped = []
         for m in self.modules:
             m.base = base
@@ -64,3 +83,20 @@ class EdenImage(nx_image.NxImage):
         self.code = [(m.base + lo, m.base + hi, m.name) for m in self.modules for lo, hi in [m.code_range()]]
         self._entries()
         self.names = self.symbol_names()
+
+    def _relocate(self):
+        """a64-kit's relocation, with the TLS descriptors it does not take bound to the host's stop (TLSDESC above)"""
+        descs = []
+        for m in self.modules:
+            here = [r for r in m.relocs if r["type"] == TLSDESC]
+            if here:
+                m.relocs = [r for r in m.relocs if r["type"] != TLSDESC]
+                descs += [(m, r) for r in here]
+        super()._relocate()
+        if descs:
+            stop = self.trampoline(TLSDESC_STOP)
+            for m, r in descs:
+                struct.pack_into("<QQ", self.mem, m.base + r["offset"] - nx_image.MAIN_BASE, stop, m.base + r["offset"])
+            print("image: %d TLS descriptor%s (R_AARCH64_TLSDESC) bound to a stop, not implemented: %s" % (
+                len(descs), "" if len(descs) == 1 else "s",
+                ", ".join("%s+%#x" % (m.name, r["offset"]) for m, r in descs)))

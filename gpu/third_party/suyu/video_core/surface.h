@@ -171,7 +171,9 @@ constexpr u32 DefaultBlockWidth(PixelFormat format) noexcept {
 #define PIXEL_FORMAT_ELEM(name, width, height, bits) case PixelFormat::name: return width;
     PIXEL_FORMAT_LIST
 #undef PIXEL_FORMAT_ELEM
-    default: UNREACHABLE();
+    // (hookshot) a format outside the list (PixelFormat::Invalid, 255: rx_core.cpp asks for a render target's texture format
+    // before it checks it) gets a 1x1 block of 32 bits, defined, instead of UNREACHABLE, which throws now (common/assert.h)
+    default: return 1;
     }
 }
 
@@ -180,7 +182,7 @@ constexpr u32 DefaultBlockHeight(PixelFormat format) noexcept {
 #define PIXEL_FORMAT_ELEM(name, width, height, bits) case PixelFormat::name: return height;
     PIXEL_FORMAT_LIST
 #undef PIXEL_FORMAT_ELEM
-    default: UNREACHABLE();
+    default: return 1;
     }
 }
 
@@ -189,7 +191,7 @@ constexpr u32 BitsPerBlock(PixelFormat format) noexcept {
 #define PIXEL_FORMAT_ELEM(name, width, height, bits) case PixelFormat::name: return bits;
     PIXEL_FORMAT_LIST
 #undef PIXEL_FORMAT_ELEM
-    default: UNREACHABLE();
+    default: return 32;
     }
 }
 

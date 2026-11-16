@@ -36,10 +36,19 @@ struct Frame {
     bool reset = false;                     ///< no history: the first frame, a new size, or a gap of more than two frames
     float frame_ms = 16.667f;               ///< since the frame before's
     uint64_t frame = 0;                     ///< texture_frame_no() when prepared
+    // (hookshot fork) For AMD FSR 4's frame generation (vk_ffx.h), which is handed whole images and the camera in the world
+    // (camera_vectors.h): the images of the three views above (R16G16B16A16_SFLOAT, R32_SFLOAT and
+    // R16G16_SFLOAT), and this frame's and the frame before's view-projection and this frame's projection, row major and
+    // without their jitter (have_previous: false on a reset, when there is no frame before)
+    VkImage color_image = VK_NULL_HANDLE, depth_image = VK_NULL_HANDLE, motion_image = VK_NULL_HANDLE;
+    float view_projection[16]{}, previous_view_projection[16]{}, projection[16]{};
+    bool have_previous = false;
 };
 
 /// FSR 3.1 is asked for at all: its upscaler (the Upscaler row) or its frame interpolation (the Frame generation row). The
-/// scene's camera is kept only then
+/// scene's camera is kept only then. (hookshot fork: or another frame generation method that takes these inputs,
+/// vk_framegen.h framegen_scene_inputs_wanted, or the open neural rendering backend's temporal path, vk_opennr.h
+/// scene_motion_wanted)
 bool wanted();
 
 /// A draw into a scene-sized target with the vertex stage's uniform buffer 3 at `camera`: what vk_temporal.cpp's
@@ -59,6 +68,10 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out);
 /// The frame prepare made last, for frame interpolation at the present, once: false when none was made since the last take
 /// (or it is older than the frame before), so a present never interpolates with another frame's depth and motion
 bool take(Frame& out);
+
+/// (hookshot fork) The same frame without taking it: for the open neural rendering backend (vk_opennr.cpp), which reads
+/// this present's motion before frame generation takes the frame at the same present. False as take's
+bool latest(Frame& out);
 
 /// FSR 3.1's upscaler drew this frame, rw x rh into dw x dh: the host's jitter follows FSR (jitter_size)
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh);

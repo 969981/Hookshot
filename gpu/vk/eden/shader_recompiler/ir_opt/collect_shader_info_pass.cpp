@@ -18,6 +18,11 @@ void AddConstantBufferDescriptor(Info& info, u32 index, u32 count) {
     if (count != 1) {
         throw NotImplementedException("Constant buffer descriptor indexing");
     }
+    // (hookshot) an index the constant folding made immediate (LDC's IS mode) can be past the 18 buffers: 1U << index is
+    // undefined at 32 and more, and the sizes below are an array of MAX_CBUFS
+    if (index >= Info::MAX_CBUFS) {
+        throw NotImplementedException("Out of bounds constant buffer binding {}", index);
+    }
     if ((info.constant_buffer_mask & (1U << index)) != 0) {
         return;
     }
@@ -540,6 +545,9 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         if (index.IsImmediate()) {
             AddConstantBufferDescriptor(info, index.U32(), 1);
             u32 element_size = GetElementSize(info.used_constant_buffer_types, inst.GetOpcode());
+            if (index.U32() >= Info::MAX_CBUFS) {   // (AddConstantBufferDescriptor refused it already: kept here, by the write)
+                throw NotImplementedException("Out of bounds constant buffer binding {}", index.U32());
+            }
             u32& size{info.constant_buffer_used_sizes[index.U32()]};
             if (offset.IsImmediate()) {
                 size = Common::AlignUp((std::max)(size, offset.U32() + element_size), 16u);

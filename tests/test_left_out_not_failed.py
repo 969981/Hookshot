@@ -37,6 +37,15 @@ static void logf(const char* f, ...) {
     va_end(a);
     lines.push_back(b);
 }
+enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };   // (gpu/vk/vk_internal.h's)
+static void logf_at(LogLevel, const char* f, ...) {   // (recorded as logf's: the level is the tag's business)
+    char b[512];
+    va_list a;
+    va_start(a, f);
+    std::vsnprintf(b, sizeof b, f, a);
+    va_end(a);
+    lines.push_back(b);
+}
 std::atomic<int64_t> st_failed, st_left_out;
 struct Forced { std::string want; };
 static Forced* forced;

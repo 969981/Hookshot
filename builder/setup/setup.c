@@ -4,12 +4,14 @@
    and starts the builder there. Parts already downloaded and checked are used again; a release already installed just
    starts. Files fetched by a program carry no "downloaded from the internet" mark, and the download itself holds no
    scripts, which is what antivirus programs' machine-learning guesses (Trojan:Script/...!ml) fired on.
+   Unpacked from the full setup (Hookshot-<tag>-Windows-x64-full-setup.zip, scripts/make_full_setup.py), with the list and a
+   parts folder beside it, a new install reads both from there and downloads nothing (beside_list, beside_part).
 
    hookshot-setup.txt, one item a line:
        tag <tag>
        part <sha256> <bytes> <folder under the install> <top folder in the zip to rename, or -> <new name, or -> <url>
        run <the builder, relative to the install>
-   Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o HookshotBuilder-Setup.exe */
+   Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -ladvapi32 -o HookshotBuilder-Setup.exe */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
 #define UNICODE
@@ -25,6 +27,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "portable_home.h"
+#include "shared_folder.h"
 
 #define WM_STATUS (WM_APP + 1)
 #define WM_DONE (WM_APP + 2)
@@ -126,6 +129,9 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
     uc.lpszHostName = host, uc.dwHostNameLength = 256;
     uc.lpszUrlPath = path, uc.dwUrlPathLength = 1024;
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return 0;
+    /* (https only, whatever names the URL: HOOKSHOT_SETUP_LIST=http://... fetched a list in clear text, and the list names
+       every part's checksum, so whoever sat on the way chose what was installed) */
+    if (uc.nScheme != INTERNET_SCHEME_HTTPS) return 0;
     HINTERNET s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     if (!s) s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!s) return 0;
@@ -525,7 +531,7 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
 
 static void w(const char *s8, wchar_t *out, int n) { MultiByteToWideChar(CP_UTF8, 0, s8, -1, out, n); }
 
-/* (HOOKSHOT_SETUP_LIST=<url>: another list, for testing a release before it is the latest) */
+/* (HOOKSHOT_SETUP_LIST=<https url>: another list, for testing a release before it is the latest; http is refused, http_get) */
 /* ---- The GitHub API's link for a release file (after PR 546 by nicholasgower, issue 544). GitHub answered the release
    page's cached link (releases/latest/download/...) with 504 for hours on 2026-11-08 while its API still answered: the API
    gives the file's own asset link, which redirects to a fresh download. Used when the release link fails. ---- */
@@ -620,6 +626,13 @@ static void wanted_tag(char *out, size_t n) {
 /* (an update to a named release reads THAT release's list: the latest/download link can answer with the release before it for a
    while after a publish, and the setup then installed the old version again and started it with --fetched, which builds without
    checking: players pressed Update and stayed on v2.0.3, 2026-11-08) */
+/* (hookshot) the repository the setup installs from, owner/name: given by CI (.github/workflows/windows-builder.yml) from the
+   repository it builds in, so a fork's setup installs the fork's release */
+#ifndef HOOKSHOT_REPOSITORY
+#define HOOKSHOT_REPOSITORY "notquiteog/Hookshot"
+#endif
+#define HOOKSHOT_WIDEN2(s) L##s
+#define HOOKSHOT_WIDEN(s) HOOKSHOT_WIDEN2(s)
 /* (a nightly's version, git describe --long's v2.1.0-rc.1-3-g1a2b3c4: its files are on the rolling nightly release) */
 static int nightly_tag(const char *s) {
     size_t n = strlen(s), h;
@@ -673,9 +686,71 @@ static const char *manifest_url(void) {
     if (!tag[0] && HOOKSHOT_SETUP_RELEASE[0] && strlen(HOOKSHOT_SETUP_RELEASE) < sizeof tag) strcpy(tag, HOOKSHOT_SETUP_RELEASE);
     if (e && *e) snprintf(u, sizeof u, "%s", e);
     else if (tag[0])
-        snprintf(u, sizeof u, "https://github.com/NotRexed/Hookshot/releases/download/%s/hookshot-setup.txt", nightly_tag(tag) ? "nightly" : tag);
-    else snprintf(u, sizeof u, "%s", "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-setup.txt");
+        snprintf(u, sizeof u, "https://github.com/" HOOKSHOT_REPOSITORY "/releases/download/%s/hookshot-setup.txt", nightly_tag(tag) ? "nightly" : tag);
+    else snprintf(u, sizeof u, "%s", "https://github.com/" HOOKSHOT_REPOSITORY "/releases/latest/download/hookshot-setup.txt");
     return u;
+}
+
+/* ---- the full setup (Hookshot-<tag>-Windows-x64-full-setup.zip, unpacked): this setup with its release's hookshot-setup.txt and a
+   parts folder beside it, holding every part the list names under its download's name. A new install downloads nothing: the
+   list is read from beside the setup, and a part is taken from parts\ when its size and SHA-256 are the ones the list names,
+   the same check a download gets. An update still reads the newer release's list from GitHub and downloads only what changed
+   (what parts\ still holds unchanged is taken from there) ---- */
+static wchar_t g_beside[MAX_PATH];   /* (the setup's own folder; empty when not known) */
+
+static void beside_init(void) {
+    wchar_t self[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(NULL, self, MAX_PATH);
+    wchar_t *slash = n && n < MAX_PATH ? wcsrchr(self, L'\\') : NULL;
+    if (!slash) return;
+    *slash = 0;
+    wcscpy(g_beside, self);
+}
+
+/* The list beside the setup, into man, when it is the one to install from: a parts folder beside it, no other list asked for
+   (HOOKSHOT_SETUP_LIST, or --tag naming another release), and no other release installed already (an older full setup started
+   again after an update would otherwise put its older version back). 0: the list is read from GitHub, as before */
+static int beside_list(Mem *man, const wchar_t *versions) {
+    wchar_t list[MAX_PATH], parts[MAX_PATH], cur[MAX_PATH];
+    const char *e = getenv("HOOKSHOT_SETUP_LIST");
+    if (!g_beside[0] || (e && *e)) return 0;
+    if (swprintf(list, MAX_PATH, L"%ls\\hookshot-setup.txt", g_beside) < 0 || swprintf(parts, MAX_PATH, L"%ls\\parts", g_beside) < 0)
+        return 0;
+    const DWORD pa = GetFileAttributesW(parts);
+    if (pa == INVALID_FILE_ATTRIBUTES || !(pa & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+    HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    char buf[16384];
+    DWORD got = 0;
+    const BOOL read = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!read || !got || got >= sizeof buf - 1) return 0;   /* (empty, or longer than any list: not one) */
+    buf[got] = 0;
+    char tag[128] = "", want[128], was[128];
+    for (char *q = buf; q && *q; q = strchr(q, '\n'), q = q ? q + 1 : NULL)
+        if (!strncmp(q, "tag ", 4)) { sscanf(q + 4, "%127s", tag); break; }
+    wanted_tag(want, sizeof want);
+    if (!tag[0] || (want[0] && strcmp(want, tag))) return 0;
+    home_path(cur, L"%ls\\current.txt", versions);
+    read_small(cur, was, sizeof was);
+    if (was[0] && strcmp(was, tag)) return 0;
+    free(man->p);
+    *man = (Mem){0};
+    return mem_sink(man, buf, got);
+}
+
+/* A part from the parts folder beside the setup, its path in out, when its size and SHA-256 are the list's */
+static int beside_part(const Part *p, wchar_t *out) {
+    const char *name = strrchr(p->url, '/');
+    name = name ? name + 1 : p->url;
+    if (!g_beside[0] || !list_name_ok(name, 0)) return 0;
+    if (swprintf(out, MAX_PATH, L"%ls\\parts\\%hs", g_beside, name) < 0) return 0;
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(out, GetFileExInfoStandard, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (((unsigned long long)info.nFileSizeHigh << 32) | info.nFileSizeLow) != p->size)
+        return 0;
+    char have[65] = "";
+    return file_sha256(out, have) && !strcmp(have, p->sha);
 }
 
 static DWORD WINAPI work(LPVOID unused) {
@@ -704,6 +779,12 @@ static DWORD WINAPI work(LPVOID unused) {
     static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
     enum { TRIES = 8 };
     int ok = 0;
+    {   /* (the full setup: the list beside it, nothing downloaded) */
+        wchar_t versions[MAX_PATH];
+        home_path(versions, L"%ls\\versions", base);
+        ok = beside_list(&man, versions);
+        if (ok) status(L"Installing from the files beside the setup...");
+    }
     for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
         if (attempt) {
             status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
@@ -727,7 +808,7 @@ static DWORD WINAPI work(LPVOID unused) {
     if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
-                   L"https://github.com/NotRexed/Hookshot/releases/latest"
+                   L"https://github.com/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/latest"
              : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                                L"This is on GitHub's side: try again in a few minutes, or later today."
                              : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
@@ -790,7 +871,11 @@ static DWORD WINAPI work(LPVOID unused) {
                 continue;
             }
             char have[65] = "";
-            if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
+            wchar_t beside[MAX_PATH];
+            if (beside_part(p, beside)) {   /* (the full setup's parts folder: checked as a download is, and unpacked from there) */
+                status(L"Part %d of %d: from the files beside the setup", i + 1, nparts);
+                wcscpy(zip, beside);
+            } else if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
                 wchar_t part[MAX_PATH];
                 home_path(part, L"%ls.part", zip);
                 int got = 0;
@@ -969,18 +1054,57 @@ static int launch_installed(const wchar_t *args) {
 
 /* (RecompLauncher's Play) --play <game folder>: bin\hookshot.exe there, started like the game folder's launcher starts it but without
    its update question, and waited for, so the launcher knows when the session ends. */
-static int play_folder(const wchar_t *args) {
-    wchar_t folder[MAX_PATH], cmd[MAX_PATH + 32];
+/* (hookshot) The default game's profile key (nx2/game_profile.py DEFAULT): its folder takes no suffix, so Ocarina's
+   stays where it always was (nx2/game_folders.py). tests/test_launcher_games.py holds the two the same. */
+#ifndef HOOKSHOT_DEFAULT_GAME
+#define HOOKSHOT_DEFAULT_GAME "oot"
+#endif
+#define HOOKSHOT_DEFAULT_GAME_W HOOKSHOT_WIDEN(HOOKSHOT_DEFAULT_GAME)
+
+/* --play <folder> [--game <key>]: the folder to start, into folder (cap characters). The launcher's games[] add
+   --game <key> after start.args' --play <folder>: the default game's folder is <folder>, another game's <folder>-<key>
+   (nx2/game_folders.py). 0, or -1 for a key that is not one (a to z, 0 to 9, 1 to 16 of them); folder is then "". */
+static int play_target(const wchar_t *args, wchar_t *folder, size_t cap) {
     while (*args == L' ') args++;
     const int quoted = *args == L'"';
     size_t k = 0;
-    for (args += quoted; *args && !(quoted ? *args == L'"' : *args == L' ') && k + 1 < MAX_PATH; ) folder[k++] = *args++;
+    for (args += quoted; *args && !(quoted ? *args == L'"' : *args == L' ') && k + 1 < cap; ) folder[k++] = *args++;
     folder[k] = 0;
+    if (quoted && *args == L'"') args++;
+    while (*args == L' ') args++;
+    if (wcsncmp(args, L"--game", 6) || (args[6] != L' ' && args[6])) return 0;
+    args += 6;
+    while (*args == L' ') args++;
+    wchar_t key[17];
+    size_t n = 0;
+    for (; *args && *args != L' '; args++) {
+        if (n == 16 || !((*args >= L'a' && *args <= L'z') || (*args >= L'0' && *args <= L'9'))) { folder[0] = 0; return -1; }
+        key[n++] = *args;
+    }
+    key[n] = 0;
+    if (!n) { folder[0] = 0; return -1; }
+    if (!wcscmp(key, HOOKSHOT_DEFAULT_GAME_W) || !k) return 0;
+    while (k && (folder[k - 1] == L'\\' || folder[k - 1] == L'/')) folder[--k] = 0;
+    if (k + 1 + n + 1 > cap) { folder[0] = 0; return -1; }
+    folder[k++] = L'-';
+    wcscpy(folder + k, key);
+    return 0;
+}
+
+static int play_folder(const wchar_t *args) {
+    wchar_t folder[MAX_PATH], cmd[MAX_PATH + 32];
+    const int bad_key = play_target(args, folder, MAX_PATH) < 0;
+    const size_t k = wcslen(folder);
     swprintf(cmd, MAX_PATH + 32, L"\"%ls\\bin\\hookshot.exe\"", folder);
     _wputenv_s(L"HOOKSHOT_NO_UPDATE_CHECK", L"1");
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi;
     DWORD code = 1;
+    if (bad_key) {
+        g_headless = 1;
+        say_error(L"--game takes a game's key: a to z and 0 to 9, up to 16 of them.");
+        return 2;
+    }
     if (!k || !CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, folder, &si, &pi)) {
         g_headless = 1;
         say_error(L"No built game to start. Build it first (the game folder needs bin\\hookshot.exe).");
@@ -1005,6 +1129,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
         if (!wcsncmp(c, L"--cli", 5) && (c[5] == L' ' || !c[5])) g_headless = 1, show = SW_HIDE;
     }
     g_home_ok = init_home(portable);
+    beside_init();
     {
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(NULL, self, MAX_PATH);
@@ -1030,6 +1155,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
             return 1;
         }
         if (wcsstr(g_cmdline, L"--launch") && launch_installed(g_cmdline)) return 0;
+    }
+    if (g_home_ok && g_home.portable) {   /* (a portable home others can write: said once, recorded in it, nothing changed) */
+        wchar_t shared[1024];
+        if (hb_shared_warning_due(g_home.root, shared, 1024)) {
+            if (g_headless) {
+                char u[3072];
+                DWORD wrote;
+                const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+                const int len = WideCharToMultiByte(CP_UTF8, 0, shared, -1, u, (int)sizeof u - 1, NULL, NULL);
+                if (len > 0 && out && out != INVALID_HANDLE_VALUE)
+                    WriteFile(out, "warning ", 8, &wrote, NULL), WriteFile(out, u, len - 1, &wrote, NULL), WriteFile(out, "\n", 1, &wrote, NULL);
+            } else MessageBoxW(NULL, shared, L"Hookshot Builder setup", MB_OK | MB_ICONWARNING);
+        }
     }
     if (!g_home_ok) {
         const wchar_t *why = L"The Builder home is unavailable or its portable marker is invalid. For a new portable install, put this setup in a writable folder and start it with --portable.";

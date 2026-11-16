@@ -19,7 +19,17 @@
    fps); 4 steps a 60 fps frame would be 0 above 240. A moving platform (the stone one under the spikes in the Deku Tree)
    then slides out from under Link (issue 1798). While the step is under 1 the count is rounded up instead, so a solver step
    never covers more time than at 60 fps, give or take 10% (the frame time's jitter, so a steady rate keeps a steady count),
-   and it is at least 1 and never under the game's. A step of 1 or more (a frame slower than 60 fps) keeps the game's count. */
+   and it is at least 1 and never under the game's. A step of 1 or more (a frame slower than 60 fps) keeps the game's count.
+
+   Floors that carry a character: the character controller's three follow-surface updates (f_8015d490, f_80159dc0, f_838baa40)
+   add the velocity of what Link stands on to his move, but first compare the physics' inverse step (one over the step's seconds
+   times the time scale) with 100.0 and, above it, keep a tenth of that velocity. At the console's 60 and 30 fps the inverse
+   step is 60 or 30, so that only happens in a slow motion under 0.6 of the game's speed; with the frames' own time as the step
+   it is the frame rate, and above 100 fps every update cut the floor's velocity to a tenth: Link was left behind on moving
+   platforms (the Deku Tree's floating one) and the floor slid out from under him. The gate now compares with 100 over the
+   frame step (frame seconds x 60) while that is under 1, so the cut comes at the time scales where it came at 60 fps and
+   nowhere else; at a step of 1 or more (60 fps and below, or no frame time: a cap of 60) it stays the game's 100. After
+   NX2navi (chrg6) commit c84724d, which found and measured it, used with its author's permission. */
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -83,4 +93,11 @@ static inline int32_t oot_solver_steps(int32_t game, uint32_t scaled_bits, uint3
     int32_t steps = (int32_t)ceilf(scaled - 0.1f);
     if (steps < 1) steps = 1;
     return steps > game ? steps : game;
+}
+
+/* The number f_8015d490, f_80159dc0 and f_838baa40 compare the inverse step with: seconds_bits, the frame's seconds as the host
+   gives them (0: no frame time, a cap of 60) */
+static inline float oot_floor_cut(uint32_t seconds_bits) {
+    const float step = oot_bits_float(seconds_bits) * 60.0f;
+    return seconds_bits && step > 0.0f && step < 1.0f ? 100.0f / step : 100.0f;
 }

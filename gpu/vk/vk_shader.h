@@ -30,8 +30,12 @@ struct Stage {
 };
 
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
-/// recompiler) run over the stage's constant banks and storage buffers as the draw has them
-uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program);
+/// recompiler) run over the stage's constant banks and storage buffers as the draw has them. element is the descriptor
+/// array element it computes, for a program that gives one handle per element of a table (Shader::HandleOp::Index)
+uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program, uint32_t element = 0);
+/// The handles of elements 0 .. count-1 of such a table (one shadow map per light, say), into out: stage_handle for each,
+/// with the constant words and storage buffer addresses the program reads read once
+void stage_handles(const NvnState& s, const Stage& st, uint32_t program, uint32_t count, uint32_t* out);
 
 /// A translated program variant: its stages, in descriptor order. The pipeline layout and pipelines made for it live
 /// in vk_pipeline.cpp (keyed by key).
@@ -76,6 +80,8 @@ struct Program {
     std::vector<Answer> answers;
     uint64_t variant = 0;   // (a hash of the answers: key alone names all the variants of these stages)
     mutable std::atomic<int64_t> wm_sig{-1};   // (hookshot: what its write masks are made from, vk_draw.cpp program_wm_sig; -1: not asked yet)
+    // (hookshot) how many buffer, image and texel view descriptors its stages have, packed (vk_draw.cpp desc_counts_pack); ~0: not counted yet
+    mutable std::atomic<uint64_t> desc_counts{~0ull};
     // (hookshot) the translation's texture questions as answered, in the order asked: what makes this variant again with nothing
     // bound (the pipeline state list, vk_draw.cpp)
     std::vector<uint8_t> questions;

@@ -1347,12 +1347,17 @@ class Lifter:
             if not img.in_code(pc):
                 R.clear()
                 bounds.clear()
+                bound = None
                 continue
             w = img.word(pc)
             if (w & 0xFC000000) == 0x14000000 or (w & 0xFFFFFC1F) in (0xD65F0000, 0xD61F0000):
-                # ret / b / br: what follows is reached from elsewhere, so nothing above is known there
+                # ret / b / br: what follows is reached from elsewhere, so nothing above is known there.
+                # (hookshot) That holds for the CMP + B.HI bound as well: kept, a compare above a `b` bounded the table
+                # of the next block's br by an unrelated value (Mario Kart World 1.0.0, br 0x81e0f0c0: cmp w8, #1 of
+                # other code gave 2 of the table's 5 entries, and the race stopped at the missing 0x81e0f200)
                 R.clear()
                 bounds.clear()
+                bound = None
                 continue
             d = w & 31
             n = (w >> 5) & 31
@@ -1840,7 +1845,9 @@ class Lifter:
         self.refs = set()
         out = ["void f_%08x(Ctx *__restrict A64_NOESC c) {" % e]
         if e in self.names and self.comments:
-            out[0] = "/* %s */\n" % self.names[e] + out[0]
+            # (a name from the dump, in a comment: printable ASCII and no comment end, or it would be C)
+            name = "".join(ch if " " <= ch <= "~" else "?" for ch in str(self.names[e])).replace("*/", "* /")
+            out[0] = "/* %s */\n" % name + out[0]
         if e in self.plt:   # a PLT stub reached indirectly: x16 = GOT slot, x17 = target, as the stub leaves them
             t, slot = self.plt[e]
             name = self.fname(self.callee(t))

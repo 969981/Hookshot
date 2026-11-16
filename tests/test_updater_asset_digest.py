@@ -41,6 +41,10 @@ using PortableArchive = DigestFixture.UnusedPortableArchive;
     with tempfile.TemporaryDirectory(prefix="updater-digest-build-") as folder:
         root = Path(folder)
         (root / "Updater.cs").write_text(aliases + source, encoding="utf-8")
+        # (hookshot fork: the repository the releases come from, as Updater.cs reads it. The real class: with no
+        # tools/repository.txt beside the fixture it answers the default, the repository these checks expect)
+        (root / "Repository.cs").write_text(
+            (args.source / "builder/HookshotBuilder/Repository.cs").read_text(encoding="utf-8"), encoding="utf-8")
         (root / "Program.cs").write_text(fixture, encoding="utf-8")
         (root / "NuGet.Config").write_text("<configuration><packageSources><clear/></packageSources></configuration>", encoding="utf-8")
         project = root / "Fixture.csproj"

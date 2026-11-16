@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <algorithm>
 #include <array>
+#include <iterator>
+#include <map>
 #include <bit>
 #include <span>
 #include <optional>
@@ -36,6 +38,10 @@ static_assert(sizeof(Instruction) == 16);
 // (vk_coopmat.cpp): HMMA.16816.F16 then lowers to the HMMA_nx2 pseudo instruction (one subgroup
 // matrix multiply on the host's tensor cores) instead of the shuffle expansion.
 inline thread_local bool native_matrix_multiply = false;
+// (hookshot) the program is a pass-through geometry stage (its header's geometry_passthrough bit; vk_shader.cpp sets it
+// around the lowering). Such a stage's exit handler (LEPC, 0x357, and the OUT and 0x957 it points to) is dropped, and
+// ISBERD of the map region gives the vertex index back, as Eden's Maxwell ISBERD does: see the cases below
+inline thread_local bool passthrough_geometry_stage = false;
 
 // (hookshot) Native programs whose GPRs reach the lowering's reserved registers (the uniform bank at R216-R245, R239's
 // uniform predicates, the scratch R246-R254): OoT's big vertex and mesh programs use ~249 GPRs. Their high GPRs (from
@@ -137,6 +143,12 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
+/// (hookshot) The stores: their bits 16-23 are no destination (the RET check's "last write to the return register")
+inline bool IsStoreOpcode(u32 op) {
+    return op == 0x385 || op == 0x386 || op == 0x387 || op == 0x388 || op == 0x985 || op == 0x986 || op == 0x987 ||
+           op == 0x988;
+}
+
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
                                          const std::array<bool, 256>& avoid = {}, bool survey = false) {
     LoweredProgram result;
@@ -147,6 +159,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     std::vector<u32> barrier_tokens;
     std::vector<u32> call_targets;
     std::vector<u32> call_links;
+    // (hookshot) What the per-instruction checks asked of every call and relocation so far, kept as they come: a crafted
+    // program of many calls, branches and exits made those scans quadratic, 10.5 s for one program (the vulnerability audit
+    // of 2026-11-14, F3). Each check gives what its scan gave (tests/malformed_shaders)
+    std::map<u32, u32> call_link_of;          // (call target -> its link: the latest target at or before an instruction)
+    u32 call_target_max = 0;                  // (the furthest call target, when there is one)
+    std::vector<u32> relocations_into;        // (how many relocations land on each instruction)
+    s64 relocation_target_max = -1;           // (the furthest relocation target)
+    std::array<u32, 256> last_destination{};  // (by destination field: 1 + the last instruction before, not a store, with it)
+    const auto add_relocation = [&](const Relocation& relocation) {
+        relocations.push_back(relocation);
+        if (relocation.target >= 0 && relocation.target < static_cast<s64>(relocations_into.size()))
+            ++relocations_into[static_cast<size_t>(relocation.target)];
+        relocation_target_max = (std::max)(relocation_target_max, relocation.target);
+    };
     bool main_exited = false;
     bool computed_branch = false; // a jump table: the program ends at its self-branch, not an EXIT
     bool uses_uniform_bank = false;
@@ -176,11 +202,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         return result;
     };
     if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
+    relocations_into.assign(code.size() + 1, 0);
     // (hookshot) A shared memory store (STS) not yet followed by a barrier: an LDS after it may read what another lane of the
     // warp stored (see LDS below)
     bool shared_store_pending = false;
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
+        if (index > 0 && !IsStoreOpcode(code[index - 1].Bits(0, 12)))   // (every instruction, the never-executed ones too)
+            last_destination[code[index - 1].Bits(16, 8)] = index;
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
         u32 opcode = insn.Bits(0, 12);
         if (insn.Bits(12, 4) == 15) continue; // @!PT: never executes (compiler padding)
@@ -188,11 +217,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         std::optional<u32> active_link;
         u32 active_entry = 0;
         if (main_exited) {
-            for (size_t call = 0; call < call_targets.size(); ++call) {
-                if (call_targets[call] <= index && call_targets[call] >= active_entry) {
-                    active_entry = call_targets[call];
-                    active_link = call_links[call];
-                }
+            // (the furthest call target at or before this instruction, and its link)
+            if (const auto after = call_link_of.upper_bound(index); after != call_link_of.begin()) {
+                const auto at = std::prev(after);
+                active_entry = at->first;
+                active_link = at->second;
             }
             // RET, BRA, NOP and ISETP/FSETP (predicate outputs) have no destination GPR; bits 16..23
             // are not a write to R0. IMAD.WIDE writes a register pair.
@@ -623,7 +652,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return fail(index, "native half fused multiply-add mode");
             if (relu && native_predicate != 7) {
                 // Guard the whole expansion before its temporary P6 updates.
-                relocations.push_back({static_cast<u32>(result.instructions.size()), index + 1});
+                add_relocation({static_cast<u32>(result.instructions.size()), index + 1});
                 emit(0xe24000000000000fULL | (u64{native_predicate ^ 8U} << 16));
                 predicate = u64{7} << 16;
             }
@@ -1585,6 +1614,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
             break;
         }
+        case 0x34e: case 0x357: case 0x324: case 0x957: {
+            // (hookshot) A pass-through geometry stage (Donkey Kong Bananza's destructible terrain, the cave's ground and
+            // walls) begins LEPC R0; MOV R3, <end>; IADD3 R0, R0, R3; ... 0x357 (R0 read, nothing written): the address
+            // of its epilogue, OUT RZ, R0, RZ; 0x957; EXIT, where its exits go. Eden's frontend emits a pass-through
+            // stage's vertices at the program's end itself (LowerGeometryPassthrough), so these four do nothing here; no
+            // branch reaches the epilogue. The body before them is what matters: it culls each triangle and appends the
+            // ones left to the terrain's index lists (ATOMG on the draw records, STG of the indices). Without it every
+            // record kept the count the reset gave it, 0, and the ground was not drawn. Other stages still fail
+            if (!passthrough_geometry_stage) return fail(index, "unsupported native opcode");
+            if (opcode == 0x34e ? (insn.words[0] & 0xff00ffffU) != 0x734e || insn.words[1] || insn.words[2]
+                                : opcode == 0x324 ? insn.words[0] != 0x00ff7324 || insn.words[1] != 0xff || insn.words[2]
+                                                  : insn.words[0] != (0x7000U | opcode) || insn.words[1] || insn.words[2])
+                return fail(index, "native exit handler mode");
+            if (opcode == 0x34e) mov_imm(dest, 0);   // (LEPC: the address is only the handler's, which is dropped)
+            break;
+        }
         case 0x918:
             if (insn.words[1] || insn.words[2]) return fail(index, "native NOP mode");
             emit(0x50b0000000000f00ULL | predicate);
@@ -1893,8 +1938,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     (earlier >= 0x940 && earlier <= 0x95f))
                     break;
             }
-            const bool target_between = std::any_of(relocations.begin(), relocations.end(),
-                [&](const Relocation& relocation) { return relocation.target > compare && relocation.target <= index; });
+            bool target_between = false;   // (relocations_into: at most the 8 instructions back)
+            for (u32 k = compare + 1; k <= index && !target_between; ++k) target_between = relocations_into[k] != 0;
             if (!guarded_select && opcode == 0x887 && compare < index && !target_between && condition == 0 && insn.words[1] <= 0x7ffff &&
                 code[compare].Bits(12, 4) == 7 && code[compare].Bits(24, 8) == insn.Bits(24, 8) &&
                 code[compare].words[1] == insn.words[1] && code[compare].words[2] == 0x0bf01070 &&
@@ -2044,13 +2089,21 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
             // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1.
             const bool half = opcode == 0x305 && (mode & ~0x100U) == 0x0010f000;
-            const bool small = mode == 0x00212800;
+            // F2I.U16 (the size bits 75-76 = 1): Maxwell's F2I.U16. (hookshot) any rounding (bits 78-79), FTZ (bit 80) or
+            // not: Donkey Kong Bananza's terrain culling (a pass-through geometry stage) stores its indices from F2I.U16.TRUNC
+            const bool small = ((mode & ~0x1c000U) == 0x00202800);
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
             const bool ceil = (mode & ~0x10100U) == 0x0020b000;   // (hookshot) round up: Maxwell's mode 2
+            // (hookshot) an 8-bit destination (F2I.S8 / F2I.U8: the size bits 75-76 clear, bit 77 set as in the 32-bit
+            // forms), any rounding (bits 78-79: 0 nearest, 1 floor, 2 ceil, 3 truncate). Maxwell's F2I has no 8-bit
+            // form: converted to 32 bits, then clamped to the byte's range. Donkey Kong Bananza's vertex programs use
+            // F2I.S8.TRUNC (its terrain's reset among them: left out, the terrain's draws drew nothing and it stayed black)
+            const bool byte = opcode == 0x305 && ((mode & ~0x10100U) & ~0xc000U) == 0x00202000;
+            const u32 byte_rounding = (mode >> 14) & 3;
             // (hookshot) a negated or absolute register source (bits 63, 62), made first
             const bool source_mod = opcode == 0x305 && !half && (insn.words[1] & 0x3fffff00U) == 0;
-            if ((!half && !small && !floor && !nearest && !ceil && (mode & ~0x10100U) != 0x0020f000) ||
+            if ((!half && !small && !floor && !nearest && !ceil && !byte && (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && !immediate && !source_mod && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (immediate && insn.Bits(24, 8)) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
@@ -2082,12 +2135,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 }
                 source = 250;
             }
+            const u32 rounding = byte || small ? (mode >> 14) & 3 : nearest ? 0U : floor ? 1U : ceil ? 2U : 3U;
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : ceil ? 2U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{rounding} << 39) | (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
+            }
+            if (byte) {   // (hookshot) IMNMX Rd, Rd, R252: the minimum (PT), then the maximum (!PT), signed per bit 48
+                mov_imm(252, is_signed ? 127U : 255U);
+                emit(base(0x5c20000000000000ULL) | (dest << 8) | (u64{252} << 20) | (u64{7} << 39) |
+                     (u64{is_signed} << 48));
+                if (is_signed) {
+                    mov_imm(252, 0xffffff80U);
+                    emit(base(0x5c20000000000000ULL) | (dest << 8) | (u64{252} << 20) | (u64{7} << 39) |
+                         (u64{1} << 42) | (u64{1} << 48));
+                }
             }
             break;
         }
@@ -3338,7 +3402,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // reconvergence point without a return-link setup or matching RET.
             if (native_predicate != 7 && insn.words[1] == 16 && insn.words[2] == 0x03c00000 &&
                 index + 2 < code.size() && code[index + 1].Bits(0, 12) == 0x947) {
-                relocations.push_back({static_cast<u32>(result.instructions.size()), index + 2});
+                add_relocation({static_cast<u32>(result.instructions.size()), index + 2});
                 emit(0xe24000000000000fULL | predicate);
                 break;
             }
@@ -3385,13 +3449,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native call destination alignment");
             const u32 link = code[setup].Bits(16, 8);
-            for (size_t call = 0; call < call_targets.size(); ++call) {
-                if (call_targets[call] == target / 16 && call_links[call] != link)
-                    return fail(index, "native inconsistent call linkage");
-            }
+            if (const auto known = call_link_of.find(static_cast<u32>(target / 16));
+                known != call_link_of.end() && known->second != link)
+                return fail(index, "native inconsistent call linkage");
             call_targets.push_back(static_cast<u32>(target / 16));
             call_links.push_back(link);
-            relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
+            call_link_of[static_cast<u32>(target / 16)] = link;
+            call_target_max = (std::max)(call_target_max, static_cast<u32>(target / 16));
+            add_relocation({static_cast<u32>(result.instructions.size()), target / 16});
             emit(0xe26000000007000fULL);
             break;
         }
@@ -3410,13 +3475,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             bool linked = active_link && return_reg == *active_link;
             // (hookshot) the stores write no register: their bits 16-23 are no destination (OoT's mesh programs spill
             // between the copy and the RET)
-            const auto is_store = [](u32 op) {
-                return op == 0x385 || op == 0x386 || op == 0x387 || op == 0x388 || op == 0x985 || op == 0x986 ||
-                       op == 0x987 || op == 0x988;
-            };
-            for (u32 prior = index; active_link && !linked && prior-- > active_entry;) {
-                if (copies_link(code[prior])) linked = true;
-                else if (!is_store(code[prior].Bits(0, 12)) && code[prior].Bits(16, 8) == return_reg) break;
+            // (IsStoreOpcode; the last instruction before this one, in the function, that writes the return register decides:
+            // a copy of the link, or not. last_destination keeps it, instead of a scan back to the function's entry)
+            if (active_link && !linked) {
+                const u32 last = last_destination[return_reg];
+                if (last != 0 && last - 1 >= active_entry) linked = copies_link(code[last - 1]);
             }
             if (!main_exited || !linked ||
                 (insn.words[0] & 0x00ffffffU) != 0x00007950 || return_reg >= 249 ||
@@ -3427,8 +3490,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (s64{index} * 16 + 16 + relative != 0)
                 return fail(index, "native return relative base");
             emit(0xe32000000007000fULL);
-            bool complete = !computed_branch;
-            for (u32 target : call_targets) complete &= target <= index;
+            bool complete = !computed_branch && (call_targets.empty() || call_target_max <= index);
             if (complete) return finish(index);
             break;
         }
@@ -3442,7 +3504,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             u64 branch_predicate = predicate;
             if (opcode == 0x947 && insn.Bits(87, 4) != 7) {
                 if (insn.Bits(12, 4) != 7) {
-                    relocations.push_back({static_cast<u32>(result.instructions.size()), index + 1});
+                    add_relocation({static_cast<u32>(result.instructions.size()), index + 1});
                     emit(0xe24000000000000fULL | (u64{insn.Bits(12, 4) ^ 8U} << 16));
                 }
                 branch_predicate = u64{insn.Bits(87, 4)} << 16;
@@ -3453,7 +3515,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
-            relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
+            add_relocation({static_cast<u32>(result.instructions.size()), target / 16});
             emit(0xe24000000000000fULL | branch_predicate);
             // (hookshot) a loop that leaves only by predicated EXITs: the program ends at the closing self-branch after the
             // loop's unconditional jump back, which nothing falls into (one of OoT's compute programs, its EXITs all @P0)
@@ -3475,6 +3537,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
+            // (hookshot) a pass-through geometry stage's ISBERD Rd, [Ra] of the map region: the handle of input vertex Ra
+            // for ALD. Eden's Maxwell ISBERD gives Ra back (its ALD takes a vertex index), so a MOV
+            if (passthrough_geometry_stage && !write && insn.words[2] == 0 && insn.Bits(40, 24) == 0 && dest != 255) {
+                emit(0x5c98000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 20) | (u64{15} << 39));
+                break;
+            }
             // (hookshot) a read may be of the output region (.O): the program reading back what it wrote (one of OoT's
             // task programs reads its payload so); a write is always to it
             if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || (write && !output) ||
@@ -3493,7 +3561,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (insn.Bits(87, 4) != 7) {
                 // @Pg EXIT Pc: exits when both hold; skip over a Pc-predicated EXIT unless Pg.
                 if (native_predicate != 7) {
-                    relocations.push_back({static_cast<u32>(result.instructions.size()), index + 1});
+                    add_relocation({static_cast<u32>(result.instructions.size()), index + 1});
                     emit(0xe24000000000000fULL | (u64{native_predicate ^ 8U} << 16));
                 }
                 emit(0xe30000000000000fULL | (u64{insn.Bits(87, 4)} << 16));
@@ -3503,17 +3571,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (insn.Bits(12, 4) != 7) break;
             if (!barrier_tokens.empty()) return fail(index, "native unclosed reconvergence scope");
             if (call_targets.empty()) {
-                const bool pending_branch = std::any_of(relocations.begin(), relocations.end(),
-                    [&](const Relocation& relocation) { return relocation.target > index; });
+                const bool pending_branch = relocation_target_max > s64{index};
                 if (!pending_branch && !computed_branch) return finish(index);
                 break;
             }
             if (main_exited) {
                 // A library function may end the shader instead of returning (Eden inlines
                 // calls, so this is an ordinary exit at that point).
-                bool complete = std::none_of(relocations.begin(), relocations.end(),
-                    [&](const Relocation& relocation) { return relocation.target > index; });
-                for (u32 target : call_targets) complete &= target <= index;
+                bool complete = relocation_target_max <= s64{index} && call_target_max <= index;
                 if (complete && !computed_branch) return finish(index);
                 break;
             }

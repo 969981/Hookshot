@@ -1,4 +1,4 @@
-"""Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (#2034), so that the pipelines their play
+"""Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (ISSUE_URL), so that the pipelines their play
 built go into the list the next release builds before the game (nx2/pipeline_states.py, assets/pipeline_states/README.md).
 
 The zip holds two files and nothing else: the game folder's hookshot_pipeline_states.bin (checked first as
@@ -29,8 +29,10 @@ import zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline_states  # noqa: E402  (the list's checks: parse, strict)
 
-ISSUE = 2034
-ISSUE_URL = "https://github.com/NotRexed/Hookshot/issues/%d" % ISSUE
+import version  # noqa: E402  (the repository the release is from)
+
+ISSUE = 84   # (the repository's pinned "Submit your pipeline lists here" issue)
+ISSUE_URL = "https://github.com/%s/issues/%d" % (version.repository(), ISSUE)
 LIST = "hookshot_pipeline_states.bin"
 REPORT = "hookshot_pipeline_report.txt"
 # (the issue's template, its lines in its order; gpu/vk/pipeline_share.h writes the same: tests/test_pipeline_share.py)
@@ -61,14 +63,24 @@ def read_list(path):
     """(the list's bytes as read, once, and its records): the bytes checked as nx2/pipeline_states.py --check checks a list
     (strict: whole records), so the zip holds exactly what was checked. ShareError with the reason when it is missing, not a list
     this build reads, cut short or empty"""
+    most = pipeline_states.SENT_MOST   # (packed or unpacked: a small xz file can unpack to gigabytes)
     try:
         with open(path, "rb") as f:
-            data = f.read()
+            data = f.read(most + 1)
     except FileNotFoundError:
         raise ShareError("No pipeline list yet: %s is not in the game folder. The game writes it as you play: play a while, then "
                          "save it again." % LIST)
+    if len(data) > most:
+        raise ShareError("%s cannot be shared: it is larger than a pipeline list holds (%d MB)." % (LIST, most >> 20))
     try:
-        body = lzma.decompress(data) if data[:6] == pipeline_states.XZ_MAGIC else data
+        body = data
+        if data[:6] == pipeline_states.XZ_MAGIC:
+            un = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+            body = un.decompress(data, max_length=most + 1)
+            if len(body) > most:
+                raise ShareError("%s cannot be shared: it unpacks to more than a pipeline list holds (%d MB)." % (LIST, most >> 20))
+            if not un.eof or un.unused_data:
+                raise lzma.LZMAError("cut short, or with more after its end")
         recs = pipeline_states.parse(body, path, strict=True)
     except lzma.LZMAError as e:
         raise ShareError("%s cannot be shared: a damaged xz file (%s)." % (LIST, e))
