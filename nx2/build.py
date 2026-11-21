@@ -41,6 +41,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 import kit
 import lifted_c
 import rtgen
@@ -270,6 +272,59 @@ def linker(*opts):
     toolchain.link_opt) at every comma: a comma in that folder's path cut the map's path in two and stopped the link. On
     Windows link.exe-style options ("/map:x"), through lld's MinGW driver (-Xlink=) for llvm-mingw, as toolchain.link_opt"""
     return [arg for opt in opts for arg in ("-Xlinker", "-Xlink=" + opt if toolchain.mingw() else opt)]
+
+
+IMAGE_LIMIT = 2**31   # (x86-64 code reaches its data RIP-relative, +-2 GB)
+
+
+def image_span(path):
+    """Bytes from the start of the image to the end of its last section, as the loader maps it: a PE's SizeOfImage, or
+    an ELF's PT_LOAD segments from the lowest address to the highest end. None when the file is neither.
+
+    The game's code reaches its data (.data, the GOT, .refptr) RIP-relative, a signed 32-bit offset. lld does not range-check
+    those fixups on x86-64 COFF: a lifted build compiled at -O0 linked a 2,262 MB hookshot.exe with no error, and its first
+    instruction that read a64_dirty read 4 GB below it (bold/cover, 2026-11-13). So the build checks the size itself.
+    On ELF this is only a second check: lld does range-check x86-64 PC-relative fixups there and fails the link itself."""
+    import struct
+    with open(path, "rb") as f:
+        head = f.read(4096)
+        if head[:2] == b"MZ" and len(head) >= 64:
+            pe = struct.unpack_from("<I", head, 0x3C)[0]
+            f.seek(pe)
+            hdr = f.read(24 + 60)
+            if hdr[:4] != b"PE\0\0" or len(hdr) < 24 + 60:
+                return None
+            return struct.unpack_from("<I", hdr, 24 + 56)[0]   # (OptionalHeader.SizeOfImage, PE32 and PE32+ alike)
+        if head[:4] == b"\x7fELF" and head[4] == 2:   # (ELFCLASS64)
+            e = "<" if head[5] == 1 else ">"
+            phoff, = struct.unpack_from(e + "Q", head, 0x20)
+            phentsize, phnum = struct.unpack_from(e + "HH", head, 0x36)
+            f.seek(phoff)
+            table = f.read(phentsize * phnum)
+            loads = []
+            for i in range(phnum):
+                p_type, = struct.unpack_from(e + "I", table, i * phentsize)
+                if p_type == 1:   # (PT_LOAD)
+                    vaddr, = struct.unpack_from(e + "Q", table, i * phentsize + 0x10)
+                    memsz, = struct.unpack_from(e + "Q", table, i * phentsize + 0x28)
+                    loads.append((vaddr, vaddr + memsz))
+            return max(b for _, b in loads) - min(a for a, _ in loads) if loads else None
+    return None
+
+
+def image_too_big(exe):
+    """The link FAILED message when the linked image is past what its code can address, else None (and the image is
+    deleted then, so nothing starts it)"""
+    span = image_span(exe)
+    if span is None or span < IMAGE_LIMIT:
+        return None
+    try:
+        os.remove(exe)
+    except OSError:
+        pass
+    return ("link FAILED: the game's image is %d MB, past the %d MB its code can address (x86-64 RIP-relative); the linker "
+            "does not check this and the game would read the wrong memory. The lifted code is too big for one image: "
+            "build it at -O1 (not -O0), or split the lifted code into more than one module" % (span >> 20, IMAGE_LIMIT >> 20))
 
 
 def HOT_ORDER():
@@ -1574,6 +1629,10 @@ def main():
             print("link FAILED (%.0fs), %d undefined symbols" % (time.time() - t, len(undefined)))
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
+        too_big = image_too_big(exe)
+        if too_big:
+            print(too_big)
+            return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
         sdl = os.environ.get("HOOKSHOT_SDL2", "")   # (libSDL2-2.0.so.0 beside it, when the AppImage brings one)
         if sdl and os.path.exists(sdl):
@@ -1598,6 +1657,10 @@ def main():
         if r.returncode:
             print("link FAILED (%.0fs), %d undefined symbols" % (time.time() - t, len(undefined)))
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
+            return 1
+        too_big = image_too_big(exe)
+        if too_big:
+            print(too_big)
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
         if wgpu:   # (wgpu_native.dll beside it; in use while the game runs)
@@ -1658,6 +1721,10 @@ def main():
         if r.returncode:
             print("link FAILED (%.0fs), %d undefined symbols" % (time.time() - t, len(undefined)))
             print("\n".join(undefined[:40]) if undefined else (r.stdout + r.stderr)[-3000:])
+            return 1
+        too_big = image_too_big(dll)
+        if too_big:
+            print(too_big)
             return 1
         print("linked %s: %d MB, no undefined symbols (%.0fs)" % (dll, os.path.getsize(dll) >> 20, time.time() - t))
     return 0

@@ -28,6 +28,10 @@ import re
 import struct
 import sys
 import time
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # (python -I leaves the script folder off)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 
 CONTROL_MAGIC = b"\x34\x12\x76\x98"
 ZSTD = b"\x28\xb5\x2f\xfd"

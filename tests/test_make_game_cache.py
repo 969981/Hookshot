@@ -36,10 +36,26 @@ def module_bytes(supported=True, payload=b"new authored module"):
     return bytes(header) + payload
 
 
+HEAPDEF = "System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs"
+DEFAULT_HEAPDEF = "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"
+
+
+def game_files(romfs, heapdef=HEAPDEF):
+    """What the build and Ocarina's start need from a romfs (game_profile.OOT.romfs_needed), as authored stand-ins. The .zs ones
+    start as zstd, so the damaged-file check reads them as whole"""
+    (romfs / "Pack").mkdir(parents=True, exist_ok=True)
+    (romfs / "Pack" / "ZsDic.pack.zs").write_bytes(b"\x28\xb5\x2f\xfd" + b"authored dictionary stand-in")
+    (romfs / "System" / "Resource").mkdir(parents=True, exist_ok=True)
+    if heapdef:
+        (romfs / heapdef).parent.mkdir(parents=True, exist_ok=True)
+        (romfs / heapdef).write_bytes(b"\x28\xb5\x2f\xfd" + b"authored heap definition stand-in")
+
+
 class NupCacheTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hookshot-cache-test-")
         self.addCleanup(self.temporary.cleanup)
+        self.addCleanup(getattr(make_game, "release_work", lambda: None))   # (Windows deletes no work folder with its lock open)
         self.root = Path(self.temporary.name).resolve()
         self.out = self.root / "output"
         self.work = self.root / "work"
@@ -52,6 +68,7 @@ class NupCacheTests(unittest.TestCase):
         self.new_nup.write_bytes(b"new authored input of a different size")
         (self.out / "romfs").mkdir()
         (self.out / "romfs" / "asset.txt").write_bytes(b"old authored assets")
+        game_files(self.out / "romfs")
         (self.out / ".hookshot_exefs").mkdir()
         (self.out / ".hookshot_exefs" / "main").write_bytes(module_bytes(payload=b"old authored module"))
         self.marker = self.out / ".hookshot_romfs"
@@ -77,7 +94,7 @@ class NupCacheTests(unittest.TestCase):
                 for path in self.out.rglob("*") if path.is_file() and ".game" not in path.parts}
 
     def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None,
-                    romfs_files=None):
+                    romfs_files=None, start_files=True):
         self.assert_owned_fixture()
 
         def run(cmd, env=None, on_line=None):
@@ -95,6 +112,8 @@ class NupCacheTests(unittest.TestCase):
                     (target / "romfs").mkdir()
                     (target / "romfs" / "asset.txt").write_bytes(b"new authored assets")
                     (target / "romfs" / "new-only.txt").write_bytes(b"new authored file")
+                    if start_files:
+                        game_files(target / "romfs")
                     for name, data in (romfs_files or {}).items():
                         path = target / "romfs" / name
                         path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,7 +363,7 @@ class NupCacheTests(unittest.TestCase):
         dump = self.root / "dump"
         (dump / "exefs").mkdir(parents=True)
         (dump / "exefs" / "main").write_bytes(module_bytes(supported=supported, payload=payload))
-        (dump / "romfs").mkdir()
+        self.game_files(dump / "romfs")   # (what check_romfs_folder looks for)
         (dump / "romfs" / "dump-only.txt").write_bytes(b"authored dump asset")
         return dump / "romfs", dump / "exefs"
 
@@ -374,6 +393,88 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(self.extractions, [self.old_nup])
         self.assertEqual((self.out / ".hookshot_exefs" / "main").read_bytes(), module_bytes())
 
+    def game_files(self, romfs, heapdef=HEAPDEF):
+        """What a chosen romfs folder needs (check_romfs_folder), as authored stand-ins"""
+        game_files(romfs, heapdef)
+
+    def test_romfs_folder_without_the_game_files_is_refused_before_the_build(self):
+        # (issue 467: another tool's packed copy, index.json and one romfs.bin, was built for 15 minutes, then the game
+        # stopped at boot)
+        shutil.rmtree(self.out)
+        exefs = self.root / "dump" / "exefs"
+        exefs.mkdir(parents=True)
+        (exefs / "main").write_bytes(module_bytes())
+        packed, empty, half = self.root / "dump" / "packed", self.root / "dump" / "empty", self.root / "dump" / "half"
+        no_heap = self.root / "dump" / "no-heap"   # (#689: no System/HeapSize, and the game crashed at boot)
+        packed.mkdir()
+        (packed / "index.json").write_text("{}")
+        (packed / "romfs.bin").write_bytes(b"authored packed stand-in")
+        empty.mkdir()
+        self.game_files(half)
+        (half / "System" / "Resource").rmdir()
+        self.game_files(no_heap, heapdef=None)
+        for romfs, said, packed_copy in ((packed, "no Pack/ZsDic.pack.zs", True), (empty, "no Pack/ZsDic.pack.zs", False),
+                                         (half, "no System/Resource", False), (no_heap, "no " + HEAPDEF, False)):
+            with self.subTest(romfs=romfs.name):
+                with self.assertRaises(SystemExit) as result:
+                    self.run_to_lift(self.new_nup, folders=(romfs, exefs))
+                self.assertEqual(result.exception.code, 1)
+                self.assertIn("does not hold the game's files (%s): choose the extracted RomFS." % said, self.output)
+                self.assertEqual("a packed copy" in self.output, packed_copy)
+                self.assertFalse(self.out.exists())
+                self.assertFalse((self.work / "exefs").exists())
+
+    def test_romfs_folder_is_looked_at_as_a_long_path(self):
+        # (Windows: a dump's Pack/ZsDic.pack.zs past 260 characters is found only through long_path, as the copy reads it)
+        romfs = self.root / "dump" / "romfs"
+        self.game_files(romfs)
+        named = str(self.root / "dump" / "named-only-through-long-path")
+        with mock.patch.object(make_game, "long_path", side_effect=lambda p: str(romfs) if p == named else p):
+            make_game.check_romfs_folder(named)
+
+    def test_romfs_folder_with_the_game_files_reaches_lift(self):
+        romfs, exefs = self.root / "dump" / "romfs", self.root / "dump" / "exefs"
+        self.game_files(romfs)
+        exefs.mkdir(parents=True)
+        (exefs / "main").write_bytes(module_bytes())
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup, folders=(romfs, exefs))
+        self.assertTrue((self.out / "romfs" / "Pack" / "ZsDic.pack.zs").is_file())
+
+    def test_romfs_folder_with_the_default_heap_definition_reaches_lift(self):
+        # (the game opens the Product heap definition, then the Default one: either is enough)
+        romfs, exefs = self.root / "dump" / "romfs", self.root / "dump" / "exefs"
+        self.game_files(romfs, heapdef=DEFAULT_HEAPDEF)
+        exefs.mkdir(parents=True)
+        (exefs / "main").write_bytes(module_bytes())
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup, folders=(romfs, exefs))
+        self.assertTrue((self.out / "romfs" / DEFAULT_HEAPDEF).is_file())
+
+    def test_nup_without_the_start_files_is_refused_and_the_previous_cache_kept(self):
+        # (a .nup unpacked into a romfs without the heap definition: refused before it replaces the folder's files)
+        before = self.cache()
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.new_nup, start_files=False)
+        self.assertEqual(self.extractions, [self.new_nup])
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("Your .nup file %s does not hold all of the game's files (no Pack/ZsDic.pack.zs): a game built from "
+                      "it could not start. Dump the game again" % self.new_nup, self.output)
+        self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
+
+    def test_cached_nup_or_update_without_the_start_files_is_refused(self):
+        # (a folder unpacked by a builder before this check, or kept for an update: refused before the build)
+        (self.out / "romfs" / HEAPDEF).unlink()
+        for update, said in ((False, "Your .nup file %s" % self.old_nup),
+                             (True, "This game folder's copy of the game files (%s)" % (self.out / "romfs"))):
+            with self.subTest(update=update):
+                with self.assertRaises(SystemExit) as result:
+                    self.run_to_lift(self.old_nup, update=update)
+                self.assertEqual(result.exception.code, 1)
+                self.assertIn("%s does not hold all of the game's files (no %s)" % (said, HEAPDEF), self.output)
+                self.assertEqual(self.extractions, [])
+
     def test_reparse_cache_is_rejected_before_extraction_or_replacement(self):
         before = self.cache()
         original_lstat = os.lstat
@@ -394,6 +495,7 @@ class NupCacheTests(unittest.TestCase):
         source_romfs = self.root / "source-romfs"
         source_romfs.mkdir()
         (source_romfs / "new.bin").write_bytes(b"authored source asset")
+        self.game_files(source_romfs)
         source_exefs = self.root / "source-exefs"
         source_exefs.mkdir()
         (source_exefs / "main").write_bytes(module_bytes())

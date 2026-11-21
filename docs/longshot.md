@@ -133,3 +133,38 @@ out is the triage of this pull (587 commits); each batch adds its rows here.
 
 Longshot's crash records (#75 and the fixes on them: #593, #626, #628, #1375, #1416, #1714) are not here; #102 and #558
 are taken without their crash-record parts, and #1459 without its crash window.
+
+### Lifter, build and script fixes (D1)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#35](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/35) | dyst | fix(build): the hash record is written under its build's start, and keeps only the keys used |
+| [#255](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/255) | Yeetbot90 | fix(tests): the game-free checks pass on Windows |
+| [#356](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/356) | madebyjordan | fix(build): a game image past 2 GB fails the link instead of running broken |
+| [#486](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/486) | jarynclouatre | fix(prompts): a failed rebuild of the button pictures keeps the last good file |
+| [#487](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/487) | jarynclouatre | fix(build): the object store's clean-up skips a folder it cannot read |
+| [#529](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/529) | jarynclouatre | fix(prompts): the Keyboard prompts show the movement keys as they are bound |
+| [#531](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/531) | Zelda Ootr | fix(scripts): hardware_report.py counts a Steam Deck as one, by whole words |
+| [#534](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/534) | jarynclouatre | fix(build): a romfs folder without the game's files is refused before the build |
+| [#557](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/557) | Zelda Ootr | fix(linux): a saves move that fails part way brings back what it moved |
+| [#630](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/630) | HumanBean | fix(build): one build at a time in a work folder, so a second build doesn't compile again what the first is compiling |
+| [#655](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/655) | NitnekLeBorgne | fix(linux): follow deep slave graphs for the slow-disk warning |
+| [#804](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/804) | d4nkn3ss | test(build): the make_game checks let go of the work folder's lock, so Windows can delete their temporary folders (with #630) |
+| [#863](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/863) | llun | fix(build): a romfs without the game's heap definition is refused too, also from a .nup and for an update |
+| [#900](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/900) | Zelda Ootr | fix(linux): a start from the Steam Deck's Game Mode no longer compiles every pipeline the preparation built |
+| [#948](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/948) | HumanBean | fix(scripts): dev_packs.py makes a folder only when it isn't there, for a Windows sandbox |
+| [#1032](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1032) | Jeff Aigner | fix(tests): run_all uses the clone's llvm-mingw folder, as make_game does |
+| [#1080](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1080) | HumanBean | fix(build): a failure after the game linked keeps the translation and the game's objects; only the renderer's go |
+| [#1125](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1125) | Gabriel Moisan Matte | fix(prompts): Auto picks the face by the pad's SDL type, not its name alone |
+| [#1132](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1132) | enum | fix(build): the build runs from, in and into folders past 260 characters |
+| [#1155](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1155) | pepe999 | fix(linux): guest memory as dma-bufs under Steam and Flatpak, where udmabuf's size_limit_mb can't be read |
+| [#1238](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1238) | HumanBean | fix(build): the compiler check names a folder Windows lets no program list, and never says "no message" |
+| [#1246](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1246) | Amateurwizrd | fix(tests): the GPU hang watch's check times its fixture from main(), not from outside |
+| [#1423](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1423) | Victor | fix(lift): SDIV of the most negative number by -1 gives the dividend, not a trap |
+| [#1495](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1495) | Zelda Ootr | fix(tests): run_all ends every process a check started, on Linux |
+| [#1686](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1686) | rainy | fix(lift): SCVTF / UCVTF (scalar, fixed-point) |
+
+#1132 is taken for the build's own scripts and `nx2/version.py`; Longshot's `nx2/translator_files.py` (its shader stamp
+in one file, which this tree keeps in `nx2/build.py`) comes with the perf batch. Not taken: #602 and #1267 (Longshot's
+play profiles, not here), #1602 (no `.def` or `.inl` files here), and the setup and Builder fixes (#151, #465, #540,
+#641, #690, #1453), which go to the Builders with their rename.

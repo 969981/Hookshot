@@ -460,6 +460,40 @@ def test_busy(d):
     check("the other job's marker is untouched", (base_dir / packs.BUSY).read_text() == "1234 pack 2026-11-12T12:00:00Z")
 
 
+def test_busy_folders_above_hidden(d):
+    """A Windows sandbox (a build farm's agent) may open the base's folder but not see the folders above it (they look missing,
+    and making one is refused): taking and leaving the busy marker, and adopting into the folder, still work"""
+    base = (d / "granted" / "base").resolve()
+    base.mkdir(parents=True)
+    real_exists, real_isdir, real_mkdir = os.path.exists, os.path.isdir, os.mkdir
+
+    def inside(p):
+        p = os.path.abspath(p)
+        return p == str(base) or p.startswith(str(base) + os.sep)
+
+    def exists(p):
+        return real_exists(p) if inside(p) else False
+
+    def isdir(p):
+        return real_isdir(p) if inside(p) else False
+
+    def mkdir(p, *args, **kwargs):
+        if not inside(p):
+            raise PermissionError(13, "Access is denied", p)
+        return real_mkdir(p, *args, **kwargs)
+
+    os.path.exists, os.path.isdir, os.mkdir = exists, isdir, mkdir
+    try:
+        with packs.Busy(str(base), "pack"):
+            check("the marker is taken", real_exists(base / packs.BUSY))
+        packs.ensure_dir(str(base))
+        packs.ensure_dir(str(base / "new"))
+    finally:
+        os.path.exists, os.path.isdir, os.mkdir = real_exists, real_isdir, real_mkdir
+    check("and left", not (base / packs.BUSY).exists())
+    check("a folder inside is still made", (base / "new").is_dir())
+
+
 def main():
     test_route()
     test_stamp_matches_build()
@@ -470,7 +504,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
-                        ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy)):
+                        ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy),
+                        ("hidden", test_busy_folders_above_hidden)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

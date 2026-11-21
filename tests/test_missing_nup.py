@@ -24,12 +24,20 @@ class MissingNupTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="hookshot-missing-nup-")
         self.addCleanup(temporary.cleanup)
+        self.addCleanup(getattr(make_game, "release_work", lambda: None))   # (Windows deletes no work folder with its lock open)
         self.root = Path(temporary.name).resolve()
         self.assertEqual(self.root.parent, Path(tempfile.gettempdir()).resolve())
         self.package = self.root / "selected game \u6f22 [1].nup"
         self.out, self.work = self.root / "output", self.root / "work"
         (self.out / "romfs").mkdir(parents=True)
         (self.out / "romfs/asset").write_bytes(b"authored asset")
+        for name in make_game.game_profile.OOT.romfs_needed:   # (what Ocarina's romfs needs to be reused: authored stand-ins, as zstd)
+            path = self.out / "romfs" / name[0][0]
+            if name[1] == "dir":
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x28\xb5\x2f\xfd" + b"authored stand-in")
         (self.out / ".hookshot_exefs").mkdir()
         (self.out / ".hookshot_exefs/main").write_bytes(b"authored code sentinel")
         (self.out / "user/save").mkdir(parents=True)

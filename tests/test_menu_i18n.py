@@ -62,7 +62,7 @@ class MenuI18nTests(unittest.TestCase):
                 "the ocarina waits for one; away from it they do their other jobs."
             ),
             "automatic button prompts": (
-                "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
+                "Those of the first controller, from its type and name (SDL's). With none, the keyboard's (the Switch's with XInput "
                 "alone)."
             ),
         }

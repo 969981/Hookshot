@@ -250,7 +250,6 @@ static int reserve_guest(void) {
            needed. HOS_GUEST_MEMFD=1: the memfd all the same) */
         const char *e = getenv("HOS_GUEST_MEMFD");
         int usable = 0;
-        unsigned long long limit_mb = 0;
         {
             const int u = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
             if (u < 0 && (errno == EACCES || errno == EPERM)) {
@@ -268,16 +267,19 @@ static int reserve_guest(void) {
             if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
+                /* (issue 1135) usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
+                   default, 64 MB, when it can't (gpu/vk/vk_memory.cpp import_dma_buf), and a limit too small only makes more
+                   dma-bufs. A Flatpak's or Steam's container shows /dev/udmabuf but not /sys/module */
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
-                if (f) {
-                    if (fscanf(f, "%llu", &limit_mb) != 1) limit_mb = 0;
+                if (f)
                     fclose(f);
-                }
-                usable = limit_mb > 0;
+                else
+                    hos_log("mem: udmabuf's size_limit_mb cannot be read (in a container?): its default, 64 MB, assumed");
+                usable = 1;
             }
             if (!usable && !e)
-                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): %s",
-                        u < 0 ? "/dev/udmabuf cannot be opened" : "udmabuf's size_limit_mb cannot be read");
+                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): "
+                        "/dev/udmabuf cannot be opened");
         }
         if (e ? atoi(e) != 0 : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "hookshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
@@ -481,23 +483,46 @@ static const char *saves_dir(const char *beside) {
     char real[MAX_PATH];
     move_old = realpath(beside, real), move_from = beside, move_new = dir;
     /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
-       The others used to go all the same, and the game then ran here without them) */
+       The others used to go all the same, and the game then ran here without them. So does one that cannot go, a copy that
+       fails (a full disk): the entries that went before it come back, and a copied one's old place goes only once all are
+       there. They used to stay in the new place, and the next start found them there and kept the old place without them) */
+    struct { char *name; int copied; } *went = NULL;
+    size_t n_went = 0;
     for (int move = 0; move < 2 && !kept; move++) {
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h == INVALID_HANDLE_VALUE) return dir;
         do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..") || (move && kept)) continue;
             char from[MAX_PATH], to[MAX_PATH];
             snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
             snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-            if (!move) kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
-            else if (!has_link(from) && MoveFileExA(from, to, 0)) moved++;
-            else if (copy_tree(from, to)) delete_tree(from), moved++;
-            else delete_tree(to), kept++;
+            if (!move) {
+                kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
+                continue;
+            }
+            void *more = realloc(went, (n_went + 1) * sizeof *went);
+            char *name = more ? strdup(fd.cFileName) : NULL;
+            if (more) went = more;
+            if (!name) kept++;
+            else if (!has_link(from) && MoveFileExA(from, to, 0)) went[n_went].name = name, went[n_went++].copied = 0;
+            else if (copy_tree(from, to)) went[n_went].name = name, went[n_went++].copied = 1;
+            else delete_tree(to), free(name), kept++;
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
+    for (size_t i = 0; i < n_went; i++) {
+        char from[MAX_PATH], to[MAX_PATH];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, went[i].name);
+        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, went[i].name);
+        if (!kept) {
+            moved++;
+            if (went[i].copied) delete_tree(from);
+        } else if (went[i].copied) delete_tree(to);
+        else if (!MoveFileExA(to, from, 0)) hos_log("saves: %s could not come back to %s", to, from);
+        free(went[i].name);
+    }
+    free(went);
     if (kept) {
         hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
         return beside;
@@ -1867,6 +1892,12 @@ static void memory_notice(void) {
     MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
 }
 #endif
+/* (hookshot, linux) What driver_env_choose did with the driver's environment, said again in the game's own log once it is open
+   (it runs before, when stderr is still the launcher's) */
+static char driver_env_said[1024];
+static void driver_env_log(void) {
+    if (driver_env_said[0]) hos_log("%s", driver_env_said);
+}
 #ifdef _WIN32
 /* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -1995,6 +2026,7 @@ static int game_main(int argc, char **argv) {
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     game_profile_log();
+    driver_env_log();
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
@@ -2260,6 +2292,37 @@ static void driver_cache_folder(void) {
         *p = '/';
     }
 }
+/* (hookshot, linux) RADV_FORCE_VRS_CONFIG_FILE dropped before anything loads Vulkan. The Steam Deck's Game Mode sets it for
+   Steam and everything it starts, naming a file it writes the Half Rate Shading rate to (/tmp/radv_vrs.<random>, "1x1" when
+   off). When that file exists, RADV forces VRS for the device and puts that into every graphics pipeline's key, so nothing
+   built without it is found, in the driver's cache or in ours: measured on a Steam Deck OLED (RADV, Mesa 26.2.0-devel), the
+   same install compiled its 32,438 noted pipelines at about 20 a second (25-30 minutes) with the variable naming a file, empty
+   or "1x1", and loaded them in 22 s without it or with it naming no file. The preparation (the Builder, a first start from the
+   desktop) runs without it, so every start from Game Mode compiled again what it built. Dropped only when it names a file that
+   exists, which is when RADV reads it; no other driver reads it. RX_VK_HALF_RATE_SHADING=1 keeps it: Steam's Half Rate Shading
+   works for the game then (little: RADV leaves a fragment program that reads its position at full rate, and nearly all of
+   ours do), and the starts in Game Mode compile their own pipelines. RADV_FORCE_VRS, a rate someone set by hand, is kept.
+   The variable is named in HOOKSHOT_DRIVER_ENV_SET for the renderer's driver cache line. A restart (hos_relaunch.c) starts
+   again from the first environment and drops it again */
+static void driver_env_choose(void) {
+    const char *file = getenv("RADV_FORCE_VRS_CONFIG_FILE");
+    struct stat st;
+    if (!file || !*file || stat(file, &st) != 0) return;
+    const char *keep = getenv("RX_VK_HALF_RATE_SHADING");
+    if (keep && !strcmp(keep, "1")) {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE kept (RX_VK_HALF_RATE_SHADING=1): Steam's Half Rate Shading reaches the game, "
+                 "and RADV gives every graphics pipeline another key than the preparation's, so they are compiled again");
+    } else {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE=%.300s dropped: with it RADV gives every graphics pipeline another key than the "
+                 "preparation's and compiles them all again; Steam's Half Rate Shading has no effect on the game "
+                 "(RX_VK_HALF_RATE_SHADING=1 keeps it)", file);
+        unsetenv("RADV_FORCE_VRS_CONFIG_FILE");
+        setenv("HOOKSHOT_DRIVER_ENV_SET", "RADV_FORCE_VRS_CONFIG_FILE", 1);
+    }
+    fprintf(stderr, "%s\n", driver_env_said);
+}
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
@@ -2267,6 +2330,7 @@ int main(int argc, char **argv) {
     game_profile_env();
     driver_cache_room();
     driver_cache_folder();
+    driver_env_choose();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

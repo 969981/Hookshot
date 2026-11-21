@@ -29,6 +29,8 @@ import time
 import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn

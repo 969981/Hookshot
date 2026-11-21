@@ -1,7 +1,7 @@
 """Every game-free check in one run: each tests/test_*.py and nx2/test_*.py in its own process, the C++ unit tests under
 gpu/vk/tests and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
 printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
-Exits 1 when anything failed.
+Exits 1 when anything failed. On Linux a check that ends or times out takes every process it started with it.
 
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N] [name ...]
     python -I -B tests/run_all.py --changed [BASE]   (only the checks that read files changed since BASE, origin/main)
@@ -36,12 +36,15 @@ import argparse
 import ast
 import concurrent.futures
 import importlib.util
+import itertools
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,6 +104,18 @@ def dav1d_prefix():
         if r and os.path.exists(os.path.join(r, "include", "dav1d", "dav1d.h")):
             return r
     return None
+
+
+def bundled_mingw():
+    """(windows) The clone's llvm-mingw folder as HOOKSHOT_MINGW for every check, as nx2/make_game.py's bundled_mingw() gives
+    it to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
+    toolchain.native_target() asks that folder's clang, found on PATH, for the MSVC target: "'algorithm' file not found".
+    HOOKSHOT_MINGW set already wins; HOOKSHOT_MSVC=1 (the Visual Studio route) and a folder without its clang leave it unset"""
+    if not WINDOWS or os.environ.get("HOOKSHOT_MINGW") or os.environ.get("HOOKSHOT_MSVC") == "1":
+        return
+    here = os.path.join(ROOT, "llvm-mingw")
+    if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
+        os.environ["HOOKSHOT_MINGW"] = here
 
 
 def find_tools():
@@ -243,9 +258,106 @@ def python_check(rel, decl, tools, timeout):
     missing += [m for m in decl["modules"] if importlib.util.find_spec(m) is None]
 
     def run():
-        return subprocess.run([sys.executable, "-I", "-B", os.path.join(ROOT, rel)] + args, cwd=ROOT, timeout=timeout,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        return run_check([sys.executable, "-I", "-B", os.path.join(ROOT, rel)] + args, timeout)
     return run, missing
+
+
+# (Linux) A check's processes end with it: when it times out, and what it left running when it ends.
+# subprocess.run's timeout kills the check alone, and a child it was waiting for ran on with no end
+# (tests/test_recorder_sync.py's broken recorder hangs on purpose until the check's own 30 s timeout). Each check's
+# processes carry a token in their environment, which they keep when their parent ends or they leave the process
+# group, so they are found in /proc; the descendants of the check and of each of those are found by their parents too
+# (one started with another environment). The checks stay in the runner's process group, so Ctrl-C and a kill of the
+# group reach them as before. Elsewhere (Windows, macOS) a check runs as subprocess.run runs it.
+CHECKS_ENV = "HOOKSHOT_RUN_ALL_CHECKS"   # (space-separated: a runner run by a check adds its own token)
+CHECK_IDS = itertools.count()
+# (one scan at a time: the runner's threads share one interpreter, and scans at once slow each other down many times over)
+SCAN_LOCK = threading.Lock()
+PROC = sys.platform.startswith("linux") and os.path.isdir("/proc")
+
+
+def run_check(cmd, timeout):
+    if not PROC:
+        return subprocess.run(cmd, cwd=ROOT, timeout=timeout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL)
+    token = "%d.%d" % (os.getpid(), next(CHECK_IDS))
+    env = dict(os.environ)
+    env[CHECKS_ENV] = (env.get(CHECKS_ENV, "") + " " + token).strip()
+    with subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          stdin=subprocess.DEVNULL) as p:
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except BaseException:   # (the timeout, with the output so far: not waited for again, as a child may hold it)
+            end_check(p.pid, token)
+            p.wait()
+            raise
+        end_check(None, token)
+        return subprocess.CompletedProcess(cmd, p.returncode, out)
+
+
+def check_processes(root, token):
+    """the live processes (not zombies) of the check: root, any process of ours with the token, and their descendants"""
+    with SCAN_LOCK:
+        return scan_processes(root, token)
+
+
+def scan_processes(root, token):
+    me, uid, parent, found = os.getpid(), os.getuid(), {}, set()
+    key, mine = CHECKS_ENV.encode() + b"=", token.encode()
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) == me:
+            continue
+        pid = int(d)
+        try:
+            if os.stat("/proc/%d" % pid).st_uid != uid:   # (only our own: the rest cannot be the check's, nor be killed)
+                continue
+            with open("/proc/%d/stat" % pid, "rb") as f:
+                stat = f.read().rsplit(b")", 1)[1].split()
+            if stat[0] == b"Z":
+                continue
+            parent[pid] = int(stat[1])
+            with open("/proc/%d/environ" % pid, "rb") as f:
+                env = f.read().split(b"\0")
+            if any(e.startswith(key) and mine in e[len(key):].split() for e in env):
+                found.add(pid)
+        except (OSError, IndexError, ValueError):   # (ended while read, or not ours to read)
+            continue
+    if root in parent:
+        found.add(root)
+    grew = True
+    while grew:   # (a descendant started with another environment, by its parent)
+        more = {pid for pid, pp in parent.items() if pp in found and pid not in found}
+        found |= more
+        grew = bool(more)
+    return found
+
+
+def end_check(root, token):
+    """SIGKILL to each of the check's processes, again until none is left: one started while they were being ended is
+    found the next time, and a last look after the first empty one finds one whose environment read back empty in the
+    middle of an execve. Given up once five rounds in a row (about 0.2 s) end none (a process that cannot be killed, as one in
+    uninterruptible sleep). A PID is read and killed a moment apart: one reused in between could be hit, as with any
+    kill by PID"""
+    last, empty, stuck = None, 0, 0
+    for _ in range(100):
+        procs = check_processes(root, token)
+        if not procs:
+            empty += 1
+            if empty == 2:
+                return
+            time.sleep(0.01)
+            continue
+        empty = 0
+        stuck = stuck + 1 if last is not None and len(procs) >= len(last) else 0
+        if stuck == 5:
+            return
+        last = procs
+        for pid in procs:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.005)
 
 
 def cpp_checks(tools, timeout):
@@ -259,12 +371,10 @@ def cpp_checks(tools, timeout):
         def run():
             with tempfile.TemporaryDirectory() as tmp:
                 exe = os.path.join(tmp, "t.exe")
-                r = subprocess.run([cxx, "-std=c++20", *flags, os.path.join(ROOT, src), "-o", exe], cwd=ROOT,
-                                   timeout=timeout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                r = run_check([cxx, "-std=c++20", *flags, os.path.join(ROOT, src), "-o", exe], timeout)
                 if r.returncode:
                     return r
-                return subprocess.run([exe] + [a.replace("{tmp}", tmp) for a in args], cwd=ROOT, timeout=timeout,
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                return run_check([exe] + [a.replace("{tmp}", tmp) for a in args], timeout)
         return run
     rect = "gpu/vk/tests/present_rect_test.cpp"
     out.append((rect, build_and_run(rect, ["-Wall", "-Wextra", "-Werror"], [])))
@@ -412,6 +522,8 @@ def main():
     p.add_argument("names", nargs="*")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     p.add_argument("--timeout", type=int, default=600, help="seconds per check (default 600)")
+    p.add_argument("--exact", action="store_true",   # (from Longshot, with #1032 and #1495's checks)
+                   help="a name must be a check's whole path, and with names given and none matching, run nothing")
     p.add_argument("--strict", action="store_true", help="a missing tool fails the check instead of skipping it")
     p.add_argument("--no-skip", action="store_true", help="also run the checks on the skip list")
     p.add_argument("--shard", type=shard_arg, metavar="K/N", help="run only the K-th of N parts (split by the times)")
@@ -425,6 +537,7 @@ def main():
     if a.changed is not None and (a.names or a.write_times):
         p.error("--changed picks the checks itself: no names, no --write-times")
     times = load_times()
+    bundled_mingw()
     tools = find_tools()
 
     checks = []
@@ -437,9 +550,12 @@ def main():
         for line in stale:
             print("  " + line, file=sys.stderr)
         return 2
+    def picked(name):
+        return name in a.names if a.exact else any(n in name for n in a.names)
+
     # (only the tests asked for: a bad declaration elsewhere does not stop a run of one named test)
     if a.names:
-        tests = [rel for rel in tests if any(n in rel for n in a.names)]
+        tests = [rel for rel in tests if picked(rel)]
     changed, everything = None, True
     if a.changed is not None:
         changed = changed_files(a.changed)
@@ -464,7 +580,7 @@ def main():
         c = Check(rel, run)
         if decls[rel]["unparsed"]:   # (no skip to read: the same failure on every OS, not run)
             c.run = lambda why=decls[rel]["unparsed"]: Result(1, (why + "\n").encode())
-        elif reason and not a.no_skip and not any(n in rel for n in a.names):
+        elif reason and not a.no_skip and not (a.names and picked(rel)):
             c.why_skip = reason
         elif missing and not a.strict:
             c.why_skip = "not found here: " + ", ".join(missing)
@@ -484,7 +600,10 @@ def main():
         checks.append(c)
     checks.append(Check("(byte-compile every tracked .py)", compile_all))
     if a.names:
-        checks = [c for c in checks if any(n in c.name for n in a.names)]
+        checks = [c for c in checks if picked(c.name)]
+        if a.exact and not checks:
+            print("run_all: --exact: no check matches %s, nothing run" % ", ".join(a.names), file=sys.stderr)
+            return 2
     part = ""
     if a.shard:
         k, n = a.shard

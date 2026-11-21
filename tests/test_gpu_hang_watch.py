@@ -5,16 +5,18 @@ afterwards: device_lost() never ran and the game froze with no report. The watch
 goes to device_lost() when the device reads as lost, or when work sent to the queue makes no progress for
 RX_VK_GPU_HANG_SEC seconds. gpu_hang_watch_start() is cut into a fixture with the timeline, the sent value and
 device_lost() as stubs, and run three ways: a timeline stuck behind what was sent must end the process after the limit,
-a lost device at once, and a timeline that keeps moving never.
+a lost device at once, and a timeline that keeps moving never. The fixture times itself from main(): timed from outside,
+Windows' first look at the freshly built program (0.7 s alone, several seconds under run_all's load) counted as the
+watch's.
 
 python -I -B tests/test_gpu_hang_watch.py [--cxx g++]
 """
 import argparse
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
-import time
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -69,13 +71,17 @@ void logf(const char* fmt, ...) {
 typedef int HANDLE;
 static HANDLE GetCurrentThread() { return 0; }
 static void SetThreadDescription(HANDLE, const wchar_t*) {}
+static std::chrono::steady_clock::time_point started;
 [[noreturn]] void device_lost(const char* why = nullptr) {
     std::printf("device_lost: %s\n", why ? why : "(VK_ERROR_DEVICE_LOST)");
+    std::printf("ended %lld ms after main\n", (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count());
     std::fflush(stdout);
     std::_Exit(3);
 }
 @@WATCH@@
 int main(int argc, char** argv) {
+    started = std::chrono::steady_clock::now();
     mode = argc > 1 ? argv[1] : "";
     gpu_hang_watch_start();
     gpu_hang_watch_start();   // (once only)
@@ -87,10 +93,11 @@ int main(int argc, char** argv) {
 
 
 def run(exe, mode, limit):
+    """The exit code, the output, and the seconds from the fixture's main() to its device_lost() (None without one)."""
     env = dict(os.environ, RX_VK_GPU_HANG_SEC=str(limit))
-    t0 = time.monotonic()
     r = subprocess.run([str(exe), mode], capture_output=True, text=True, timeout=30, env=env)
-    return r.returncode, r.stdout, time.monotonic() - t0
+    m = re.search(r"^ended (\d+) ms after main$", r.stdout, re.M)
+    return r.returncode, r.stdout, int(m.group(1)) / 1000 if m else None
 
 
 def main():
@@ -114,13 +121,13 @@ def main():
 
         code, out, took = run(exe, "stuck", 2)
         print(out, end="")
-        if code != 3 or "device_lost: the GPU hung" not in out or not 1.5 < took < 3.4:
-            raise SystemExit("FAIL: a stuck timeline did not end the process after the limit (exit %d, %.1f s)" % (code, took))
+        if code != 3 or "device_lost: the GPU hung" not in out or took is None or not 1.5 < took < 3.4:
+            raise SystemExit("FAIL: a stuck timeline did not end the process after the limit (exit %d, %s s)" % (code, took))
         if "ends the game (RX_VK_GPU_HANG_SEC)" not in out:
             raise SystemExit("FAIL: the hang watch does not log the limit it settled on")
         code, out, took = run(exe, "lost", 30)
-        if code != 3 or took > 2.5 or "(VK_ERROR_DEVICE_LOST)" not in out:
-            raise SystemExit("FAIL: a lost device did not end the process at once (exit %d, %.1f s)" % (code, took))
+        if code != 3 or took is None or took > 2.5 or "(VK_ERROR_DEVICE_LOST)" not in out:
+            raise SystemExit("FAIL: a lost device did not end the process at once (exit %d, %s s)" % (code, took))
         code, out, _ = run(exe, "moving", 2)
         if code != 0 or "device_lost" in out:
             raise SystemExit("FAIL: a timeline that keeps moving was taken as a hang")

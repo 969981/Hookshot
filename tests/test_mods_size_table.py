@@ -179,7 +179,8 @@ def merge_checks(cc, src, tmp):
 POSIX_PIECES = ["static DWORD error_of(int e) {", "static void slashes(char *dst, size_t cap, const char *src) {",
                 "DWORD GetFileAttributesA(LPCSTR name) {", "static BOOL find_next(HFind *f, WIN32_FIND_DATAA *fd) {",
                 "HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *fd) {",
-                "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {", "BOOL FindClose(HANDLE h) {"]
+                "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {", "BOOL FindClose(HANDLE h) {",
+                "BOOL DeleteFileA(LPCSTR name) {", "BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {"]   # (prompts.c moves its files in)
 
 
 def routing_checks(cc, tmp, zstandard, host):
@@ -224,7 +225,7 @@ void hos_log(const char *f, ...) { va_list ap; va_start(ap, f); printf("log: ");
 int hos_binding(int set, int button, int slot) { (void)set; (void)button; (void)slot; return -1; }
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }
 int hos_xinput_pads(void) { return 0; } /* no controllers in this routing fixture */
-void hos_sdl_pad_first_name(char *out, size_t cap) { if (cap) *out = 0; }
+void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl) { if (cap) *out = 0; if (type) *type = 0; if (sdl) *sdl = 0; }
 int hos_regions(uint64_t (*out)[2], int cap) { (void)out; (void)cap; return 0; }
 int64_t hos_now_ns(void) { return 0; }
 int rx_option(int id, int otherwise) { (void)id; return otherwise; }
