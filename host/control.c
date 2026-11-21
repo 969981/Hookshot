@@ -2307,10 +2307,11 @@ static int game_save_root(char *out, size_t cap) {
 static int64_t game_frame(void) { return __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED); }
 static void game_log(const char *line) { hos_log("%s", line); }
 void rx_close_asked(void);   /* (rx_backend.c) */
+void hos_close_finish(void);   /* (hos_relaunch.c: the shared close tail, without a window message or restart) */
 static void game_quit(void) {   /* (as the window's close: the pipelines made since the last save kept, then out) */
     rx_close_asked();
     hos_log("control: exiting");
-    hos_log_flush();
+    hos_close_finish();
     ExitProcess(0);
 }
 static const char *game_renderer(void) { return rx_describe(); }

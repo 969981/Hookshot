@@ -3990,6 +3990,7 @@ void do_present(const nvn_tex* t, const int crop[4], float cover) {
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
+        new_refuse_test(presents);
         wide_sides_tick(cover);
         if (presents == 1) hang_watch_start(), gpu_hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the

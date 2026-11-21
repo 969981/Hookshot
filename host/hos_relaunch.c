@@ -100,12 +100,21 @@ static void relaunch(void) {
 }
 #endif
 
+/* Shared tail after rx_close_asked returned. No process exit or restart here: the Windows stop worker must
+   keep its watchdog alive until all explicit close work and the log flush have returned. */
+void hos_close_finish(void) {
+    void hos_fs_wait_writes(void);   /* (nn_fs.c: a file the game is writing, up to 3 s) */
+    hos_fs_wait_writes();
+    hos_log("stop: close work done (a file the game was writing waited for, at most 3 s)");
+    hos_log_flush();
+}
+
 /* The window was closed (host/display.c's WM_CLOSE, host/posix/display_sdl.c's quit): the game exits, and starts again
    first when the menu asked for it */
 void hos_window_closed_exit(void) {
     const int again = relaunch_asked != 0;
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
-    hos_log_flush();
+    hos_close_finish();
     if (again) relaunch();
     ExitProcess(0);
 }

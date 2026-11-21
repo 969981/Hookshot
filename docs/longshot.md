@@ -109,3 +109,27 @@ out is the triage of this pull (587 commits); each batch adds its rows here.
 | [#1839](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1839) | gmourao | fix(vk): recognize RDNA 4 GPUs by PCI device ID (ported: the ids only) |
 
 #1659 is taken as its commit, but its line stays as #1631 had it: this tree's `dynamic_state` reads `cur_program`.
+
+### Host fixes (C1)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#102](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/102) | mooki | fix(runtime): handle windowless Windows stop requests (without its crash record: not here) |
+| [#341](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/341) | llun | fix(hos): wait at the commit limit for the host's own allocations, then say out of memory (host API 23 here) |
+| [#488](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/488) | omgitsgela | fix(vi): pace at 240 while a movie plays, so its player stops losing pictures |
+| [#496](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/496) | Zelda Ootr | fix(host): a thread lowered right after it is created runs lowered on Linux |
+| [#558](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/558) | Zelda Ootr | fix: a log file that cannot be opened no longer closes stderr |
+| [#594](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/594) | mooki | fix(vcores): a thread starved of its core gets it after 1 s, not an escape after 2 s |
+| [#911](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/911) | dyst | fix(host): hookshot_env.txt can't set HOS_CONTROL_PEER_SID |
+| [#1291](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1291) | HumanBean | fix(vk): at Windows' commit limit the renderer's C++ allocations wait for memory, then say out of memory (host API 23 here) |
+| [#1322](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1322) | omgitsgela | fix(linux): a Gaming-mode start still writes hookshot_log.txt (the game log follows the game, not Steam's pipe) |
+| [#1346](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1346) | cuecuemoar | fix(fs): a long path with a doubled separator opens: the cutscenes' voices in a deep game folder |
+| [#1422](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1422) | Joey Magnus | fix(host): closing the game waits for a save it is writing |
+| [#1459](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1459) | dyst | fix(host): the saved logs leave out the player's user name |
+| [#1683](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1683) | rainy | fix(svc): svcQueryMemory answers a free range as the whole gap, Inaccessible past the address space |
+| [#1827](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1827) | SadTransGirl | fix(host): a CPU read or write of texels gives the thread's virtual core up while it waits for the GPU (no ~1 s freeze at area changes) |
+| [#2007](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/2007) | SadTransGirl | fix(host): the game's memory stays in RAM when the PC runs short: a soft working-set minimum (HOS_WS_FLOOR_MB) |
+| [#2012](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/2012) | siantm | fix(os): spin_begin reads HOS_SPIN_ALWAYS once, under a lock, and its cache atomically |
+
+Longshot's crash records (#75 and the fixes on them: #593, #626, #628, #1375, #1416, #1714) are not here; #102 and #558
+are taken without their crash-record parts, and #1459 without its crash window.

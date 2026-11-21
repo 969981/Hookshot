@@ -86,6 +86,7 @@ static HANDLE CreateFileA(const char *p, DWORD a, DWORD s, void *sa, DWORD d, DW
 }
 typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; volatile long refs; } Handle;
 static uint64_t new_handle(Handle *h) { free(h); return 7; }
+static int writes_open;
 
 @OPEN@
 

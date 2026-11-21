@@ -57,6 +57,7 @@
 #endif
 
 #include "vk_loader.h"
+#include "vk_new.h"   // (NewNothrow: the ring's and the arena's nothrow new keep their null at the commit limit)
 
 namespace mkwvk {
 void logf(const char* fmt, ...);        // (vk_main.cpp)
@@ -257,7 +258,11 @@ struct Arena {
             }
             const size_t cap = n + align > kChunk ? n + align : kChunk;
             if (nchunks == kMaxChunks || cap > g_hard_budget || capacity > g_hard_budget - cap) return nullptr;
-            void* p = ::operator new(cap, std::align_val_t(64), std::nothrow);
+            void* p;
+            {
+                const NewNothrow nothrow;   // (a refusal: the null below at once, not the new_handler's wait and stop)
+                p = ::operator new(cap, std::align_val_t(64), std::nothrow);
+            }
             if (!p) return nullptr;
             chunks[nchunks++] = {static_cast<uint8_t*>(p), cap};
             capacity += cap;
@@ -460,7 +465,10 @@ inline bool Recorder::start() {   // (the producer, its first packet)
     if (!base) {
         size_t c = 4096;
         while (c < g_ring_bytes && c < (size_t(1) << 30)) c <<= 1;
-        base = static_cast<uint8_t*>(::operator new(c, std::align_val_t(64), std::nothrow));
+        {
+            const NewNothrow nothrow;   // (a refusal: every call made directly, below, not the new_handler's wait and stop)
+            base = static_cast<uint8_t*>(::operator new(c, std::align_val_t(64), std::nothrow));
+        }
         if (!base) {
             broken.store(true);
             ::mkwvk::logf("vk: RX_VK_RECORDER=thread: no memory for the recorder's ring (%zu KB): every call made directly", c >> 10);

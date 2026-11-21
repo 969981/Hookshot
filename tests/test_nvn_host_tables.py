@@ -92,6 +92,10 @@ static int pool_off(void) { return 0; }
 static unsigned pool_class(size_t n) { (void)n; return 0; }
 static int puts_count;
 static void pool_put(void *b, unsigned c) { (void)c; free(b); puts_count++; }
+/* (host/mkw_glue.c's: never NULL; tests/test_host_alloc_wait.py checks their wait and notice) */
+static void *hos_xmalloc(size_t s, const char *what) { void *p = malloc(s); if (!p) { fprintf(stderr, "%s\n", what); exit(3); } return p; }
+static void *hos_xcalloc(size_t n, size_t s, const char *what) { void *p = calloc(n, s); if (!p) { fprintf(stderr, "%s\n", what); exit(3); } return p; }
+static void *hos_xrealloc(void *o, size_t s, const char *what) { void *p = realloc(o, s); if (!p) { fprintf(stderr, "%s\n", what); exit(3); } return p; }
 ''' + "\n".join(pieces) + r'''
 static void require(int ok, const char *m) { if (!ok) { fprintf(stderr, "FAIL: %s\n", m); exit(1); } }
 static int dies(void *(*f)(uint64_t, uint64_t), uint64_t a, uint64_t n) {

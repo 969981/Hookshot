@@ -48,7 +48,12 @@ CODE = r"""
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include "../gpu/vk/compat/hookshot_redact.h"
 %(hos_enum)s
+// (host/log_redact.c's, for a player whose home folder is /home/al)
+static size_t hos_log_redact(char* out, size_t cap, const char* line) {
+    return hookshot_redact_line(out, cap, line, std::strlen(line), "/home/al", "al", 0);
+}
 struct HosThread { const char* name; };
 HosThread* cur;
 volatile int hos_control_on;
@@ -87,6 +92,8 @@ int main() {
     want(queued, "[hos host] vk: device 1\n", "host: an info line as it was");
     host_line(HOS_LOG_TRACE, "vk: program %%s", "x");
     want(queued, "[hos host] [trace] vk: program x\n", "host: trace after the thread's tag");
+    host_line(HOS_LOG_INFO, "saves: %%s and /run/media/al/SD", "/home/al/Games/Hookshot/user");
+    want(queued, "[hos host] saves: ~/Games/Hookshot/user and /run/media/<user>/SD\n", "host: the line without the user name");
     HosThread main_thread{"Main"};
     cur = &main_thread;
     host_line(HOS_LOG_DEBUG, "codec: y");
@@ -128,7 +135,7 @@ def main():
         src, exe = Path(tmp) / "levels.cpp", Path(tmp) / ("levels" + (".exe" if os.name == "nt" else ""))
         src.write_text(code, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-format-security",
-                        "-D_CRT_SECURE_NO_WARNINGS", str(src), "-o", str(exe)], check=True, timeout=180)
+                        "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "host"), str(src), "-o", str(exe)], check=True, timeout=180)
         r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
         sys.stdout.write(r.stdout)
         if r.returncode:

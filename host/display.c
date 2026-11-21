@@ -513,6 +513,10 @@ void hos_renderer_wait(void) {
 void hos_display_start(void) {
     if (env_on("HOS_HEADLESS")) {   /* no window: the renderer still draws, offscreen (screenshots, frame dumps) */
         rx_start(NULL);
+        /* The renderer's startup may attach/free a console, which resets Windows' console handlers.
+           Install the stop route afterwards; it needs neither a rendered frame nor the game's input loop. */
+        int hos_windows_stop_start(void);
+        if (!hos_windows_stop_start()) hos_log("stop: windowless stop route unavailable; use the control bridge");
         return;
     }
     renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);

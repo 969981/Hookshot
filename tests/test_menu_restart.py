@@ -136,8 +136,10 @@ def sources():
         raise SystemExit("display_sdl.c: no WM_APP + 9")
     relaunch = (ROOT / "host" / "hos_relaunch.c").read_text(encoding="utf-8")
     end = function(relaunch, "void hos_window_closed_exit(void) {")
-    if end.index("hos_log_flush();") > end.index("relaunch();") or end.index("relaunch();") > end.index("ExitProcess(0);"):
-        raise SystemExit("hos_relaunch.c: the restart is not the last step before the exit (after the log)")
+    finish = function(relaunch, "void hos_close_finish(void) {")
+    if "hos_log_flush();" not in finish or end.index("hos_close_finish();") > end.index("relaunch();") or \
+            end.index("relaunch();") > end.index("ExitProcess(0);"):
+        raise SystemExit("hos_relaunch.c: the restart is not the last step before the exit (after the shared log flush)")
     for need in ("GetModuleFileNameW(", "GetCommandLineW()", "CreateProcessW(", '"/proc/self/cmdline"', '"/proc/self/environ"',
                  'execve("/proc/self/exe"'):
         if need not in relaunch:

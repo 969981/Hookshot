@@ -63,7 +63,8 @@ def main():
     if "hos_commit(" in touch:
         raise SystemExit("FAIL: the first-touch handler calls hos_commit, which would wait a second time")
     refused = block(glue, "static void commit_refused(uint64_t lo, uint64_t size, DWORD err)")
-    if "hos_out_of_memory_box" not in refused:
+    notice = block(glue, "void hos_out_of_memory(int wait)")
+    if "hos_out_of_memory(0)" not in refused or "oom_box" not in notice:
         raise SystemExit("FAIL: commit_refused does not show the out-of-memory notice")
     # (#2941: std::bad_alloc on the presenting thread, in the page table's flush, closed the game: the flush writes the changes
     # at once when its list cannot be made, and the renderer keeps a reserve that operator new's handler gives back)
