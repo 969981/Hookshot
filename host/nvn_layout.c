@@ -145,6 +145,23 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     o->align = 512;
 }
 
+/* (hookshot) Within these bounds the layout cannot wrap before the 16 GiB check refuses it: a level is at most 2^16 GOB
+   columns x 2^14 rows x 2^16 deep x 512 bytes (a tile's shift divides the rows and depth first), about 2^55, 17 of them
+   under 2^60; a layered texture's layer is one deep, under 2^44, times 2^16 layers (the audit's V1, V4, V5: a layer size
+   that wrapped became a heap write past the renderer's staging, an allocation or a loop of 2^43) */
+int nvn_tex_sanitize(const nvn_tex *in, nvn_tex *out) {
+    *out = *in;
+    const nvn_texdesc *d = &out->d;
+    const int s = d->samples;
+    if (d->target < 0 || d->target > 10 || (s != 0 && s != 1 && s != 2 && s != 4 && s != 8 && s != 16)) return 0;
+    if (d->levels > NVN_TEX_MAX_LEVELS || d->height > NVN_TEX_MAX_DIM || d->depth > NVN_TEX_MAX_DIM) return 0;
+    /* (a buffer texture's width is its element count: up to 2^30, as GPUs' texel buffers) */
+    if (d->target == 10 ? d->width > (1u << 30) : d->width > NVN_TEX_MAX_DIM) return 0;
+    nvn_tex_layout(d, &out->L);
+    if (out->L.size > NVN_TEX_MAX_BYTES || out->L.layer_size > out->L.size) return 0;
+    return 1;
+}
+
 uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level) {
     fmt_t t = fmt_of(d->format);
     unsigned dpl; int layered; uint32_t w, h, z;

@@ -400,8 +400,11 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n) {
 }
 void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
+static const nvn_tex *safe_tex(const nvn_tex *in, nvn_tex *copy, const char *what);
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
+    nvn_tex tc;
+    t = safe_tex(t, &tc, "present");   /* (the window's texture is the game's object too: a copy, NULL past any texture) */
     vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
 }
 /* (hookshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
@@ -448,7 +451,24 @@ static void forward(const early_call *c) {
         break;
     }
 }
-void rx_nvn_register_texture(int id, const nvn_tex *t, const nvn_view *v) {
+/* (hookshot) a texture object from the game, as the renderer takes it: a copy with its layout made from its description,
+   or NULL when the description is past any texture (nvn_tex_sanitize; the audit's V1, V4, V5). The game owns the bytes
+   and may change them while the renderer reads, so the renderer only ever sees the copy (V2) */
+static const nvn_tex *safe_tex(const nvn_tex *in, nvn_tex *copy, const char *what) {
+    if (!in) return NULL;
+    if (nvn_tex_sanitize(in, copy)) return copy;
+    static int told;
+    if (__atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 20)
+        hos_log("nvn: %s of a texture %ux%ux%u, %u levels, target %d, format %#x, %d samples: past any texture, left out", what,
+                copy->d.width, copy->d.height, copy->d.depth, copy->d.levels, copy->d.target, (unsigned)copy->d.format, copy->d.samples);
+    return NULL;
+}
+void rx_nvn_register_texture(int id, const nvn_tex *t_in, const nvn_view *v_in) {
+    nvn_tex tc;
+    nvn_view vc;
+    const nvn_tex *t = safe_tex(t_in, &tc, "registration");
+    if (t_in && !t) return;
+    const nvn_view *v = v_in ? (vc = *v_in, &vc) : NULL;
     if (!started && t) {
         early_call c = {0, id};
         c.t = *t;
@@ -473,6 +493,8 @@ void rx_nvn_set_texture_pool_size(int n) {
     vk ? vk->nvn_set_texture_pool_size(n) : wgr_nvn_set_texture_pool_size(n);
 }
 void rx_nvn_texture_released(const nvn_tex *t) {
+    nvn_tex tc;
+    if (t && !(t = safe_tex(t, &tc, "release"))) return;
     if (!started && t) {
         early_call c = {3, 0};
         c.t = *t;
@@ -481,6 +503,8 @@ void rx_nvn_texture_released(const nvn_tex *t) {
     vk ? vk->nvn_texture_released(t) : wgr_nvn_texture_released(t);
 }
 void rx_nvn_texture_created(const nvn_tex *t) {
+    nvn_tex tc;
+    if (t && !(t = safe_tex(t, &tc, "creation"))) return;
     if (!started && t) {
         early_call c = {4, 0};
         c.t = *t;
@@ -492,12 +516,18 @@ void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(
 void rx_nvn_program_created(const nvn_prog *p) {
     if (vk && vk->nvn_program_created) vk->nvn_program_created(p);
 }
-void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
+void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r_in, uint8_t *dst,
                         size_t row, size_t img) {
+    nvn_tex tc;
+    if (!r_in || !(t = safe_tex(t, &tc, "ReadTexels"))) return;
+    const NVNcopyRegion rc = *r_in, *r = &rc;
     vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);
 }
-void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src,
+void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r_in, const uint8_t *src,
                          size_t row, size_t img) {
+    nvn_tex tc;
+    if (!r_in || !(t = safe_tex(t, &tc, "WriteTexels"))) return;
+    const NVNcopyRegion rc = *r_in, *r = &rc;
     if (!started && t && r && src) {   /* (kept with a copy of the data: the caller's buffer is its own again on return) */
         int bw = 1, bh = 1;
         const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);

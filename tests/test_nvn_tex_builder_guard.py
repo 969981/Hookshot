@@ -64,6 +64,8 @@ typedef struct { uint32_t swizzle_r, swizzle_g, swizzle_b, swizzle_a; } nvn_texd
 typedef struct { nvn_texdesc d; } nvn_tex_builder;
 #define GP(a) ((void *)(uintptr_t)(a))
 #define P(i) ((void *)(c->x[i] ? GP(c->x[i]) : NULL))
+#define PN(i, n) P(i)   /* (nvn_native.c checks n bytes in the window: none here) */
+static const void *in_window(const void *p, size_t n) { (void)n; return p; }   /* (every pointer here is in the window) */
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define U32(i) ((uint32_t)c->x[i])
 #define NV(name) __attribute__((noinline)) static void n_##name(Ctx *c, void *u_)

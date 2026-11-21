@@ -65,6 +65,7 @@ typedef struct {
 } nvn_pool;
 #define GP(a) ((void *)(uintptr_t)(a))
 #define P(i) ((void *)(c->x[i] ? GP(c->x[i]) : NULL))
+#define PN(i, n) P(i)   /* (nvn_native.c checks n bytes in the window: none here) */
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define NV(name) __attribute__((noinline)) static void n_##name(Ctx *c, void *u_)
 #define NVN_MAGIC(a, b, c, d) ((uint32_t)(a) | (uint32_t)(b) << 8 | (uint32_t)(c) << 16 | (uint32_t)(d) << 24)

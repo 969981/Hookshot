@@ -46,6 +46,7 @@ def main():
 #include <map>
 #include <mutex>
 #include <vector>
+#define NVN_TEX_MAX_BYTES (16ull << 30)   /* (gpu/render/rx_nvn.h) */
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d: %s\n", __LINE__, #ok); std::exit(1); } } while (0)
 constexpr uint64_t kPageShift = 12;
 // (the test's pool: 8 pages of guest memory at kLo, a mirror and a shadow of it, in words)

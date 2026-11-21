@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#define NVN_TEX_MAX_BYTES (16ull << 30)   // (gpu/render/rx_nvn.h)
 namespace fixture {
 void require(bool ok, const char* why) { if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); } }
 struct VmaAllocation_T { std::vector<uint8_t> cpu, gpu; bool alive = true; };

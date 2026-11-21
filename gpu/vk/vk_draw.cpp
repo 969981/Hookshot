@@ -1129,6 +1129,14 @@ int skip_slot(int line) {
     return 47;
 }
 }  // namespace
+// (hookshot) a log line built in pieces, as snprintf at its end: n kept inside the buffer. snprintf returns what it would have
+// written, so n passed the buffer's end once a line was full, and the next piece's room (sizeof line - n) wrapped and was
+// written past it (the 2026-11-14 audit's B1: RX_VK_FLASH_RECORD's dump lines). A full line is cut
+template <size_t N, class... A> void line_add(char (&line)[N], int& n, const char* fmt, A... a) {
+    if (n < 0 || (size_t)n >= N - 1) return;
+    const int k = snprintf(line + n, N - (size_t)n, fmt, a...);
+    if (k > 0) n = (int)std::min<size_t>(N - 1, (size_t)n + (size_t)k);
+}
 #define SKIP_HERE() do { static const int slot_ = skip_slot(__LINE__); skip_sites[slot_].n.fetch_add(1, std::memory_order_relaxed); st_skipped++; return; } while (0)
 void skip_report_impl(double frames) {
     char line[600];
@@ -1137,7 +1145,7 @@ void skip_report_impl(double frames) {
     for (auto& k : skip_sites) {
         const int64_t v = k.n.load(std::memory_order_relaxed);
         if (k.line.load() && v != k.last && n < (int)sizeof line - 32) {
-            n += snprintf(line + n, sizeof line - n, " %d: %.1f", k.line.load(), (v - k.last) / frames);
+            line_add(line, n, " %d: %.1f", k.line.load(), (v - k.last) / frames);
             any = true;
         }
         k.last = v;
@@ -4878,8 +4886,9 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
-        const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
-        const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
+        // (hookshot: the sums in 64 bits: the game's x and width are each up to 2^31, and their int sum overflowed, the audit's low items)
+        const int32_t x1 = (int32_t)std::min<int64_t>((int64_t)s.scissor[0] + s.scissor[2], (int64_t)at.width);
+        const int32_t y1 = (int32_t)std::min<int64_t>((int64_t)s.scissor[1] + s.scissor[3], (int64_t)at.height);
         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
     }
     std::memcpy(d.blend, s.blend_color, sizeof d.blend);
@@ -5043,8 +5052,8 @@ VkRect2D clear_rect(const NvnState& s, uint32_t w, uint32_t h) {
     VkRect2D r{{0, 0}, {w, h}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         const int32_t x0 = std::clamp(s.scissor[0], 0, (int32_t)w), y0 = std::clamp(s.scissor[1], 0, (int32_t)h);
-        const int32_t x1 = std::clamp(s.scissor[0] + s.scissor[2], 0, (int32_t)w);
-        const int32_t y1 = std::clamp(s.scissor[1] + s.scissor[3], 0, (int32_t)h);
+        const int32_t x1 = (int32_t)std::clamp<int64_t>((int64_t)s.scissor[0] + s.scissor[2], 0, (int64_t)w);   // (hookshot: 64-bit sums)
+        const int32_t y1 = (int32_t)std::clamp<int64_t>((int64_t)s.scissor[1] + s.scissor[3], 0, (int64_t)h);
         r = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
     }
     return r;
@@ -5753,7 +5762,7 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
         host->gpu_read(d.indirect, a, sizeof a);
         uint32_t c = 0;
         if (d.count_addr) host->gpu_read(d.count_addr, &c, 4);
-        n += snprintf(line + n, sizeof line - n, " ind %#llx [%u %u %u %u %u] cnt %#llx=%u max %d stride %d",
+        line_add(line, n, " ind %#llx [%u %u %u %u %u] cnt %#llx=%u max %d stride %d",
                       (unsigned long long)d.indirect, a[0], a[1], a[2], a[3], a[4], (unsigned long long)d.count_addr, c, d.max,
                       d.stride);
     }
@@ -5763,14 +5772,14 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
         const uint64_t isz = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         uint8_t ib[64] = {};
         host->gpu_read(d.ibuf + (uint64_t)d.first * isz, ib, 12 * isz);
-        n += snprintf(line + n, sizeof line - n, " IDX");
+        line_add(line, n, " IDX");
         for (int k = 0; k < 12; k++) {
             uint32_t ix = isz == 1 ? ib[k] : isz == 2 ? ((uint16_t*)ib)[k] : ((uint32_t*)ib)[k];
             if (k < 6 && ix != 0xFFFF && ix != 0xFFFFFFFF && s.vbuf[a0.stream & 15].address && stride) {
                 float v[2] = {};
                 host->gpu_read(s.vbuf[a0.stream & 15].address + (uint64_t)((int64_t)ix + d.base_vertex) * stride + a0.offset, v, 8);
-                n += snprintf(line + n, sizeof line - n, " %u(%.4g,%.4g)", ix, v[0], v[1]);
-            } else n += snprintf(line + n, sizeof line - n, " %u", ix);
+                line_add(line, n, " %u(%.4g,%.4g)", ix, v[0], v[1]);
+            } else line_add(line, n, " %u", ix);
         }
     }
     for (int i : {12, 11}) {   // (the vertex stage's c15 and c14 first: MKW's terrain patches' placement and camera)
@@ -5779,17 +5788,17 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
         float f[16] = {};
         const bool upd = ub_overlay(u.addr, sizeof f, (uint8_t*)f, [](uint64_t) { return (uint64_t)0; }) != UINT64_MAX;
         if (!upd) host->gpu_read(u.addr, f, sizeof f);
-        n += snprintf(line + n, sizeof line - n, " C%d%s %#llx+%#llx [", i + 3, upd ? "*" : "", (unsigned long long)u.addr,
+        line_add(line, n, " C%d%s %#llx+%#llx [", i + 3, upd ? "*" : "", (unsigned long long)u.addr,
                       (unsigned long long)u.size);
-        for (int k = 0; k < 16; k++) n += snprintf(line + n, sizeof line - n, k ? " %.6g" : "%.6g", f[k]);
-        n += snprintf(line + n, sizeof line - n, "]");
+        for (int k = 0; k < 16; k++) line_add(line, n, k ? " %.6g" : "%.6g", f[k]);
+        line_add(line, n, "]");
     }
     for (int i = 0; i < 4 && n < 1500; i++)
-        if (s.vbuf[i].address) n += snprintf(line + n, sizeof line - n, " vb%d %#llx+%#llx", i, (unsigned long long)s.vbuf[i].address,
+        if (s.vbuf[i].address) line_add(line, n, " vb%d %#llx+%#llx", i, (unsigned long long)s.vbuf[i].address,
                                              (unsigned long long)s.vbuf[i].size);
     for (int i = 0; i < s.nvattr && i < 4 && n < 1500; i++) {   // (the attributes: format, offset, stream; the streams' strides)
         const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-        n += snprintf(line + n, sizeof line - n, " va%d f%u+%u s%u/%u", i, (unsigned)a.fmt, (unsigned)a.offset, (unsigned)a.stream,
+        line_add(line, n, " va%d f%u+%u s%u/%u", i, (unsigned)a.fmt, (unsigned)a.offset, (unsigned)a.stream,
                       s.vstream[a.stream & 15].stride);
     }
     for (int i = 0; i < 16 && n < 1500; i++) {   // (the vertex stage's storage buffers: their first 8 words)
@@ -5797,7 +5806,7 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
         if (!b.addr) continue;
         uint32_t w[8] = {};
         host->gpu_read(b.addr, w, sizeof w);
-        n += snprintf(line + n, sizeof line - n, " sb%d %#llx+%#llx [%x %x %x %x %x %x %x %x]", i, (unsigned long long)b.addr,
+        line_add(line, n, " sb%d %#llx+%#llx [%x %x %x %x %x %x %x %x]", i, (unsigned long long)b.addr,
                       (unsigned long long)b.size, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
     }
     for (int i = 0; i < 16 && n < 1500; i++) {   // (the vertex stage's uniform buffers: their first 16 words)
@@ -5807,10 +5816,10 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
         // (as the draw reads it: guest memory with the stream's uniform updates over it; '*': updated)
         const bool upd = ub_overlay(u.addr, sizeof f, (uint8_t*)f, [](uint64_t) { return (uint64_t)0; }) != UINT64_MAX;
         if (!upd) host->gpu_read(u.addr, f, sizeof f);
-        n += snprintf(line + n, sizeof line - n, " c%d%s %#llx+%#llx [", i + 3, upd ? "*" : "", (unsigned long long)u.addr,
+        line_add(line, n, " c%d%s %#llx+%#llx [", i + 3, upd ? "*" : "", (unsigned long long)u.addr,
                       (unsigned long long)u.size);
-        for (int k = 0; k < 16 && n < 1900; k++) n += snprintf(line + n, sizeof line - n, k ? " %.5g" : "%.5g", f[k]);
-        n += snprintf(line + n, sizeof line - n, "]");
+        for (int k = 0; k < 16 && n < 1900; k++) line_add(line, n, k ? " %.5g" : "%.5g", f[k]);
+        line_add(line, n, "]");
     }
     logf("%s", line);
 }
@@ -5863,7 +5872,7 @@ void exposure_log_dump(const char* why) {
         const ExposureRing& e = exposure_ring[(exposure_at + i) % 32];
         float v;
         std::memcpy(&v, &e.word, 4);
-        n += snprintf(line + n, sizeof line - n, " %lld:%.3g", (long long)e.present, v);
+        line_add(line, n, " %lld:%.3g", (long long)e.present, v);
     }
     logf("%s", line);
 }
@@ -6947,26 +6956,26 @@ static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs&
     char line[3072];
     int n = snprintf(line, sizeof line, "vk: dlss-trace f%llu prog %016llx%s%s %ux%u c[", (unsigned long long)f,
                      (unsigned long long)p.key, d.mesh ? " mesh" : "", p.fallback ? "(fb)" : "", at.width, at.height);
-    for (int i = 0; i < at.n && n < 1800; i++) n += snprintf(line + n, sizeof line - n, "%s%d", i ? "," : "", (int)at.color_format[i]);
-    n += snprintf(line + n, sizeof line - n, "] d%d %s n%d i%d bv%d inst%d ib%llx g%d,%d,%d ind%llx", (int)at.depth_format,
+    for (int i = 0; i < at.n && n < 1800; i++) line_add(line, n, "%s%d", i ? "," : "", (int)at.color_format[i]);
+    line_add(line, n, "] d%d %s n%d i%d bv%d inst%d ib%llx g%d,%d,%d ind%llx", (int)at.depth_format,
                   d.indexed ? "idx" : "arr", d.count, d.first, d.base_vertex, d.instances, (unsigned long long)d.ibuf,
                   d.groups[0], d.groups[1], d.groups[2], (unsigned long long)d.indirect);
     for (int v = 0; v < 4 && n < 1800; v++)
-        if (s.vbuf[v].address) n += snprintf(line + n, sizeof line - n, " vb%d=%llx/%llu/s%u", v, (unsigned long long)s.vbuf[v].address,
+        if (s.vbuf[v].address) line_add(line, n, " vb%d=%llx/%llu/s%u", v, (unsigned long long)s.vbuf[v].address,
                                              (unsigned long long)s.vbuf[v].size, s.vstream[v].stride);
-    n += snprintf(line + n, sizeof line - n, " va");
+    line_add(line, n, " va");
     for (int i = 0; i < s.nvattr && i < 16 && n < 1800; i++) {
         const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-        n += snprintf(line + n, sizeof line - n, "%s%x@%u:%u", i ? "," : "=", a.fmt, a.offset, a.stream);
+        line_add(line, n, "%s%x@%u:%u", i ? "," : "=", a.fmt, a.offset, a.stream);
     }
     for (const Stage& st : p.stages) {
         const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
-        n += snprintf(line + n, sizeof line - n, " st%d:", ns);
+        line_add(line, n, " st%d:", ns);
         for (int u = 0; u < 16 && n < 1900; u++)
-            if (s.ubo[ns][u].addr) n += snprintf(line + n, sizeof line - n, " u%d=%llx/%llu", u, (unsigned long long)s.ubo[ns][u].addr,
+            if (s.ubo[ns][u].addr) line_add(line, n, " u%d=%llx/%llu", u, (unsigned long long)s.ubo[ns][u].addr,
                                                  (unsigned long long)s.ubo[ns][u].size);
         for (int u = 0; u < 16 && n < 1900; u++)
-            if (s.ssbo[ns][u].addr) n += snprintf(line + n, sizeof line - n, " s%d=%llx/%llu", u, (unsigned long long)s.ssbo[ns][u].addr,
+            if (s.ssbo[ns][u].addr) line_add(line, n, " s%d=%llx/%llu", u, (unsigned long long)s.ssbo[ns][u].addr,
                                                   (unsigned long long)s.ssbo[ns][u].size);
     }
     logf("%s", line);
@@ -7195,6 +7204,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
+    // (hookshot) a direct draw of no vertices, or of a negative count from the game, draws nothing: given to Vulkan as an
+    // unsigned count, -1 was 4.29 billion vertices (the audit's V6). Indirect and mesh draws take theirs elsewhere
+    if (!d.indirect && !d.mesh && d.count <= 0) return;
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
     VkPrimitiveTopology topo = kMeshDrawTopology;
     if (!d.mesh && !topology(d.prim, topo)) {
@@ -9826,18 +9838,18 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 bool hv = false;
                 if (!h || !texture_of((int)(h & 0xFFFFF), &t, &v, &hv)) return;
                 if (n < (int)sizeof line - 96)
-                    n += snprintf(line + n, sizeof line - n, " %s %#llx %ux%ux%u fmt %#x;", what,
+                    line_add(line, n, " %s %#llx %ux%ux%u fmt %#x;", what,
                                   (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, (unsigned)t.d.format);
             };
             for (int i = 0; i < 8; i++) desc("img", s.img[5][i]);
             for (int i = 0; i < 16; i++) desc("tex", s.tex[5][i]);
             for (int i = 0; i < 16; i++)
                 if (s.ssbo[5][i].addr && n < (int)sizeof line - 64)
-                    n += snprintf(line + n, sizeof line - n, " ssbo%d %#llx+%#llx;", i, (unsigned long long)s.ssbo[5][i].addr,
+                    line_add(line, n, " ssbo%d %#llx+%#llx;", i, (unsigned long long)s.ssbo[5][i].addr,
                                   (unsigned long long)s.ssbo[5][i].size);
             for (int i = 0; i < 8; i++)
                 if (s.ubo[5][i].addr && n < (int)sizeof line - 64)
-                    n += snprintf(line + n, sizeof line - n, " ubo%d %#llx+%#llx;", i, (unsigned long long)s.ubo[5][i].addr,
+                    line_add(line, n, " ubo%d %#llx+%#llx;", i, (unsigned long long)s.ubo[5][i].addr,
                                   (unsigned long long)s.ubo[5][i].size);
             logf("%s", line);
         }
@@ -9888,7 +9900,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             char line[1600];
             int n = snprintf(line, sizeof line, "vk: program %s: %u bytes pushed; c0:", hex, s.cs_push_n);
             for (uint32_t off = 0; off < 0x100 && n < (int)sizeof line - 16; off += 4)
-                n += snprintf(line + n, sizeof line - n, " %08x", driver_bank_word(s, 0, 5, off));
+                line_add(line, n, " %08x", driver_bank_word(s, 0, 5, off));
             logf("%s", line);
         }
     }
@@ -10012,11 +10024,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                          !p.stages.empty() && p.stages[0].info.stores_global_memory ? " (stores global)" : "");
         for (int i = 0; i < 16 && n < 1700; i++)
             if (s.ssbo[5][i].addr)
-                n += snprintf(line + n, sizeof line - n, " sb%d %#llx+%#llx", i, (unsigned long long)s.ssbo[5][i].addr,
+                line_add(line, n, " sb%d %#llx+%#llx", i, (unsigned long long)s.ssbo[5][i].addr,
                               (unsigned long long)s.ssbo[5][i].size);
         for (int i = 0; i < 16 && n < 1700; i++)
             if (s.ubo[5][i].addr)
-                n += snprintf(line + n, sizeof line - n, " ub%d %#llx+%#llx", i, (unsigned long long)s.ubo[5][i].addr,
+                line_add(line, n, " ub%d %#llx+%#llx", i, (unsigned long long)s.ubo[5][i].addr,
                               (unsigned long long)s.ubo[5][i].size);
         if (!p.stages.empty()) {   // the translated program's own storage bindings: which constant-buffer word names each
             const auto& sd = p.stages[0].info.storage_buffers_descriptors;
@@ -10024,7 +10036,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 const uint32_t off = sd[i].cbuf_offset;
                 const uint64_t a = stage_cbuf_word(s, p.stages[0], sd[i].cbuf_index, off) |
                                    (uint64_t)stage_cbuf_word(s, p.stages[0], sd[i].cbuf_index, off + 4) << 32;
-                n += snprintf(line + n, sizeof line - n, " ssbo%zu=c%u+%#x%s%s->%#llx", i, sd[i].cbuf_index, off,
+                line_add(line, n, " ssbo%zu=c%u+%#x%s%s->%#llx", i, sd[i].cbuf_index, off,
                               sd[i].is_written ? "w" : "", sd[i].count > 1 ? "[t]" : "", (unsigned long long)a);
             }
         }
@@ -10051,7 +10063,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             int n = snprintf(line, sizeof line, "vk: network %016llx: dispatch %ux%ux%u, %zu textures %zu images:", (unsigned long long)p.key, x, y, z,
                              p.stages[0].info.texture_descriptors.size(), p.stages[0].info.image_descriptors.size());
             for (const Texture* t : draw_sampled())
-                if (t && n < 860) n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+                if (t && n < 860) line_add(line, n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
             logf("%s", line);
         }
     }
@@ -10245,14 +10257,14 @@ void record_draw(const NvnState& s, const Program& p, const DrawArgs& d, const T
                      (unsigned long long)p.key, d.count, d.first, d.instances, d.base_vertex, d.base_instance,
                      (int)d.indexed, (unsigned long long)d.ibuf, (unsigned long long)d.indirect,
                      (unsigned long long)d.count_addr);
-    n += snprintf(line + n, sizeof line - n, " target %ux%u n%d samples %d c0 %d depth %d vp %g %g %g %g scissor %d %d %d %d", at.width, at.height, at.n,
+    line_add(line, n, " target %ux%u n%d samples %d c0 %d depth %d vp %g %g %g %g scissor %d %d %d %d", at.width, at.height, at.n,
                   (int)at.samples, (int)at.color_format[0], (int)at.depth_format, s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3],
                   s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]);
-    n += snprintf(line + n, sizeof line - n, "%s", program_textures(s, p).c_str());
+    line_add(line, n, "%s", program_textures(s, p).c_str());
     if (d.indirect) {   // (what the GPU will take the draw's size from)
         uint32_t w[5]{};
         if (host->gpu_read(d.indirect, w, sizeof w))
-            n += snprintf(line + n, sizeof line - n, " args %u %u %u %d %u", w[0], w[1], w[2], (int)w[3], w[4]);
+            line_add(line, n, " args %u %u %u %d %u", w[0], w[1], w[2], (int)w[3], w[4]);
     }
     for (const Stage& st : p.stages) {   // (each stage's uniform buffers: address, size, a hash of the first 512 bytes)
         const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
@@ -10264,7 +10276,7 @@ void record_draw(const NvnState& s, const Program& p, const DrawArgs& d, const T
             uint64_t h = 1469598103934665603ull;
             if (host->gpu_read(u.addr, b, k))
                 for (uint64_t j = 0; j < k; j++) h = (h ^ b[j]) * 1099511628211ull;
-            n += snprintf(line + n, sizeof line - n, " s%d.c%d %#llx+%#llx h%016llx", ns, i + 3, (unsigned long long)u.addr,
+            line_add(line, n, " s%d.c%d %#llx+%#llx h%016llx", ns, i + 3, (unsigned long long)u.addr,
                           (unsigned long long)u.size, (unsigned long long)h);
         }
     }

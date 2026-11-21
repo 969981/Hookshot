@@ -49,6 +49,7 @@ typedef struct {
 typedef struct { uint32_t magic; nvn_pool *pool; int64_t off; uint64_t size; } nvn_buffer;
 #define GP(a) ((void *)(uintptr_t)(a))
 #define P(i) ((void *)(c->x[i] ? GP(c->x[i]) : NULL))
+#define PN(i, n) P(i)   /* (nvn_native.c checks n bytes in the window: none here) */
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define RETP(p) RET((uint64_t)(uintptr_t)(p))
 #define POOL(p) ((const nvn_pool *)(p))
