@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.29](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.28...v2.3.0-rc.29) (2026-11-21)
+
+
+### Bug Fixes
+
+* **build:** the release builds take dav1d, FFmpeg, Tcl and Tk from this repository's copies, so a down host does not stop a release ([#97](https://github.com/notquiteog/Hookshot/issues/97)) ([f4b2fdb](https://github.com/notquiteog/Hookshot/commit/f4b2fdb608addf6d1e683d76410dc71bbf655302))
+
 ## [2.3.0-rc.28](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.27...v2.3.0-rc.28) (2026-11-15)
 
 
