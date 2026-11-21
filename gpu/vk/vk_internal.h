@@ -399,6 +399,7 @@ unsigned usable_cpus();   // vk_progcache.cpp
 unsigned half_cpus();   // vk_progcache.cpp
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
+void driver_env_note();   // vk_draw.cpp: (Linux) the environment the pipelines were built in, for later starts
 /// (hookshot) At the start after a preparation, behind the game: a sample of its predicted pipelines asked of the driver without
 /// compiling, "the driver's shader cache kept N of M" (none: this driver keeps nothing the prediction builds)
 void predicted_check();   // vk_draw.cpp

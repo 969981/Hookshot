@@ -20,6 +20,7 @@ already_prepared=block((a.source/'gpu/vk/vk_draw.cpp').read_text(encoding='utf-8
                        'if (why == PrepareWhy::None && !env_on("RX_VK_PREPARE_AGAIN")) {')
 cpp=r"""
 #include "vk_progress.h"
+#include "crash_markers.h"   // (the stage libraries' marker, prepare_run's, as vk_draw.cpp includes it)
 using namespace mkwvk;
 #include <cstdio>
 #include <cstdlib>

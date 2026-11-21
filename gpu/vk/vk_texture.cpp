@@ -5174,6 +5174,21 @@ void texture_frame(uint64_t completed) {
         pending_bytes += tex->bytes + tex->pad;
         if (by_hold && !overwritten) hold_live += tex->bytes + tex->pad;
     }
+    {   // (hookshot) nor one whose storage another image was drawn into after its own last drawing (evict_reason.h's
+        // write_back_stale): its write-back puts old texels over memory that is the other image's now, and marks those pages
+        // written. OoT draws its HUD's labels inside the storage of a 1920 x 1080 target it has stopped using; that target's
+        // eviction, ~600 frames later at a 6 GB budget, made the finalized labels upload from memory that never held their
+        // texels: the d-pad and item prompts as noise until the pause menu redrew them
+        std::vector<const Texture*> ts;
+        for (const Evict& e : evict)
+            if (e.flush) ts.push_back(e.tex);
+        if (!ts.empty()) {
+            const std::vector<uint64_t> other = drawn_others(ts);
+            size_t i = 0;
+            for (Evict& e : evict)
+                if (e.flush) e.flush = !evict_reason::write_back_stale(e.tex->last_written, other[i++]);
+        }
+    }
     evict_reason::Tally tally;                     // (why each one goes: the retired line below)
     std::unordered_set<const Texture*> flushed_ok;   // (the write-backs that worked)
     {   // (the write-backs: batches of up to 64 textures or ~512 MB of staging memory, each one submission and one wait)

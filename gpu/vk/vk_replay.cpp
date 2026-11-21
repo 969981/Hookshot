@@ -319,6 +319,19 @@ void wait_value(uint64_t v) {
     vkWaitSemaphores(dev.device, &wi, UINT64_MAX);
 }
 bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok);
+/// (hookshot) What the calling thread's last wait on the recordings' timeline came back with (wait_rec_seq): one that came back
+/// VK_ERROR_DEVICE_LOST is said there, and not again by vk_timeline_wait as a capture's wait that timed out
+thread_local VkResult wait_rec_result = VK_SUCCESS;
+/// (hookshot) A timeline wait that came back VK_ERROR_DEVICE_LOST, said as a lost device (8 times at most). Run 21 (macOS,
+/// MoltenVK 1.4.2) logged one as a capture's wait that "timed out (done 0)": the driver marks the device lost, signals every
+/// timeline waited on, returns VK_ERROR_DEVICE_LOST from the wait and leaves the counter's value unwritten, so completed() read
+/// 0, and the log showed a timeout where the GPU was gone. Only the line: the next submit or the GPU hang watch ends the game,
+/// as before
+void wait_lost(const char* what, uint64_t v) {
+    static std::atomic<int> logged{0};
+    if (logged++ >= 8) return;
+    logf("vk: %s %llu came back VK_ERROR_DEVICE_LOST: the GPU device is lost", what, (unsigned long long)v);
+}
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
 void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back behind the caller's thread goes on without it)
@@ -327,6 +340,8 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     // submission is stopped at an event wait; wait on `rec_timeline` where that recording actually signalled completion)
     int ok = 0;
     if (wait_recorded(v, 250000000ull, &ok)) {
+        const bool lost = wait_rec_result == VK_ERROR_DEVICE_LOST;   // (said by wait_rec_seq)
+        if (lost) return;
         if (!ok) {
             static std::atomic<int> logged{0};
             if (logged++ < 8)
@@ -340,10 +355,13 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     wi.semaphoreCount = 1;
     wi.pSemaphores = &timeline;
     wi.pValues = &v;
-    if (vkWaitSemaphores(dev.device, &wi, 250000000ull) == VK_TIMEOUT) {
+    const VkResult res = vkWaitSemaphores(dev.device, &wi, 250000000ull);
+    if (res == VK_TIMEOUT) {
         static std::atomic<int> logged{0};
         if (logged++ < 8) logf("vk: a capture's wait for write-back %llu timed out (done %llu)", (unsigned long long)v, (unsigned long long)completed());
     }
+    const bool lost = res == VK_ERROR_DEVICE_LOST;
+    if (lost) wait_lost("a capture's wait for write-back", v);
 }
 namespace {
 
@@ -2788,6 +2806,7 @@ static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
     uint64_t reached = 0;
     if (vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached) == VK_SUCCESS && reached >= seq) {
         *ok = 1;
+        wait_rec_result = VK_SUCCESS;
         return;
     }
     // (a batched submit holds its recordings' signal until the batch goes out: the readback wait in invalidate came here
@@ -2797,10 +2816,15 @@ static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
     wi.semaphoreCount = 1;
     wi.pSemaphores = &rec_timeline;
     wi.pValues = &seq;
+    VkResult res;
     {
         FpsWait fw(fps_stats::kGpuWait);   // (the FPS counter's Breakdown)
-        *ok = vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
+        res = vkWaitSemaphores(dev.device, &wi, timeout_ns);
     }
+    *ok = res == VK_SUCCESS;
+    wait_rec_result = res;
+    const bool lost = res == VK_ERROR_DEVICE_LOST;   // (said as a lost device, not by vk_timeline_wait as a wait that timed out)
+    if (lost) wait_lost("a wait for recording", seq);
 }
 uint64_t fence();
 /// (hookshot) A fence of one queue (nvnQueueFenceSync): the value of that queue's last submission
@@ -3117,7 +3141,6 @@ struct Frame {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;
-    VkSemaphore acquired = VK_NULL_HANDLE;
 };
 Frame frames[3];
 uint32_t frame_index = 0;
@@ -3327,6 +3350,8 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
     return c;
 }
 } // namespace
+/// (the parallel replay's threads, par_threads above, for vk_temporal.cpp's hidden-mesh rule: RX_VK_PARALLEL or the game profile's)
+int replay_par_threads() { return par_threads(); }
 
 // Called while replaying, including workers joined before the next signal is issued.
 // The current logical value may already have completed before a stopped queue resumes.
@@ -4514,6 +4539,55 @@ void present_hand_off(uint32_t index, VkFence done);
 void present_finish(VkResult res, bool on_presenter);
 std::atomic<bool> presenter_surface_lost{false};   // (the presenter thread's present: VK_ERROR_SURFACE_LOST_KHR, for present_image)
 }  // namespace
+// (hookshot, #1376) The swapchain's image is waited for on the CPU, never on the replay's queue. The copy into it waited on the
+// GPU for the acquire's semaphore, on the queue every submission of the game's work goes to, so whatever held the image held
+// the replay. AMD's driver on Windows hands an image back from vkAcquireNextImageKHR at once and leaves the wait to the
+// semaphore; with the game's fullscreen window behind another one (a browser, OBS: RX 9070 XT, issues 316, 1355, 1376) the
+// system gave the image back late or never, the queue finished nothing, and the GPU hang watch ended the game 30 s later
+// ("no submission finished in 30 s, and the driver never reported the device lost", no TDR). Now the acquire signals
+// acquire_fence; a copy goes to the queue only once the image is free; an image not free in kImageFreeNs is held (frames are
+// not shown meanwhile, the game goes on) and looked at again, without waiting, at each present until it is
+static VkFence acquire_fence = VK_NULL_HANDLE;
+struct HeldImage {
+    bool held = false;
+    uint32_t index = 0;
+    uint64_t generation = 0;   // (dev.swapchain_generation it was acquired from)
+};
+static HeldImage held_image;
+// (250 ms: past a refresh of a 24 Hz display for each image FIFO may hold queued, at frame generation's most; far under the GPU
+// hang watch's 30 s)
+constexpr uint64_t kImageFreeNs = 250000000ull;
+/// Whether the acquired image is free (acquire_fence signaled, and reset for the next acquire), waiting up to timeout_ns
+static bool image_free(uint64_t timeout_ns) {
+    if (!acquire_fence) return false;   // (none could be made again: held_image_drop)
+    VkResult r;
+    {
+        const gpu_wait_stats::Exclude pacing;   // (the display's pace, not the GPU's work: not counted as a GPU wait)
+        r = vkWaitForFences(dev.device, 1, &acquire_fence, VK_TRUE, timeout_ns);
+    }
+    if (r == VK_ERROR_DEVICE_LOST) device_lost();
+    if (r != VK_SUCCESS) return false;   // (VK_TIMEOUT: not yet)
+    if (vkResetFences(dev.device, 1, &acquire_fence) == VK_ERROR_DEVICE_LOST) device_lost();
+    return true;
+}
+/// A held image of a swapchain made again since: let go. Its fence may never be signaled now; then a new one takes its place
+/// (the old one is left as it is, not destroyed: the presentation engine may still signal it). With none made, no acquire
+/// until one is (acquire_fence_ready)
+static void held_image_drop() {
+    held_image.held = false;
+    if (image_free(0)) return;
+    acquire_fence = VK_NULL_HANDLE;
+}
+/// Whether there is an unsignaled acquire fence to acquire with, made again here when held_image_drop let the last one go
+static bool acquire_fence_ready() {
+    if (acquire_fence) return true;
+    VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence made = VK_NULL_HANDLE;
+    if (vkCreateFence(dev.device, &fi, nullptr, &made) != VK_SUCCESS) return false;
+    acquire_fence = made;
+    return true;
+}
+
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
@@ -4577,7 +4651,12 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static bool unseen = false;
     const uint64_t acquire_timeout = unseen ? 0 : 100000000ull;
 #endif
-    VkResult res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, f.acquired, VK_NULL_HANDLE, &index);
+    if (held_image.held && held_image.generation != dev.swapchain_generation) held_image_drop();   // (its swapchain is gone)
+    const bool was_held = held_image.held;
+    if (!was_held && !acquire_fence_ready()) return;   // (no fence to acquire with: the frame is not shown)
+    if (was_held) index = held_image.index;   // (acquired at an earlier present, not free then: no other acquire meanwhile)
+    VkResult res = VK_SUCCESS;
+    if (!was_held) res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, VK_NULL_HANDLE, acquire_fence, &index);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     if (acquire_t0) fps_wait(fps_stats::kPace, fps_clock() - acquire_t0);
     if (res == VK_ERROR_SURFACE_LOST_KHR) {
@@ -4604,6 +4683,24 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         return;
     }
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) return;
+    {   // (#1376: the image free before any work for it goes to the queue; a held one is looked at without waiting)
+        const int64_t free_t0 = fence_t0 ? fps_clock() : 0;
+        const bool ready = image_free(was_held ? 0 : kImageFreeNs);
+        if (free_t0) fps_wait(fps_stats::kPace, fps_clock() - free_t0);
+        static int said;     // (the first 16 holds are said, and their ends)
+        static bool told;    // (this hold was said)
+        if (!ready) {
+            if (!was_held) {
+                told = said < 16;
+                if (told) said++, logf("vk: the window's image was not given back in 250 ms (the window hidden?): frames are not "
+                                       "shown until it is");
+            }
+            held_image = {true, index, dev.swapchain_generation};
+            return;
+        }
+        held_image.held = false;
+        if (was_held && told) told = false, logf("vk: the window's image was given back: frames are shown again");
+    }
     if (vkResetFences(dev.device, 1, &f.done) == VK_ERROR_DEVICE_LOST) device_lost();
     if (vkResetCommandPool(dev.device, f.pool, 0) == VK_ERROR_DEVICE_LOST) device_lost();
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -4702,19 +4799,14 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     menu_record(f.cmd, index, dev.swap_extent.width, dev.swap_extent.height);   // (hookshot) Dear ImGui's overlays, over all of it
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     if (vkEndCommandBuffer(f.cmd) == VK_ERROR_DEVICE_LOST) device_lost();
-    // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value
-    // another thread had counted but not yet submitted blocked the queue for good)
-    VkSemaphoreSubmitInfo waits[1] = {{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
-    waits[0].semaphore = f.acquired;
-    waits[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    // (no wait: the image was free before the copy was recorded, image_free above. Not on the timeline either: one queue runs
+    // submits in order, and a wait for a value another thread had counted but not yet submitted blocked the queue for good)
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = dev.swap_rendered[index];
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cb.commandBuffer = f.cmd;
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    si.waitSemaphoreInfoCount = 1;
-    si.pWaitSemaphoreInfos = waits;
     si.commandBufferInfoCount = 1;
     si.pCommandBufferInfos = &cb;
     si.signalSemaphoreInfoCount = 1;
@@ -5511,8 +5603,10 @@ bool replay_start() {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         vkCreateFence(dev.device, &fi, nullptr, &f.done);
-        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired);
+    }
+    {   // (the swapchain image's own fence: present_image waits for it on the CPU, image_free)
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(dev.device, &fi, nullptr, &acquire_fence) != VK_SUCCESS) return false;
     }
     if (par_threads() >= 2 && !init_pools_make(pi)) return false;   // (last: nothing after it fails and leaves them made)
     logf("vk: replay ready (%s; push descriptors %s (%u), extended dynamic state 3 %s, custom border colours %s)",

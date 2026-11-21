@@ -39,6 +39,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_progress.h"
 #include "vk_programs.h"
 #include "mesh_mode.h"
+#include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -1553,8 +1554,12 @@ void auto_profile() {
     hw.mesh_native = dev.mesh_capable;   // (the card's, not this run's mode: Linux AMD's Automatic is Compute, #2245)
     hw.mesh_as_compute = dev.mesh_capable && !dev.mesh_shader;
     hw.rtx = hw.vendor == ::auto_settings::NVIDIA && strstr(p.deviceName, "RTX");
-    // (RDNA 4: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
-    hw.rdna4 = hw.vendor == ::auto_settings::AMD && (strstr(p.deviceName, "RX 9") || strstr(p.deviceName, "GFX12"));
+    // (RDNA 4 by PCI device id, from Longshot #1839 by gmourao: Navi 48, 0x7550 RX 9070 series and 0x7551 Radeon AI PRO R9700;
+    // Navi 44, 0x7590 RX 9060 series. A driver may name the card "AMD Radeon Graphics", which the name check missed; the name
+    // stays the fallback for cards not yet listed: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
+    hw.rdna4 = hw.vendor == ::auto_settings::AMD &&
+               (p.deviceID == 0x7550 || p.deviceID == 0x7551 || p.deviceID == 0x7590 || strstr(p.deviceName, "RX 9") ||
+                strstr(p.deviceName, "GFX12"));
     // (the Steam Deck's APU, LCD and OLED, or SteamOS's own flag)
     const char* deck = getenv("SteamDeck");
     hw.handheld = (deck && atoi(deck) == 1) || strstr(p.deviceName, "Custom GPU 0405") || strstr(p.deviceName, "Custom GPU 0932");
@@ -1649,9 +1654,10 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
-// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
-// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
-// pipeline). Looked up by name, so an executable and a back end of different versions still close
+// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process). First the files
+// that count the starts that crashed in a step are put back as this start found them (crash_markers.h): a quit is not a crash.
+// Then, while the shaders are prepared, their workers are stopped and what they made is kept (10 s at most: a driver can take
+// longer on one pipeline). Looked up by name, so an executable and a back end of different versions still close
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1660,6 +1666,10 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    // (before anything that takes time: the caches' saves below and the 10 s for the workers, with the window not answering. A
+    // player who quits again then ends the process (Force Quit, End task), and so does the system at a log-out: that end comes
+    // after a quit, and must not count as a crash either)
+    crash_markers::close();
     programs_census_log("close");
     module_ids_flush();
     fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)

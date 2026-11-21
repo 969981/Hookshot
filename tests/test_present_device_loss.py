@@ -51,7 +51,8 @@ def main():
 using VkResult = int;
 enum { VK_SUCCESS=0, VK_ERROR_DEVICE_LOST=-4, VK_TRUE=1, VK_NULL_HANDLE=0 };
 struct { int device=1, queue=2, present_queue=3, swapchain=4; } dev;
-struct { int done=5, acquired=6, pool=7, cmd=8; } f;
+struct { int done=5, pool=7, cmd=8; } f;
+bool was_held=false; int acquire_fence=6;   // (#1376: the acquire's fence, and no image held from an earlier present)
 int bi=0, si=0, pi=0, index=0;
 uint64_t acquire_timeout=UINT64_MAX;
 int result=VK_SUCCESS, calls=0, reports=0, continued=0;

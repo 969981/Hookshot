@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """When kept programs are loaded by default (gpu/vk/load_default.h): RX_VK_LOAD always wins; without it, at their create calls
-only where the GPU has mesh shaders and no earlier session left the marker; the safety net's limits against the measured
-sessions; the marker written and found. And the source: the choice is made once the device is up, a first use's time with a
-load goes through the safety net, and a preparation removes the marker. Compiled and run alone: no game or GPU is needed.
+wherever no earlier session left the marker, with mesh shaders or through the compute fallback; the safety net's limits
+against the measured sessions; the marker written and found. And the source: the choice is made once the device is up, a
+first use's time with a load goes through the safety net, and a preparation removes the pipelines-built marker only when
+it notes a pipeline it had not noted before (an update that changes no shader must not make the next start build every
+pipeline again). Compiled and run alone: no game or GPU is needed.
 """
 import argparse
 import subprocess
@@ -50,11 +52,18 @@ def check_source():
             "load_default::counts(" not in progs or "load_default::strike_take(load_fallback_path())" not in progs:
         raise SystemExit("vk_programs.cpp does not use load_default.h's rule")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
-    built = draw.index("remove(precompile_built_path().c_str());   // (notes are added here")
+    built = draw.index("void state_list_prepare(")   # (a preparation: what it removes first)
     if '"hookshot_load_start.txt").c_str());' not in draw[built:built + 400]:
         raise SystemExit("a preparation does not remove hookshot_load_start.txt")
     if '"hookshot_load_start.txt.waited").c_str());' not in draw[built:built + 700]:
         raise SystemExit("a preparation does not remove the strike beside hookshot_load_start.txt")
+    # (ported from Hookshot 0824d761, NotRexed: the marker that every note's pipeline is built went at every preparation,
+    # so every update's first start built every noted pipeline again. Only a note the state list adds takes it now)
+    body = draw[built:draw.index("\n}\n", built)]
+    if body.count("remove(precompile_built_path().c_str());") != 1 or \
+            "added += pipeline_note(" not in body or \
+            body.index("if (added) {") > body.index("remove(precompile_built_path().c_str());"):
+        raise SystemExit("state_list_prepare removes the pipelines-built marker though it noted nothing new")
 
 
 def main():

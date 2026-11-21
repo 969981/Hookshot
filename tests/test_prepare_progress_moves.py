@@ -32,6 +32,7 @@ from srccut import block  # noqa: E402
 
 HEAD = r"""
 #include "warm_bounded.h"
+#include "crash_markers.h"   // (the files that count the starts that crashed in a step, vk_draw.cpp)
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -66,6 +67,7 @@ std::string pipe_notes_path() { return folder + "/hookshot_pipelines.bin"; }
 void precompile_built_write(size_t) {}
 void pcache_init() {}
 void pipeline_cache_save(bool) {}
+void driver_env_note() {}   // (vk_draw.cpp: the driver's shader cache's line, #902)
 bool env_on(const char*) { return false; }
 bool prepare_stopped() { return false; }
 unsigned usable_cpus() { return kThreads; }

@@ -76,3 +76,36 @@ Left out on purpose: the rename (`e2a4d453`), Discord as Longshot's (#10, #194),
 tools, templates, CI and releases (#3, #5, #6, #13, #18, #21, #48, #72, #76, #79, #99, #105, #106, #113, #115, #116,
 #117, #121, #126, #128, #129, #132, #133, #135, #140, #143, #146, #148, #149, #154, #160, #166, #254), the removal of
 builders this tree still ships (#161, #163, #171, #175, #179, #181), and importing Hookshot saves into Longshot (#20).
+
+## 514591a3 to 9dd41326
+
+Taken in pull requests by area, each with its run in the game. The list of what was taken, what waits and what is left
+out is the triage of this pull (587 commits); each batch adds its rows here.
+
+### Renderer fixes (A1)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#216](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/216) | TrashPanda | perf(vk): walk the captured ranges once a scan, not a binary search a page |
+| [#323](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/323) | Amateurwizrd | fix(vk): HUD labels no longer turn to noise when a render target over their memory is evicted |
+| [#325](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/325) | proci | fix(vk): HUD labels the GPU drew no longer go blank after a zone change |
+| [#427](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/427) | mooki | fix(vk): shader programs over 1 MiB, or with a stray branch after their end, are no longer left out |
+| [#428](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/428) | mooki | fix(vk): closing the game while its shaders are prepared no longer counts as a crash |
+| [#442](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/442) | mooki | fix(vk): samplers past the driver's allocation limit are reused, not lost |
+| [#498](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/498) | mooki | fix(vk): a game ended while it closes, after a quit during the precompile, no longer counts as a crash |
+| [#552](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/552) | Zelda Ootr | fix(vk): a recording without a draw stream is submitted instead of crashing |
+| [#670](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/670) | mooki | fix(vk): a timeline wait that comes back device-lost is said as a lost device, not as a timeout |
+| [#902](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/902) | Zelda Ootr | fix(vk): the start names the driver's shader cache and says when the pipelines were built in another environment |
+| [#910](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/910) | bvtterbrot | fix(vk): the Anisotropic filtering row leaves images of one level alone, so no bright lines along edges |
+| [#975](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/975) | HumanBean | fix(vk): GPUs on the compute fallback load programs when the game makes them, not all 32,645 pipelines before the title |
+| [#1083](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1083) | nyannoying | fix(vk): a submit's capture no longer misses the pages the replay's collection is marking again |
+| [#1220](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1220) | Joey Magnus | fix(vk): the write-back diff pass has a checkpoint of its own in device-lost reports |
+| [#1418](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1418) | Joey Magnus | fix(vk): an update that changes no shader no longer rebuilds every pipeline |
+| [#1447](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1447) | pmwork-personal | fix(vk): leave out the depth draws of a mesh the game no longer shows: no ghosting with the camera inside Link |
+| [#1450](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1450) | HumanBean | fix(vk): a load-at-create start whose mesh fallback builds stall in the driver goes on to the title, with progress on the way (without its save before the title: precompile_save.h is not here) |
+| [#1458](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1458) | HumanBean | fix(vk): the swapchain's image is waited for on the CPU, so a window behind another one no longer stops the GPU's work |
+| [#1615](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1615) | SonnikBoom | fix(vk): precompile the Hyrule drawbridge scene pipelines |
+| [#1631](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1631) | Guep | fix(vk): no EQUAL depth margin for draws that blend (Death Mountain Trail's khaki veil on Intel) |
+| [#1839](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1839) | gmourao | fix(vk): recognize RDNA 4 GPUs by PCI device ID (ported: the ids only) |
+
+#1659 is taken as its commit, but its line stays as #1631 had it: this tree's `dynamic_state` reads `cur_program`.

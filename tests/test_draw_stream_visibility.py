@@ -37,7 +37,7 @@ def main():
     end = replay.index("        if (res == VK_ERROR_DEVICE_LOST) device_lost();", start)
     end += len("        if (res == VK_ERROR_DEVICE_LOST) device_lost();")
     fixture = fixture.replace("/* SEGMENT */", replay[start:end])
-    cases = ["single", "grow", "reuse", "empty", "batch", "segments", "failed-segment", "allocation-failure"]
+    cases = ["single", "grow", "reuse", "empty", "batch", "segments", "failed-segment", "allocation-failure", "first-stream-failure"]
     if a.case != "all":
         assert a.case in cases
         cases = [a.case]

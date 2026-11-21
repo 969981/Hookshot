@@ -58,6 +58,13 @@ struct SkinnedDraw {
 };
 void temporal_note_skinned_draw(const SkinnedDraw& k);
 
+/// (hookshot, #1370) The hidden-mesh rule's switches (vk_draw.cpp hidden_depth_draw, gpu/vk/hidden_mesh.h). Bit 0: the depth
+/// draws of hidden meshes are left out (unless RX_VK_DLSS_FADED=0); bit 1: the detailed log (RX_VK_DLSS_FADED_LOG=1). 0:
+/// nothing runs, as with the parallel replay (RX_VK_PARALLEL=2 and more). Read once; the first call logs what it is
+int temporal_hidden_mesh_mode();
+/// (hookshot, #1370) Whether `depth` is the depth target of the scene the chain has taken in this frame (its camera's)
+bool temporal_scene_depth_is(const Texture* depth);
+
 /// A gameplay upscale's dispatch (program `key`; vk_draw.cpp's temporal_stand_in finds them: the 4/3 network fd029a317a9a4b94
 /// at the game's usual 3/4, the same-size pass 9dc98871eb7fc101 at full size, and one network of its own for each other
 /// share): its input as it samples it (in, in_view) and its output's storage view (out at level 0). known: one of the
