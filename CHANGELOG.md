@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.34](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.33...v2.3.0-rc.34) (2026-11-21)
+
+
+### Bug Fixes
+
+* **vk:** DLSS and FSR 3 keep the scene depth unless a depth image went ([#109](https://github.com/notquiteog/Hookshot/issues/109)) ([7b97cf7](https://github.com/notquiteog/Hookshot/commit/7b97cf7d251022c34d3c3913022e1e6b66ca1748))
+
 ## [2.3.0-rc.33](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.32...v2.3.0-rc.33) (2026-11-21)
 
 
