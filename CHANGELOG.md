@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.32](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.31...v2.3.0-rc.32) (2026-11-21)
+
+
+### Bug Fixes
+
+* **os:** the rest of the timer events, timed receive, thread try-wait and core mask, in the runtime's own model ([#100](https://github.com/notquiteog/Hookshot/issues/100)) ([cc4d240](https://github.com/notquiteog/Hookshot/commit/cc4d240cc19967dbc251a4e529b463ed4274f106))
+
 ## [2.3.0-rc.31](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.30...v2.3.0-rc.31) (2026-11-21)
 
 
