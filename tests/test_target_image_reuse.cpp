@@ -20,7 +20,7 @@ struct Device {
     VkDevice device = reinterpret_cast<VkDevice>(1);
 };
 Device dev;
-uint64_t frame_no = 0, total_bytes = 0, destroy_gen = 0;
+uint64_t frame_no = 0, total_bytes = 0, destroy_gen = 0, depth_destroy_gen = 0;
 int destroyed_images = 0, destroyed_views = 0;
 void destroy_image(VkImage, VmaAllocation) {
     destroyed_images++;
@@ -36,6 +36,7 @@ struct Texture {
     std::vector<VkDeviceMemory> sparse_chunks;
     std::unordered_map<uint64_t, VkImageView> views;
     uint64_t pool_key = 0;
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     uint64_t bytes = 0, pad = 0;
     struct BlockAttachment {
         VkImage image;
@@ -110,6 +111,25 @@ int main() {
         CHECK(destroyed_images == 0 && destroyed_views == 0);
         CHECK(pool_n == 0 && pool_bytes == 0);
         CHECK(total_bytes == 0);
+    }
+    {   // only a depth image's going moves the depth counter: DLSS and FSR 3 keep the scene depth while it has not moved, and
+        // a colour texture the budget lets go is not a reason to hand the frame back to the game's upscale
+        const uint64_t was = destroy_gen, depth_was = depth_destroy_gen;
+        Texture colour = target(key_for(1920, 1080), reinterpret_cast<VkImage>(static_cast<uintptr_t>(0x4000)),
+                                reinterpret_cast<VmaAllocation>(static_cast<uintptr_t>(0x5000)),
+                                reinterpret_cast<VkImageView>(static_cast<uintptr_t>(0x6000)), 8ull << 20);
+        total_bytes = colour.bytes + colour.pad;
+        destroy_later(colour);
+        CHECK(destroy_gen == was + 1);
+        CHECK(depth_destroy_gen == depth_was);
+        Texture depth = target(0, reinterpret_cast<VkImage>(static_cast<uintptr_t>(0x7000)),
+                               reinterpret_cast<VmaAllocation>(static_cast<uintptr_t>(0x8000)),
+                               reinterpret_cast<VkImageView>(static_cast<uintptr_t>(0x9000)), 8ull << 20);
+        depth.aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        total_bytes += depth.bytes + depth.pad;
+        destroy_later(depth);
+        CHECK(destroy_gen == was + 2);
+        CHECK(depth_destroy_gen == depth_was + 1);
     }
     std::printf("target image reuse: %d failure(s)\n", fails);
     return fails ? 1 : 0;

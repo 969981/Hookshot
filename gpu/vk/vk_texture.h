@@ -150,6 +150,8 @@ int texture_segment_end(int index);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
+/// Changes whenever a depth (or stencil) image is destroyed or moved: a depth texture kept elsewhere is good while it has not
+uint64_t texture_depth_destroy_generation();
 // (hookshot, RX_VK_FRAME_TRACE: time no other column has; totals in ns, the trace takes their differences)
 int64_t texture_readback_wait_ns();   // (a read-back's submit and wait for the GPU: the write-backs before an eviction)
 int64_t texture_frame_ns();           // (texture_frame as a whole: each present's eviction, compaction and sweeps)

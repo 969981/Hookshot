@@ -52,7 +52,7 @@ struct Camera {
     float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
-    uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
+    uint64_t depth_gen = 0;   // (texture_depth_destroy_generation when taken: a depth image gone or moved since is not used)
     uint64_t frame = 0;       // (texture_frame_no when taken)
     bool valid = false;
 };
@@ -188,8 +188,8 @@ bool make_pipeline() {
 /// A view of a depth texture's depth alone, for sampling (made once per image: vk_temporal.cpp's depth_view)
 VkImageView depth_view(Texture* t) {
     State& s = st();
-    const uint64_t gen = texture_destroy_generation();
-    if (gen != s.depth_views_gen) {   // (a texture was destroyed: its image's view may be stale)
+    const uint64_t gen = texture_depth_destroy_generation();
+    if (gen != s.depth_views_gen) {   // (a depth image went or moved: its view may be stale)
         auto old = std::move(s.depth_views);
         s.depth_views.clear();
         later([old] {
@@ -233,7 +233,7 @@ void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Tex
     std::memcpy(k.projection, c + 0x70 / 4, sizeof k.projection);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
     k.jitter[0] = -c[0x78 / 4], k.jitter[1] = -c[0x88 / 4];
-    k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
+    k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_depth_destroy_generation(), k.frame = now;
     k.valid = true;
 }
 
@@ -253,7 +253,7 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
     if (!in || !in_view) return fail("no input view");
     const uint64_t now = texture_frame_no();
     if (!cam.valid || now - cam.frame > 1) return fail("no scene camera this frame");
-    if (cam.depth_gen != texture_destroy_generation()) return fail("the scene depth may be gone");
+    if (cam.depth_gen != texture_depth_destroy_generation()) return fail("the scene depth may be gone");
     const uint32_t rw = in->width, rh = in->height;
     if (rw != cam.width || rh != cam.height) return fail("the input is not the scene's size");
     if (cam.depth->width != rw || cam.depth->height != rh || !(cam.depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||

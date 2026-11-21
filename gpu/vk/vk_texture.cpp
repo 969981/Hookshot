@@ -2196,6 +2196,12 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out) {
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
+// (hookshot) bumped only when a depth image goes or moves: a texture destroyed, a compaction pass. destroy_gen also moves
+// for every sampled texture the budget lets go and every ASTC upload left for a later frame, and DLSS and FSR 3 took that as
+// "the scene depth may be gone": 1214 times in 48 minutes of one Windows log (median 102 frames apart), each a frame or more
+// upscaled by the game instead. Only the eviction sweep frees a Texture, through destroy_later, so a camera's depth pointer
+// is good while this has not moved
+uint64_t depth_destroy_gen = 1;
 
 /// (A render target's image goes to the pool now rather than at the next present: between the two, the next frame is
 /// recorded, and a target of its shape made there missed it and made a new image, while the old one was destroyed unused
@@ -2203,6 +2209,7 @@ uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to th
 /// over one the GPU is done with (it skips those in flight), so the next frame's target takes it)
 void destroy_later(Texture& tex) {
     destroy_gen++;
+    if (tex.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) depth_destroy_gen++;
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -2824,6 +2831,10 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
+}
+
+uint64_t texture_depth_destroy_generation() {
+    return depth_destroy_gen;
 }
 
 uint32_t texture_epoch() {
@@ -4551,6 +4562,7 @@ void compact_step(uint64_t completed) {
     }
     full_barrier(cmd, "compaction: after the copies");
     destroy_gen++;   // (what was resolved to the moved textures' views is stale)
+    depth_destroy_gen++;   // (a depth image may have moved too)
     compact.in_pass = true, compact.value = rec_value;
 }
 
