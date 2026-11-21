@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.31](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.30...v2.3.0-rc.31) (2026-11-21)
+
+
+### Bug Fixes
+
+* **vk:** the replay takes a texture's layout, counts and ranges from what it can check, not from the game's word ([#102](https://github.com/notquiteog/Hookshot/issues/102)) ([1efc627](https://github.com/notquiteog/Hookshot/commit/1efc627e6f125b964bc51f0a912bcfe2aa8f192f))
+
 ## [2.3.0-rc.30](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.29...v2.3.0-rc.30) (2026-11-21)
 
 
