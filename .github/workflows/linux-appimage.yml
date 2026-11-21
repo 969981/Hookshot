@@ -293,6 +293,10 @@ jobs:
       # (the parts to the linux-parts release, which is never "latest"; a part already there is not uploaded again)
       - name: Update parts
         run: scripts/linux/publish_parts.sh dist/parts
+      # (the build's downloads from hosts other than GitHub, copied to linux-parts once: deps.sh and dav1d.sh take that
+      # copy first, so a host that is down does not stop a release)
+      - name: Copy outside build sources
+        run: scripts/mirror_build_sources.sh
       # (the Release workflow's draft release, or for a tag pushed by hand the release made here or by the Windows
       # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand and the
       # nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's publish job)
