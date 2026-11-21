@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.33](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.32...v2.3.0-rc.33) (2026-11-21)
+
+
+### Bug Fixes
+
+* **os:** a finalized message queue keeps its room, so a send after the finalize goes in as on Horizon ([#104](https://github.com/notquiteog/Hookshot/issues/104)) ([fe760d7](https://github.com/notquiteog/Hookshot/commit/fe760d77fde5d1ea132b230a572b10068b1221a6))
+
 ## [2.3.0-rc.32](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.31...v2.3.0-rc.32) (2026-11-21)
 
 
