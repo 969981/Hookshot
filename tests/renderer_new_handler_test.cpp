@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
     using namespace mkwvk;
     scenario = argc > 1 ? argv[1] : "";
     host_v23.version = MKWVK_API_VERSION, host_v23.out_of_memory = fake_out_of_memory;   // (the host mkwvk_init takes: exactly this one)
-    host_v22.version = MKWVK_API_VERSION - 1, host_v22.out_of_memory = fake_out_of_memory;   // (an older host: the slot is not its)
+    host_v22.version = 22, host_v22.out_of_memory = fake_out_of_memory;   // (a host from before out_of_memory, 23: the slot is not its; not MKWVK_API_VERSION - 1, which is past 23 from 24 on)
     host = &host_v23;
     std::set_new_handler(new_refused);
     if (!std::strcmp(scenario, "limit")) {   // (operator new: 5 s of tries, then the host's out-of-memory stop)

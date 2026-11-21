@@ -444,10 +444,10 @@ static void forward(const early_call *c) {
     switch (c->kind) {
     case 0: {
         const nvn_view *v = c->has_view ? &c->v : NULL;
-        vk ? vk->nvn_register_texture(c->id, &c->t, v) : wgr_nvn_register_texture(c->id, &c->t, v);
+        vk ? vk->nvn_register_texture_copy(c->id, &c->t, v) : wgr_nvn_register_texture(c->id, &c->t, v);   /* (our copies: issue 1117's) */
         break;
     }
-    case 1: vk ? vk->nvn_register_sampler(c->id, &c->p) : wgr_nvn_register_sampler(c->id, &c->p); break;
+    case 1: vk ? vk->nvn_register_sampler_copy(c->id, &c->p) : wgr_nvn_register_sampler(c->id, &c->p); break;
     case 2: vk ? vk->nvn_set_texture_pool_size(c->id) : wgr_nvn_set_texture_pool_size(c->id); break;
     case 3: vk ? vk->nvn_texture_released(&c->t) : wgr_nvn_texture_released(&c->t); break;
     case 4: if (vk && vk->nvn_texture_created) vk->nvn_texture_created(&c->t); break;
@@ -469,27 +469,41 @@ static const nvn_tex *safe_tex(const nvn_tex *in, nvn_tex *copy, const char *wha
                 copy->d.width, copy->d.height, copy->d.depth, copy->d.levels, copy->d.target, (unsigned)copy->d.format, copy->d.samples);
     return NULL;
 }
+/* (hookshot) whether the n bytes at host pointer p are all guest memory: the game's objects are (nvn_native.c checks them
+   whole with PN), and the copies made of them here are what the renderer takes */
+static int in_guest(const void *p, size_t n) {
+    const uintptr_t q = (uintptr_t)p, base = (uintptr_t)hos_guest_base();
+    return q >= base && hos_guest_range(q - base, n) != NULL;
+}
+/* The registrations hand the renderer the host's own copies, through the entries that take them as such
+   (nvn_register_texture_copy, _sampler_copy: API 24): the game's object checked here once, its texture's layout made from its
+   description (safe_tex), the copy read at once. Handed through nvn_register_texture, a copy outside guest memory was checked
+   again for every registration with a VirtualQuery, which reads /proc/self/maps on Linux (host/posix/win32_posix.c) and is a
+   system call on Windows: 38% of Ocarina's main thread in play, at half its frame rate (#102) */
 void rx_nvn_register_texture(int id, const nvn_tex *t_in, const nvn_view *v_in) {
     nvn_tex tc;
     nvn_view vc;
+    if (t_in && !in_guest(t_in, sizeof *t_in)) return;
     const nvn_tex *t = safe_tex(t_in, &tc, "registration");
     if (t_in && !t) return;
-    const nvn_view *v = v_in ? (vc = *v_in, &vc) : NULL;
+    const nvn_view *v = v_in && in_guest(v_in, sizeof *v_in) ? (vc = *v_in, &vc) : NULL;   /* (a bad view only loses the view) */
     if (!started && t) {
         early_call c = {0, id};
         c.t = *t;
         if (v) c.v = *v, c.has_view = 1;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_texture(id, t, v) : wgr_nvn_register_texture(id, t, v);
+    vk ? vk->nvn_register_texture_copy(id, t, v) : wgr_nvn_register_texture(id, t, v);
 }
-void rx_nvn_register_sampler(int id, const nvn_samp_par *p) {
-    if (!started && p) {
+void rx_nvn_register_sampler(int id, const nvn_samp_par *p_in) {
+    if (!p_in || !in_guest(p_in, sizeof *p_in)) return;
+    const nvn_samp_par pc = *p_in, *p = &pc;
+    if (!started) {
         early_call c = {1, id};
         c.p = *p;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_sampler(id, p) : wgr_nvn_register_sampler(id, p);
+    vk ? vk->nvn_register_sampler_copy(id, p) : wgr_nvn_register_sampler(id, p);
 }
 void rx_nvn_set_texture_pool_size(int n) {
     if (!started) {

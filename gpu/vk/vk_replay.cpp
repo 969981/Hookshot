@@ -5528,6 +5528,23 @@ void register_sampler_queued(int id, const nvn_samp_par* p) {
     j.id = id, j.samp = *p;
     enqueue(std::move(j));
 }
+// (hookshot, API 24) the host's own copies (rx_backend.c): copied at once, with no descriptor_ok. Its VirtualQuery, for a
+// pointer outside guest memory, read /proc/self/maps on Linux at every registration (#102: Ocarina at half its frame rate)
+void register_texture_copy_queued(int id, const nvn_tex* t, const nvn_view* v) {
+    if (id < 0 || id >= (1 << 20) || !t) return;
+    if (!async_on() || register_at_once()) return register_texture_copy(id, *t, v);
+    Job j{JOB_REGISTER_TEXTURE};
+    j.id = id, j.tex = *t;
+    if (v) j.view = *v, j.has_view = true;
+    enqueue(std::move(j));
+}
+void register_sampler_copy_queued(int id, const nvn_samp_par* p) {
+    if (id < 0 || id >= (1 << 12) || !p) return;
+    if (!async_on() || register_at_once()) return register_sampler_copy(id, *p);
+    Job j{JOB_REGISTER_SAMPLER};
+    j.id = id, j.samp = *p;
+    enqueue(std::move(j));
+}
 uint64_t fence() { return async_on() || sync_waits_on() ? q_values.load() : pushed.load(); }
 uint64_t get_pushed() { return fence(); }
 
@@ -5682,6 +5699,8 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
     t.nvn_program_created = programs_created;
+    t.nvn_register_texture_copy = register_texture_copy_queued;
+    t.nvn_register_sampler_copy = register_sampler_copy_queued;
     programs_life_on(), programs_load_at_create();
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;

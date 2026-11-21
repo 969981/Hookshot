@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 23   /* (23: out_of_memory, from Longshot #1291) */
+#define MKWVK_API_VERSION 24   /* (23: out_of_memory, from Longshot #1291; 24: the registrations' copy entries, #102's fix) */
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -287,6 +287,13 @@ typedef struct MkwVkRenderer {
        game's thread, before any draw uses it: what the back end kept ready for it can be loaded now (gpu/vk/vk_programs.cpp).
        Its stages' code and control sections are in the game's memory at this call */
     void (*nvn_program_created)(const nvn_prog *p);
+    /* (version 24; 23 is out_of_memory, #114) a texture or sampler registration from the host's own copy of it (host/rx_backend.c: made from the game's
+       object, which nvn_native.c checked whole in guest memory, and its layout recomputed: nvn_tex_sanitize), copied at once:
+       no check of where the pointer is. nvn_register_texture and nvn_register_sampler check theirs (vk_bank.cpp
+       descriptor_ok): for a copy outside guest memory that was a VirtualQuery per registration, a read of /proc/self/maps
+       on Linux, 38% of Ocarina's main thread in play (#102) */
+    void (*nvn_register_texture_copy)(int id, const nvn_tex *t, const nvn_view *v);
+    void (*nvn_register_sampler_copy)(int id, const nvn_samp_par *p);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */
