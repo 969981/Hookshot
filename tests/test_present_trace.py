@@ -46,6 +46,7 @@ static int has_vcore;
 static int64_t renderer_work, back_work;
 #define NV(name) static void name(void)
 #define P(i) (&window)
+#define PN(i, n) (&window)
 #define I(i) 0
 static void die(const char *fmt, ...) { (void)fmt; exit(91); }
 static void held_flush(void) { clock_now += 2000000; }

@@ -134,7 +134,7 @@ struct Camera {
     float near_z = 0, far_z = 0, fov_y = 0;   // (its projection's, 0 when it is not a plain perspective one)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
-    uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
+    uint64_t depth_gen = 0;   // (texture_depth_destroy_generation when taken: a depth image gone or moved since is not used)
     uint64_t frame = 0;       // (texture_frame_no when taken)
     VkFormat scene_format = VK_FORMAT_UNDEFINED;
     bool valid = false;
@@ -419,8 +419,8 @@ bool make_rgba_output() {
 /// A view of a depth texture's depth alone, for sampling (made once per image)
 VkImageView depth_view(Texture* t) {
     State& s = st();
-    const uint64_t gen = texture_destroy_generation();
-    if (gen != s.depth_views_gen) {   // (a texture was destroyed: its image's view may be stale)
+    const uint64_t gen = texture_depth_destroy_generation();
+    if (gen != s.depth_views_gen) {   // (a depth image went or moved: its view may be stale)
         auto old = std::move(s.depth_views);
         s.depth_views.clear();
         later([old] {
@@ -820,7 +820,7 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     const bool plain = std::isfinite(n) && n > 0.0f && p11 > 0.0f && (!std::isfinite(f) || f > n);
     k.near_z = plain ? n : 0.0f, k.far_z = plain ? (std::isfinite(f) ? f : 1e9f) : 0.0f;
     k.fov_y = plain ? 2.0f * std::atan(1.0f / p11) : 0.0f;
-    k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
+    k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_depth_destroy_generation(), k.frame = now;
     k.scene_format = color0->format;
     k.valid = true;
 }
@@ -1048,7 +1048,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         return fail("unexpected scene colour format");
     const bool psycho = scene_tonemap_on() && ur::takes_psychov35(mode) &&
                         temporal_scene_format(VK_FORMAT_R16G16B16A16_SFLOAT);
-    if (cam.depth_gen != texture_destroy_generation()) return fail("the scene depth may be gone");
+    if (cam.depth_gen != texture_depth_destroy_generation()) return fail("the scene depth may be gone");
     const uint32_t rw = in->width, rh = in->height;
     const uint32_t ow = std::max(1u, out->width >> out_level), oh = std::max(1u, out->height >> out_level);
     if (rw != cam.width || rh != cam.height) return fail("the input is not the scene's size");

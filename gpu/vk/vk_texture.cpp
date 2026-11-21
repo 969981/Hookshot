@@ -30,6 +30,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -609,12 +610,20 @@ std::mutex gpu_wrote_mu;
 bool gpu_wrote_into(Texture& tex);
 namespace {
 Staging staging(uint64_t n, uint64_t align = 256) {
+    // (hookshot) past the largest texture storage (rx_nvn.h NVN_TEX_MAX_BYTES), none: a size from a layout that wrapped
+    // rounded up to 0 below, took the 64 MB spare arena, and the caller wrote its 2^64 bytes past it (the audit's V1). The
+    // comparisons below subtract, so no sum of an offset and a size wraps either
+    if (n > NVN_TEX_MAX_BYTES) {
+        static std::atomic<int> told{0};
+        if (told++ < 8) logf("vk: staging: %llu bytes asked for, past any texture: none given", (unsigned long long)n);
+        return {};
+    }
     // Separate slices may already be read by submitted parallel segments. A flush must not share their cache atom.
     align = std::max<uint64_t>(align, dev.props.limits.nonCoherentAtomSize);
     for (Arena& a : arenas) {   // the current one first, then any whose readers completed
         if (a.value == rec_value) {
             const uint64_t at = (a.used + align - 1) & ~(align - 1);
-            if (at + n <= a.size) {
+            if (n <= a.size && at <= a.size - n) {
                 a.used = at + n;
                 a.used_at = std::chrono::steady_clock::now();
                 return {a.buffer, at, a.mapped + at, a.allocation};
@@ -631,7 +640,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
     for (Arena& a : arenas) {
         if (a.value < rec_value) {
             const uint64_t at = (a.used + align - 1) & ~(align - 1);
-            if (at + n <= a.size) {
+            if (n <= a.size && at <= a.size - n) {
                 a.value = rec_value, a.used = at + n;
                 a.used_at = std::chrono::steady_clock::now();
                 return {a.buffer, at, a.mapped + at, a.allocation};
@@ -1952,6 +1961,20 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                         src = scratch.data();
                     }
                     const auto u0 = std::chrono::steady_clock::now();
+                    {   // (hookshot) the unswizzles take the exact width: suyu's stride alignment 1 rounded it up to even, and
+                        // with 3, 6 or 12 bytes a texel an odd width's rows then spanned one more 64-byte GOB than the
+                        // texture's layout (nvn_layout.c), read texels from the wrong place and past the data (the audit's
+                        // V3). Which textures that was, each shape once (50)
+                        const uint64_t even = ((uint64_t)g.tw + 1) & ~1ull;
+                        if ((g.tw & 1) && (even * src_bpb + 63) / 64 != ((uint64_t)g.tw * src_bpb + 63) / 64) {
+                            static std::mutex mu;
+                            static std::set<uint64_t> told;
+                            std::lock_guard lk(mu);
+                            if (told.size() < 50 && told.insert((uint64_t)g.tw << 8 | (uint64_t)src_bpb).second)
+                                logf("vk: unswizzle: a %ux%u texture of %u bytes a texel (format %#x) read at its own width: "
+                                     "the even width read one GOB more a row", g.tw, th, (unsigned)src_bpb, tex.nvn_format);
+                        }
+                    }
                     if (nthreads > 1) {
                         const uint64_t out_row = (uint64_t)g.tw * rows_per * src_bpb;   // (bytes per GOB-block row)
                         const uint32_t per = (nrow + nthreads - 1) / nthreads;
@@ -1978,7 +2001,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                 }
                                 Tegra::Texture::UnswizzleTexture(
                                     std::span<uint8_t>(blocks + a * out_row, (uint64_t)g.tw * h * src_bpb),
-                                    std::span<const uint8_t>(rows, rows_n), (u32)src_bpb, g.tw, h, 1, g.tile_h, 0, 1);
+                                    std::span<const uint8_t>(rows, rows_n), (u32)src_bpb, g.tw, h, 1, g.tile_h, 0, 0);
                             }
                         };
                         std::vector<std::thread> pool;
@@ -1990,7 +2013,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                             std::vector<uint8_t> ref(block_bytes);
                             Tegra::Texture::UnswizzleTexture(std::span<uint8_t>(ref.data(), block_bytes),
                                                              std::span<const uint8_t>(src, need), (u32)src_bpb, g.tw,
-                                                             th, g.td, g.tile_h, g.tile_d, 1);
+                                                             th, g.td, g.tile_h, g.tile_d, 0);
                             const bool same = !std::memcmp(ref.data(), blocks, block_bytes);
                             logf("vk: unswizzle check %#llx level %u rows %u+%u: %s", (unsigned long long)tex.gpu,
                                  level, row0, nrow, same ? "same" : "DIFFERENT");
@@ -1998,7 +2021,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                     } else {
                         Tegra::Texture::UnswizzleTexture(std::span<uint8_t>(blocks, block_bytes),
                                                          std::span<const uint8_t>(src, need), (u32)src_bpb, g.tw, th,
-                                                         g.td, g.tile_h, g.tile_d, 1);
+                                                         g.td, g.tile_h, g.tile_d, 0);
                     }
                     st_unswizzle_bytes += (int64_t)block_bytes;
                     st_unswizzle_ns +=
@@ -2173,6 +2196,12 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out) {
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
+// (hookshot) bumped only when a depth image goes or moves: a texture destroyed, a compaction pass. destroy_gen also moves
+// for every sampled texture the budget lets go and every ASTC upload left for a later frame, and DLSS and FSR 3 took that as
+// "the scene depth may be gone": 1214 times in 48 minutes of one Windows log (median 102 frames apart), each a frame or more
+// upscaled by the game instead. Only the eviction sweep frees a Texture, through destroy_later, so a camera's depth pointer
+// is good while this has not moved
+uint64_t depth_destroy_gen = 1;
 
 /// (A render target's image goes to the pool now rather than at the next present: between the two, the next frame is
 /// recorded, and a target of its shape made there missed it and made a new image, while the old one was destroyed unused
@@ -2180,6 +2209,7 @@ uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to th
 /// over one the GPU is done with (it skips those in flight), so the next frame's target takes it)
 void destroy_later(Texture& tex) {
     destroy_gen++;
+    if (tex.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) depth_destroy_gen++;
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -2801,6 +2831,10 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
+}
+
+uint64_t texture_depth_destroy_generation() {
+    return depth_destroy_gen;
 }
 
 uint32_t texture_epoch() {
@@ -3652,7 +3686,7 @@ bool flush_finish(Flush& f, bool gpu_ok) {
             else host->gpu_read(at, sw.data(), span);
             Tegra::Texture::SwizzleTexture(std::span<uint8_t>(sw.data(), sw.size()),
                                            std::span<const uint8_t>((const uint8_t*)map + p.at, p.n), (u32)t.bpb, p.g.tw,
-                                           p.g.th, p.g.td, p.g.tile_h, p.g.tile_d, 1);
+                                           p.g.th, p.g.td, p.g.tile_h, p.g.tile_d, 0);
             if (!write_back(at, sw.data(), span)) ok = false;   // (marks the pages written: textures over them upload)
         }
         publish();
@@ -4528,6 +4562,7 @@ void compact_step(uint64_t completed) {
     }
     full_barrier(cmd, "compaction: after the copies");
     destroy_gen++;   // (what was resolved to the moved textures' views is stale)
+    depth_destroy_gen++;   // (a depth image may have moved too)
     compact.in_pass = true, compact.value = rec_value;
 }
 

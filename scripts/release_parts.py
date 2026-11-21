@@ -71,10 +71,20 @@ def get(url, api=False, tries=5):
         time.sleep(10)
 
 
+def releases_of(repo, pages=10):
+    """A repository's releases, newest first, page by page (100 a page, at most `pages`): the newest stable release sits
+    behind every release candidate made since, and rc.29 was the 31st release after v2.2.0, past one page of 30"""
+    for page in range(1, pages + 1):
+        batch = json.loads(get("https://api.github.com/repos/%s/releases?per_page=100&page=%d" % (repo, page), api=True))
+        yield from batch
+        if len(batch) < 100:
+            return
+
+
 def previous(a):
     for repo in a.repo:
         try:
-            releases = json.loads(get("https://api.github.com/repos/%s/releases?per_page=30" % repo, api=True))
+            releases = list(releases_of(repo))
         except urllib.error.HTTPError as e:
             print("%s: %s" % (repo, e), file=sys.stderr)
             continue

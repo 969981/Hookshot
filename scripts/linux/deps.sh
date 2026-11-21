@@ -20,7 +20,6 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 DEPS=${DEPS:-$PWD/build-linux/deps}
 DL=$DEPS/downloads
-mkdir -p "$DEPS" "$DL"
 JOBS=$(nproc)
 
 LLVM_VER=23.1.5
@@ -53,6 +52,33 @@ VK_HEADERS_TREE=f420c9f8639ce3a078c8792624b292ae60858318c4741f609d8a087ddd958669
 SPIRV_HEADERS_TREE=d2eb655ad74ecf31e039866232142199476ffac691a8e3cfeba90993c2de5209
 VMA_TREE=ab0e5e18a0b0ba7303d0df7d3f5610e5dc99f045f8006c2404cb0e49d242d322
 
+# The downloads from hosts other than GitHub, also kept on this repository's linux-parts release under these names
+# (scripts/mirror_build_sources.sh, from the Linux release job): fetch takes that copy first and the host's only when it
+# is missing, so a host that is down does not stop a release (code.videolan.org answered 502 through rc.27's build). A
+# copy is checked as the host's download is: by its SHA-256 or by what it unpacks to.
+DAV1D_URL=https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz
+DAV1D_COPYING_URL=https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING
+TCL_URL=https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tcl$TCLTK_VER-src.tar.gz
+TK_URL=https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tk$TCLTK_VER-src.tar.gz
+FFMPEG_URL=https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz
+SOURCES=${HOOKSHOT_BUILD_SOURCES:-https://github.com/${GITHUB_REPOSITORY:-notquiteog/Hookshot}/releases/download/linux-parts}
+mirror_name() {   # url -> its copy's name on linux-parts (none for a GitHub download)
+    case $1 in
+        "$DAV1D_COPYING_URL") echo "dav1d-$DAV1D_VER-COPYING" ;;
+        "$DAV1D_URL" | "$TCL_URL" | "$TK_URL" | "$FFMPEG_URL") echo "${1##*/}" ;;
+        *) return 1 ;;
+    esac
+}
+if [ "${1:-}" = --outside-sources ]; then   # name, host's url and check of each (sha256:<hex>, tree:<hex> or -)
+    printf '%s %s %s\n' "$(mirror_name "$DAV1D_URL")" "$DAV1D_URL" "tree:$DAV1D_TREE" \
+        "$(mirror_name "$DAV1D_COPYING_URL")" "$DAV1D_COPYING_URL" - \
+        "$(mirror_name "$TCL_URL")" "$TCL_URL" "sha256:$TCL_SHA256" \
+        "$(mirror_name "$TK_URL")" "$TK_URL" "sha256:$TK_SHA256" \
+        "$(mirror_name "$FFMPEG_URL")" "$FFMPEG_URL" "sha256:$FFMPEG_SHA256"
+    exit 0
+fi
+mkdir -p "$DEPS" "$DL"
+
 CURL=(curl -fL --retry 5 --retry-delay 10 --proto '=https')
 # A GitHub release link (github.com/O/R/releases/download/TAG/NAME) can answer 504 for a long while: the same file is
 # then fetched through the GitHub API (with $GH_TOKEN when it is set).
@@ -66,9 +92,19 @@ fetch_github_api() {   # url out
     echo "release link failed: fetching $name through the GitHub API"
     "${CURL[@]}" "${auth[@]}" -H "Accept: application/octet-stream" -o "$2" "https://api.github.com/repos/$repo/releases/assets/$id"
 }
+from_copy() {   # url out: this repository's copy of a download from outside GitHub, when linux-parts has one
+    local name
+    name=$(mirror_name "$1") || return 1
+    if "${CURL[@]}" -sS -o "$2" "$SOURCES/$name" 2>/dev/null || fetch_github_api "$SOURCES/$name" "$2" 2>/dev/null; then
+        echo "$name: this repository's copy"
+    else
+        echo "$name: not on linux-parts yet, from its host"
+        return 1
+    fi
+}
 fetch() {   # url file [sha256: checked on every run, the download removed when it differs]
     if [ ! -f "$DL/$2" ]; then
-        "${CURL[@]}" -o "$DL/$2.part" "$1" || fetch_github_api "$1" "$DL/$2.part"
+        from_copy "$1" "$DL/$2.part" || "${CURL[@]}" -o "$DL/$2.part" "$1" || fetch_github_api "$1" "$DL/$2.part"
         mv -f "$DL/$2.part" "$DL/$2"
     fi
     if [ -n "${3:-}" ] && ! echo "$3  $DL/$2" | sha256sum -c --quiet -; then
@@ -132,8 +168,8 @@ fi
 
 # ---- Tk with Xft (the builder window's fonts; Tcl is built only for Tk's configure and stub library) ----
 if ! done_for tk "$TCLTK_VER"; then
-    fetch "https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tcl$TCLTK_VER-src.tar.gz" "tcl$TCLTK_VER.tar.gz"
-    fetch "https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tk$TCLTK_VER-src.tar.gz" "tk$TCLTK_VER.tar.gz"
+    fetch "$TCL_URL" "tcl$TCLTK_VER.tar.gz"
+    fetch "$TK_URL" "tk$TCLTK_VER.tar.gz"
     printf '%s  %s\n' "$TCL_SHA256" "$DL/tcl$TCLTK_VER.tar.gz" "$TK_SHA256" "$DL/tk$TCLTK_VER.tar.gz" | sha256sum -c -
     rm -rf "$DEPS/src-tcl" "$DEPS/src-tk" "$DEPS/tk"
     mkdir -p "$DEPS/src-tcl" "$DEPS/src-tk" "$DEPS/tk"
@@ -156,12 +192,12 @@ fi
 P=$DEPS/ffmpeg
 if ! done_for ffmpeg "$FFMPEG_VER-$DAV1D_VER"; then
     rm -rf "$P" "$DEPS/src-dav1d" "$DEPS/src-ffmpeg"
-    fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz" dav1d.tar.gz
+    fetch "$DAV1D_URL" dav1d.tar.gz
     mkdir -p "$DEPS/src-dav1d" && tar -xzf "$DL/dav1d.tar.gz" -C "$DEPS/src-dav1d" --strip-components=1
     tree_is "$DEPS/src-dav1d" "$DAV1D_TREE" dav1d.tar.gz
     (cd "$DEPS/src-dav1d" && meson setup build --prefix="$P" --libdir=lib --buildtype=release --default-library=static \
         -Db_staticpic=true -Denable_tools=false -Denable_tests=false -Denable_examples=false && ninja -C build install)
-    fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz" ffmpeg.tar.xz "$FFMPEG_SHA256"
+    fetch "$FFMPEG_URL" ffmpeg.tar.xz "$FFMPEG_SHA256"
     mkdir -p "$DEPS/src-ffmpeg" && tar -xJf "$DL/ffmpeg.tar.xz" -C "$DEPS/src-ffmpeg" --strip-components=1
     (cd "$DEPS/src-ffmpeg" && PKG_CONFIG_PATH="$P/lib/pkgconfig" ./configure --prefix="$P" --pkg-config-flags=--static \
         --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-network --disable-autodetect \
@@ -211,7 +247,7 @@ if ! done_for licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER-$TCLTK_VER"; t
     curl -fsSL -o "$L/LLVM-LICENSE.TXT" "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT"
     curl -fsSL -o "$L/FFmpeg-COPYING.LGPLv2.1" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1"
     curl -fsSL -o "$L/FFmpeg-LICENSE.md" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md"
-    curl -fsSL -o "$L/dav1d-COPYING" "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING"
+    fetch "$DAV1D_COPYING_URL" "dav1d-$DAV1D_VER-COPYING" && cp "$DL/dav1d-$DAV1D_VER-COPYING" "$L/dav1d-COPYING"
     cp "$DEPS/sdl2/LICENSE.txt" "$L/SDL2-LICENSE.txt"
     cp "$DEPS/tk/Tk-license.terms" "$L/Tk-license.terms"
     cp /usr/share/doc/libxft2/copyright "$L/libXft-copyright"

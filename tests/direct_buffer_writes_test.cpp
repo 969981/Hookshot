@@ -64,8 +64,9 @@ static const uint8_t* gpu_ptr(uint64_t, uint64_t* avail) {
     return mapping_valid ? reinterpret_cast<const uint8_t*>(&pool) : nullptr;
 }
 static uint64_t gpu_guest(uint64_t gpu) { return gpu >= virtual_base ? pool.lo + (gpu - virtual_base) : gpu; }
-struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_guest)(uint64_t); };
-static Host interface{gpu_ptr, gpu_guest};
+static uint64_t guest_size() { return 1ull << 40; }
+struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_guest)(uint64_t); uint64_t (*guest_size)(); };
+static Host interface{gpu_ptr, gpu_guest, guest_size};
 static Host* host = &interface;
 // (hookshot fork: gpu_buffer_bind counts why its lock-free path did not answer, vk_memory.cpp pool_lock_*)
 static std::atomic<int64_t> pool_lock_written{0}, pool_lock_cache_miss{0}, pool_lock_mirror{0};

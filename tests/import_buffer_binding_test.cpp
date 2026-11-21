@@ -1,6 +1,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -25,7 +26,7 @@ struct Pool {
     std::vector<VkDeviceMemory> pieces;
 };
 struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true; VkDriverId driver_id{}; } dev;
-struct Host { uint8_t* guest_base() { static uint8_t bytes[4096]{}; return bytes; } } host_value;
+struct Host { uint8_t* guest_base() { static uint8_t bytes[4096]{}; return bytes; } uint64_t guest_size() { return 1ull << 40; } } host_value;
 Host* host = &host_value;
 uint64_t max_import_size = UINT64_MAX;
 bool import_cooling = false;

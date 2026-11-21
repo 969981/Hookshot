@@ -53,7 +53,9 @@ static const void *in_window(const void *p, size_t n) {
     return p;
 }
 #define POOL(p) ((const nvn_pool *)in_window((p), sizeof(nvn_pool)))
-#define P(i) ((void *)(c->x[i] ? gw(c->x[i], NVN_OBJ_MIN) : NULL))   /* host pointer of a guest pointer argument */
+/* host pointer of a guest pointer argument, its first byte checked: what reads an object or an array through it says
+   how much (PN, or a typed macro below that checks its type's size: in_window), (hookshot) the audit's V8 */
+#define P(i) ((void *)(c->x[i] ? gw(c->x[i], NVN_OBJ_MIN) : NULL))
 #define PN(i, n) ((void *)(c->x[i] ? gw(c->x[i], (n)) : NULL))     /* the same for an array of n bytes */
 #define I(i) ((int)c->x[i])
 #define U32(i) ((uint32_t)c->x[i])
@@ -178,16 +180,16 @@ int nvn_depth_minus_w(void) { return depth_minus_w != 0; }
 uint64_t nvn_native_proc(const char *name);
 
 NV(nvnDeviceBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_dev_builder)); }
-NV(nvnDeviceBuilderSetFlags) { ((nvn_dev_builder *)P(0))->flags = U32(1); }
+NV(nvnDeviceBuilderSetFlags) { ((nvn_dev_builder *)PN(0, sizeof(nvn_dev_builder)))->flags = U32(1); }
 NV(nvnDeviceInitialize) {
-    nvn_dev *o = (nvn_dev *)P(0);
+    nvn_dev *o = (nvn_dev *)PN(0, sizeof(nvn_dev));
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('D', 'E', 'V', 0);
-    o->flags = ((const nvn_dev_builder *)P(1))->flags;
+    o->flags = ((const nvn_dev_builder *)PN(1, sizeof(nvn_dev_builder)))->flags;
     hos_log("nvn: native NVN device (flags %#x): no Switch GPU emulation", o->flags);
     RET(1);
 }
-NV(nvnDeviceFinalize) { ((nvn_dev *)P(0))->magic = 0; }
+NV(nvnDeviceFinalize) { ((nvn_dev *)PN(0, sizeof(nvn_dev)))->magic = 0; }
 NV(nvnDeviceGetProcAddress) { RET(U64(1) ? nvn_native_proc((const char *)GP(U64(1))) : 0); }
 /* (hookshot) API version 231.40: OoT (SDK 22.2.8) skips its graphics setup unless the minor is >= 40 (main
    0x8348c11c); MKW's driver said 39, which MKW accepts too. */
@@ -226,7 +228,7 @@ NV(nvnDeviceGetInteger) {
     static int devinfo_log = -1;
     if (devinfo_log < 0) devinfo_log = env_on("HOS_NVN_DEVINFO_LOG");
     if (devinfo_log) hos_log("nvn: nvnDeviceGetInteger(%u) -> %d", w, devinfo[w]);
-    *(int *)P(2) = devinfo[w];
+    *(int *)PN(2, sizeof(int)) = devinfo[w];
 }
 NV(nvnDeviceRegisterFastClearColor) { RET(0); }   /* "not registered": the game keeps its normal clears */
 NV(nvnDeviceRegisterFastClearColori) { RET(0); }
@@ -246,11 +248,11 @@ NV(nvnDeviceGetSeparateTextureHandle) { RET((uint64_t)I(1)); }
 NV(nvnDeviceGetSeparateSamplerHandle) { RET((uint64_t)I(1) << 20); }
 NV(nvnDeviceInstallDebugCallback) {}
 NV(nvnDeviceSetWindowOriginMode) {
-    ((nvn_dev *)P(0))->origin = U32(1);
+    ((nvn_dev *)PN(0, sizeof(nvn_dev)))->origin = U32(1);
     hos_log("nvn: window origin %s", U32(1) ? "upper left" : "lower left");
 }
 NV(nvnDeviceSetDepthMode) {
-    ((nvn_dev *)P(0))->depth_mode = U32(1);
+    ((nvn_dev *)PN(0, sizeof(nvn_dev)))->depth_mode = U32(1);
     const LONG was = InterlockedExchange(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
     hos_log("nvn: depth mode %s", U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W ? "near = -w (GL)" : "near = 0");
     if (was != (LONG)(depth_minus_w != 0))
@@ -264,7 +266,7 @@ NV(nvnDeviceFinalizeCommandHandle) {}
 NV(nvnDeviceGetCurrentTimestampInNanoseconds) { RET(hos_ticks() * (1000000000ull / HOS_TICK_HZ)); }
 /* counters hold Tegra GPU ticks (19.2 MHz): ns = ticks * 625 / 12 */
 NV(nvnDeviceGetTimestampInNanoseconds) {
-    const uint64_t t = ((const NVNcounterData *)P(1))->timestamp;
+    const uint64_t t = ((const NVNcounterData *)PN(1, sizeof(NVNcounterData)))->timestamp;
     RET(t / 12 * 625 + t % 12 * 625 / 12);
 }
 NV(nvnDeviceSetDebugLabel) {}
@@ -273,12 +275,12 @@ NV(nvnDeviceSetIntermediateShaderCache) {}
 
 /* ---- memory pools ---- */
 NV(nvnMemoryPoolBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_pool_builder)); }
-NV(nvnMemoryPoolBuilderSetDevice) { ((nvn_pool_builder *)P(0))->dev = P(1); }
-NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)P(0))->mem = U64(1); ((nvn_pool_builder *)P(0))->size = U64(2); }
-NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)P(0))->flags = U32(1); }
+NV(nvnMemoryPoolBuilderSetDevice) { ((nvn_pool_builder *)PN(0, sizeof(nvn_pool_builder)))->dev = P(1); }
+NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)PN(0, sizeof(nvn_pool_builder)))->mem = U64(1); ((nvn_pool_builder *)PN(0, sizeof(nvn_pool_builder)))->size = U64(2); }
+NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)PN(0, sizeof(nvn_pool_builder)))->flags = U32(1); }
 NV(nvnMemoryPoolInitialize) {
-    const nvn_pool_builder *b = (const nvn_pool_builder *)P(1);
-    nvn_pool *o = (nvn_pool *)P(0);
+    const nvn_pool_builder *b = (const nvn_pool_builder *)PN(1, sizeof(nvn_pool_builder));
+    nvn_pool *o = (nvn_pool *)PN(0, sizeof(nvn_pool));
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o->flags = b->flags;
@@ -329,7 +331,7 @@ static int no_pool(Ctx *c, const char *what) {
 }
 NV(nvnMemoryPoolFinalize) {
     if (no_pool(c, "finalize")) return;
-    nvn_pool *o = (nvn_pool *)P(0);
+    nvn_pool *o = (nvn_pool *)PN(0, sizeof(nvn_pool));
     struct nvn_vmap *vm = pool_vmap(o);
     if (vm) {   /* (its GPU range is not reused) */
         int mapped = 0;   /* (pages still mapped: what the GPU drew there goes into their memory first) */
@@ -358,34 +360,34 @@ NV(nvnMemoryPoolFinalize) {
 }
 NV(nvnMemoryPoolGetFlags) {
     if (no_pool(c, "flags")) { RET(0); return; }
-    RET(((const nvn_pool *)P(0))->flags);
+    RET(((const nvn_pool *)PN(0, sizeof(nvn_pool)))->flags);
 }
 NV(nvnMemoryPoolGetSize) {
     if (no_pool(c, "size")) { RET(0); return; }
-    RET(((const nvn_pool *)P(0))->size);
+    RET(((const nvn_pool *)PN(0, sizeof(nvn_pool)))->size);
 }
 NV(nvnMemoryPoolMap) {
     if (no_pool(c, "map")) { RET(0); return; }
-    const nvn_pool *o = (const nvn_pool *)P(0);
+    const nvn_pool *o = (const nvn_pool *)PN(0, sizeof(nvn_pool));
     if (o->magic != NVN_MAGIC('P', 'O', 'O', 'L') || (o->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) { RET(0); return; }
     if (!o->mem) die("CPU mapping of a virtual pool");
     RET(o->mem);
 }
 NV(nvnMemoryPoolGetBufferAddress) {
     if (no_pool(c, "buffer address")) { RET(0); return; }
-    RET(((const nvn_pool *)P(0))->gpu);
+    RET(((const nvn_pool *)PN(0, sizeof(nvn_pool)))->gpu);
 }
 NV(nvnMemoryPoolFlushMappedRange) {}   /* CPU writes are seen through write watch */
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
-    const nvn_pool *o = (const nvn_pool *)P(0);
+    const nvn_pool *o = (const nvn_pool *)PN(0, sizeof(nvn_pool));
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
 NV(nvnMemoryPoolSetDebugLabel) {}
 /* NVNmappingRequest (0x28 bytes): physical pool (guest pointer), physical offset, virtual offset, size, storage class */
 NV(nvnMemoryPoolMapVirtual) {
     if (no_pool(c, "map virtual")) return;
-    nvn_pool *v = (nvn_pool *)P(0);
+    nvn_pool *v = (nvn_pool *)PN(0, sizeof(nvn_pool));
     const int n = I(1);
     struct nvn_vmap *vm = pool_vmap(v);
     if (!vm || n < 0) die("MapVirtual on a pool that is not virtual");
@@ -446,25 +448,25 @@ NV(nvnMemoryPoolMapVirtual) {
 }
 
 /* ---- buffers (a range of a pool) ---- */
-NV(nvnBufferBuilderSetDevice) { ((nvn_buffer_builder *)P(0))->dev = P(1); }
+NV(nvnBufferBuilderSetDevice) { ((nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder)))->dev = P(1); }
 NV(nvnBufferBuilderSetDefaults) {
-    nvn_buffer_builder *b = (nvn_buffer_builder *)P(0);
+    nvn_buffer_builder *b = (nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder));
     void *d = b->dev;
     memset(b, 0, sizeof *b);
     b->dev = d;
 }
 NV(nvnBufferBuilderSetStorage) {
-    nvn_buffer_builder *b = (nvn_buffer_builder *)P(0);
-    b->pool = (nvn_pool *)P(1);
+    nvn_buffer_builder *b = (nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder));
+    b->pool = (nvn_pool *)PN(1, sizeof(nvn_pool));
     b->off = (int64_t)U64(2);
     b->size = U64(3);
 }
 NV(nvnBufferInitialize) {
-    const nvn_buffer_builder *b = (const nvn_buffer_builder *)P(1);
+    const nvn_buffer_builder *b = (const nvn_buffer_builder *)PN(1, sizeof(nvn_buffer_builder));
     const nvn_pool *bp = POOL(b->pool);
     if (!bp || bp->magic != NVN_MAGIC('P', 'O', 'O', 'L') || b->off < 0 || (uint64_t)b->off > bp->size ||
         b->size > bp->size - (uint64_t)b->off) { RET(0); return; }
-    nvn_buffer *o = (nvn_buffer *)P(0);
+    nvn_buffer *o = (nvn_buffer *)PN(0, sizeof(nvn_buffer));
     o->magic = NVN_MAGIC('B', 'U', 'F', 0);
     o->pool = b->pool;
     o->off = b->off;
@@ -492,7 +494,7 @@ static uint64_t scratch_map(uint64_t size, uint64_t lr) {
     return r;
 }
 NV(nvnBufferMap) {
-    const nvn_buffer *o = (const nvn_buffer *)P(0);
+    const nvn_buffer *o = (const nvn_buffer *)PN(0, sizeof(nvn_buffer));
     if (!o) { RET(0); return; }
     if (!o->pool) { RET(scratch_map(o->size ? o->size : 0x1000, c->x[30])); return; }
     const nvn_pool *pool = POOL(o->pool);
@@ -500,23 +502,23 @@ NV(nvnBufferMap) {
     RET(pool->mem + (uint64_t)o->off);
 }
 NV(nvnBufferGetAddress) {
-    const nvn_buffer *o = (const nvn_buffer *)P(0);
+    const nvn_buffer *o = (const nvn_buffer *)PN(0, sizeof(nvn_buffer));
     RET(o->pool ? POOL(o->pool)->gpu + (uint64_t)o->off : 0);
 }
-NV(nvnBufferGetMemoryPool) { RETP(((const nvn_buffer *)P(0))->pool); }
-NV(nvnBufferGetMemoryOffset) { RET((uint64_t)((const nvn_buffer *)P(0))->off); }
-NV(nvnBufferGetSize) { RET(((const nvn_buffer *)P(0))->size); }
+NV(nvnBufferGetMemoryPool) { RETP(((const nvn_buffer *)PN(0, sizeof(nvn_buffer)))->pool); }
+NV(nvnBufferGetMemoryOffset) { RET((uint64_t)((const nvn_buffer *)PN(0, sizeof(nvn_buffer)))->off); }
+NV(nvnBufferGetSize) { RET(((const nvn_buffer *)PN(0, sizeof(nvn_buffer)))->size); }
 NV(nvnBufferFlushMappedRange) {}
 NV(nvnBufferInvalidateMappedRange) {
-    const nvn_buffer *o = (const nvn_buffer *)P(0);
+    const nvn_buffer *o = (const nvn_buffer *)PN(0, sizeof(nvn_buffer));
     if (o->pool) rx_nvn_invalidate(POOL(o->pool)->gpu + (uint64_t)o->off + U64(1), U64(2));
 }
 NV(nvnBufferSetDebugLabel) {}
 
 /* ---- descriptor pools ---- */
 NV(nvnTexturePoolInitialize) {
-    nvn_dpool *o = (nvn_dpool *)P(0);
-    o->pool = (const nvn_pool *)P(1);
+    nvn_dpool *o = (nvn_dpool *)PN(0, sizeof(nvn_dpool));
+    o->pool = (const nvn_pool *)PN(1, sizeof(nvn_pool));
     o->off = (int64_t)U64(2);
     o->n = I(3);
     rx_nvn_set_texture_pool_size(o->n);
@@ -525,17 +527,17 @@ NV(nvnTexturePoolInitialize) {
 }
 NV(nvnTexturePoolFinalize) {}
 NV(nvnTexturePoolSetDebugLabel) {}
-NV(nvnTexturePoolRegisterTexture) { rx_nvn_register_texture(I(1), (const nvn_tex *)P(2), (const nvn_view *)P(3)); }
+NV(nvnTexturePoolRegisterTexture) { rx_nvn_register_texture(I(1), (const nvn_tex *)PN(2, sizeof(nvn_tex)), (const nvn_view *)PN(3, sizeof(nvn_view))); }
 NV(nvnSamplerPoolInitialize) {
-    nvn_dpool *o = (nvn_dpool *)P(0);
-    o->pool = (const nvn_pool *)P(1);
+    nvn_dpool *o = (nvn_dpool *)PN(0, sizeof(nvn_dpool));
+    o->pool = (const nvn_pool *)PN(1, sizeof(nvn_pool));
     o->off = (int64_t)U64(2);
     o->n = I(3);
     RET(1);
 }
 NV(nvnSamplerPoolFinalize) {}
 NV(nvnSamplerPoolSetDebugLabel) {}
-NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_samp *)P(2))->p); }
+NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_samp *)PN(2, sizeof(nvn_samp)))->p); }
 
 /* ---- textures ---- */
 /* (hookshot) A texture builder of no address: a scratch one instead, said once. The game passed 0 after a long freeze (the
@@ -543,7 +545,7 @@ NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_s
    a builder set up wrongly is a missing texture, not a crash. As PR 510 for memory pools. */
 static nvn_tex_builder *tb_or_scratch(void *p, uint64_t lr) {
     static nvn_tex_builder scratch;
-    if (p) return (nvn_tex_builder *)p;
+    if (p) return (nvn_tex_builder *)in_window(p, sizeof(nvn_tex_builder));
     static volatile LONG told;
     if (InterlockedIncrement(&told) <= 4) hos_log("nvn: a texture builder of no address (lr %#llx): a scratch one", (unsigned long long)lr);
     memset(&scratch, 0, sizeof scratch);
@@ -551,8 +553,8 @@ static nvn_tex_builder *tb_or_scratch(void *p, uint64_t lr) {
 }
 #define TB(p) tb_or_scratch((p), c->x[30])
 #define CTB(p) ((const nvn_tex_builder *)tb_or_scratch((p), c->x[30]))
-#define TX(p) ((nvn_tex *)(p))
-#define CTX(p) ((const nvn_tex *)(p))
+#define TX(p) ((nvn_tex *)in_window((p), sizeof(nvn_tex)))
+#define CTX(p) ((const nvn_tex *)in_window((p), sizeof(nvn_tex)))
 NV(nvnTextureBuilderSetDefaults) {
     nvn_tex_builder *b = TB(P(0));
     void *dev = b->dev;
@@ -597,10 +599,10 @@ NV(nvnTextureBuilderSetSwizzle) {
 }
 NV(nvnTextureBuilderSetSamples) { TB(P(0))->d.samples = I(1); }
 NV(nvnTextureBuilderSetStride) { TB(P(0))->d.stride = (uint32_t)U64(1); }
-NV(nvnTextureBuilderSetStorage) { TB(P(0))->pool = (nvn_pool *)P(1); TB(P(0))->off = (int64_t)U64(2); }
+NV(nvnTextureBuilderSetStorage) { TB(P(0))->pool = (nvn_pool *)PN(1, sizeof(nvn_pool)); TB(P(0))->off = (int64_t)U64(2); }
 NV(nvnTextureBuilderSetPackagedTextureLayout) {
     nvn_tex_builder *b = TB(P(0));
-    const NVNpackagedTextureLayout *l = (const NVNpackagedTextureLayout *)P(1);
+    const NVNpackagedTextureLayout *l = (const NVNpackagedTextureLayout *)PN(1, sizeof(NVNpackagedTextureLayout));
     b->has_layout = l != NULL;
     if (l) memcpy(b->layout, l->layout, 8);
     b->d.pkg_block_h = l ? l->layout[0] + 1 : 0;
@@ -645,7 +647,7 @@ NV(nvnTextureBuilderGetMemoryOffset) { RET((uint64_t)CTB(P(0))->off); }
 NV(nvnTextureBuilderGetViewOffset) {
     if (no_builder(c, "view offset")) { RET(0); return; }
     const nvn_tex_builder *b = CTB(P(0));
-    const nvn_view *w = (const nvn_view *)P(1);
+    const nvn_view *w = (const nvn_view *)PN(1, sizeof(nvn_view));
     if (!w) { RET(0); return; }
     nvn_texlayout L;
     nvn_tex_layout(&b->d, &L);
@@ -766,15 +768,15 @@ NV(nvnTextureGetDebugID) { RET(CTX(P(0))->serial); }
 NV(nvnTextureSetDebugLabel) {}
 NV(nvnTextureGetSwizzle) {
     const nvn_texdesc *d = &CTX(P(0))->d;
-    *(int *)P(1) = d->swizzle_r, *(int *)P(2) = d->swizzle_g, *(int *)P(3) = d->swizzle_b, *(int *)P(4) = d->swizzle_a;
+    *(int *)PN(1, sizeof(int)) = d->swizzle_r, *(int *)PN(2, sizeof(int)) = d->swizzle_g, *(int *)PN(3, sizeof(int)) = d->swizzle_b, *(int *)PN(4, sizeof(int)) = d->swizzle_a;
 }
 NV(nvnTextureCompare) {
     const nvn_tex *x = CTX(P(0)), *y = CTX(P(1));
     RET(!memcmp(&x->d, &y->d, sizeof x->d) && x->gpu == y->gpu);
 }
 NV(nvnTextureGetRawStorageClass) { RET(1); }   /* (no prototype; callers compare it with 1) */
-#define VW(p) ((nvn_view *)(p))
-#define CVW(p) ((const nvn_view *)(p))
+#define VW(p) ((nvn_view *)in_window((p), sizeof(nvn_view)))
+#define CVW(p) ((const nvn_view *)in_window((p), sizeof(nvn_view)))
 NV(nvnTextureViewSetDefaults) { memset(P(0), 0, sizeof(nvn_view)); }
 NV(nvnTextureViewSetLevels) {
     if (U32(1) > 255 || U32(2) > 255) die("texture view levels %u/%u", U32(1), U32(2));
@@ -797,10 +799,10 @@ NV(nvnTextureViewSetSwizzle) {
 NV(nvnTextureViewSetDepthStencilMode) {
     if (I(1) != NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH) die("stencil-plane texture view sampling");
 }
-NV(nvnTextureViewGetLevels) { const nvn_view *v = CVW(P(0)); *(int *)P(1) = v->base_level; *(int *)P(2) = v->nlevels; RET(v->set_levels); }
-NV(nvnTextureViewGetLayers) { const nvn_view *v = CVW(P(0)); *(int *)P(1) = v->min_layer; *(int *)P(2) = v->nlayers; RET(v->set_layers); }
-NV(nvnTextureViewGetFormat) { const nvn_view *v = CVW(P(0)); *(int *)P(1) = v->format; RET(v->set_format); }
-NV(nvnTextureViewGetTarget) { const nvn_view *v = CVW(P(0)); *(int *)P(1) = v->target; RET(v->set_target); }
+NV(nvnTextureViewGetLevels) { const nvn_view *v = CVW(P(0)); *(int *)PN(1, sizeof(int)) = v->base_level; *(int *)PN(2, sizeof(int)) = v->nlevels; RET(v->set_levels); }
+NV(nvnTextureViewGetLayers) { const nvn_view *v = CVW(P(0)); *(int *)PN(1, sizeof(int)) = v->min_layer; *(int *)PN(2, sizeof(int)) = v->nlayers; RET(v->set_layers); }
+NV(nvnTextureViewGetFormat) { const nvn_view *v = CVW(P(0)); *(int *)PN(1, sizeof(int)) = v->format; RET(v->set_format); }
+NV(nvnTextureViewGetTarget) { const nvn_view *v = CVW(P(0)); *(int *)PN(1, sizeof(int)) = v->target; RET(v->set_target); }
 NV(nvnTextureGetViewOffset) {
     const nvn_tex *t = CTX(P(0));
     const nvn_view *w = CVW(P(1));
@@ -895,9 +897,18 @@ static uint64_t texels_extent(uint64_t wb, uint64_t hb, uint64_t depth, uint64_t
     return n;
 }
 static void texels(Ctx *c, int write, int strided) {
-    const nvn_tex *t = CTX(PN(0, sizeof(nvn_tex)));
-    const nvn_view *v = CVW(PN(1, sizeof(nvn_view)));
-    const NVNcopyRegion *r = (const NVNcopyRegion *)PN(2, sizeof(NVNcopyRegion));
+    /* (hookshot) the texture, view and region read once, into copies: the game owns them and another of its threads may
+       change them between the checks below and the renderer's use (the audit's V2) */
+    const nvn_tex *tg = CTX(PN(0, sizeof(nvn_tex)));
+    const nvn_view *vg = CVW(PN(1, sizeof(nvn_view)));
+    const NVNcopyRegion *rg = (const NVNcopyRegion *)PN(2, sizeof(NVNcopyRegion));
+    if (!tg || !rg) die("%sTexels without a texture or a region", write ? "Write" : "Read");
+    nvn_tex tc = *tg;
+    nvn_view vc;
+    const NVNcopyRegion rc = *rg;
+    const nvn_tex *t = &tc;
+    const nvn_view *v = vg ? (vc = *vg, &vc) : NULL;
+    const NVNcopyRegion *r = &rc;
     int bw, bh;
     const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     const uint64_t wb = (uint64_t)((r->width > 0 ? r->width : 0) + bw - 1) / bw * (uint64_t)(bpb > 0 ? bpb : 0);
@@ -921,7 +932,7 @@ static void texels(Ctx *c, int write, int strided) {
         uint64_t chain[6] = {c->x[30]}, fp = c->x[29];
         for (int k = 1; k < 6 && fp && fp < 0x8000000000ull && !(fp & 7); k++) chain[k] = G64(fp + 8), fp = G64(fp);
         hos_log("nvn: %sTexels data %#llx (%zu nonzero) from %llx < %llx < %llx < %llx < %llx < %llx",
-                write ? "Write" : "Read", (unsigned long long)(P(3) ? (uint8_t *)P(3) - (uint8_t *)GP(0) : 0), nz,
+                write ? "Write" : "Read", (unsigned long long)(P(3) ? (uint8_t *)PN(3, sizeof(uint8_t)) - (uint8_t *)GP(0) : 0), nz,
                 (unsigned long long)chain[0], (unsigned long long)chain[1], (unsigned long long)chain[2],
                 (unsigned long long)chain[3], (unsigned long long)chain[4], (unsigned long long)chain[5]);
     }
@@ -936,11 +947,11 @@ NV(nvnTextureFlushTexels) {}
 NV(nvnTextureInvalidateTexels) {}
 
 /* ---- samplers ---- */
-#define SB(x) (&((nvn_samp_builder *)(x))->p)
-#define CSB(x) (&((const nvn_samp_builder *)(x))->p)
-#define CSP(x) (&((const nvn_samp *)(x))->p)
+#define SB(x) (&((nvn_samp_builder *)in_window((x), sizeof(nvn_samp_builder)))->p)
+#define CSB(x) (&((const nvn_samp_builder *)in_window((x), sizeof(nvn_samp_builder)))->p)
+#define CSP(x) (&((const nvn_samp *)in_window((x), sizeof(nvn_samp)))->p)
 NV(nvnSamplerBuilderSetDefaults) {
-    nvn_samp_builder *b = (nvn_samp_builder *)P(0);
+    nvn_samp_builder *b = (nvn_samp_builder *)PN(0, sizeof(nvn_samp_builder));
     void *dev = b->dev;
     memset(b, 0, sizeof *b);
     b->dev = dev;
@@ -950,37 +961,37 @@ NV(nvnSamplerBuilderSetDefaults) {
     b->p.cmp_func = NVN_COMPARE_FUNC_LESS;
     b->p.lod_min = -1000.f, b->p.lod_max = 1000.f, b->p.aniso = 1.f;
 }
-NV(nvnSamplerBuilderSetDevice) { ((nvn_samp_builder *)P(0))->dev = P(1); }
+NV(nvnSamplerBuilderSetDevice) { ((nvn_samp_builder *)PN(0, sizeof(nvn_samp_builder)))->dev = P(1); }
 NV(nvnSamplerBuilderSetMinMagFilter) { SB(P(0))->minf = (uint8_t)U32(1); SB(P(0))->magf = (uint8_t)U32(2); }
 NV(nvnSamplerBuilderSetWrapMode) { nvn_samp_par *p = SB(P(0)); p->ws = (uint8_t)U32(1), p->wt = (uint8_t)U32(2), p->wr = (uint8_t)U32(3); }
 NV(nvnSamplerBuilderSetLodClamp) { SB(P(0))->lod_min = F(0); SB(P(0))->lod_max = F(1); }
 NV(nvnSamplerBuilderSetLodBias) { SB(P(0))->lod_bias = F(0); }
 NV(nvnSamplerBuilderSetCompare) { SB(P(0))->cmp_mode = (uint8_t)U32(1); SB(P(0))->cmp_func = (uint8_t)U32(2); }
 NV(nvnSamplerBuilderSetBorderColor) { memcpy(SB(P(0))->border, PN(1, 16), 16); }
-NV(nvnSamplerBuilderSetBorderColori) { const int32_t *v = (const int32_t *)P(1); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
-NV(nvnSamplerBuilderSetBorderColorui) { const uint32_t *v = (const uint32_t *)P(1); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
+NV(nvnSamplerBuilderSetBorderColori) { const int32_t *v = (const int32_t *)PN(1, sizeof(int32_t)); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
+NV(nvnSamplerBuilderSetBorderColorui) { const uint32_t *v = (const uint32_t *)PN(1, sizeof(uint32_t)); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
 NV(nvnSamplerBuilderSetMaxAnisotropy) { SB(P(0))->aniso = F(0); }
 NV(nvnSamplerBuilderSetLodSnap) { SB(P(0))->lod_snap = F(0); }
 NV(nvnSamplerBuilderSetReductionFilter) {
     if (U32(1) > 2) die("sampler reduction %u", U32(1));
     SB(P(0))->reduction = (uint8_t)U32(1);
 }
-NV(nvnSamplerBuilderGetMinMagFilter) { *(int *)P(1) = CSB(P(0))->minf; *(int *)P(2) = CSB(P(0))->magf; }
-NV(nvnSamplerBuilderGetWrapMode) { const nvn_samp_par *p = CSB(P(0)); *(int *)P(1) = p->ws; *(int *)P(2) = p->wt; *(int *)P(3) = p->wr; }
+NV(nvnSamplerBuilderGetMinMagFilter) { *(int *)PN(1, sizeof(int)) = CSB(P(0))->minf; *(int *)PN(2, sizeof(int)) = CSB(P(0))->magf; }
+NV(nvnSamplerBuilderGetWrapMode) { const nvn_samp_par *p = CSB(P(0)); *(int *)PN(1, sizeof(int)) = p->ws; *(int *)PN(2, sizeof(int)) = p->wt; *(int *)PN(3, sizeof(int)) = p->wr; }
 NV(nvnSamplerBuilderGetReductionFilter) { RET(CSB(P(0))->reduction); }
 NV(nvnSamplerInitialize) {
-    nvn_samp *o = (nvn_samp *)P(0);
+    nvn_samp *o = (nvn_samp *)PN(0, sizeof(nvn_samp));
     o->magic = NVN_MAGIC('S', 'M', 'P', 0);
     o->p = *CSB(P(1));
     RET(1);
 }
-NV(nvnSamplerFinalize) { ((nvn_samp *)P(0))->magic = 0; }
+NV(nvnSamplerFinalize) { ((nvn_samp *)PN(0, sizeof(nvn_samp)))->magic = 0; }
 NV(nvnSamplerSetDebugLabel) {}
-NV(nvnSamplerGetMinMagFilter) { *(int *)P(1) = CSP(P(0))->minf; *(int *)P(2) = CSP(P(0))->magf; }
-NV(nvnSamplerGetWrapMode) { const nvn_samp_par *p = CSP(P(0)); *(int *)P(1) = p->ws; *(int *)P(2) = p->wt; *(int *)P(3) = p->wr; }
-NV(nvnSamplerGetLodClamp) { *(float *)P(1) = CSP(P(0))->lod_min; *(float *)P(2) = CSP(P(0))->lod_max; }
+NV(nvnSamplerGetMinMagFilter) { *(int *)PN(1, sizeof(int)) = CSP(P(0))->minf; *(int *)PN(2, sizeof(int)) = CSP(P(0))->magf; }
+NV(nvnSamplerGetWrapMode) { const nvn_samp_par *p = CSP(P(0)); *(int *)PN(1, sizeof(int)) = p->ws; *(int *)PN(2, sizeof(int)) = p->wt; *(int *)PN(3, sizeof(int)) = p->wr; }
+NV(nvnSamplerGetLodClamp) { *(float *)PN(1, sizeof(float)) = CSP(P(0))->lod_min; *(float *)PN(2, sizeof(float)) = CSP(P(0))->lod_max; }
 NV(nvnSamplerGetLodBias) { retf(c, CSP(P(0))->lod_bias); }
-NV(nvnSamplerGetCompare) { *(int *)P(1) = CSP(P(0))->cmp_mode; *(int *)P(2) = CSP(P(0))->cmp_func; }
+NV(nvnSamplerGetCompare) { *(int *)PN(1, sizeof(int)) = CSP(P(0))->cmp_mode; *(int *)PN(2, sizeof(int)) = CSP(P(0))->cmp_func; }
 NV(nvnSamplerGetBorderColor) { memcpy(PN(1, 16), CSP(P(0))->border, 16); }
 NV(nvnSamplerGetMaxAnisotropy) { retf(c, CSP(P(0))->aniso); }
 NV(nvnSamplerGetReductionFilter) { RET(CSP(P(0))->reduction); }
@@ -989,12 +1000,12 @@ NV(nvnSamplerGetDebugID) { RET(U64(0)); }
 /* ---- programs: the stages' code addresses and control sections (translated by the replay) ---- */
 NV(nvnProgramInitialize) {
     memset(P(0), 0, sizeof(nvn_prog));
-    ((nvn_prog *)P(0))->magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    ((nvn_prog *)PN(0, sizeof(nvn_prog)))->magic = NVN_MAGIC('P', 'R', 'O', 'G');
     RET(1);
 }
 NV(nvnProgramFinalize) {
-    rx_nvn_program_released((const nvn_prog *)P(0));
-    ((nvn_prog *)P(0))->magic = 0;
+    rx_nvn_program_released((const nvn_prog *)PN(0, sizeof(nvn_prog)));
+    ((nvn_prog *)PN(0, sizeof(nvn_prog)))->magic = 0;
 }
 /* HOS_SHADER_DUMP=<dir> (mkw-recomp, debugging): each stage's code (from its GPU address, up to 64 KiB while mapped)
    and control section (0x800 bytes) as <code address>.code / .ctl, for gpu/shadertool */
@@ -1033,14 +1044,14 @@ static int set_shaders(nvn_prog *o, int n, const uint8_t *sd, int stride) {
     rx_nvn_program_created(o);   /* (the stages are in memory now: the back end loads what it kept ready for them) */
     return 1;
 }
-NV(nvnProgramSetShaders) { RET(set_shaders((nvn_prog *)P(0), I(1), (const uint8_t *)P(2), 16)); }
+NV(nvnProgramSetShaders) { RET(set_shaders((nvn_prog *)PN(0, sizeof(nvn_prog)), I(1), (const uint8_t *)PN(2, sizeof(uint8_t)), 16)); }
 /* NVNshaderDataExt: {data, control, reserved}, 0x18 bytes (seen in TOTK's calls; reserved 0) */
-NV(nvnProgramSetShadersExt) { RET(set_shaders((nvn_prog *)P(0), I(1), (const uint8_t *)P(2), 0x18)); }
+NV(nvnProgramSetShadersExt) { RET(set_shaders((nvn_prog *)PN(0, sizeof(nvn_prog)), I(1), (const uint8_t *)PN(2, sizeof(uint8_t)), 0x18)); }
 NV(nvnProgramSetDebugLabel) {}
 
 /* ---- sync, events ---- */
-NV(nvnSyncInitialize) { nvn_sync *s = (nvn_sync *)P(0); s->magic = NVN_MAGIC('S', 'Y', 'N', 'C'); s->fenced = 0; s->fence = 0; RET(1); }
-NV(nvnSyncFinalize) { ((nvn_sync *)P(0))->magic = 0; }
+NV(nvnSyncInitialize) { nvn_sync *s = (nvn_sync *)PN(0, sizeof(nvn_sync)); s->magic = NVN_MAGIC('S', 'Y', 'N', 'C'); s->fenced = 0; s->fence = 0; RET(1); }
+NV(nvnSyncFinalize) { ((nvn_sync *)PN(0, sizeof(nvn_sync)))->magic = 0; }
 NV(nvnSyncSetDebugLabel) {}
 /* a fence: everything submitted to the queue so far is done */
 /* HOS_NVN_SYNC_LOG=1 or the live "!synclog" (debugging): fences, sync waits and event reads, with the caller */
@@ -1081,7 +1092,7 @@ static uint64_t held_count(void) { return (uint64_t)nheld; }
 
 NV(nvnQueueFenceSync) {
     held_init();
-    nvn_sync *s = (nvn_sync *)P(1); s->fenced = 1;
+    nvn_sync *s = (nvn_sync *)PN(1, sizeof(nvn_sync)); s->fenced = 1;
     /* (hookshot) the queue's own work: with nothing held, its last submission (a wait for it no longer waits for another
        queue's work stopped at an event wait) */
     s->fence = held_count() ? rx_nvn_fence() + held_count() : rx_nvn_fence_q((uint64_t)(uintptr_t)P(0));
@@ -1105,7 +1116,7 @@ static void wait_note(int kind, int64_t t0) {
 }
 /* never fenced: times out, as on the console; fenced: released once the GPU reached the fence */
 NV(nvnSyncWait) {
-    const nvn_sync *s = (const nvn_sync *)P(0);
+    const nvn_sync *s = (const nvn_sync *)PN(0, sizeof(nvn_sync));
     if (sync_log()) hos_log("nvn: SyncWait %p fence %llu timeout %llu (lr %#llx); latest %llu, done %llu", (void *)s,
                             (unsigned long long)s->fence, (unsigned long long)U64(1), (unsigned long long)c->x[30],
                             (unsigned long long)rx_nvn_fence(), (unsigned long long)rx_nvn_replayed());
@@ -1122,16 +1133,16 @@ NV(nvnSyncWait) {
     RET(ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 NV(nvnEventBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_event_builder)); }
-NV(nvnEventBuilderSetStorage) { nvn_event_builder *b = (nvn_event_builder *)P(0); b->pool = (const nvn_pool *)P(1); b->off = (int64_t)U64(2); }
+NV(nvnEventBuilderSetStorage) { nvn_event_builder *b = (nvn_event_builder *)PN(0, sizeof(nvn_event_builder)); b->pool = (const nvn_pool *)PN(1, sizeof(nvn_pool)); b->off = (int64_t)U64(2); }
 NV(nvnEventInitialize) {
-    const nvn_event_builder *b = (const nvn_event_builder *)P(1);
+    const nvn_event_builder *b = (const nvn_event_builder *)PN(1, sizeof(nvn_event_builder));
     if (!b->pool) { RET(0); return; }
-    nvn_event *e = (nvn_event *)P(0);
+    nvn_event *e = (nvn_event *)PN(0, sizeof(nvn_event));
     e->magic = NVN_MAGIC('E', 'V', 'N', 'T');
     e->gpu = POOL(b->pool)->gpu + (uint64_t)b->off;
     RET(1);
 }
-NV(nvnEventFinalize) { ((nvn_event *)P(0))->magic = 0; }
+NV(nvnEventFinalize) { ((nvn_event *)PN(0, sizeof(nvn_event)))->magic = 0; }
 /* (hookshot) an NVN event's value from the host (hos_thread.c's present poll): 0 when it is no event */
 int hos_nvn_event_value(uint64_t guest_event, uint32_t *v) {
     const nvn_event *e = (const nvn_event *)hos_guest_range(guest_event, sizeof(nvn_event));
@@ -1152,11 +1163,11 @@ NV(nvnEventGetValue) {
                 if (c->x[30] == lrs[i]) { RET(1); return; }
         }
     }
-    uint32_t v = 0; nvn_gpu_read(((const nvn_event *)P(0))->gpu, &v, 4); RET(v);
+    uint32_t v = 0; nvn_gpu_read(((const nvn_event *)PN(0, sizeof(nvn_event)))->gpu, &v, 4); RET(v);
     if (sync_log()) hos_log("nvn: EventGetValue %p = %u (lr %#llx)", P(0), v, (unsigned long long)c->x[30]);
 }
 NV(nvnEventSignal) {
-    const nvn_event *e = (const nvn_event *)P(0);
+    const nvn_event *e = (const nvn_event *)PN(0, sizeof(nvn_event));
     {   /* (the CPU's signals, 40 then every 5000: what the GPU's waits above wait for) */
         static volatile LONG n;
         const LONG k = InterlockedIncrement(&n);
@@ -1172,7 +1183,7 @@ NV(nvnEventSignal) {
 }
 
 /* ---- queue ---- */
-#define QB(p) ((nvn_queue_builder *)(p))
+#define QB(p) ((nvn_queue_builder *)in_window((p), sizeof(nvn_queue_builder)))
 NV(nvnQueueBuilderSetDefaults) {
     nvn_queue_builder *b = QB(P(0));
     void *dev = b->dev;
@@ -1189,8 +1200,8 @@ NV(nvnQueueBuilderSetCommandFlushThreshold) { QB(P(0))->flush = U64(1); }
 /* the game allocates this much (we do not use it): the three blocks, rounded to 4 KiB */
 NV(nvnQueueBuilderGetQueueMemorySize) { const nvn_queue_builder *b = QB(P(0)); RET((b->cmd_sz + b->comp_sz + b->ctl_sz + 4095) & ~4095ull); }
 NV(nvnQueueBuilderSetQueueMemory) { QB(P(0))->mem = U64(1); QB(P(0))->mem_sz = U64(2); }
-NV(nvnQueueInitialize) { nvn_queue *q = (nvn_queue *)P(0); q->magic = NVN_MAGIC('Q', 'U', 'E', 'U'); q->submits = 0; RET(1); }
-NV(nvnQueueFinalize) { ((nvn_queue *)P(0))->magic = 0; }
+NV(nvnQueueInitialize) { nvn_queue *q = (nvn_queue *)PN(0, sizeof(nvn_queue)); q->magic = NVN_MAGIC('Q', 'U', 'E', 'U'); q->submits = 0; RET(1); }
+NV(nvnQueueFinalize) { ((nvn_queue *)PN(0, sizeof(nvn_queue)))->magic = 0; }
 NV(nvnQueueGetError) { if (P(1)) memset(P(1), 0, sizeof(NVNqueueErrorInfo)); RET(NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR); }
 NV(nvnQueueFlush) { held_flush(); }
 NV(nvnQueueFinish) {
@@ -1204,7 +1215,7 @@ NV(nvnQueueFinish) {
 NV(nvnQueueSetDebugLabel) {}
 
 /* ---- command buffers ---- */
-#define CB(p) ((nvn_cmd *)(p))
+#define CB(p) ((nvn_cmd *)in_window((p), sizeof(nvn_cmd)))
 #define OP_RESERVE 24
 
 /* Recording copies and command buffer segments come from power-of-two free lists and go back to them. Through the
@@ -1712,10 +1723,10 @@ NV(nvnCommandBufferSignalEvent) {
         const LONG k = InterlockedIncrement(&n);
         if (k <= 40 || k % 5000 == 0)
             hos_log("nvn: CommandBufferSignalEvent #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
-                    (unsigned long long)((const nvn_event *)P(1))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
+                    (unsigned long long)((const nvn_event *)PN(1, sizeof(nvn_event)))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
     }
     nvn_p_signal *s = REC(CB(P(0)), NOP_SIGNAL_EVENT, nvn_p_signal);
-    s->gpu = ((const nvn_event *)P(1))->gpu;
+    s->gpu = ((const nvn_event *)PN(1, sizeof(nvn_event)))->gpu;
     s->mode = U32(2);
     s->value = U32(5);
 }
@@ -1725,7 +1736,7 @@ NV(nvnCommandBufferSignalEvent) {
 NV(nvnCommandBufferWaitEvent) {
     static volatile LONG n;
     const LONG k = InterlockedIncrement(&n);
-    const nvn_event *e = (const nvn_event *)P(1);
+    const nvn_event *e = (const nvn_event *)PN(1, sizeof(nvn_event));
     if (k <= 40 || k % 5000 == 0) {
         uint32_t now = 0;
         if (e) nvn_gpu_read(e->gpu, &now, 4);
@@ -1830,7 +1841,7 @@ NV(nvnCommandBufferPushGraphicsConstants) {
    NVN queue replays in one stream in submit order, so a fence submitted before this already came first; a sync not
    fenced yet (a wait on a fence another queue submits later) cannot be honored that way and is logged. */
 NV(nvnQueueWaitSync) {
-    const nvn_sync *s = (const nvn_sync *)P(1);
+    const nvn_sync *s = (const nvn_sync *)PN(1, sizeof(nvn_sync));
     static volatile LONG n;
     if (s && !s->fenced && InterlockedIncrement(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
@@ -1968,7 +1979,7 @@ NV(nvnCommandBufferSetScissor) {
 /* one scissor and depth range are replayed (index 0); differing others are reported */
 NV(nvnCommandBufferSetScissors) {
     const int first = I(1), n = I(2);
-    const int *v = (const int *)P(3);
+    const int *v = (const int *)PN(3, sizeof(int));
     for (int i = 1; i < n; i++)
         if (memcmp(v + 4 * i, v, 16)) { static int once; if (!once++) hos_log("nvn: SetScissors: scissor %d differs (index 0 used)", first + i); }
     if (first == 0 && n > 0) {
@@ -1982,7 +1993,7 @@ NV(nvnCommandBufferSetDepthRange) {
 }
 NV(nvnCommandBufferSetDepthRanges) {
     const int first = I(1), n = I(2);
-    const float *v = (const float *)P(3);
+    const float *v = (const float *)PN(3, sizeof(float));
     if (first == 0 && n > 0) {
         nvn_p_depth_range *r = REC(CB(P(0)), NOP_DEPTH_RANGE, nvn_p_depth_range);
         r->n = v[0], r->f = v[1];
@@ -2010,7 +2021,7 @@ NV(nvnCommandBufferSetRenderEnableConditional) {
 NV(nvnCommandBufferSetRasterizerDiscard) { REC(CB(P(0)), NOP_RASTER_DISCARD, nvn_p_flag)->value = BOOL(1) != 0; }
 NV(nvnCommandBufferBindProgram) {
     nvn_p_bind_program *r = REC(CB(P(0)), NOP_BIND_PROGRAM, nvn_p_bind_program);
-    r->prog = (const nvn_prog *)P(1);
+    r->prog = (const nvn_prog *)PN(1, sizeof(nvn_prog));
     r->stages = I(2);
 }
 static void bind_state(Ctx *c, int kind, size_t n) {
@@ -2049,7 +2060,7 @@ static void bind_vbufs(nvn_cmd *o, int first, int n, const NVNbufferRange *rg) {
     memcpy(r->r, rg, sizeof *rg * (size_t)n);
     hw_fix(o, 24 * (uint64_t)n);
 }
-NV(nvnCommandBufferBindVertexBuffers) { bind_vbufs(CB(P(0)), I(1), I(2), (const NVNbufferRange *)P(3)); }
+NV(nvnCommandBufferBindVertexBuffers) { bind_vbufs(CB(P(0)), I(1), I(2), (const NVNbufferRange *)PN(3, sizeof(NVNbufferRange))); }
 NV(nvnCommandBufferBindVertexBuffer) { NVNbufferRange r = {U64(2), U64(3)}; bind_vbufs(CB(P(0)), I(1), 1, &r); }
 static void bind_buf(nvn_cmd *o, uint32_t op, int stage, int index, uint64_t addr, uint64_t size) {
     nvn_p_bind_buf *r = REC(o, op, nvn_p_bind_buf);
@@ -2107,19 +2118,19 @@ static void watch_tex(Ctx *c, const uint64_t *h, int n) {
     }
 }
 NV(nvnCommandBufferBindTexture) { const uint64_t h = U64(3); watch_tex(c, &h, 1); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), 1, &h, 0, 0); }
-NV(nvnCommandBufferBindTextures) { watch_tex(c, (const uint64_t *)P(4), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 0); }
+NV(nvnCommandBufferBindTextures) { watch_tex(c, (const uint64_t *)PN(4, sizeof(uint64_t)), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), 0, 0); }
 NV(nvnCommandBufferBindImage) { const uint64_t h = U64(3); bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), 1, &h, 0, 24); }
-NV(nvnCommandBufferBindImages) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindImages) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), 0, 16 + 8 * (uint64_t)I(3)); }
 NV(nvnCommandBufferBindSeparateTexture) { const uint64_t h = U64(3); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), 1, &h, 0, 24); }
-NV(nvnCommandBufferBindSeparateTextures) { bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindSeparateTextures) { bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), 0, 16 + 8 * (uint64_t)I(3)); }
 NV(nvnCommandBufferBindSeparateSampler) { const uint64_t h = U64(3); bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), 1, &h, 0, 24); }
-NV(nvnCommandBufferBindSeparateSamplers) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindSeparateSamplers) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), 0, 16 + 8 * (uint64_t)I(3)); }
 /* NVN 55 *Deferred binds (what the inline fast paths call: always, see nvn_cmd.inline_cur): the console driver only
    records the game's handle array and reads it at submit; the game fills material tables after recording */
-NV(nvnCommandBufferBindTexturesDeferred) { watch_tex(c, (const uint64_t *)P(4), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 0); }
-NV(nvnCommandBufferBindImagesDeferred) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
-NV(nvnCommandBufferBindSeparateTexturesDeferred) { bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
-NV(nvnCommandBufferBindSeparateSamplersDeferred) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindTexturesDeferred) { watch_tex(c, (const uint64_t *)PN(4, sizeof(uint64_t)), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), U64(4), 0); }
+NV(nvnCommandBufferBindImagesDeferred) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), U64(4), 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindSeparateTexturesDeferred) { bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), U64(4), 16 + 8 * (uint64_t)I(3)); }
+NV(nvnCommandBufferBindSeparateSamplersDeferred) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)PN(4, sizeof(uint64_t)), U64(4), 16 + 8 * (uint64_t)I(3)); }
 static void stencil(Ctx *c, int which) {
     nvn_p_stencil *r = REC(CB(P(0)), NOP_STENCIL, nvn_p_stencil);
     r->face = I(1), r->which = which;
@@ -2183,8 +2194,8 @@ NV(nvnCommandBufferDispatchCompute) {
     r->x = I(1), r->y = I(2), r->z = I(3);
 }
 NV(nvnCommandBufferBarrier) { *(int32_t *)rec(CB(P(0)), NOP_BARRIER, 8) = I(1); }
-NV(nvnCommandBufferSetTexturePool) { REC(CB(P(0)), NOP_SET_TEX_POOL, nvn_p_set_pool)->pool = (const nvn_dpool *)P(1); }
-NV(nvnCommandBufferSetSamplerPool) { REC(CB(P(0)), NOP_SET_SAMP_POOL, nvn_p_set_pool)->pool = (const nvn_dpool *)P(1); }
+NV(nvnCommandBufferSetTexturePool) { REC(CB(P(0)), NOP_SET_TEX_POOL, nvn_p_set_pool)->pool = (const nvn_dpool *)PN(1, sizeof(nvn_dpool)); }
+NV(nvnCommandBufferSetSamplerPool) { REC(CB(P(0)), NOP_SET_SAMP_POOL, nvn_p_set_pool)->pool = (const nvn_dpool *)PN(1, sizeof(nvn_dpool)); }
 NV(nvnCommandBufferSetShaderScratchMemory) {}
 
 /* Records keep textures by pointer to an immutable copy: the game may finalize or reuse a texture object after
@@ -2223,8 +2234,21 @@ static void pins_grow(void) {
 }
 static void tex_copy(const nvn_tex **dst, uint64_t t) {
     if (!t) { *dst = NULL; return; }
-    const nvn_tex *o = (const nvn_tex *)gw(t, sizeof(nvn_tex));
-    if (!o->serial) die("recording refers to an uninitialized texture object %#llx", (unsigned long long)t);
+    const nvn_tex *g = (const nvn_tex *)gw(t, sizeof(nvn_tex));
+    if (!g->serial) die("recording refers to an uninitialized texture object %#llx", (unsigned long long)t);
+    /* (hookshot) the recording keeps a copy whose layout is made from its description (nvn_tex_sanitize): the object is the
+       game's bytes, and the renderer sized its staging, uploads and page walks by the layout they held (the audit's V1, V4,
+       V5). A description past any texture is left out of the recording, as a texture not set */
+    nvn_tex safe;
+    if (!nvn_tex_sanitize(g, &safe)) {
+        static int told;
+        if (__atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 20)
+            hos_log("nvn: a recording's texture %#llx, %ux%ux%u, %u levels, target %d: past any texture, left out",
+                    (unsigned long long)t, safe.d.width, safe.d.height, safe.d.depth, safe.d.levels, safe.d.target);
+        *dst = NULL;
+        return;
+    }
+    const nvn_tex *o = &safe;
     const uint64_t h = pin_hash(o);
     AcquireSRWLockExclusive(&pin_lock);
     if (npins * 2 >= pin_slots) pins_grow();
@@ -2243,7 +2267,7 @@ NV(nvnCommandBufferCopyBufferToTexture) {
     r->buf = U64(1);
     tex_copy(&r->tex, U64(2));
     set_view(&r->view, &r->has_view, U64(3));
-    r->r = *(const NVNcopyRegion *)P(4);
+    r->r = *(const NVNcopyRegion *)PN(4, sizeof(NVNcopyRegion));
     r->flags = I(5);
     {   /* (hookshot, RX_VK_LOG_B2T=1) who records the big copies: the caller's chain, each new source once */
         static int on = -1;
@@ -2264,7 +2288,7 @@ NV(nvnCommandBufferCopyTextureToBuffer) {
     nvn_p_copy_bt *r = REC(CB(P(0)), NOP_COPY_T2B, nvn_p_copy_bt);
     tex_copy(&r->tex, U64(1));
     set_view(&r->view, &r->has_view, U64(2));
-    r->r = *(const NVNcopyRegion *)P(3);
+    r->r = *(const NVNcopyRegion *)PN(3, sizeof(NVNcopyRegion));
     r->buf = U64(4);
     r->flags = I(5);
 }
@@ -2272,17 +2296,17 @@ NV(nvnCommandBufferCopyTextureToTexture) {
     nvn_p_copy_tt *r = REC(CB(P(0)), NOP_COPY_T2T, nvn_p_copy_tt);
     tex_copy(&r->src, U64(1));
     set_view(&r->sv, &r->has_sv, U64(2));
-    r->sr = *(const NVNcopyRegion *)P(3);
+    r->sr = *(const NVNcopyRegion *)PN(3, sizeof(NVNcopyRegion));
     tex_copy(&r->dst, U64(4));
     set_view(&r->dv, &r->has_dv, U64(5));
-    r->dr = *(const NVNcopyRegion *)P(6);
+    r->dr = *(const NVNcopyRegion *)PN(6, sizeof(NVNcopyRegion));
     r->flags = I(7);
 }
 static void clear_tex(Ctx *c, int is_uint) {
     nvn_p_clear_tex *r = REC(CB(P(0)), NOP_CLEAR_TEX, nvn_p_clear_tex);
     tex_copy(&r->tex, U64(1));
     set_view(&r->view, &r->has_view, U64(2));
-    r->r = *(const NVNcopyRegion *)P(3);
+    r->r = *(const NVNcopyRegion *)PN(3, sizeof(NVNcopyRegion));
     memcpy(r->c.f, PN(4, 16), 16);
     r->mask = I(5);
     r->is_uint = (uint8_t)is_uint;
@@ -2444,7 +2468,7 @@ static void resolve_deferred(uint8_t *p) {
 }
 NV(nvnQueueSubmitCommands) {
     { void hos_renderer_wait(void); static volatile LONG up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
-    nvn_queue *q = (nvn_queue *)P(0);
+    nvn_queue *q = (nvn_queue *)PN(0, sizeof(nvn_queue));
     const int n = I(1);
     uint64_t h[64];
     if (n < 0 || n > 64) die("submit of %d handles", n);
@@ -2483,7 +2507,7 @@ NV(nvnQueueSubmitCommands) {
 }
 
 /* ---- window ---- */
-#define WB(p) ((nvn_win_builder *)(p))
+#define WB(p) ((nvn_win_builder *)in_window((p), sizeof(nvn_win_builder)))
 /* (hookshot) a window texture: a guest address, checked at each use (the window object is guest memory) */
 static const nvn_tex *win_tex(const nvn_win *o, int i) {
     if (i < 0 || i >= 4 || !o->tex[i]) die("window texture %d", i);
@@ -2514,7 +2538,7 @@ NV(nvnWindowBuilderGetNativeWindow) { RET(WB(P(0))->native); }
 NV(nvnWindowBuilderGetPresentInterval) { RET((uint32_t)WB(P(0))->interval); }
 NV(nvnWindowInitialize) {
     const nvn_win_builder *b = WB(P(1));
-    nvn_win *o = (nvn_win *)P(0);
+    nvn_win *o = (nvn_win *)PN(0, sizeof(nvn_win));
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('W', 'I', 'N', 'D');
     o->ntex = b->ntex;
@@ -2529,12 +2553,12 @@ NV(nvnWindowInitialize) {
 }
 NV(nvnWindowFinalize) {}
 NV(nvnWindowSetDebugLabel) {}
-NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)P(0); if (I(1) < 2 || I(1) > o->ntex) die("%d active window textures", I(1)); o->active = I(1); }
-NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)P(0); RET((uint32_t)(o->active ? o->active : o->ntex)); }
-NV(nvnWindowGetPresentInterval) { RET((uint32_t)((const nvn_win *)P(0))->interval); }
+NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)PN(0, sizeof(nvn_win)); if (I(1) < 2 || I(1) > o->ntex) die("%d active window textures", I(1)); o->active = I(1); }
+NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)PN(0, sizeof(nvn_win)); RET((uint32_t)(o->active ? o->active : o->ntex)); }
+NV(nvnWindowGetPresentInterval) { RET((uint32_t)((const nvn_win *)PN(0, sizeof(nvn_win)))->interval); }
 /* the game picks its interval from its frame time; in real-time mode (nn_vi.c) frames are paced by our limiter */
 NV(nvnWindowSetPresentInterval) {
-    nvn_win *o = (nvn_win *)P(0);
+    nvn_win *o = (nvn_win *)PN(0, sizeof(nvn_win));
     {   /* (OoT changes it several times a second: logged with a backtrace only the first times, it was a syscall-heavy cost) */
         static int told;
         if (o->interval != I(1) && told++ < 6) hos_log("nvn: the game sets present interval %d -> %d", o->interval, I(1)), hos_backtrace();
@@ -2545,14 +2569,14 @@ NV(nvnWindowSetPresentInterval) {
     o->interval = hos_vi_native_interval(c, I(1));
 }
 NV(nvnWindowSetCrop) {
-    nvn_win *o = (nvn_win *)P(0);
+    nvn_win *o = (nvn_win *)PN(0, sizeof(nvn_win));
     const int v[4] = {I(1), I(2), I(3), I(4)};
     if (memcmp(o->crop, v, sizeof v)) hos_log("nvn: window crop %d,%d %dx%d", v[0], v[1], v[2], v[3]);
     memcpy(o->crop, v, sizeof v);
 }
 NV(nvnWindowGetCrop) {
-    const nvn_win *o = (const nvn_win *)P(0);
-    NVNrectangle *r = (NVNrectangle *)P(1);
+    const nvn_win *o = (const nvn_win *)PN(0, sizeof(nvn_win));
+    NVNrectangle *r = (NVNrectangle *)PN(1, sizeof(NVNrectangle));
     if (!o->crop[2] && !o->crop[3] && o->ntex) {
         const nvn_tex *t0 = win_tex(o, 0);
         r->x = r->y = 0, r->width = (int)t0->d.width, r->height = (int)t0->d.height;
@@ -2563,9 +2587,9 @@ NV(nvnWindowGetCrop) {
 /* frames are paced here (the console blocks here when every window texture waits for display), not in the present:
    the game presents with locks held */
 NV(nvnWindowAcquireTexture) {
-    nvn_win *o = (nvn_win *)P(0);
-    nvn_sync *s = (nvn_sync *)P(1);
-    *(int *)P(2) = o->active ? o->next++ % o->active : 0;
+    nvn_win *o = (nvn_win *)PN(0, sizeof(nvn_win));
+    nvn_sync *s = (nvn_sync *)PN(1, sizeof(nvn_sync));
+    *(int *)PN(2, sizeof(int)) = o->active ? o->next++ % o->active : 0;
     {
         const int away = hos_vcore_away();
         hos_vi_native_acquire(o->active ? o->active : o->ntex);
@@ -2576,7 +2600,7 @@ NV(nvnWindowAcquireTexture) {
     RET(NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
 NV(nvnQueuePresentTexture) {
-    nvn_win *o = (nvn_win *)P(1);
+    nvn_win *o = (nvn_win *)PN(1, sizeof(nvn_win));
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
     HOS_CHAIN(HOS_CHAIN_PRESENT, (uint64_t)i);
@@ -2604,11 +2628,11 @@ NV(nvnQueuePresentTexture) {
    InitializeFromBuilder */
 typedef struct { void *dev; int32_t n, pad; uint64_t data; } nvn_prog_builder;
 NV(nvnProgramBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_prog_builder)); }
-NV(nvnProgramBuilderSetDevice) { ((nvn_prog_builder *)P(0))->dev = P(1); }
-NV(nvnProgramBuilderSetShaders) { ((nvn_prog_builder *)P(0))->n = I(1); ((nvn_prog_builder *)P(0))->data = U64(2); }
+NV(nvnProgramBuilderSetDevice) { ((nvn_prog_builder *)PN(0, sizeof(nvn_prog_builder)))->dev = P(1); }
+NV(nvnProgramBuilderSetShaders) { ((nvn_prog_builder *)PN(0, sizeof(nvn_prog_builder)))->n = I(1); ((nvn_prog_builder *)PN(0, sizeof(nvn_prog_builder)))->data = U64(2); }
 NV(nvnProgramInitializeFromBuilder) {
-    const nvn_prog_builder *b = (const nvn_prog_builder *)P(1);
-    nvn_prog *o = (nvn_prog *)P(0);
+    const nvn_prog_builder *b = (const nvn_prog_builder *)PN(1, sizeof(nvn_prog_builder));
+    nvn_prog *o = (nvn_prog *)PN(0, sizeof(nvn_prog));
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('P', 'R', 'O', 'G');
     RET(b->data ? set_shaders(o, b->n, (const uint8_t *)gw(b->data, b->n > 0 && b->n <= 6 ? 16ull * (uint32_t)b->n : 0), 16) : 1);
@@ -2627,23 +2651,23 @@ NV(nvnCommandBufferSetComputeOverlapMode) {}
 typedef struct { void *dev; int32_t format, permission; uint64_t handle; } nvn_native_image_builder;
 typedef struct { uint32_t magic; int32_t format, width, height; uint64_t storage, size; } nvn_native_image;
 NV(nvnNativeImageBuilderSetDefaults) {
-    nvn_native_image_builder *b = (nvn_native_image_builder *)P(0);
+    nvn_native_image_builder *b = (nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder));
     void *dev = b->dev;
     memset(b, 0, sizeof *b);
     b->dev = dev;
     b->format = NVN_FORMAT_RGBA8;
 }
-NV(nvnNativeImageBuilderSetDevice) { ((nvn_native_image_builder *)P(0))->dev = P(1); }
-NV(nvnNativeImageBuilderSetFormat) { ((nvn_native_image_builder *)P(0))->format = I(1); }
-NV(nvnNativeImageBuilderSetMemoryPermission) { ((nvn_native_image_builder *)P(0))->permission = I(1); }
-NV(nvnNativeImageBuilderSetNativeImageHandle) { ((nvn_native_image_builder *)P(0))->handle = U64(1); }
-NV(nvnNativeImageBuilderGetDevice) { RETP(((const nvn_native_image_builder *)P(0))->dev); }
-NV(nvnNativeImageBuilderGetFormat) { RET((uint32_t)((const nvn_native_image_builder *)P(0))->format); }
-NV(nvnNativeImageBuilderGetMemoryPermission) { RET((uint32_t)((const nvn_native_image_builder *)P(0))->permission); }
-NV(nvnNativeImageBuilderGetNativeImageHandle) { RET(((const nvn_native_image_builder *)P(0))->handle); }
+NV(nvnNativeImageBuilderSetDevice) { ((nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->dev = P(1); }
+NV(nvnNativeImageBuilderSetFormat) { ((nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->format = I(1); }
+NV(nvnNativeImageBuilderSetMemoryPermission) { ((nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->permission = I(1); }
+NV(nvnNativeImageBuilderSetNativeImageHandle) { ((nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->handle = U64(1); }
+NV(nvnNativeImageBuilderGetDevice) { RETP(((const nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->dev); }
+NV(nvnNativeImageBuilderGetFormat) { RET((uint32_t)((const nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->format); }
+NV(nvnNativeImageBuilderGetMemoryPermission) { RET((uint32_t)((const nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->permission); }
+NV(nvnNativeImageBuilderGetNativeImageHandle) { RET(((const nvn_native_image_builder *)PN(0, sizeof(nvn_native_image_builder)))->handle); }
 NV(nvnNativeImageInitialize) {
-    const nvn_native_image_builder *b = (const nvn_native_image_builder *)P(1);
-    nvn_native_image *o = (nvn_native_image *)P(0);
+    const nvn_native_image_builder *b = (const nvn_native_image_builder *)PN(1, sizeof(nvn_native_image_builder));
+    nvn_native_image *o = (nvn_native_image *)PN(0, sizeof(nvn_native_image));
     uint64_t hos_region_alloc(uint64_t size, uint64_t align);   /* hos_mem.c */
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('N', 'I', 'M', 'G');
@@ -2655,10 +2679,10 @@ NV(nvnNativeImageInitialize) {
             (unsigned long long)b->handle, (unsigned long long)o->storage);
     RET(o->storage != 0);
 }
-NV(nvnNativeImageFinalize) { ((nvn_native_image *)P(0))->magic = 0; }
+NV(nvnNativeImageFinalize) { ((nvn_native_image *)PN(0, sizeof(nvn_native_image)))->magic = 0; }
 /* nvnTextureInitializeFromNativeImage(NVNtexture*, NVNnativeImage*): a pitch-linear 2D render target over it */
 NV(nvnTextureInitializeFromNativeImage) {
-    const nvn_native_image *img = (const nvn_native_image *)P(1);
+    const nvn_native_image *img = (const nvn_native_image *)PN(1, sizeof(nvn_native_image));
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {
         live_del(o);
@@ -2681,7 +2705,7 @@ NV(nvnTextureInitializeFromNativeImage) {
 }
 /* nvnSyncInitializeFromNativeSyncHandle(NVNsync*, NVNdevice*, nn::gs::NativeSyncHandle): signaled */
 NV(nvnSyncInitializeFromNativeSyncHandle) {
-    nvn_sync *s = (nvn_sync *)P(0);
+    nvn_sync *s = (nvn_sync *)PN(0, sizeof(nvn_sync));
     s->magic = NVN_MAGIC('S', 'Y', 'N', 'C'), s->fenced = 3, s->fence = 0;
     RET(1);
 }
@@ -2705,7 +2729,7 @@ NV(nvnTextureGetSparseTileLayout) {
     int levels = 0;
     for (uint32_t l = 0, w = t->d.width, h = t->d.height; l < t->d.levels; l++, w = w > 1 ? w / 2 : 1, h = h > 1 ? h / 2 : 1)
         if (w >= (uint32_t)tw && h >= (uint32_t)th) levels++;
-    int32_t *out = (int32_t *)P(1);
+    int32_t *out = (int32_t *)PN(1, sizeof(int32_t));
     memset(out, 0, 32);
     out[0] = levels, out[1] = tw, out[2] = th, out[3] = 1;
 }
@@ -2726,16 +2750,16 @@ NV(nvnCommandBufferPopDebugGroupCompute) {}
 
 NV(nvnTextureGetMemoryPool) { RETP(CTX(P(0))->pool); }
 NV(nvnTextureBuilderGetMemoryPool) { RETP(CTB(P(0))->pool); }
-NV(nvnBufferBuilderGetMemoryPool) { RETP(((const nvn_buffer_builder *)P(0))->pool); }
-NV(nvnBufferBuilderGetMemoryOffset) { RET((uint64_t)((const nvn_buffer_builder *)P(0))->off); }
-NV(nvnBufferBuilderGetSize) { RET(((const nvn_buffer_builder *)P(0))->size); }
-NV(nvnTexturePoolGetMemoryPool) { RETP(((const nvn_dpool *)P(0))->pool); }
-NV(nvnTexturePoolGetMemoryOffset) { RET((uint64_t)((const nvn_dpool *)P(0))->off); }
-NV(nvnTexturePoolGetSize) { RET((uint32_t)((const nvn_dpool *)P(0))->n); }
-NV(nvnSamplerPoolGetMemoryPool) { RETP(((const nvn_dpool *)P(0))->pool); }
-NV(nvnSamplerPoolGetMemoryOffset) { RET((uint64_t)((const nvn_dpool *)P(0))->off); }
-NV(nvnSamplerPoolGetSize) { RET((uint32_t)((const nvn_dpool *)P(0))->n); }
-NV(nvnWindowGetNumTextures) { RET((uint32_t)((const nvn_win *)P(0))->ntex); }
+NV(nvnBufferBuilderGetMemoryPool) { RETP(((const nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder)))->pool); }
+NV(nvnBufferBuilderGetMemoryOffset) { RET((uint64_t)((const nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder)))->off); }
+NV(nvnBufferBuilderGetSize) { RET(((const nvn_buffer_builder *)PN(0, sizeof(nvn_buffer_builder)))->size); }
+NV(nvnTexturePoolGetMemoryPool) { RETP(((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->pool); }
+NV(nvnTexturePoolGetMemoryOffset) { RET((uint64_t)((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->off); }
+NV(nvnTexturePoolGetSize) { RET((uint32_t)((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->n); }
+NV(nvnSamplerPoolGetMemoryPool) { RETP(((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->pool); }
+NV(nvnSamplerPoolGetMemoryOffset) { RET((uint64_t)((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->off); }
+NV(nvnSamplerPoolGetSize) { RET((uint32_t)((const nvn_dpool *)PN(0, sizeof(nvn_dpool)))->n); }
+NV(nvnWindowGetNumTextures) { RET((uint32_t)((const nvn_win *)PN(0, sizeof(nvn_win)))->ntex); }
 
 
 /* GPU-driven draws (NVN2): the arguments are read at replay (rx_nvn.cpp), after the GPU's writes reached memory */
@@ -2779,7 +2803,7 @@ NV(nvnCommandBufferSetStencilCullCriteria) {}
 
 
 /* images share the texture pool's ids: the replay finds an image's texture as it finds a texture's */
-NV(nvnTexturePoolRegisterImage) { rx_nvn_register_texture(I(1), (const nvn_tex *)P(2), (const nvn_view *)P(3)); }
+NV(nvnTexturePoolRegisterImage) { rx_nvn_register_texture(I(1), (const nvn_tex *)PN(2, sizeof(nvn_tex)), (const nvn_view *)PN(3, sizeof(nvn_view))); }
 
 /* ---- the procs ---- */
 typedef struct { const char *name; void (*fn)(Ctx *, void *); } nvn_impl;

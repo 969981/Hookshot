@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.3.0-rc.34](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.33...v2.3.0-rc.34) (2026-11-21)
+
+
+### Bug Fixes
+
+* **vk:** DLSS and FSR 3 keep the scene depth unless a depth image went ([#109](https://github.com/notquiteog/Hookshot/issues/109)) ([7b97cf7](https://github.com/notquiteog/Hookshot/commit/7b97cf7d251022c34d3c3913022e1e6b66ca1748))
+
+## [2.3.0-rc.33](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.32...v2.3.0-rc.33) (2026-11-21)
+
+
+### Bug Fixes
+
+* **os:** a finalized message queue keeps its room, so a send after the finalize goes in as on Horizon ([#104](https://github.com/notquiteog/Hookshot/issues/104)) ([fe760d7](https://github.com/notquiteog/Hookshot/commit/fe760d77fde5d1ea132b230a572b10068b1221a6))
+
+## [2.3.0-rc.32](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.31...v2.3.0-rc.32) (2026-11-21)
+
+
+### Bug Fixes
+
+* **os:** the rest of the timer events, timed receive, thread try-wait and core mask, in the runtime's own model ([#100](https://github.com/notquiteog/Hookshot/issues/100)) ([cc4d240](https://github.com/notquiteog/Hookshot/commit/cc4d240cc19967dbc251a4e529b463ed4274f106))
+
+## [2.3.0-rc.31](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.30...v2.3.0-rc.31) (2026-11-21)
+
+
+### Bug Fixes
+
+* **vk:** the replay takes a texture's layout, counts and ranges from what it can check, not from the game's word ([#102](https://github.com/notquiteog/Hookshot/issues/102)) ([1efc627](https://github.com/notquiteog/Hookshot/commit/1efc627e6f125b964bc51f0a912bcfe2aa8f192f))
+
+## [2.3.0-rc.30](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.29...v2.3.0-rc.30) (2026-11-21)
+
+
+### Bug Fixes
+
+* **release:** the Windows package finds the last stable release's setup list past the first page of releases ([#99](https://github.com/notquiteog/Hookshot/issues/99)) ([5b5cfdd](https://github.com/notquiteog/Hookshot/commit/5b5cfdd387e03ffc37314f0157c3e386a847b1ef))
+
+## [2.3.0-rc.29](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.28...v2.3.0-rc.29) (2026-11-21)
+
+
+### Bug Fixes
+
+* **build:** the release builds take dav1d, FFmpeg, Tcl and Tk from this repository's copies, so a down host does not stop a release ([#97](https://github.com/notquiteog/Hookshot/issues/97)) ([f4b2fdb](https://github.com/notquiteog/Hookshot/commit/f4b2fdb608addf6d1e683d76410dc71bbf655302))
+
 ## [2.3.0-rc.28](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.27...v2.3.0-rc.28) (2026-11-15)
 
 

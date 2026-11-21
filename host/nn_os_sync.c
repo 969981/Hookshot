@@ -1059,7 +1059,13 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
 }
 
 HLE(_ZN2nn2os22InitializeMessageQueueEPNS0_16MessageQueueTypeEPmm) { queue_init(ARG(0), (int)ARG(2)); }
-HLE(_ZN2nn2os20FinalizeMessageQueueEPNS0_16MessageQueueTypeE) { drop(ARG(0)); }
+/* Finalize leaves the queue as it is, as Horizon's does: the SDK marks its object not initialized and changes nothing a
+   late Send or Receive reads, and the buffer stays where the game put it. A tombstone here was brought back by the next
+   lookup with no room (qcap 0), so a send after the finalize slept for good: Kirby Air Riders' movie player finalizes
+   its video thread's queue while its frame timer's callback still sends to it, and the callback's thread, which the
+   player joins, never returned. The queue goes when its address is initialized again (fresh) or used for another kind
+   of object (obj_lookup), the buffer with it. */
+HLE(_ZN2nn2os20FinalizeMessageQueueEPNS0_16MessageQueueTypeE) { (void)c; }
 HLE(_ZN2nn2os16SendMessageQueueEPNS0_16MessageQueueTypeEm) { queue_put(obj(ARG(0), K_QUEUE), ARG(1), 0, 0); }
 HLE(_ZN2nn2os19ReceiveMessageQueueEPmPNS0_16MessageQueueTypeE) {
     uint64_t v;
@@ -1068,7 +1074,7 @@ HLE(_ZN2nn2os19ReceiveMessageQueueEPmPNS0_16MessageQueueTypeE) {
 }
 
 HLE(_ZN2nn2os27InitializeLightMessageQueueEPNS0_21LightMessageQueueTypeEPmm) { queue_init(ARG(0), (int)ARG(2)); }
-HLE(_ZN2nn2os25FinalizeLightMessageQueueEPNS0_21LightMessageQueueTypeE) { drop(ARG(0)); }
+HLE(_ZN2nn2os25FinalizeLightMessageQueueEPNS0_21LightMessageQueueTypeE) { (void)c; }   /* (as FinalizeMessageQueue) */
 HLE(_ZN2nn2os21SendLightMessageQueueEPNS0_21LightMessageQueueTypeEm) { queue_put(obj(ARG(0), K_QUEUE), ARG(1), 0, 0); }
 HLE(_ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeEm) { RET(queue_put(obj(ARG(0), K_QUEUE), ARG(1), 0, 1)); }
 HLE(_ZN2nn2os20JamLightMessageQueueEPNS0_21LightMessageQueueTypeEm) { queue_put(obj(ARG(0), K_QUEUE), ARG(1), 1, 0); }
@@ -1332,6 +1338,16 @@ HLE(_ZN2nn2os26TimedWaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9Mut
 HLE(_ZN2nn2os19TrySendMessageQueueEPNS0_16MessageQueueTypeEm) { RET(queue_put(obj(ARG(0), K_QUEUE), ARG(1), 0, 1)); }
 HLE(_ZN2nn2os15JamMessageQueueEPNS0_16MessageQueueTypeEm) { queue_put(obj(ARG(0), K_QUEUE), ARG(1), 1, 0); }
 HLE(_ZN2nn2os18TryJamMessageQueueEPNS0_16MessageQueueTypeEm) { RET(queue_put(obj(ARG(0), K_QUEUE), ARG(1), 1, 1)); }
+/* (dragoon) TimedReceiveMessageQueue(uintptr_t* out, MessageQueueType*, TimeSpan) -> bool: as Receive, for at most the
+   time given. Left to the lifted SDK it read the SDK's own queue structure, which this file never fills (the queue
+   lives in this file's table), and so it never saw what the game sent */
+HLE(_ZN2nn2os24TimedReceiveMessageQueueEPmPNS0_16MessageQueueTypeENS_8TimeSpanE) {
+    uint64_t v;
+    const int64_t ns = (int64_t)ARG(2);
+    const int ok = queue_get(obj(ARG(1), K_QUEUE), &v, 1, ns > 0 ? ns : 0);
+    if (ok && ARG(0) && hos_guest_range(ARG(0), 8)) G64(ARG(0)) = v;
+    RET(ok);
+}
 HLE(_ZN2nn2os22TryReceiveMessageQueueEPmPNS0_16MessageQueueTypeE) {
     uint64_t v;
     const int ok = queue_get(obj(ARG(1), K_QUEUE), &v, 1, 0);
@@ -1355,6 +1371,41 @@ HLE(_ZN2nn2os22StartOneShotTimerEventEPNS0_14TimerEventTypeENS_8TimeSpanE) {
     t->due_ns = hos_now_ns() + (int64_t)ARG(1);
     t->period_ns = 0;
     t->signaled = 0;
+    ReleaseSRWLockExclusive(&t->lk);
+    WakeAllConditionVariable(&t->cv);
+    poke_multiwait(t);
+}
+/* (dragoon) StopTimerEvent / ClearTimerEvent / SignalTimerEvent: the rest of the TimerEvent API. Left to the lifted
+   SDK, Stop read the SDK's own layout of the event, which InitializeTimerEvent above never fills, and faulted at guest
+   0x10: Kirby Air Riders' movie player stops its frame timer (main 0x82ef47c8). In this file's model a timer is a due
+   time (0: not started) and a period, and it is signalled once the due time has passed. */
+/* StopTimerEvent(TimerEventType*): no more firing; a wait now waits for the next start */
+HLE(_ZN2nn2os14StopTimerEventEPNS0_14TimerEventTypeE) {
+    Obj *t = obj(ARG(0), K_TIMER);
+    AcquireSRWLockExclusive(&t->lk);
+    t->due_ns = 0;
+    t->period_ns = 0;
+    ReleaseSRWLockExclusive(&t->lk);
+    poke_multiwait(t);
+}
+/* ClearTimerEvent(TimerEventType*): not signalled: a periodic timer's next firing is after now, a fired one-shot stops */
+HLE(_ZN2nn2os15ClearTimerEventEPNS0_14TimerEventTypeE) {
+    Obj *t = obj(ARG(0), K_TIMER);
+    const int64_t now = hos_now_ns();
+    AcquireSRWLockExclusive(&t->lk);
+    if (t->due_ns && now >= t->due_ns) {
+        if (t->period_ns > 0) while (t->due_ns <= now) t->due_ns += t->period_ns;
+        else t->due_ns = 0;
+    }
+    ReleaseSRWLockExclusive(&t->lk);
+    poke_multiwait(t);
+}
+/* SignalTimerEvent(TimerEventType*): signalled now (a periodic timer's period goes on from here) */
+HLE(_ZN2nn2os16SignalTimerEventEPNS0_14TimerEventTypeE) {
+    Obj *t = obj(ARG(0), K_TIMER);
+    const int64_t now = hos_now_ns();
+    AcquireSRWLockExclusive(&t->lk);
+    if (!t->due_ns || t->due_ns > now) t->due_ns = now;
     ReleaseSRWLockExclusive(&t->lk);
     WakeAllConditionVariable(&t->cv);
     poke_multiwait(t);

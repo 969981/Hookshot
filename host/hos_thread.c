@@ -1265,6 +1265,13 @@ HLE(_ZN2nn2os10WaitThreadEPNS0_10ThreadTypeE) {
     hos_thread_join(thread_arg(c, ARG(0)));
 }
 
+/* (dragoon) TryWaitThread(ThreadType*) -> bool: whether the thread has ended, without waiting. Left to the lifted SDK
+   it read the SDK's thread state, which this runtime's threads never write */
+HLE(_ZN2nn2os13TryWaitThreadEPNS0_10ThreadTypeE) {
+    HosThread *t = thread_arg(c, ARG(0));
+    RET(!t->handle || WaitForSingleObject(t->handle, 0) == WAIT_OBJECT_0);
+}
+
 HLE(_ZN2nn2os13DestroyThreadEPNS0_10ThreadTypeE) {
     HOS_TRACE_CALL("DestroyThread");
     HosThread *t = thread_arg(c, ARG(0));
@@ -1289,6 +1296,14 @@ HLE(_ZN2nn2os20ChangeThreadPriorityEPNS0_10ThreadTypeEi) {
 HLE(_ZN2nn2os17SetThreadCoreMaskEPNS0_10ThreadTypeEim) {
     HosThread *t = thread_arg(c, ARG(0));
     hos_thread_affinity(t, (int)ARG(1), ARG(2));
+}
+
+/* (dragoon) GetThreadCoreMask(int* idealCore, unsigned long* mask, ThreadType const*): the core it runs on and the
+   cores an application has (SetThreadCoreMask's affinity is the host scheduler's, not kept as the game gave it) */
+HLE(_ZN2nn2os17GetThreadCoreMaskEPiPmPKNS0_10ThreadTypeE) {
+    HosThread *t = thread_arg(c, ARG(2));
+    if (ARG(0) && hos_guest_range(ARG(0), 4)) G32(ARG(0)) = (uint32_t)hos_thread_core(t);
+    if (ARG(1) && hos_guest_range(ARG(1), 8)) G64(ARG(1)) = (1u << hos_cores()) - 1;
 }
 
 HLE(_ZN2nn2os20GetCurrentCoreNumberEv) { RET((uint32_t)hos_thread_core(cur)); }

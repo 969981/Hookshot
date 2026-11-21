@@ -57,6 +57,7 @@ thread_local int import_result = 0;
 bool import_on_hold(uint64_t, uint64_t) { import_cooling = false; return false; }
 void import_remember_failure(uint64_t, uint64_t) {}
 bool mirror_on() { return true; } // (import_chunk's default: 4 MB with VRAM mirrors, 16 without)
+struct HostStub { uint64_t guest_size() { return 1ull<<40; } } host_stub, *host=&host_stub; // (import_pool keeps a range in guest memory)
 '''+guard+'''
     p.lo=lo;p.hi=hi;imports++;return true;
 }

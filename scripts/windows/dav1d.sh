@@ -21,8 +21,15 @@ for t in meson ninja nasm; do command -v "$t" >/dev/null || { echo "dav1d.sh: $t
 CC=$MINGW/bin/x86_64-w64-mingw32-clang
 [ -x "$CC" ] || [ -x "$CC.exe" ] || { echo "dav1d.sh: no x86_64-w64-mingw32-clang in $MINGW/bin"; exit 1; }
 
-curl -fL --retry 5 --retry-delay 10 --proto '=https' -o "$WORK/dav1d.tar.gz" \
-    "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz"
+# (this repository's copy on linux-parts first, as scripts/linux/deps.sh fetches it; the host's when it is not there yet)
+read -r name url _ < <(scripts/linux/deps.sh --outside-sources | grep "^dav1d-$DAV1D_VER\.tar\.gz ")
+SOURCES=${HOOKSHOT_BUILD_SOURCES:-https://github.com/${GITHUB_REPOSITORY:-notquiteog/Hookshot}/releases/download/linux-parts}
+if curl -fsSL --retry 3 --retry-delay 5 --proto '=https' -o "$WORK/dav1d.tar.gz" "$SOURCES/$name"; then
+    echo "$name: this repository's copy"
+else
+    echo "$name: not on linux-parts yet, from its host"
+    curl -fL --retry 5 --retry-delay 10 --proto '=https' -o "$WORK/dav1d.tar.gz" "$url"
+fi
 mkdir -p "$WORK/src" && tar -xzf "$WORK/dav1d.tar.gz" -C "$WORK/src" --strip-components=1
 # (GitLab's tag archives are made on demand: pinned by what they unpack to, as scripts/linux/deps.sh's tree_is)
 other=$(find "$WORK/src" ! -type f ! -type d -print -quit)

@@ -75,6 +75,14 @@ typedef struct {
     const nvn_pool *pool; int64_t off;
     uint64_t serial;                      /* one per initialization: the game copies texture objects by value */
 } nvn_tex;
+/* (hookshot) A texture object from the game's memory, as the renderer may take it: copied, its layout computed again from
+   its description (the stored one is the game's bytes, which may say anything), and refused (0) when that description
+   is past any texture a GPU makes: a side past 65,536 texels, more than 17 levels, a sample count NVN has not, or storage
+   past the console's 16 GiB. host/nvn_layout.c; every route of a texture object into the renderer goes through it */
+#define NVN_TEX_MAX_DIM 65536u
+#define NVN_TEX_MAX_LEVELS 17u
+#define NVN_TEX_MAX_BYTES (16ull << 30)
+int nvn_tex_sanitize(const nvn_tex *in, nvn_tex *out);
 /* TOTK reserves 16 bytes for a view on its stack (main+0x823398): packed */
 typedef struct {
     uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, pad0 : 3;

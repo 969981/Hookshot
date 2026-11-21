@@ -380,6 +380,13 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     import_cooling = false;
     import_result = VK_SUCCESS;
     if (import_on_hold(lo, hi)) return false;   // (tried recently and failed: not again until the hold ends)
+    // (hookshot) and only guest memory: a pool's range is the game's numbers, and one past the guest space's end imported
+    // host memory beyond it (the audit's V7)
+    if (hi > host->guest_size()) {
+        static std::atomic<int> told{0};
+        if (told++ < 8) logf("vk: import %#llx..%#llx: past guest memory, not imported", (unsigned long long)lo, (unsigned long long)hi);
+        return false;
+    }
     if (hi <= lo || hi - lo > max_import_size) {
         logf("vk: import %#llx..%#llx exceeds the device's allocation/buffer limit", (unsigned long long)lo,
              (unsigned long long)hi);
@@ -1242,6 +1249,8 @@ void shadow_erase(uint32_t page) {   // (shadow_mu held)
     shadow_n--;
 }
 void shadow_drop_range(uint64_t lo, uint64_t hi) {   // (shadow_mu held)
+    // (hookshot) guest memory ends at 2^40: a range from a texture's size that wrapped walked 2^43 regions (the audit's V5)
+    hi = std::min<uint64_t>(hi, 1ull << 40);
     if (hi <= lo) return;
     for (uint64_t r = lo >> 21; r <= (hi - 1) >> 21; r++) {
         if (!shadow_regions.count((uint32_t)r)) continue;
@@ -1437,7 +1446,7 @@ const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t
 void memory_drop_shadow(uint64_t guest, uint64_t size) {
     if (!size || !shadow_n.load(std::memory_order_relaxed)) return;
     std::lock_guard lk(shadow_mu);
-    shadow_drop_range(guest, guest + size);
+    shadow_drop_range(guest, size > ~0ull - guest ? ~0ull : guest + size);   // (hookshot: no wrap; clamped there)
 }
 
 // ---- (EvilBoyce) GPU results by page: the submission that last wrote a page into guest memory ----
@@ -3040,6 +3049,7 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     // page locking stalled the game's threads (3-7 fps); chunked imports at first use are the default)
     static const bool on = env_on("RX_VK_BG_IMPORT");
     if (!on || !size || gpu >= (1ull << 40) || !dev.external_memory_host) return;   // (virtual pools are not imported)
+    if (size > host->guest_size() || gpu > host->guest_size() - size) return;   // (hookshot: inside guest memory, no wrap: V7)
     const uint64_t lo = gpu & ~(align - 1), hi = (gpu + size + align - 1) & ~(align - 1);
     std::lock_guard lk(bg_mu);
     bg_start();
@@ -3181,6 +3191,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         uint64_t avail = 0;
         if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
         guest = host->gpu_guest(gpu);
+    } else if (size > host->guest_size() || gpu > host->guest_size() - size) {
+        return {};   // (hookshot: a binding past guest memory's end, from the game's address and size, is none: V7)
     }
     // (the same read, while that stamp still stands: the buffer and the offset are the ones found before. a miss
     // runs the lookup below, including a mirror sync, and remembers what it returned. a write is not remembered)
@@ -4159,6 +4171,9 @@ void guest_cpu_wrote(uint64_t gpu, uint64_t n) {
     if (!n || !wb_diff_on()) return;
     uint32_t pages[64];
     int k = 0;
+    // (hookshot) a texture holds 16 GiB at most (rx_nvn.h): a size past it, or a range that wraps, is not a write the game
+    // made, and walked its pages for ever (the audit's V5)
+    if (n > NVN_TEX_MAX_BYTES || n > ~0ull - gpu) return;
     for (uint64_t a = gpu & ~4095ull; a < gpu + n; a += 4096) {   // (GPU pages are mapped to guest memory page by page)
         const uint64_t g = host->gpu_guest(a);
         if (!g) continue;
