@@ -77,7 +77,26 @@
       "--game-mkw={input:mkw}"
     ],
     "label": "Building the game from your copy (10 to 45 minutes)",
-    "timeout": 7200
+    "timeout": 7200,
+    "options": [
+      {
+        "id": "dlss",
+        "label": "NVIDIA DLSS: download NVIDIA's DLSS files and accept their license",
+        "note": "NVIDIA's, not Hookshot's: the build downloads them from NVIDIA and puts DLSS in each game folder.",
+        "args": [
+          "--dlss",
+          "--accept-nvidia-license"
+        ],
+        "os": [
+          "windows"
+        ],
+        "gpu": "nvidia",
+        "license": {
+          "name": "NVIDIA RTX SDKs license (NVIDIA DLSS)",
+          "url": "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt"
+        }
+      }
+    ]
   },
   "config": [
     {

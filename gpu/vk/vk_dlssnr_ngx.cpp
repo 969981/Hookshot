@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include "nr_plan.h"       // (the Passes and Resolution scale rows)
@@ -81,8 +82,15 @@ struct Image {
 };
 
 struct State {
-    bool probed{}, ok{};
-    std::string why;
+    // probe's answer, asked once: from the start-up block's detached thread (dlss_status_log) and from the frame's (apply,
+    // running_backend, the Neural tab), whichever is first. probe_mu makes the other wait for it; ok is written before
+    // probed is set, and read only once it is
+    std::atomic<bool> probed{};
+    bool ok{};
+    std::mutex probe_mu;
+    // (why NGX direct is not available, for the menu and the start-up block: always one of the string literals below, so
+    // a reader on another thread holds a pointer that stays valid whatever is set after)
+    std::atomic<const char*> why{""};
     NVSDK_NGX_Parameter* params{};
     // One feature a pass (nr_plan.h: each keeps its own history). features: how many were made; features_asked: for how
     // many passes, which is more when NGX would not make them all (video memory): the row is then not asked again for
@@ -282,16 +290,14 @@ void explain(State& s, unsigned result, bool needs_driver, unsigned major, unsig
 #endif
 }
 
-/// Asks NGX once, after the device exists, whether the feature is here. False until then, without asking.
-bool probe(State& s) {
-    if (s.probed) return s.ok;
-    if (!dev.device) return false;
-    s.probed = true;
+/// probe's question, under probe_mu
+bool probe_once(State& s) {
     if (dlss_why() == DLSS_ENV_OFF) {
         logf("vk: DLSS 5 neural rendering (NGX direct): NGX is off for this run (RX_VK_DLSS=0)");
         s.why = "Not available: NGX is off for this run (RX_VK_DLSS=0).";
         return false;
     }
+    // (no NGX on a GPU without NVIDIA's extensions: dlss_ngx_session does not start it there)
     if (!dlss_ngx_session()) {
         logf("vk: DLSS 5 neural rendering (NGX direct): no NGX session on this device (the NVIDIA DLSS lines say why)");
         s.why = "Not available: NGX did not start on this GPU (NVIDIA RTX only).";
@@ -320,7 +326,6 @@ bool probe(State& s) {
          driver_known && needs_driver ? ", and says the driver is too old" : "");
     if (available_known && available) {
         logf("vk: DLSS 5 neural rendering (NGX direct) is available on this device");
-        s.ok = true;
         return true;
     }
     if (!available_known) {
@@ -328,11 +333,21 @@ bool probe(State& s) {
         // creation's own answer is then the one explained.
         logf("vk: DLSS 5 neural rendering (NGX direct): NGX does not answer for the feature; it is tried at the first "
              "frame and its answer is what counts");
-        s.ok = true;
         return true;
     }
     explain(s, init_known ? (unsigned)init : 0u, driver_known && needs_driver, major, minor);
     return false;
+}
+
+/// Asks NGX once, after the device exists, whether the feature is here. False until then, without asking.
+bool probe(State& s) {
+    if (s.probed.load(std::memory_order_acquire)) return s.ok;
+    if (!dev.device) return false;
+    std::lock_guard lk(s.probe_mu);
+    if (s.probed.load(std::memory_order_relaxed)) return s.ok;
+    s.ok = probe_once(s);
+    s.probed.store(true, std::memory_order_release);
+    return s.ok;
 }
 
 /// NGX asks the feature's caller for the ratio of output to input through this; it is always 1 here, the uplift being
@@ -447,7 +462,7 @@ bool ensure_features(State& s, VkCommandBuffer cmd, const NrSettings& want, uint
     s.feature_w = w, s.feature_h = h;
     s.feature_preset = want.preset, s.feature_quality = want.quality;
     s.reset_next = true;
-    s.why.clear();
+    s.why = "";
     logf("vk: DLSS 5 neural rendering (NGX direct): %u feature(s) ready (Passes %u), %ux%u, preset %u, quality %u",
          s.features, want.passes, w, h, want.preset, want.quality);
     return true;
@@ -494,7 +509,7 @@ bool capable() {
 const char* why() {
     State& s = state();
     (void)probe(s);   // (the menu asks before any frame has: the answer is NGX's either way, and asked once)
-    return s.why.c_str();
+    return s.why.load();
 }
 
 size_t device_extensions(VkInstance instance, VkPhysicalDevice gpu, const char** out, size_t max) {

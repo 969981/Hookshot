@@ -21,6 +21,11 @@ DlssWhy dlss_why();
 /// Asks NGX once whether DLSS runs on this device, so dlss_why knows before the first upscale (the menu, when it opens).
 /// Nothing off an NVIDIA device with NGX's extensions, or in a build without DLSS
 void dlss_probe();
+/// (hookshot) SR's and FG's lines of the start-up block: "on: <the runtimes found, with their versions>" or "off: <why>; ..."
+void dlss_status_sr_fg(std::string& sr, std::string& fg);
+/// (hookshot) The start-up block: for each of DLSS super resolution, frame generation and DLSS 5 neural rendering, on or off,
+/// the files found (with versions) and why when off. Once, after dlss_probe (vk_menu.cpp probe_upscalers_soon)
+void dlss_status_log();
 /// A feature that was not made is asked for again at the next upscale (vk_dlss.cpp prepare's `refused`): the player
 /// changed a row the feature is made from (vk_temporal.cpp temporal_reset_failure, with the chain's lock held, as prepare
 /// has it)

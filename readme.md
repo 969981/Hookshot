@@ -773,9 +773,14 @@ When Streamline refuses the feature, the log's `vk: DLSS 5 neural rendering is n
 the `nvngx_dlssnr.dll` there is NVIDIA's or a patched one, and whether the override is set, and the line after it says
 what is missing.
 
-For Streamline, these files go beside the game, or in a `streamline` folder beside it, or wherever
-`RX_VK_STREAMLINE_DIR` points. They are NVIDIA's to ship; Hookshot builds against Streamline's
-MIT-licensed headers only and loads nothing it has not checked NVIDIA's signature on:
+For Streamline, these files go in the game folder's `ngx` folder (where the DLSS tick puts DLSS's runtimes), or a
+`streamline` folder in the game folder, or the game folder itself, or wherever `RX_VK_STREAMLINE_DIR` points (`bin\` and
+`bin\streamline\` are looked in too). The NGX path finds `nvngx_dlssnr.dll` in `ngx` and `streamline` as well, so one copy
+serves both. The log's
+`vk: no sl.interposer.dll in ...` line names every folder looked in. They are NVIDIA's to ship, and NVIDIA has not
+published them: its public Streamline release (v2.14.16, checked 2026-11-14) and its DLSS repository carry no
+`sl.dlss_nr.dll` and no `nvngx_dlssnr.dll`, so neither the Builder nor RecompLauncher can fetch them. Hookshot builds
+against Streamline's MIT-licensed headers only and checks NVIDIA's signature on `sl.interposer.dll` before loading it:
 
 | file | what it is |
 |---|---|

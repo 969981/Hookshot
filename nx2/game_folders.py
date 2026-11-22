@@ -165,6 +165,22 @@ def launcher_games(profiles=None, home="{home}/Games/Hookshot", local="{local}",
 LAUNCHER_MIN = "0.90.0-beta.36"
 
 
+def dlss_option():
+    """prepare.options' NVIDIA DLSS tick on Windows: ticked, HookshotBuilder.exe --cli --dlss --accept-nvidia-license
+    fetches NVIDIA's pinned DLSS runtimes into each game folder's ngx\\ and keeps the release's renderer (NGX, Streamline
+    and FSR 4 compiled in). Unticked passes nothing, and a prepare without either flag keeps the folder's runtimes. Off
+    until ticked (it carries NVIDIA's license, the one scripts/ngx_sdk.py downloads under); shown with an RTX card. Not on
+    Linux: the AppImage's renderer has no DLSS"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ngx_sdk", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "ngx_sdk.py"))
+    ngx = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ngx)
+    return {"id": "dlss", "label": "NVIDIA DLSS: download NVIDIA's DLSS files and accept their license",
+            "note": "NVIDIA's, not Hookshot's: the build downloads them from NVIDIA and puts DLSS in each game folder.",
+            "args": ["--dlss", "--accept-nvidia-license"], "os": ["windows"], "gpu": "nvidia",
+            "license": {"name": "NVIDIA RTX SDKs license (NVIDIA DLSS)", "url": ngx.LICENSE_URL}}
+
+
 def launcher_entry(entry, profiles=None):
     """recomplauncher.json with every released game in it: its copy as a named input (no legacy `game`: the launcher
     would then ask every game's tile for that one copy too), its tile in games[], and its copy in prepare.args in one
@@ -183,7 +199,8 @@ def launcher_entry(entry, profiles=None):
     out.setdefault("min", LAUNCHER_MIN)
     out["inputs"] = launcher_inputs(profiles) + [i for i in entry.get("inputs", []) if i["id"] not in {p.key for p in profiles}]
     args = [a for a in out["prepare"]["args"] if a not in ("--game", "{game}") and not a.startswith("--game-")]
-    out["prepare"] = dict(out["prepare"], args=args + prepare_args(profiles))
+    options = [o for o in out["prepare"].get("options", []) if o.get("id") != "dlss"] + [dlss_option()]
+    out["prepare"] = dict(out["prepare"], args=args + prepare_args(profiles), options=options)
     games = launcher_games(profiles)
     if games:
         out["games"] = games
