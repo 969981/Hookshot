@@ -340,8 +340,10 @@ A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-
 have them, the DLSS model where DLSS does not run. HDR paper white and
 HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR set to Native.
 
-The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation and latency, Screen,
-HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The table lists them in that order.
+The tabs group their rows under section titles. Graphics: Resolution and upscaling, Frame generation and latency, Screen
+(HDR with it), Detail, and GPU and memory (last: the rows to change when something is wrong). Gameplay: Game, Interface
+(this menu and what it shows over the game), and System. Controls: Controller (its Controls and Motion pages first),
+Camera, Mouse, and Menu (the keys that open this menu). The table lists the rows in that order.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
@@ -374,34 +376,34 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
-| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
-| | Menu size | Small, Medium, Large | Medium |
-| | Game speed | Per frame, Real time | Real time |
+| Gameplay | Game speed | Per frame, Real time | Real time |
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
-| | Microphone | Off, Default, or each microphone by name | Default |
-| | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
-| | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
-| | Discord status | Off, On ("Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC) | On |
 | | Skip opening | Off, On (skips the new-game opening: the story movie and Navi waking Link; later cutscenes and the title screen stay) | Off |
+| | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
+| | Microphone | Off, Default, or each microphone by name | Default |
+| | Menu size | Small, Medium, Large | Medium |
+| | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
+| | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
+| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
+| | Discord status | Off, On ("Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC) | On |
 | | Bug report | Saves a report into a new folder in `bug-reports` (below) | |
-| Controls | Controller in background | Off, On | Off |
-| | Mouse camera | As the stick, Native, Off | As the stick |
-| | Disable camera centering | Off, On | Off |
-| | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
-| | Invert mouse vertical | Off, On | Off |
-| | Invert camera X | Off, On | Off |
-| | Invert camera Y | Off, On | Off |
-| | Camera speed | 50% to 400%, in steps of 25 | 100% |
-| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
-| | Auto run | Off, On | Off |
-| | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| Controls | Controls | Opens the Controls page | |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
-| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
-| | Controls | Opens the Controls page | |
+| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion dead zone (Low, Standard, High; Standard) | |
+| | Controller in background | Off, On | Off |
+| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
+| | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| | Auto run | Off, On | Off |
+| | Camera speed | 50% to 400%, in steps of 25 | 100% |
+| | Invert camera X | Off, On | Off |
+| | Invert camera Y | Off, On | Off |
+| | Disable camera centering | Off, On | Off |
+| | Mouse camera | As the stick, Native, Off | As the stick |
+| | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
+| | Invert mouse vertical | Off, On | Off |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
