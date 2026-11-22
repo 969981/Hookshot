@@ -274,4 +274,73 @@ void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
 
 #ifdef __cplusplus
 }
+
+#include <cstring>
+/* nvnCommandBufferBindProgram(cmd, program, stages) binds the program's stages that `stages` names, and only those
+   (NVNshaderStageBits: 1 << the NVN stage, which a stage's control section has at +0x56: 0 vertex, 1 fragment, 2
+   geometry, 3 and 4 tessellation, 5 compute, 6 and 7 task and mesh); the other stages stay as they were bound, and a
+   null program unbinds the stages named. Both replays (rx_nvn.cpp, vk_replay.cpp) took each bind for the whole program
+   and a null one for none: Kirby Air Riders binds a vertex program (0x1), a fragment program (0x2) and no geometry
+   (NULL, 0x4) before each draw, and every draw was left out ("a draw without a program"; a black screen behind its
+   movies). A bind of all the graphics stages (0x1f) or of compute alone (0x20) is the program as it is, as before.
+   cur: the bound stages, as one program (has: whether any are bound); serials[8]: by stage, the serial of the program
+   each bound stage came from (the replay's state keeps them); read(gpu, dst, n): the replay's read of GPU memory.
+   Returns whether a stage is bound after it. */
+template <class Read> inline uint32_t nvn_stage_type(const nvn_stage_data &sd, Read &read) {
+    uint16_t st = 0xffff;
+    if (sd.control) read(sd.control + 0x56, &st, 2);
+    return st;
+}
+template <class Read>
+inline bool nvn_bind_stages(nvn_prog &cur, bool has, const nvn_prog *prog, uint32_t stages, uint64_t serials[8],
+                            Read &&read) {
+    if (prog && ((stages & 0x1f) == 0x1f || stages == 0x20)) {   /* (the whole program, as before) */
+        cur = *prog;
+        for (int t = 0; t < 8; t++) serials[t] = prog->serial;
+        return prog->nstage > 0;
+    }
+    struct Entry { uint32_t type; nvn_stage_data sd; uint64_t serial; };
+    Entry e[12];
+    int n = 0;
+    const int compute = stages == 0x20;   /* (a bind of one kind drops the other kind's stages, as the whole binds do) */
+    /* (so do the two graphics pipelines': a vertex, tessellation or geometry stage (0x1d) drops task and mesh (0xc0), and
+       the other way round; fragment is in both. No pipeline has both, and the whole binds replace either) */
+    const uint32_t drop = stages | (stages & 0x1d ? 0xc0u : 0) | (stages & 0xc0 ? 0x1du : 0);
+    bool removed = false, all_of_prog = prog != nullptr;
+    if (has)
+        for (uint32_t i = 0; i < cur.nstage && i < 6; i++) {
+            const uint32_t t = nvn_stage_type(cur.sd[i], read);
+            if (t < 32 && ((drop >> t & 1) || (t == 5) != compute)) { removed = true; continue; }
+            e[n++] = {t, cur.sd[i], t < 8 ? serials[t] : cur.serial};
+            all_of_prog = false;
+        }
+    if (prog)
+        for (uint32_t i = 0; i < prog->nstage && i < 6; i++) {
+            const uint32_t t = nvn_stage_type(prog->sd[i], read);
+            if (t < 32 && !(stages >> t & 1)) { all_of_prog = false; continue; }
+            e[n++] = {t, prog->sd[i], prog->serial};
+            if (t < 8) serials[t] = prog->serial;
+        }
+    if (all_of_prog) {   /* (nothing else bound: the program as it is, its own serial) */
+        cur = *prog;
+        return prog->nstage > 0;
+    }
+    if (!prog && !removed) return has;   /* (unbinding stages none of which is bound: nothing changes) */
+    for (int i = 1; i < n; i++)   /* (by stage, vertex first) */
+        for (int j = i; j > 0 && e[j - 1].type > e[j].type; j--) { const Entry x = e[j]; e[j] = e[j - 1]; e[j - 1] = x; }
+    nvn_prog out;
+    std::memset(&out, 0, sizeof out);
+    out.magic = prog ? prog->magic : cur.magic;
+    /* (a program of its own for the replays' caches, which go by serial (codes, layouts): the same stages of the same
+       programs give the same one. Serials from nvn_native.c's counter never have the top bit) */
+    uint64_t h = 1469598103934665603ull;
+    for (int k = 0; k < n && out.nstage < 6; k++) {
+        out.sd[out.nstage++] = e[k].sd;
+        const uint64_t v[4] = {(uint64_t)e[k].type, e[k].sd.data, e[k].sd.control, e[k].serial};
+        for (int j = 0; j < 4; j++) h = (h ^ v[j]) * 1099511628211ull;
+    }
+    out.serial = h | 0x8000000000000000ull;
+    cur = out;
+    return out.nstage > 0;
+}
 #endif

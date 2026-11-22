@@ -599,6 +599,7 @@ PixelFormat nvn_pixel_format(int nvn_format);
 struct NvnState {
     nvn_prog prog{};   // the bound program, copied at the bind (the game can set new shaders on the object later)
     bool has_prog = false;
+    uint64_t prog_serials[8]{};   // (by stage, the serial of the program each bound stage came from: nvn_bind_stages)
     // per NVN stage (0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess evaluation, 5 compute)
     nvn_p_bind_buf ubo[6][16]{}, ssbo[6][16]{};
     uint64_t tex[6][128]{}, samp[6][128]{}, img[6][32]{};

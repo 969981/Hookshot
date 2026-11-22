@@ -1061,7 +1061,11 @@ static uint64_t kept_control(uint64_t ctl) {
     return at;
 }
 static int set_shaders(nvn_prog *o, int n, const uint8_t *sd, int stride) {
-    if (n < 0 || n > 6) return 0;
+    if (n < 0 || n > 6) {   /* (refused: the program keeps no stages, and the replay leaves its draws out: said, once each 8) */
+        static volatile LONG told;
+        if (InterlockedIncrement(&told) <= 8) hos_log("nvn: ProgramSetShaders with %d stages refused (at most 6)", n);
+        return 0;
+    }
     rx_nvn_program_released(o);
     o->nstage = (uint32_t)n;
     for (int i = 0; i < n; i++) {   /* {data (GPU address), control (guest pointer)[, reserved]} */
