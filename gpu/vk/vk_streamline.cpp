@@ -13,10 +13,10 @@
 #include <string>
 #include <vector>
 
-#include <softpub.h>
-#include <wincrypt.h>
+#include <softpub.h>   // (trusted_signature: a DLSS 5 model's signature, whoever's it is)
 #include <wintrust.h>
 
+#include "vk_signed.h"
 #include "vk_streamline_api.h"
 
 namespace mkwvk::streamline {
@@ -123,94 +123,16 @@ bool resolve(HMODULE m, const char* name, T*& fn) {
     return fn != nullptr;
 }
 
-/// Whether the file carries a signature Windows trusts, and whether that signature is NVIDIA's.
-///
-/// Written out here rather than taken from Streamline's own sl_security.h on purpose: that header's
-/// verifyEmbeddedSignature uses WINTRUST_SIGNATURE_SETTINGS, which the Windows SDK has and
-/// llvm-mingw's headers do not, and Hookshot builds for Windows with either (third_party/a64-kit).
-/// This uses only what both have. Trust alone is not enough -- it would accept anything signed by
-/// anyone Windows trusts -- so the subject name is read too.
-constexpr const wchar_t* kNvidiaSigner = L"NVIDIA Corporation";   // (the subject of NVIDIA's code-signing certificate)
-bool signed_by_nvidia(const std::wstring& path) {
-    WINTRUST_FILE_INFO file{};
-    file.cbStruct = sizeof file;
-    file.pcwszFilePath = path.c_str();
-    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    WINTRUST_DATA data{};
-    data.cbStruct = sizeof data;
-    data.dwUIChoice = WTD_UI_NONE;
-    data.fdwRevocationChecks = WTD_REVOKE_NONE;   // (a player may well be offline)
-    data.dwUnionChoice = WTD_CHOICE_FILE;
-    data.pFile = &file;
-    data.dwStateAction = WTD_STATEACTION_VERIFY;
-    const LONG status = WinVerifyTrust(nullptr, &action, &data);
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(nullptr, &action, &data);
-    if (status != ERROR_SUCCESS) {
-        logf("vk: sl.interposer.dll has no signature Windows trusts (status %#lx)",
-             (unsigned long)status);
-        return false;
-    }
-    // Whose signature it is. A trusted signature by somebody else is not a reason to load it.
-    HCERTSTORE store{};
-    HCRYPTMSG msg{};
-    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(),
-                          CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
-                          CERT_QUERY_FORMAT_FLAG_BINARY, 0, nullptr, nullptr, nullptr, &store,
-                          &msg, nullptr)) {
-        logf("vk: sl.interposer.dll's signature could not be read (error %lu)", GetLastError());
-        return false;
-    }
-    DWORD info_size = 0;
-    bool nvidia = false;
-    if (CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &info_size) && info_size) {
-        std::vector<unsigned char> buffer(info_size);
-        if (CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, buffer.data(), &info_size)) {
-            const auto* signer = reinterpret_cast<CMSG_SIGNER_INFO*>(buffer.data());
-            CERT_INFO want{};
-            want.Issuer = signer->Issuer;
-            want.SerialNumber = signer->SerialNumber;
-            if (PCCERT_CONTEXT cert = CertFindCertificateInStore(
-                    store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_CERT, &want, nullptr)) {
-                wchar_t name[256] = {};
-                CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
-                // (exactly NVIDIA's own name: a certificate whose name only contains "NVIDIA" (anyone can be
-                // "Not NVIDIA Ltd" to a CA) is not NVIDIA's)
-                nvidia = wcscmp(name, kNvidiaSigner) == 0;
-                if (!nvidia)
-                    logf("vk: sl.interposer.dll is signed by \"%s\", not \"NVIDIA Corporation\": not loading it",
-                         narrow(name).c_str());
-                CertFreeCertificateContext(cert);
-            }
-        }
-    }
-    CryptMsgClose(msg);
-    CertCloseStore(store, 0);
-    return nvidia;
-}
-
 bool load(State& s, const std::wstring& path) {
     // We are about to load code from a path a player can write to, so a file that is not NVIDIA's
-    // signed interposer is not loaded at all. The file is held open from before its signature is
-    // checked until it is loaded, sharing reads only: nothing can write, rename or delete it in
-    // between, so the file checked is the file loaded. Its own imports are looked for only beside it
-    // and in System32, not in the current folder or along PATH.
-    const HANDLE held = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                    FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (held == INVALID_HANDLE_VALUE) {
-        logf("vk: could not open sl.interposer.dll to check it (error %lu)", GetLastError());
-        return false;
-    }
-    const bool trusted = signed_by_nvidia(path);
-    s.module = trusted ? LoadLibraryExW(path.c_str(), nullptr,
-                                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)
-                       : nullptr;
-    const DWORD load_error = trusted && !s.module ? GetLastError() : 0;
-    CloseHandle(held);
-    if (!trusted) return false;
+    // signed interposer is not loaded at all, and the file loaded is the file checked: held open,
+    // sharing reads only, from the check to the load (vk_signed.h). Its own imports are looked for
+    // only beside it and in System32, not in the current folder or along PATH.
+    s.module = signed_dll::load(path, signed_dll::kNvidia, "sl.interposer.dll",
+                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!s.module) {
-        SetLastError(load_error);
-        logf("vk: could not load sl.interposer.dll (error %lu)", GetLastError());
+        if (GetLastError() != ERROR_INVALID_IMAGE_HASH)   // (not NVIDIA's: open_checked said why)
+            logf("vk: could not load sl.interposer.dll (error %lu)", GetLastError());
         return false;
     }
     HMODULE m = s.module;

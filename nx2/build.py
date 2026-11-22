@@ -145,16 +145,16 @@ def streamline_sdk_path():
 
 
 def streamline_link():
-    """(hookshot) What a Windows build with Streamline's headers links for the interposer check.
+    """(hookshot) What a Windows build links for the vendors' library checks (gpu/vk/vk_signed.cpp).
 
-    Nothing of Streamline's and nothing of NVIDIA's: sl.interposer.dll is loaded at run time. These
-    two are Windows' own, and they are what gpu/vk/vk_streamline.cpp's signed_by_nvidia calls --
-    WinVerifyTrust from wintrust and the certificate walk from crypt32. A build without Streamline's
-    headers does not compile that function and links neither.
+    Nothing of Streamline's, NVIDIA's or AMD's: sl.interposer.dll and AMD's loader are loaded at run
+    time, and only when signed by their vendor. These are Windows' own: WinVerifyTrust from wintrust
+    and the certificate walk from crypt32, for every Windows build (AMD's FSR 4 is checked in one
+    without Streamline too); advapi32 reads the NGX signature override for the log.
     """
-    if LINUX or not streamline_sdk_path():
+    if LINUX:
         return []
-    return ["-lwintrust", "-lcrypt32", "-ladvapi32"]   # (advapi32: the NGX signature override, read for the log)
+    return ["-lwintrust", "-lcrypt32", "-ladvapi32"]
 
 
 def target():

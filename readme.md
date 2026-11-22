@@ -1041,8 +1041,14 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
   beside the game's exe (`bin\hookshot.exe`) or in the game folder. (`RX_VK_FSR_DIR` names another folder, for testing:
   set it in the environment or a `HOS_ENV_FILE` file; `hookshot_env.txt` takes no paths.) Without them the Upscaler row
-  says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
-  takes their place.
+  says so and offers the rest. Hookshot loads AMD's loader, and the upscaler and frame generation DLLs beside it, only when
+  Windows trusts their signatures and they are signed by Advanced Micro Devices (the log says why when one is not). On
+  Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's) takes their place. It is not loaded
+  when another account may write it or its folder (the log says which; `chmod go-w` them). On a drive that keeps no Unix
+  permissions (NTFS, exFAT, FAT, such as a Steam library on an NTFS drive mounted with `umask=000`), or one made under
+  another install, it is loaded and the log says the check could not be made. The same holds for NVIDIA DLSS's
+  runtime folders on Linux. `RX_VK_LIBRARY_CHECK=0` loads it anyway, and `=2` refuses those too
+  ([development guide](docs/development.md)).
 - **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime --accept-amd-license` downloads those two
   DLLs and AMD's license from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and
   puts them in the game folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `work/ffx-sdk`).

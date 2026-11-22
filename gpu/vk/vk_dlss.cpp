@@ -39,6 +39,7 @@
 #include "vk_paths.h"
 #include "vk_dlssnr_ngx.h"   // (the start-up block: DLSS 5 through NGX direct)
 #include "vk_reactive.h"
+#include "vk_signed.h"   // (Linux: NGX's runtime folders, only those no other account may write)
 #include "vk_streamline.h"   // (the start-up block: DLSS 5 through Streamline)
 #include "vk_temporal.h"
 #include "vk_texture.h"
@@ -236,6 +237,20 @@ std::vector<fs::path> runtime_dirs(const fs::path& game) {
     dirs.push_back(game / "ngx");
     if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
     else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
+    // (NGX on Linux loads what it finds in these folders without a signature to check: a folder that exists is kept only
+    // when no other account may write it (vk_signed.h); one not made yet holds nothing to load. A folder left out is said)
+    std::vector<fs::path> safe;
+    std::error_code ec;
+    for (const fs::path& d : dirs) {
+        if (!fs::exists(d, ec)) {
+            safe.push_back(d);
+            continue;
+        }
+        static std::atomic<int> told{0};
+        if (signed_dll::folder_owned_safely(d.native(), "NVIDIA DLSS's runtime folder")) safe.push_back(d);
+        else if (told++ < 4) logf("vk: NVIDIA DLSS: %s left out of NGX's runtime folders (above)", d.c_str());
+    }
+    dirs.swap(safe);
 #endif
     return dirs;
 }

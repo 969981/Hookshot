@@ -835,7 +835,7 @@ bool create_device() {
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     opennr::device_created();   // (hookshot: whether open neural rendering can run here, said in the log)
-    ffx::probe();   // (hookshot: what AMD's FSR 4 runtime offers here, asked once, now: gpu/vk/vk_ffx.h)
+    // (hookshot: what AMD's FSR 4 runtime offers here is asked on the start-up probes' thread, not here: vk_ffx.h probe)
     reflex_device_created();
     antilag_device_created();
     if (dev.push_descriptor) {

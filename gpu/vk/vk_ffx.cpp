@@ -24,6 +24,7 @@
 #include "../../third_party/ffx-api/framegeneration/include/ffx_framegeneration.h"
 #include "vk_loader.h"
 #include "vk_paths.h"   // (game_module_path: the game folder, where the release puts AMD's files)
+#include "vk_signed.h"  // (AMD's loader: only AMD's signed file)
 #include "vk_work.h"    // (after the others: the commands here go through the recorder, and AMD's own are told to it)
 
 namespace mkwvk::ffx {
@@ -51,7 +52,6 @@ struct State {
     PfnFfxDispatch dispatch = nullptr;
 
     // frame generation
-    int fg_supported = -1;
     std::string fg_provider;
     ffxContext fg = nullptr;
     uint32_t fg_w = 0, fg_h = 0, fg_rw = 0, fg_rh = 0;
@@ -66,6 +66,11 @@ State& st() {
     static State s;
     return s;
 }
+// (what probe found, for the run: -1 not asked yet, 0 no, 1 yes. Its own atomic, not State's: probe runs on the start-up
+// probes' thread (vk_menu.cpp probe_upscalers_soon) while the menu and the frame read it; State's loader and provider are
+// written before it is set to 1, and read only after it is)
+std::atomic<int> fg_supported{-1};
+std::mutex probe_mu;
 // (the frame generation context could not be made, for the run. Its own atomic, not State's: max_frames reads it on the
 // menu's and the draws' threads)
 std::atomic<bool> fg_failed{false};
@@ -104,9 +109,9 @@ std::string find_loader() {
 // (hookshot) Every call into AMD's DLLs goes through these: a fault inside the runtime (a driver it does not expect, a
 // provider that dereferences what an NVIDIA device does not have) costs FSR 4, not the game. Plain C functions with no
 // objects to unwind, which is what __try needs; noinline so the guard stays around the call.
-__declspec(noinline) HMODULE guarded_load(const char* path) {
+__declspec(noinline) HMODULE guarded_load(const wchar_t* path) {
     __try {
-        return LoadLibraryExA(path, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        return LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     } __except (1) {
         return nullptr;
     }
@@ -157,9 +162,17 @@ bool load() {
     }
     // (the loader looks for the frame generation DLL in its own folder)
     logf("vk: amd fsr 4: loading AMD's runtime for frame generation (%s)", path.c_str());
-    s.module = guarded_load(path.c_str());
+    // (only AMD's own signed file, held from its check until it is loaded: vk_signed.h)
+    const std::wstring wpath = signed_dll::wide(path);
+    // (and first the providers beside it, which the loader loads with no check of its own: vk_signed.h)
+    if (!signed_dll::preload_amd_providers(path.substr(0, path.find_last_of("\\/")), 0, guarded_load)) return false;
+    const HANDLE held = signed_dll::open_checked(wpath, signed_dll::kAmd, "amd_fidelityfx_loader_vk.dll");
+    if (held == INVALID_HANDLE_VALUE) return false;   // (it said why)
+    s.module = guarded_load(wpath.c_str());
+    const DWORD load_error = s.module ? 0 : GetLastError();
+    CloseHandle(held);
     if (!s.module) {
-        logf("vk: amd fsr 4: amd_fidelityfx_loader_vk.dll did not load (error %lu)", GetLastError());
+        logf("vk: amd fsr 4: amd_fidelityfx_loader_vk.dll did not load (error %lu)", (unsigned long)load_error);
         return false;
     }
     s.create = (PfnFfxCreateContext)(void*)GetProcAddress(s.module, "ffxCreateContext");
@@ -307,36 +320,38 @@ void whole_barrier(VkCommandBuffer cmd) {
 
 bool built() { return true; }
 
-void probe_frames();
+bool probe_frames();
 
-// (hookshot) AMD's runtime is asked once, at the start, from the render thread (probe(), from vk_main.cpp once the device
-// exists), with a line in the log before each call into it, so a runtime that hangs or faults names itself. The Insert
-// menu and the frame only read what it answered: v2.0.13 asked from the menu's first draw, where an answer that never
-// came meant a menu that never opened.
+// (hookshot) AMD's runtime is asked once, at the start, on the start-up probes' thread (vk_menu.cpp probe_upscalers_soon,
+// with NGX's and FSR 4's upscaler's), with a line in the log before each call into it, so a runtime that hangs or faults
+// names itself. Not on the thread that makes the device: AMD's DLLs are in every Windows game the Builder makes, and
+// checking their signatures (WinVerifyTrust) can wait on the network for its certificates, seconds on a poor connection.
+// The Insert menu and the frame only read what it answered (false until then): v2.0.13 asked from the menu's first
+// draw, where an answer that never came meant a menu that never opened.
 void probe() {
-    State& s = st();
-    if (s.fg_supported >= 0 || !dev.device) return;
-    s.fg_supported = 0;
+    std::lock_guard lk(probe_mu);
+    if (fg_supported.load(std::memory_order_acquire) >= 0 || !dev.device) return;
+    int found = 0;
     if (env_int("RX_VK_FFX_FG", 1) == 0) {
         logf("vk: amd fsr 4: frame generation off for this run (RX_VK_FFX_FG=0)");
-        return;
+    } else if (load()) {
+        logf("vk: amd fsr 4: asking AMD's runtime for its frame generation on this GPU");
+        found = probe_frames() ? 1 : 0;
+        logf("vk: amd fsr 4: AMD's runtime answered: frame generation %s", found ? "yes" : "no");
     }
-    if (!load()) return;
-    logf("vk: amd fsr 4: asking AMD's runtime for its frame generation on this GPU");
-    probe_frames();
-    logf("vk: amd fsr 4: AMD's runtime answered: frame generation %s", s.fg_supported > 0 ? "yes" : "no");
+    fg_supported.store(found, std::memory_order_release);
 }
 
-bool frames_supported() { return st().fg_supported > 0; }
+bool frames_supported() { return fg_supported.load(std::memory_order_acquire) > 0; }
 
-void probe_frames() {
+bool probe_frames() {
     State& s = st();
     if (!providers(FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, s.fg_provider)) {
         logf("vk: amd fsr 4: AMD's runtime has no frame generation for this GPU");
-        return;
+        return false;
     }
     logf("vk: amd fsr 4: frame generation available (%s)", s.fg_provider.c_str());
-    s.fg_supported = 1;
+    return true;
 }
 
 uint32_t max_frames() {
@@ -492,6 +507,8 @@ void shutdown() {
     drop_framegen();
     if (s.module) FreeLibrary(s.module);
     s = State{};
+    std::lock_guard lk(probe_mu);
+    fg_supported.store(-1, std::memory_order_release);
 }
 
 } // namespace mkwvk::ffx
