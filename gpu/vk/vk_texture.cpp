@@ -1072,6 +1072,17 @@ void bc_encode_resized(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t ow,
                        uint32_t level, uint32_t layer);
 
 /// Encodes scratch layers [0, n) (a w x h region at its corner) and copies the blocks into dst's level and layers
+/// The extent a w x h region at (dx, dy) of a level lw x lh is copied into a BC image with: its whole 4x4 blocks, cut at the
+/// level's edge. Vulkan takes a BC copy's extent only as whole blocks or reaching the level's edge (VUID-vkCmdCopyBufferToImage-
+/// dstImage-00207/00208), and the encoder wrote ceil(w / 4) x ceil(h / 4) blocks, their texels past the region the region's
+/// edge (it clamps its reads). The console copies an ASTC region by whole blocks too. MK World copies textures of any size
+/// (2048 x 1759, 509 x 511 and each of their levels) into the corner of its terrain's 2048 x 2048 material arrays: refused,
+/// as Longshot #672 did, its road was drawn from layers never filled (dark, without the karts' shadows, a haze).
+VkExtent2D bc_copy_extent(uint32_t w, uint32_t h, uint32_t lw, uint32_t lh, int dx, int dy) {
+    const uint32_t room_w = lw > (uint32_t)dx ? lw - (uint32_t)dx : 0, room_h = lh > (uint32_t)dy ? lh - (uint32_t)dy : 0;
+    return {std::min((w + 3) & ~3u, std::max(room_w, w)), std::min((h + 3) & ~3u, std::max(room_h, h))};
+}
+
 void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Texture& dst, uint32_t level,
                     uint32_t layer, int dx, int dy, VkImageView from = VK_NULL_HANDLE) {
     full_barrier(cmd);
@@ -1091,7 +1102,8 @@ void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Tex
     vkCmdPushConstants(cmd, bc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cmd, (pc.blocks_x + 7) / 8, (pc.blocks_y + 7) / 8, n);
     full_barrier(cmd);
-    const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {w, h, 1}};
+    const VkExtent2D e = bc_copy_extent(w, h, std::max(1u, dst.width >> level), std::max(1u, dst.height >> level), dx, dy);
+    const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {e.width, e.height, 1}};
     vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     full_barrier(cmd);   // (the scratch and the buffer are the next part's)
 }
@@ -3435,9 +3447,7 @@ bool texture_copy_into_bc(VkCommandBuffer cmd, Texture* src, uint32_t src_level,
             return false;
         }
     }
-    // (the blocks are copied in with the region's extent: whole 4x4 blocks, or reaching the level's edge. A region of
-    // another size, from an ASTC 6x6 or 10x10 source, is left to the copy's other paths)
-    if (!dst->bc_resized && (((w & 3) && dx + w != ow) || ((h & 3) && dy + h != oh))) return false;
+    // (a region of any size: bc_encode_into copies its whole blocks, bc_copy_extent)
     if (!bc_scratch_layout(cmd, dst->bc_resized)) return false;
     for (uint32_t l0 = 0; l0 < layers; l0 += kBcLayers) {
         const uint32_t n = std::min(kBcLayers, layers - l0);

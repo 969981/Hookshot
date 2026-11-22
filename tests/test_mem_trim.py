@@ -41,9 +41,12 @@ def main():
          "an ASTC upload does not check scratch allocation with its resize mode")
     need("if (!bc_scratch_layout(cmd, dst->bc_resized)) return false;" in copy,
          "a BC3 copy does not check scratch allocation with its destination resize mode")
-    guard = "if (!dst->bc_resized && (((w & 3) && dx + w != ow) || ((h & 3) && dy + h != oh))) return false;"
-    need(guard in copy and copy.index(guard) < copy.index("bc_scratch_layout("),
-         "a BC3 copy region that is not whole blocks and does not reach the level's edge is copied in")
+    # (a region that is not whole blocks is copied in by its whole blocks, cut at the level's edge: test_bc_copy_extent.
+    # Refusing it, as Longshot #672 did, left MK World's terrain arrays unfilled and its road dark)
+    need("(w & 3)" not in copy and "(h & 3)" not in copy, "a BC3 copy region that is not whole blocks is refused")
+    encode = block(tex, "void bc_encode_into(")
+    need("bc_copy_extent(w, h, " in encode and "{e.width, e.height, 1}" in encode,
+         "a BC3 copy region is copied in with its own extent, not its whole blocks")
     need("bc_have = false" in block(tex, "void bc_scratch_idle("), "the scratch given back is still taken for made")
     need("dead.push_back" in block(tex, "void bc_scratch_idle("), "the scratch is freed with no wait for the GPU")
     need("total_bytes -= std::min(total_bytes, tex.bytes + tex.pad)" in tex, "a texture leaves the budget by its texels only")
