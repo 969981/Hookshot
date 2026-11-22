@@ -1649,11 +1649,15 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_BIND_PROGRAM: {
             const auto b = payload<nvn_p_bind_program>(a, avail);
+            // (the stages named bound from it, or unbound for a null program; the others stay: nvn_bind_stages)
+            nvn_prog now = s.prog;
+            const bool has = nvn_bind_stages(now, s.has_prog, b.prog, (uint32_t)b.stages, s.prog_serials,
+                                             [](uint64_t at, void* to, uint64_t n) { return host->gpu_read(at, to, n); });
             // (the same program bound again: its descriptors already stand)
-            const bool same = b.prog && s.has_prog ? std::memcmp(&s.prog, b.prog, sizeof s.prog) == 0 : !b.prog && !s.has_prog;
+            const bool same = has && s.has_prog ? std::memcmp(&s.prog, &now, sizeof s.prog) == 0 : !has && !s.has_prog;
             if (!same) s.bind_gen++, st_bg_prog++;
-            if (b.prog) s.prog = *b.prog;
-            s.has_prog = b.prog != nullptr && b.prog->nstage > 0;
+            if (has) s.prog = now;
+            s.has_prog = has;
             break;
         }
         case NOP_BIND_STATE: {

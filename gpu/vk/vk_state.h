@@ -14,6 +14,7 @@ constexpr int kNvnStages = 8;
 struct NvnState {
     nvn_prog prog{};
     bool has_prog = false;
+    uint64_t prog_serials[8]{};   // (by stage, the serial of the program each bound stage came from: nvn_bind_stages)
     nvn_p_bind_buf ubo[kNvnStages][16]{}, ssbo[kNvnStages][16]{};
     uint64_t tex[kNvnStages][128]{}, samp[kNvnStages][128]{}, img[kNvnStages][32]{};
     nvn_blend_st blend[8]{};

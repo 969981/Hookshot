@@ -891,8 +891,9 @@ void cond_recheck_present() {
         }
         case NOP_BIND_PROGRAM: {
             const auto b = payload<nvn_p_bind_program>(a, avail);
-            if (b.prog) s.prog = *b.prog;
-            s.has_prog = b.prog != nullptr && b.prog->nstage > 0;
+            // (the stages named bound from it, or unbound for a null program; the others stay: nvn_bind_stages)
+            s.has_prog = nvn_bind_stages(s.prog, s.has_prog, b.prog, (uint32_t)b.stages, s.prog_serials,
+                                         [](uint64_t at, void* to, uint64_t n) { return gpu_read(at, to, n); });
             s.prog_epoch++;
             break;
         }

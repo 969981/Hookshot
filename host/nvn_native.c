@@ -1026,14 +1026,53 @@ static void dump_stage(uint64_t code, uint64_t ctl) {
     f = fopen(path, "wb");
     if (f) { fwrite(GP(ctl), 1, 0x800, f); fclose(f); }
 }
+/* A stage's control section is read by NVN when the program's shaders are set, and the game may reuse its memory after:
+   Kirby Air Riders does, within frames, and the replay, which reads the section at the draw, found another object
+   there and left every draw out. So the program keeps a copy of each section, made here, one for each content (the
+   game sets the same shaders again and again), in the system region; the replay reads that. NVN_CONTROL_KEEP bytes:
+   the section (0xd8) and what the replays' diagnostics read past it. A section without the control magic, or past
+   NVN_CONTROL_KEPT_MAX copies, stays where the game has it. */
+enum { NVN_CONTROL_KEEP = 0x200, NVN_CONTROL_KEPT_MAX = 1 << 15 };
+static uint64_t kept_control(uint64_t ctl) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static struct { uint64_t hash, at; } *table;   /* (open addressing, twice the copies at most) */
+    static uint32_t count;
+    if (!ctl || !hos_guest_range(ctl, NVN_CONTROL_KEEP) || G32(ctl) != 0x98761234u) return ctl;
+    const uint8_t *b = (const uint8_t *)GP(ctl);
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < NVN_CONTROL_KEEP; i++) h = (h ^ b[i]) * 1099511628211ULL;
+    h |= 1;   /* (0: an empty slot) */
+    AcquireSRWLockExclusive(&lock);
+    if (!table) table = calloc(2 * NVN_CONTROL_KEPT_MAX, sizeof *table);
+    uint64_t at = ctl;
+    if (table) {
+        uint32_t i = (uint32_t)(h >> 17) & (2 * NVN_CONTROL_KEPT_MAX - 1);
+        for (; table[i].hash; i = (i + 1) & (2 * NVN_CONTROL_KEPT_MAX - 1))
+            if (table[i].hash == h && !memcmp(GP(table[i].at), b, NVN_CONTROL_KEEP)) break;
+        if (table[i].hash) at = table[i].at;
+        else if (count < NVN_CONTROL_KEPT_MAX) {
+            at = hos_sys_alloc(NVN_CONTROL_KEEP, 16);
+            memcpy(GP(at), b, NVN_CONTROL_KEEP);
+            table[i].hash = h, table[i].at = at;
+            if (++count == NVN_CONTROL_KEPT_MAX) hos_log("nvn: %u control sections kept: the next ones are read where the game has them", count);
+        }
+    }
+    ReleaseSRWLockExclusive(&lock);
+    return at;
+}
 static int set_shaders(nvn_prog *o, int n, const uint8_t *sd, int stride) {
-    if (n < 0 || n > 6) return 0;
+    if (n < 0 || n > 6) {   /* (refused: the program keeps no stages, and the replay leaves its draws out: said, once each 8) */
+        static volatile LONG told;
+        if (InterlockedIncrement(&told) <= 8) hos_log("nvn: ProgramSetShaders with %d stages refused (at most 6)", n);
+        return 0;
+    }
     rx_nvn_program_released(o);
     o->nstage = (uint32_t)n;
     for (int i = 0; i < n; i++) {   /* {data (GPU address), control (guest pointer)[, reserved]} */
         memcpy(&o->sd[i].data, sd + stride * i, 8);
         memcpy(&o->sd[i].control, sd + stride * i + 8, 8);
         dump_stage(o->sd[i].data, o->sd[i].control);
+        o->sd[i].control = kept_control(o->sd[i].control);   /* (the section as it is now: see kept_control) */
         if (stride == 0x18) {
             uint64_t reserved;
             memcpy(&reserved, sd + stride * i + 16, 8);

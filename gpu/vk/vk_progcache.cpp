@@ -101,6 +101,7 @@ constexpr size_t kIdxEntry = 20;
 // (the index's kind word is the record's first flags word: bits 0-3 are compute/mesh/fallback/fallback_task)
 constexpr uint32_t kCompressedKind = 16;   // (a zstd record: 8-byte unpacked size, then the frame)
 constexpr size_t kZstdHead = 20;           // (the zstd cache's record head: key, stored size, kind; the old cache's is 16)
+constexpr uint64_t kMaxUnpacked = 64ull << 20;   // (a compressed record's most unpacked bytes: program_cache_payload)
 
 void idx_put(std::vector<uint8_t>& o, uint64_t key, uint64_t size, uint32_t kind) {
     uint8_t e[kIdxEntry];
@@ -428,10 +429,16 @@ bool program_cache_payload(const uint8_t* stored, size_t stored_size, uint32_t k
     *payload = stored;
     *payload_size = stored_size;
     if (!(kind & kCompressedKind)) return true;
-    if (stored_size < 8) return false;
+    // (a compressed record only in the zstd cache: in the other one the kind bit is no record's, and a record taken as
+    // compressed there asked for its "unpacked size" as it read, up to 2 GiB, on each of the threads that load)
+    if (!disk_zstd || stored_size < 8) return false;
     uint64_t usize;
     std::memcpy(&usize, stored, 8);
-    if (usize < 4 || usize > (1ull << 31)) return false;
+    // (no record is near the cap: the largest of 56,173 in a whole Ocarina cache is 4.4 MB unpacked. And the size must be
+    // the frame's own, read from its header, before a byte is allocated for it)
+    if (usize < 4 || usize > kMaxUnpacked) return false;
+    const unsigned long long framed = ZSTD_getFrameContentSize(stored + 8, stored_size - 8);
+    if (framed == ZSTD_CONTENTSIZE_UNKNOWN || framed == ZSTD_CONTENTSIZE_ERROR || framed != usize) return false;
     plain.resize((size_t)usize);
     const size_t n = ZSTD_decompress(plain.data(), plain.size(), stored + 8, stored_size - 8);
     if (ZSTD_isError(n) || n != plain.size()) return false;

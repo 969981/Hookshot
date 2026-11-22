@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+RUN_ALL_MODULES = ["numpy", "capstone"]   # (the lift it runs imports them: nx2/lift.py, nx2/adr_entries.py)
+
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("make_game_under_test", ROOT / "nx2" / "make_game.py")
 make_game = importlib.util.module_from_spec(spec)

@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.0-rc.38](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.37...v2.3.0-rc.38) (2026-11-22)
+
+
+### Bug Fixes
+
+* **nvn:** a program keeps its stages' control sections from when its shaders were set, so the replay reads them whatever the game did after ([#111](https://github.com/notquiteog/Hookshot/issues/111)) ([01e8cfe](https://github.com/notquiteog/Hookshot/commit/01e8cfe03b928a38a724c35c0a2e415fb6e374cc))
+* **tests:** a PC set up as docs/development.md says runs every check, and one without a package skips it ([#124](https://github.com/notquiteog/Hookshot/issues/124)) ([2acf3c7](https://github.com/notquiteog/Hookshot/commit/2acf3c702249db55842c86a48de490ed43e1949e))
+* **vk:** BindProgram binds only the stages it names, so a game that binds each stage from its own program draws ([#112](https://github.com/notquiteog/Hookshot/issues/112)) ([4c37d8b](https://github.com/notquiteog/Hookshot/commit/4c37d8b3e0cc20784c19a5b3ed2f32c06204c295))
+
 ## [2.3.0-rc.37](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.36...v2.3.0-rc.37) (2026-11-22)
 
 

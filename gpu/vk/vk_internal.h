@@ -47,6 +47,7 @@ struct Device {
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties props{};
+    uint32_t max_vertex_divisor = 0;   // (hookshot: VK_EXT_vertex_attribute_divisor's maxVertexAttribDivisor; 0 without it)
     VkPhysicalDeviceMemoryProperties memory{};
     VkPhysicalDeviceFeatures features{};
     VkDevice device = VK_NULL_HANDLE;

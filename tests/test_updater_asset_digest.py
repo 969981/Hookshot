@@ -1,7 +1,8 @@
 """Exercise the actual Windows updater with authored HTTP/launch/temp-directory boundaries only.
 
 Built for net8.0, the builder's framework, where this .NET SDK has its reference pack (CI installs .NET 8). An SDK of a
-later .NET alone cannot restore net8.0 here (NuGet sources are cleared: NU1100), and the fixture is then built for that
+later .NET alone cannot restore net8.0 here (NuGet sources are cleared: NU1100; a distro's SDK, whose own package folder
+stays a source, says NU1101 for the reference pack), and the fixture is then built for that
 SDK's own framework, with a line saying so. Not on GitHub's runners: there .NET 8 is installed for the builder, so a
 missing reference pack (or an updater that no longer builds for net8.0) fails the check instead of being built around."""
 import argparse
@@ -50,7 +51,7 @@ using PortableArchive = DigestFixture.UnusedPortableArchive;
         project = root / "Fixture.csproj"
         project.write_text(PROJECT % "net8.0", encoding="utf-8")
         restore = subprocess.run([dotnet, "restore", str(project), "--disable-build-servers"], capture_output=True, text=True)
-        if restore.returncode and "NU1100" in restore.stdout + restore.stderr:
+        if restore.returncode and no_net8_pack(restore.stdout + restore.stderr):
             if os.environ.get("GITHUB_ACTIONS") == "true":   # (as tests/run_all.py tells a runner from a PC)
                 raise SystemExit("on a GitHub runner the updater must build for the builder's net8.0, and its reference "
                                  "pack is missing: no fallback to a later framework here\n" + restore.stdout + restore.stderr)
@@ -63,6 +64,12 @@ using PortableArchive = DigestFixture.UnusedPortableArchive;
             raise SystemExit(restore.stdout + restore.stderr)
         subprocess.run([dotnet, "run", "--project", str(project), "--configuration", "Release",
                         "--disable-build-servers"], check=True)
+
+
+def no_net8_pack(out):
+    """A restore that failed only for want of .NET 8's reference pack: NU1100 with the sources cleared, or NU1101 for
+    the pack where the SDK keeps a package folder of its own (Ubuntu's: /usr/lib/dotnet/library-packs)"""
+    return "NU1100" in out or "NU1101: Unable to find package Microsoft.NETCore.App.Ref" in out
 
 
 if __name__ == "__main__":

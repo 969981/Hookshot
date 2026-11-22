@@ -102,7 +102,14 @@ ModelCheck check_model(const std::string& dir) {
         std::vector<std::pair<std::string, size_t>> stages;
         for (const json::Value& s : m["stages"].array) {
             std::vector<uint8_t> bytes;
-            const std::string path = dir + "/model/" + s["file"].str();
+            // (a stage file is a plain name in model/: "../" or a drive or a separator in the manifest named a file
+            // anywhere the game could read, read and kept as weights)
+            const std::string file = s["file"].str();
+            if (file.empty() || file[0] == '.' || file.find_first_of("/\\:") != std::string::npos) {
+                c.why = "stage " + s["id"].str() + " names \"" + file + "\", not a file in model/";
+                return c;
+            }
+            const std::string path = dir + "/model/" + file;
             // (its length as the manifest gives it is the most that is read: a file of another size is refused before a
             // byte of it is allocated)
             const int64_t packed = s["packedByteLength"].integer();
@@ -203,7 +210,9 @@ Network* create(const Device& d, const std::string& model_dir, const std::string
     try {
         ovk::volkUseInstanceProcAddr(d.get_instance_proc_addr);
         n->context = std::make_unique<vk::Context>(d.instance, d.physical, d.device, d.queue_family, d.queue_index);
-        n->model = std::make_unique<nr::Model>(*n->context, model_dir, false);   // (hashed by check_model already)
+        // (verified as it is loaded: check_model hashed the files it read, but these are read again here, and a file changed
+        // in between was taken unhashed)
+        n->model = std::make_unique<nr::Model>(*n->context, model_dir, true);
         n->kernels = std::make_unique<nr::Kernels>(
             *n->context, kernel_dir + (khr ? std::string("/shaders-khr-") + khr->name : std::string("/shaders")));
         n->kernels->setSiluTable(ref::siluTable());
