@@ -7,6 +7,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -462,14 +464,55 @@ def test_warm(d):
         check("a linked cache file is not copied back", not (game / "mkw_vk_pipelines_play_7.bin").exists())
 
 
+def gone_pid():
+    """The PID of a process that has ended"""
+    p = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
 def test_busy(d):
     """A second job on a busy base is refused, and the other job's marker is left alone"""
     base_dir, game = fake_base(d)
-    (base_dir / packs.BUSY).write_text("1234 pack 2026-11-12T12:00:00Z")
+    live = "%d pack 2026-11-12T12:00:00Z" % os.getpid()   # (a job that runs: this test)
+    (base_dir / packs.BUSY).write_text(live)
     refused("a runtime while the base is busy", ["rt", str(base_dir), str(d / "rt-x")], "busy")
     refused("a warm-up while the base is busy", ["warm", str(base_dir), "--run", "x"], "busy")
     check("nothing made", not (d / "rt-x").exists() and not (base_dir / "warm-runtime").exists())
-    check("the other job's marker is untouched", (base_dir / packs.BUSY).read_text() == "1234 pack 2026-11-12T12:00:00Z")
+    check("the other job's marker is untouched", (base_dir / packs.BUSY).read_text() == live)
+    (base_dir / packs.BUSY).write_text(live + " " + socket.gethostname())
+    refused("a runtime while this machine's job runs", ["rt", str(base_dir), str(d / "rt-x")], "busy")
+
+
+def test_busy_stale(d):
+    """A marker whose job is gone (a pack stopped or killed: its PID runs no process here) is taken over by the next job, and
+    left as the next job's own; one written on another machine, or that can't be read, still refuses the base"""
+    base_dir, game = fake_base(d)
+    pid = gone_pid()
+    check("the ended process reads as gone", not packs.pid_running(pid))
+    check("this one reads as running", packs.pid_running(os.getpid()))
+    for stale in ("%d pack 2026-11-22T20:33:32Z" % pid, "%d pack 2026-11-22T20:33:32Z %s" % (pid, socket.gethostname())):
+        (base_dir / packs.BUSY).write_text(stale)
+        packs.main(["rt", str(base_dir), str(d / "rt-s")])
+        check("a stale marker (%s) is taken over: the runtime is made" % stale, (d / "rt-s").is_dir())
+        check("and the marker is gone after the job", not (base_dir / packs.BUSY).exists())
+        check("nothing set aside is left", not [n for n in os.listdir(base_dir) if n.startswith(packs.BUSY + ".")])
+        shutil.rmtree(d / "rt-s")
+    elsewhere = "%d pack 2026-11-22T20:33:32Z another-pc-%s" % (pid, socket.gethostname())
+    (base_dir / packs.BUSY).write_text(elsewhere)
+    refused("a runtime while another machine's marker holds the base", ["rt", str(base_dir), str(d / "rt-s")], "busy")
+    check("that marker is untouched", (base_dir / packs.BUSY).read_text() == elsewhere)
+    for unreadable in ("", "pack", "x pack 2026-11-22T20:33:32Z"):
+        (base_dir / packs.BUSY).write_text(unreadable)
+        refused("a runtime while the marker reads %r" % unreadable, ["rt", str(base_dir), str(d / "rt-s")], "busy")
+    # (a job took the base between the read and the move: its marker is put back, and the base stays refused)
+    newer = "%d rt 2026-11-22T20:40:00Z %s" % (os.getpid(), socket.gethostname())
+    (base_dir / packs.BUSY).write_text(newer)
+    busy = packs.Busy(str(base_dir), "rt")
+    check("a marker that changed since it was read is not taken over", not busy.take_over("%d pack 2026-11-22T20:33:32Z" % pid))
+    check("and is back as it was", (base_dir / packs.BUSY).read_text() == newer)
+    check("nothing set aside is left after a put-back", not [n for n in os.listdir(base_dir) if n.startswith(packs.BUSY + ".")])
+    check("no runtime was made", not (d / "rt-s").exists())
 
 
 def test_busy_folders_above_hidden(d):
@@ -515,7 +558,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
-                        ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy),
+                        ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy), ("stale", test_busy_stale),
                         ("hidden", test_busy_folders_above_hidden), ("stamp", test_stamp_matches_build)):
             (d / name).mkdir()
             t(d / name)

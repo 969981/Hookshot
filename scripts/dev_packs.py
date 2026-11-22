@@ -43,6 +43,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import tempfile
 import subprocess
 import sys
@@ -634,24 +635,86 @@ def ensure_dir(d):
         os.makedirs(d, exist_ok=True)
 
 
+def pid_running(pid):
+    """Whether process pid runs on this machine (True when it can't be told: a marker is only taken over from a job known gone)"""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = ctypes.c_void_p
+        h = k32.OpenProcess(0x1000, False, pid)   # (PROCESS_QUERY_LIMITED_INFORMATION; os.kill would end the process)
+        if not h:
+            return ctypes.get_last_error() != 87   # (ERROR_INVALID_PARAMETER: no such process)
+        try:
+            code = ctypes.c_ulong()
+            return not k32.GetExitCodeProcess(ctypes.c_void_p(h), ctypes.byref(code)) or code.value == 259   # (STILL_ACTIVE)
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(h))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True   # (EPERM: another account's process, running)
+    return True
+
+
+def busy_stale(held):
+    """Whether the marker text held names a job that is gone: its PID runs no process here, and it was written on this machine
+    (a marker with no machine, from before markers named one, counts as this one's). A PID used again since reads as running,
+    and the base stays refused, as before"""
+    f = held.split()
+    if len(f) < 3 or not f[0].isdigit() or (len(f) > 3 and f[3] != socket.gethostname()):
+        return False
+    return not pid_running(int(f[0]))
+
+
 class Busy:
     """dev_packs.busy in a base's folder while a job builds, warms or copies from it: a second job on the same base is refused
-    (game packs share one work folder; a warm-up writes the base's caches). A marker left by a stopped job is deleted by hand"""
+    (game packs share one work folder; a warm-up writes the base's caches). A marker left by a job that is gone (stopped, killed,
+    the PC restarted) is taken over: its PID runs no process on the machine that wrote it"""
     def __init__(self, d, what):
         self.path, self.what = os.path.join(d, BUSY), what
 
+    def held(self, path=None):
+        try:
+            with open(path or self.path, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return "?"
+
+    def take_over(self, held):
+        """The stale marker moved aside and deleted, so that the next O_EXCL may take the base. A marker another job wrote in its
+        place meanwhile is moved aside with it: it is put back, and the base stays refused"""
+        aside = "%s.%d.stale" % (self.path, os.getpid())
+        try:
+            os.replace(self.path, aside)
+        except OSError:
+            return False
+        if self.held(aside) == held:
+            os.remove(aside)
+            print("the base's marker (%s) named a job that is gone: taken over" % held, flush=True)
+            return True
+        try:
+            os.link(aside, self.path)   # (back, unless a third job took the base meanwhile)
+        except OSError:
+            pass
+        os.remove(aside)
+        return False
+
     def __enter__(self):
         ensure_dir(os.path.dirname(self.path))
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        for attempt in range(2):
             try:
-                with open(self.path, encoding="utf-8") as f:
-                    held = f.read().strip()
-            except OSError:
-                held = "?"
-            sys.exit("the base is busy (%s): wait for that job, or delete %s if it is no longer running" % (held, self.path))
-        self.token = "%d %s %s" % (os.getpid(), self.what, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                held = self.held()
+                if attempt or not busy_stale(held) or not self.take_over(held):
+                    sys.exit("the base is busy (%s): wait for that job, or delete %s if it is no longer running" % (held, self.path))
+        self.token = "%d %s %s %s" % (os.getpid(), self.what, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                      socket.gethostname())
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(self.token)
         return self

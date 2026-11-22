@@ -614,7 +614,9 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
 - **`warm`** plays a runtime with no pack once per `--run` command (`{runtime}` in it is the runtime's folder),
   copies the caches play made or grew (pipelines, play files, programs) back into the base's game folder, and
   deletes the runtime, so every later runtime starts warm for those scenes. Only cache files are copied.
-- **One job at a time per base:** `base`, `pack`, `rt` and `warm` hold `<base>/dev_packs.busy` while they run.
+- **One job at a time per base:** `base`, `pack`, `rt` and `warm` hold `<base>/dev_packs.busy` while they run. A marker
+  whose job is gone (stopped, killed, the PC restarted: its PID runs no process on the machine that wrote it) is taken over
+  by the next job, so a stopped pack no longer blocks the base until someone deletes it.
 
 For numbers, compare the runtime with one made by `rt` from no pack: same base, same caches, one difference.
 
