@@ -7,6 +7,14 @@
     python -I nx2/make_game.py --game <.nup or folder> --prepare   (RecompLauncher: --out defaults to ~/Games/Hookshot; no window,
                                                                     "progress <0..1> <text>" lines and an "error <text>" line on stdout,
                                                                     exit 0 when the game is built; with --check, its "check ok|bad" line)
+    python -I nx2/make_game.py --nup <file.nup> --base <folder>   (the copy's game into its own folder under that base: <folder> for
+                                                                    the default game, <folder>-<key> for another; not with --out)
+    python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run]   (every game built under base, default
+                                                                    ~/Games/Hookshot, updated in turn; one that fails does not
+                                                                    stop the others; --dry-run says what it would do)
+
+A copy is never built into a folder that holds another game (its .hookshot_exefs/main names another profile): the build stops
+with both games and the folder named. An empty folder, or one that holds the same game, is built into as before.
 
 The folder holds the executable and all it needs, started with a double click: nothing goes back into the repository, and no game
 data ever comes with the tools. Lines the app reads, each on its own line of stdout:
@@ -20,6 +28,24 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
     @@check <ok|bad> <text>  (--check) the answer
     @@done <folder>          finished
     @@error <text>           stopped
+
+--update-all runs one make_game --update per built folder and passes on each one's lines as they come (so the lines above
+repeat, a @@done or @@error for each), framed by its own pair of lines for each game, in profile order (nx2/game_folders.py
+library), and for each further folder that holds the same game:
+
+    @@game start <key> <folder>            this game's folder (for a game not installed: its own folder); its lines follow
+    @@game end <key> <result> [<text>]     the outcome, after every start. result is one of updated (text: the version),
+                                           current (already this version, text: it; skipped, --force builds it anyway),
+                                           missing (not installed), failed (text: the reason, its @@error's text), and
+                                           rebuild (text: choose this game's files once: the folder keeps none to
+                                           update from, built before updates came in; not a failure), and with
+                                           --dry-run, which runs nothing, update (text: "from <version>") in place of
+                                           updated
+
+A game in another game's folder (an older Builder built where the player chose) is updated there, as the game it is. Then
+one plain summary line per game and folder ("Mario Kart World: updated", "...: failed: <reason>", and the folder named when
+a game is in more than one), and exit status 1 when any failed. (Under --prepare these lines go to stderr, as RecompLauncher
+reads only progress lines on stdout.)
 
 and one plain line the builders also read (older ones only show it): "the shaders were not prepared now (<why>): ..." when the
 build's last step, the shaders' preparation, was skipped or failed and is left to the game's first start (NOT_PREPARED)
@@ -640,12 +666,20 @@ def dump_build_id(a, work):
     return build_id(os.path.join(a.exefs, "main"))
 
 
+def copy_build(a):
+    """main's build id of the copy a names, read once (dump_build_id: a .nup's exefs is unpacked to read it) and kept on a"""
+    bid = getattr(a, "copy_bid", None)
+    if bid is None:
+        bid = a.copy_bid = dump_build_id(a, a.work)
+    return bid
+
+
 def game_folders_for_dump(a):
-    """(--prepare with no --out) The game folder and the work folder of the game the copy is: the dump decides the game
+    """(--prepare with no --out, or --base) The game folder and the work folder of the game the copy is: the dump decides the game
     (game_profile.for_build), and a game other than the default one builds beside it in <folder>-<key>, with a work
     folder <work>-<key> when the work folder is the builder's own (nx2/game_folders.py). The default game's are the ones
     it always had. A copy no profile knows is left to check_supported_build, which refuses it as before."""
-    profile = supported_build(dump_build_id(a, a.work))
+    profile = supported_build(copy_build(a))
     if profile is None:
         return
     a.out = game_folders.folder(a.out, profile.key)
@@ -654,6 +688,151 @@ def game_folders_for_dump(a):
         os.makedirs(a.work, exist_ok=True)
     if profile.key != game_profile.DEFAULT:
         print("%s: its own game folder %s" % (profile.game, a.out), file=sys.stderr if PREPARE else sys.stdout, flush=True)
+
+
+def unpack_stamp(nup, size):
+    """What .hookshot_romfs holds after this builder unpacked that .nup into the folder: the same .nup again is not read again"""
+    return "unpacked by this builder: %s %d" % (os.path.basename(nup), size)
+
+
+def refuse_other_game(a, out):
+    """A copy of one game is not built into a folder that holds another (its kept copy, .hookshot_exefs/main, is another
+    profile's: game_folders.folder_game): the build would replace that game's files, and its saves and settings would be the
+    new game's. Said before anything in the folder is touched. An empty folder, one that keeps no copy (built before
+    updates came in), or one of the same game is built into as before; --update builds the folder's own copy, so it is the
+    same game. A .nup unpacked into this folder before is that folder's game, and is not read again to tell; a copy no
+    profile knows is left to check_supported_build"""
+    if a.update:
+        return
+    held = game_folders.folder_game(out)
+    if held is None:
+        return
+    if a.nup:
+        try:
+            st = os.stat(a.nup)
+        except OSError:
+            return   # (main says it plainly next)
+        good = os.path.join(out, ".hookshot_romfs")
+        if os.path.isfile(good) and read_stamp(good).strip() == unpack_stamp(a.nup, st.st_size):
+            return
+    got = supported_build(copy_build(a))
+    if got is None or got.key == held.key:
+        return
+    said = "The game folder %s holds %s, and this copy is %s: building it there would replace %s." % (out, held.game, got.game,
+                                                                                                         held.game)
+    if PREPARE:   # (RecompLauncher chose the folder: the player can't choose another there)
+        fail("%s Move or rename that folder (it holds %s, with its saves and settings), then set up %s again." % (
+            said, held.game, got.game))
+    own = game_folders.folder(game_folders.base_of(out), got.key)
+    fail("%s Choose an empty folder for %s%s." % (
+        said, got.game, "" if os.path.normcase(os.path.abspath(own)) == os.path.normcase(os.path.abspath(out)) else
+        " (its own folder beside the other games is %s)" % own))
+
+
+UPDATE_LINE = "@@game"   # (--update-all's framing lines: the module's docstring)
+
+
+def update_all_args(argv):
+    """The arguments each game's make_game --update gets: the ones given, without --update-all's own (its base, --force,
+    --dry-run) and without --log (this make_game's log holds every game's lines, which it passes on). The parser takes no
+    abbreviations (allow_abbrev=False), so these are the only spellings"""
+    rest, skip = [], False
+    for i, arg in enumerate(argv):
+        if skip:
+            skip = False
+        elif arg in ("--update-all", "--log"):
+            skip = arg == "--log" or (i + 1 < len(argv) and not argv[i + 1].startswith("-"))
+        elif arg.startswith(("--update-all=", "--log=")) or arg in ("--force", "--dry-run"):
+            pass
+        else:
+            rest.append(arg)
+    return rest
+
+
+def update_one(cmd):
+    """One game's make_game --update: its lines passed on as they come. (0, None) when it built, else its exit status and the
+    reason it said: its @@error line (under --prepare, RecompLauncher's "error" line, which is what it prints instead)"""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None if PREPARE else subprocess.STDOUT,
+                         encoding="utf-8", errors="replace")
+    reason = None
+    for line in p.stdout:
+        line = line.rstrip("\r\n")
+        print(line, flush=True)
+        head = "error " if PREPARE else "@@error "
+        if line.startswith(head):
+            reason = line[len(head):].strip()
+    p.stdout.close()
+    code = p.wait()
+    return code, (reason or "exit status %d" % code) if code else None
+
+
+REBUILD = "choose this game's files once to update it"   # (a folder built before folders kept them: --update-all's rebuild)
+
+
+def update_all(a, run_one=None):
+    """(--update-all) Every game built under the base updated in turn (game_folders.library, in profile order), each by a
+    make_game --update of its own with the other arguments as given. Unlike build_each, one that fails does not stop the
+    others. Each built folder of the base is updated once, as the game it holds: a game in another's folder (an older
+    Builder built into the folder chosen) is updated there, and a game in two folders is updated in both, which the summary
+    says. A game other than the default one gets its own work folder, <work>-<key>, when the work folder is the builder's
+    own (as --prepare and --base give it), so each game's object cache stays its own. A folder built with this version is
+    skipped unless --force; one that keeps no game files to update from (built before updates came in) is "rebuild":
+    not a failure, its files are to be chosen once. --dry-run: the same lines, with what would be done (update, current,
+    rebuild, missing), and nothing run. Then one summary line per game, and exit status 1 when any failed"""
+    import version as _version
+    run_one = run_one or update_one
+    base = game_folders.base_of(os.path.abspath(os.path.expanduser(a.update_all or default_game_folder())))
+    rest = update_all_args(sys.argv[1:])
+    stream = sys.stderr if PREPARE else sys.stdout
+    engine = _version.release()
+    dry = getattr(a, "dry_run", False)
+    own_work = os.path.abspath(a.work) == os.path.abspath(getattr(a, "default_work", a.work))
+    results = []   # (game, folder, result, text)
+
+    def line(*words):
+        print(" ".join([UPDATE_LINE] + [str(w) for w in words if w]), file=stream, flush=True)
+
+    for g in game_folders.library(base, engine=engine):
+        if not g["built"]:
+            line("start", g["key"], g["folder"])
+            line("end", g["key"], "missing")
+            results.append((g, g["folder"], "missing", None))
+            continue
+        work = []
+        if own_work and g["key"] != game_profile.DEFAULT:   # (the game's own work folder, as --prepare and --base give it)
+            work = ["--work", game_folders.folder(os.path.abspath(a.work), g["key"])]
+        for f in [g["folder"]] + g["other_folders"]:
+            first = f == g["folder"]
+            have = g["version"] if first else game_folders.version_file(f)[0]
+            kept = g["kept"] if first else game_folders.kept_copy(f)
+            due = g["update"] if first else _version.update_due(have, engine)
+            line("start", g["key"], f)
+            if not kept:
+                result, text = "rebuild", REBUILD
+            elif due is False and not a.force:
+                result, text = "current", have
+            elif dry:
+                result, text = "update", have and "from %s" % have
+            else:
+                code, reason = run_one(PY + [os.path.abspath(__file__)] + rest + work + ["--update", f])
+                result, text = ("failed", reason) if code else ("updated", engine)
+            line("end", g["key"], result, text)
+            results.append((g, f, result, text))
+    said = {"updated": "updated", "update": "would be updated", "current": "up to date", "missing": "not installed",
+            "failed": "failed", "rebuild": "not updated"}
+    for g, f, result, text in results:
+        several = [r for r in results if r[0] is g]
+        where = " in %s" % f if len(several) > 1 else ""
+        detail = (": " + text if result in ("failed", "rebuild") else
+                  " (%s)" % text if result in ("current", "update") and text else "")
+        print("%s%s: %s%s" % (g["name"], where, said[result], detail), file=stream, flush=True)
+        if len(several) > 1 and several[-1][1] == f:
+            print("%s is installed in %d folders under %s: %s." % (
+                g["name"], len(several), base, "; ".join("%s in %s" % (said[r], rf) for _, rf, r, _ in several)),
+                file=stream, flush=True)
+    if any(result == "failed" for _, _, result, _ in results):
+        sys.exit(1)
+    return 0
 
 
 def copy_for_key(a, work):
@@ -2374,8 +2553,16 @@ def write_game_home(out, relative):
             os.remove(partial)
 
 
+def default_game_folder():
+    """The default game's folder when none is given (--prepare, --update-all): ~/Games/Hookshot, or beside a portable Builder's
+    home on Windows. Another game's is beside it (nx2/game_folders.py)"""
+    if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and os.environ.get("HOOKSHOT_SETUP_BASE"):
+        return os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
+    return os.path.join(os.path.expanduser("~"), "Games", "Hookshot")
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)   # (update_all_args: exact spellings)
     p.add_argument("--nup")
     p.add_argument("--romfs")
     p.add_argument("--exefs")
@@ -2396,6 +2583,15 @@ def parse_args():
                        help="your copy of %s (%s): checked to be that game, built into its own folder" % (prof.game, prof.version_name))
     p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--update-all", nargs="?", const="", metavar="BASE",
+                   help="every game built under BASE (default: ~/Games/Hookshot, as --prepare's), updated in turn, each by a make_game "
+                        "--update of its own; one that fails does not stop the others. A game built with this version is skipped")
+    p.add_argument("--force", action="store_true", help="with --update-all: update the games already at this version too")
+    p.add_argument("--dry-run", action="store_true",
+                   help="with --update-all: say what it would do for each game (its @@game lines: update, current, missing), "
+                        "and change nothing")
+    p.add_argument("--base", help="the games' base folder instead of --out: the copy's game decides its own folder in it (the base "
+                                  "for the default game, <base>-<key> for another: nx2/game_folders.py)")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
     p.add_argument("--compile-shaders", choices=tuple(COMPILE_LEVELS),
@@ -2416,14 +2612,24 @@ def parse_args():
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
     p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
     a = p.parse_args()
-    # (--prepare with no --out: the default game's folder below, and main makes it the copy's game's: game_folders_for_dump)
-    a.out_from_game = bool(a.prepare and not a.out)
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
         PREPARE = True
-        a.out = a.out or (os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
-                          if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and
-                          os.environ.get("HOOKSHOT_SETUP_BASE") else os.path.join(os.path.expanduser("~"), "Games", "Hookshot"))
+    if a.base is not None and (a.out or a.update):
+        fail("Give the game folder with --out, or the games' base folder with --base, not both." if a.out else
+             "--update builds the folder it is given again: it takes no --base.")
+    if a.update_all is not None and (a.out or a.update or a.base is not None or a.game or a.nup or a.romfs or a.exefs or a.check or
+                                     any(getattr(a, "game_" + prof.key, None) for prof, _ in game_profile.known_builds())):
+        fail("--update-all updates the games already built, from the game files each keeps: give no copy, --out, --base, --update "
+             "or --check with it.")
+    if (a.force or a.dry_run) and a.update_all is None:
+        fail("%s goes with --update-all." % ("--force" if a.force else "--dry-run"))
+    # (--prepare with no --out: the default game's folder below, and main makes it the copy's game's: game_folders_for_dump)
+    a.out_from_game = bool(a.prepare and not a.out)
+    if a.base is not None:   # (--base: the same choice, from the base given)
+        a.out, a.out_from_game = game_folders.base_of(os.path.abspath(os.path.expanduser(a.base))), True
+    if a.prepare:
+        a.out = a.out or default_game_folder()
     # (--game-<key>: one copy is that game's --game, its key kept to check the copy against; several are built one after
     # another by main, each in a make_game of its own)
     a.game_copies = [(prof.key, getattr(a, "game_" + prof.key)) for prof, _ in game_profile.known_builds()
@@ -2534,6 +2740,8 @@ def end_stale_games(folders):
 def main(a=None):
     if a is None:
         a = parse_args()
+    if getattr(a, "update_all", None) is not None and getattr(a, "dry_run", False):
+        return update_all(a)   # (first: a preview makes no folder, keeps no PC awake and changes no process's power state)
     portable_home = portable_game_home(a.update or a.out) if not a.check and (a.update or a.out) else None
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
@@ -2543,6 +2751,8 @@ def main(a=None):
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
         import ctypes
         ctypes.WinDLL("kernel32").SetThreadExecutionState(0x80000000 | 0x00000001)
+    if getattr(a, "update_all", None) is not None:
+        return update_all(a)
     if len(getattr(a, "game_copies", ())) > 1:
         return build_each(a)
     if getattr(a, "expect_key", None):
@@ -2560,6 +2770,7 @@ def main(a=None):
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
     lock_work(work)   # (before anything is read or cleared in it: stop_stray_compilers, drop_stale_objects, the lift)
+    refuse_other_game(a, out)   # (before anything in the folder is touched: a copy of another game than the folder holds)
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
@@ -2617,7 +2828,7 @@ def main(a=None):
         except OSError as e:
             fail("Could not access your .nup file %s: %s. Check that the file is still there, reconnect its drive if needed, "
                  "or choose the file again in Hookshot Builder." % (a.nup, e))
-        stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
+        stamp = unpack_stamp(a.nup, st.st_size)
         same = False
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
             same = read_stamp(good).strip() == stamp

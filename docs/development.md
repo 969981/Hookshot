@@ -438,6 +438,68 @@ what you test.
 **Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
 and no release or player build. Build those with the defaults.
 
+#### Every game under one base
+
+Each game has its own folder under one base: the default game (Ocarina) keeps `<base>`, another game gets
+`<base>-<key>` (`nx2/game_folders.py`, [one engine, four games](one-engine.md)). These are the calls a program that
+manages every game makes; the Builders' library (to come) runs them:
+
+| Call | What it does |
+|---|---|
+| `python -I nx2/game_folders.py --library <base> [--json]` | Every game that builds, in profile order, installed or not: where it is installed, the version it was built with, and whether this engine would update it |
+| `python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run]` | Every built folder under the base (default `~/Games/Hookshot`) updated in turn as the game it holds, each by a `make_game.py --update` of its own; one that fails does not stop the others. A folder already at this version is skipped unless `--force`. `--dry-run` says what it would do and changes nothing. Exit status 1 when any failed |
+| `python -I nx2/make_game.py --nup <copy> --base <base>` | The copy's game (by main's build id) into its own folder under the base, with its own work folder as `--prepare` gives it. Not with `--out` or `--update` |
+
+A game is looked for in all of the base's folders (`<base>` and every `<base>-<key>`), its own folder first. The Builders
+used to build into the folder the player chose (`--out`), so a player may have Mario Kart World in `~/Games/Hookshot`:
+that is Mario Kart World, listed, played and updated where it is. A folder is the game its kept copy
+(`.hookshot_exefs/main`) names; a folder that keeps none (built before updates came in) is the game whose folder it is
+by the rule.
+
+A copy is never built into a folder that holds another game (its kept copy names another profile), with `--out`,
+`--base` or `--prepare` alike: the build stops before the folder is touched, naming both games and the folder. An empty
+folder, one of the same game and one built before folders kept their copy are built into as before, and `--update
+<folder>` always builds the folder's own copy. In the library this shows as `own_folder_holds`: installing that game
+under this base needs its own folder freed, or another base.
+
+`--library --json` prints a list, one object per game. The fields keep their names and types (new ones may be added):
+
+| Field | Type | What it is |
+|---|---|---|
+| `key` | string | The profile key (`oot`, `dkb`, `mkw`) |
+| `name` | string | The game, from its profile |
+| `folder` | string | Where the game is installed: its own folder when it is there or not installed, else the base's folder that holds it. Play starts this folder |
+| `base` | string | The base the folders are named from (another game's folder given as the base gives its base) |
+| `state` | string | `built` (installed in `folder`) or `missing` (in none of the base's folders) |
+| `built` | bool | `state` is `built` |
+| `holds` | string or null | The key of the game whose copy `folder` keeps; null when it keeps none, no profile knows the build, or the game is not installed (another game in its own folder is `own_folder_holds`) |
+| `other_folders` | list of strings | The base's other folders that hold this game too (mostly empty); `--update-all` updates each |
+| `own_folder` | string | The game's own folder by the rule: where an install of it goes |
+| `own_folder_holds` | string or null | The key of another game whose copy sits in `own_folder`, or null |
+| `version` | string or null | `hookshot_version.txt`'s `version=` in `folder`, when built |
+| `builder` | string or null | `hookshot_version.txt`'s `builder=`: the Builder executable that built it |
+| `kept` | bool | `folder` keeps the game files an update builds from (`.hookshot_exefs/` and `romfs/`). False when not installed, and for a folder built before updates came in: that game's files are to be chosen once to build it again |
+| `update` | bool or null | True when this engine would update it, false when current, null when it can't be told (no version in the folder: a checkout build writes none). False when not built or not `kept`. The rule is the Linux updater's (`nx2/version.py` `update_due`): another version, unless that one is newer, so a game is never taken back to an older version. The Windows Builder's `Updater.cs` differs: it rebuilds a game whose version differs from its own, a newer one too |
+
+`--update-all` updates each built folder once, as the game it holds, in profile order (a game in two folders: both, its
+own first). It passes each update's own lines on as they come (its `@@done` or `@@error` among them) and frames them:
+
+    @@game start <key> <folder>          a game's folder (a game not installed: its own folder); its lines follow
+    @@game end <key> <result> [<text>]   after every start. result: updated (text: the version), current (text: the
+                                         version), missing (not installed), rebuild (text: "choose this game's files
+                                         once to update it"), or failed (text: the reason, the update's @@error); with
+                                         --dry-run, update (text: "from <version>") in place of updated, and nothing run
+
+`rebuild` is a folder built before folders kept the game files an update builds from: it can't be updated, only built
+again from the game's files once. It is not a failure and leaves the exit status as it is. Each game other than the
+default one is updated with its own work folder, `<work>-<key>` (by the game the folder holds), when the work folder is
+the builder's own, as `--prepare` and `--base` give it, so each game keeps its own object cache. `--dry-run` runs
+nothing and makes no folder.
+
+Then one summary line per game (`Mario Kart World: updated`; with the folder, `... in <folder>: updated`, when the game
+is in more than one, and a line with what happened in each). Under `--prepare` these lines go to stderr, and a copy
+refused over another game's folder tells the player to move or rename that folder.
+
 ## Draw statistics
 
 Set `RX_VK_DRAW_STATS=<directory>` and create `<directory>/draw_stats.now` during play to measure one future frame.
