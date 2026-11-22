@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.0-rc.39](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.38...v2.3.0-rc.39) (2026-11-22)
+
+
+### Features
+
+* **dlss:** RecompLauncher and the Builder give the same DLSS on Windows, Streamline finds DLSS 5's files, and a start-up block says what runs ([#107](https://github.com/notquiteog/Hookshot/issues/107)) ([49f1d60](https://github.com/notquiteog/Hookshot/commit/49f1d60ce95fafef63bf4f834f77f02765172682))
+
+
+### Bug Fixes
+
+* **menu:** the settings in sections on every tab, and the launcher's names the menu's ([#127](https://github.com/notquiteog/Hookshot/issues/127)) ([58ae8be](https://github.com/notquiteog/Hookshot/commit/58ae8befc0549b36668f4f795105a64836e00bb4))
+* **vk:** AMD's FSR 4 libraries load only when they are AMD's, and NGX gets only folders no other account may write ([#108](https://github.com/notquiteog/Hookshot/issues/108)) ([037f840](https://github.com/notquiteog/Hookshot/commit/037f840413d424459ec6129527be4d25bacaad36))
+* **vk:** the program cache, draw state and Open NR check what the game folder holds before using it ([#117](https://github.com/notquiteog/Hookshot/issues/117)) ([d34161f](https://github.com/notquiteog/Hookshot/commit/d34161f913f75f80995c798e2dced1b071f8be2c))
+
 ## [2.3.0-rc.38](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.37...v2.3.0-rc.38) (2026-11-22)
 
 
