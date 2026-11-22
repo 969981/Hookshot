@@ -1,6 +1,6 @@
 # Game packs: one engine in NX2PC, each game in its own repository
 
-**Status: a design; its open questions were decided on 2026-11-22 (section 6), except two checks. No code has moved.**
+**Status: a design; its open questions were decided and its two checks done on 2026-11-22 (section 6). No code has moved.**
 Written 2026-11-22 on `main` 0826b396 (rc.40 + #130).
 
 The decision this design serves:
@@ -452,12 +452,12 @@ after a1, and its multi-pad layer as separate engine PRs.
 | Step | What | Needs, and the user's OK |
 |---|---|---|
 | c0 | Engine changes still only in forks go to `main` first: `git diff <main>...fork/mario-kart-world -- . ':!packs' ':!docs/mario-kart-world.md'` and the same for Dragoon list them; each becomes an engine PR or is dropped. Open engine PRs (#123) merged or moved (5f) | a5 |
-| c1 | **NX2PC becomes the trunk.** One PR in NX2PC: the default repository `notquiteog/NX2PC` in `nx2/version.py`, `builder/setup/setup.c` `HOOKSHOT_REPOSITORY`, `Repository.cs`, `builder/py/hookshot_builder/__init__.py`, `linux_update.py`, `scripts/linux/appimage.sh`, the MSI, `tests/test_repository_default.py`; release-please moved to NX2PC; the bridge job (5d). Hookshot `main` frozen (branch protection) | b3; **OK**: freezing Hookshot `main`, a token in NX2PC that can write Hookshot's releases. The first tag is decided: NX2PC `v3.0.0` |
-| c2 | NX2PC's first release and the Hookshot bridge release (5d), tested from rc.40 clients on Windows and Linux before it is marked latest | c1 |
+| c1 | **NX2PC becomes the trunk.** One PR in NX2PC: the default repository `notquiteog/NX2PC` in `nx2/version.py`, `builder/setup/setup.c` `HOOKSHOT_REPOSITORY`, `Repository.cs`, `builder/py/hookshot_builder/__init__.py`, `linux_update.py`, `scripts/linux/appimage.sh`, the MSI, `recomplauncher.json` `repo`, `tests/test_repository_default.py`; release-please moved to NX2PC; the bridge job (5d). Hookshot `main` frozen (branch protection) | b3; **OK**: freezing Hookshot `main`, a token in NX2PC that can write Hookshot's releases. The first tag is decided: NX2PC `v3.0.0` |
+| c2 | NX2PC's first release and the Hookshot bridge release (5d), tested from rc.40 clients on Windows and Linux before it is marked latest | c1; **ask RecompLauncher's catalog maintainers for an NX2PC entry (user's OK)** (5d) |
 | c3 | **DKB → `notquiteog/Bananza`** (empty, so the simplest; it proves the flow): `git clone NX2PC`, `git filter-repo --subdirectory-filter packs/dkb` (keeps the history of those files), push as `main`; CI and release-please; release `dkb-v1.0.0`; pin PR in NX2PC that removes `packs/dkb/` and pins the release; the lift key and the lifted C the same as from the tree | c2; **OK**: Bananza's settings (issues, default branch `main`) |
 | c4 | **MKW → `notquiteog/Lakitu`**, keeping its history: on a new branch `pack` from `fork/mario-kart-world`, merge NX2PC `main` (which has `packs/mkw/`), then one commit that removes everything but `packs/mkw/` and moves it to the root ("Lakitu becomes Mario Kart World's game pack"). Then `git merge -s ours origin/main` on `pack`, so `main` fast-forwards to it: `git push origin pack:main`. No force-push, no default-branch change; `fork/mario-kart-world` and the old `main` stay in the history and as a tag `engine-fork-final`. Release `mkw-v1.0.0`, pin PR | c2; decided: the removal commit on `main` (history kept, no force-push); **the user is told before it lands**; deleting or archiving its `fork/*` branch later is asked separately |
 | c5 | **KAR → `notquiteog/Dragoon`**, the same as c4 from `fork/kirby-air-riders` | c2; as c4: **the user is told before it lands** |
-| c6 | **OoT → `notquiteog/Hookshot`**, last, because Hookshot is the repository old clients read. Hookshot `main` is NX2PC `main` up to c1, so one commit on Hookshot `main` removes everything but `packs/oot/`, moves it to the root, and keeps `recomplauncher.json` at the root (5d) and a readme that says where NX2PC is. History, blame and old links stay. Release `oot-v1.0.0` with `--latest=false`; pin PR in NX2PC | c2; as c4: **the user is told before it lands** |
+| c6 | **OoT → `notquiteog/Hookshot`**, last, because Hookshot is the repository old clients read. Hookshot `main` is NX2PC `main` up to c1, so one commit on Hookshot `main` removes everything but `packs/oot/`, moves it to the root, and keeps a readme that says where NX2PC is (no `recomplauncher.json`: no catalog entry reads Hookshot, 5d). History, blame and old links stay. Release `oot-v1.0.0` with `--latest=false`; pin PR in NX2PC | c2; as c4: **the user is told before it lands** |
 
 Decided (2026-11-22): Hookshot, Lakitu and Dragoon each get a removal commit on `main`, history kept, no force-push,
 no default-branch change, and the user is told before each one lands. (Rejected: a new orphan default branch per
@@ -477,7 +477,7 @@ What old clients ask Hookshot for (`docs/versioning.md`, `Updater.cs`, `setup.c`
 | AppImage self-update (`linux_update.py`) | `hookshot-linux.txt` on latest, the newest rc, or `nightly` |
 | AppImageUpdate, Gear Lever | `gh-releases-zsync|notquiteog|Hookshot|latest|Hookshot-*-x86_64.AppImage.zsync` (`rc` and `nightly` in place of `latest`) |
 | A game folder's own update check (`nx2/version.py`) | the latest release of the repository in its `repository.txt` |
-| RecompLauncher | the repository in its catalog, `recomplauncher.json`, the `Hookshot-v<ver>-Windows-x64.zip` asset |
+| RecompLauncher | nothing: its catalog has no entry for `notquiteog/Hookshot` (below) |
 
 The bridge is **NX2PC's first release's files under their old names, published on Hookshot** by NX2PC's release job
 (c1). Because the setup lists and Linux lists name each part by its full URL, the bridge files point at NX2PC's
@@ -486,29 +486,44 @@ The bridge is **NX2PC's first release's files under their old names, published o
 - A release **`v3.0.0`** on Hookshot (decided 2026-11-22: NX2PC's first tag; newer in semver than every v2.3.0-rc.N
   and v2.2.0, so every track offers it), marked **latest**, not a prerelease, with: `HookshotBuilder.exe` (NX2PC's setup,
   built with `HOOKSHOT_REPOSITORY "notquiteog/NX2PC"`), `hookshot-setup.txt` and `hookshot-linux.txt` (NX2PC's own
-  lists, whose parts are on NX2PC), `Hookshot-v<ver>-x86_64.AppImage.zsync` whose URL is NX2PC's AppImage,
-  `Hookshot-v<ver>-Windows-x64.zip` (for RecompLauncher), `SHA256SUMS`, and notes that say "Hookshot is now NX2PC;
-  this release installs it; your games, saves and settings stay where they are".
+  lists, whose parts are on NX2PC), `Hookshot-v3.0.0-x86_64.AppImage.zsync` and `Hookshot-v3.0.0-x86_64.AppImage`
+  (below), `SHA256SUMS`, and notes that say "Hookshot is now NX2PC; this release installs it; your games, saves and
+  settings stay where they are". No RecompLauncher zip: no catalog install reads Hookshot (below).
+- **The AppImage updaters** (checked in their source, 2026-11-22):
+  - **AppImageUpdate / zsync2** follows an absolute `URL:` in a `.zsync` (zsync2 `zsclient.cpp` 565–567). The bridge's
+    `.zsync` is **NX2PC's own `.zsync` for the same AppImage with only its `URL:` header rewritten** to the full NX2PC
+    download address; nothing else in it may change, since only header lines are free (the block checksums are the
+    AppImage's). It saves the new file under the `.zsync`'s `Filename:` beside the old one (`zsclient.cpp` 406–445),
+    and from then on the new AppImage's own update information (NX2PC's) takes over.
+  - **Gear Lever** ignores the `URL:` (`GithubUpdater.py` 250–253): it downloads the AppImage from the same release,
+    named as the `.zsync` without `.zsync`. So the bridge release also carries **`Hookshot-v3.0.0-x86_64.AppImage`**
+    (NX2PC's AppImage under the old name, about 250 MB), **once**, beside the rewritten `.zsync`. The `rc` and `nightly`
+    releases get the same pair.
 - The rolling **`rc`** and **`nightly`** releases on Hookshot get the same bridge files once, so clients on those tracks
   move too.
 - Once installed, the new Builder's `repository.txt` names NX2PC and it never asks Hookshot again. The bridge is
   refreshed only if NX2PC ever prunes a part it names (a check in `release_files.sh`), and later by the rename PR
   (5e). It is not a mirror of every release.
-- **Open check 2, before c2**: that AppImageUpdate follows a `.zsync` whose URL is on another repository (else the bridge
-  also carries the 250 MB AppImage, once); and the whole matrix by installing from rc.40 and updating: the Windows
-  Builder on each track, a kept setup, the AppImage's own updater, AppImageUpdate, Gear Lever, RecompLauncher.
+- **Before c2**, the whole matrix by installing from rc.40 and updating: the Windows Builder on each track, a kept
+  setup, the AppImage's own updater, AppImageUpdate, Gear Lever.
 
-**RecompLauncher (open check 1, before c2)**: how it keys an install (the catalog's repository, the entry's `name`, or an id) is not known: the
-rename plan already lists it as "to check in its source before starting", and no note on this PC answers it. Until it
-is known:
+**RecompLauncher** (checked in its source, elripalda/RecompLauncher @95ca2128, and the live catalog, 2026-11-22):
 
-- RecompLauncher keeps reading **`notquiteog/Hookshot`**: Hookshot's `main` keeps `recomplauncher.json` at the root
-  after c6 (copied from NX2PC by the bridge job), and its `repo` field stays `notquiteog/Hookshot`. NX2PC's release job
-  also publishes the `Hookshot-v<ver>-Windows-x64.zip` on Hookshot **for every release** for as long as this lasts
-  (the one asset that is mirrored; small).
-- Then, with RecompLauncher's maintainers, move the catalog entry to `notquiteog/NX2PC` in a way that keeps existing
-  installs as the same entry (same id), switch `repo`, and stop the mirror. The `games[]` ids `oot`, `dkb`, `mkw` (and
-  later `kar`) never change.
+- **An install is keyed by the catalog id** (`library.rs` 468–476, `lib.rs` 7204), and its updates come from the
+  catalog entry's `repo` (`lib.rs` 7335 `listed_repo`). The manifest's `repo` and `name` neither move an install nor
+  make a second one, so changing them in `recomplauncher.json` is safe.
+- **The live catalog** (recomplauncher.com/pc-catalog.json) has **no entry for `notquiteog/Hookshot`**: `hookshot` is
+  NotRexed's (`git.notrexed.dev/Hookshot/Hookshot`, v3.0.2) and `longshot` is Longshot. So a RecompLauncher zip on
+  Hookshot serves no catalog install, and the bridge carries none.
+- **Asset picking** (`assets.rs` 399, 174): with a catalog asset pattern, only names matching it count; without one,
+  the OS, the architecture and the kind decide, never the product name.
+- **What is needed**: our own catalog entry for `notquiteog/NX2PC`, with asset patterns for the file names NX2PC
+  releases ship at that time (`Hookshot-v<ver>-Windows-x64.zip` until the rename, `NX2PC-v<ver>-Windows-x64.zip`
+  after it; a pattern can take both for the rename's transition). That means asking the catalog's maintainers, which is
+  outward-facing: **it needs the user's OK** (c2). `recomplauncher.json` lives in NX2PC with `repo: notquiteog/NX2PC`
+  (c1). The `games[]` ids `oot`, `dkb`, `mkw` (and later `kar`) never change.
+- **Risk until the rename**: a player who brings in a folder of our build can be matched by name to NotRexed's
+  `hookshot` entry (`adopt.rs` 717 compares only the repository's name part, `Hookshot`). The NX2PC rename removes it.
 
 ### (e) Lining up with PR 2 and the rename PR
 
@@ -546,7 +561,7 @@ is known:
   `docs/one-engine.md` and `docs/workflow.md` are rewritten for NX2PC in c1, and each pack repository gets a short
   `AGENTS.md` that points at NX2PC's.
 
-## 6. Risks, decisions and open checks
+## 6. Risks, decisions and checks
 
 Risks:
 
@@ -557,8 +572,9 @@ Risks:
 - **a3 and a4 are large** (`hos_main.c` and `vk_menu.cpp`) and conflict with anything in flight there, the rename's
   token pass included. Land them in quiet windows, and land the rename's mechanical pass before or after them, never
   in between.
-- **Old-client paths are tested once and then trusted.** If the zsync or RecompLauncher checks fail, the bridge carries
-  more (the AppImage, a per-release zip mirror).
+- **Old-client paths are tested once and then trusted**, from the updaters' source and one matrix run before c2.
+- **RecompLauncher adoption by name**: until the rename, a folder of our build can be adopted as NotRexed's `hookshot`
+  entry (5d). The rename removes it.
 - A pack move that changed the lift key would cost every player a full relift (about 45 minutes); 3.3's name mapping
   avoids it, and a1–a5 check it.
 
@@ -577,9 +593,11 @@ Decided (2026-11-22):
 7. **Tested configurations:** one table in NX2PC with a Game column (a5 adds the column).
 8. **The dead MKW 1.8.0 code** moves to the mkw pack, behind its profile, for a later 1.8.0 profile (a3).
 
-Open checks (both before c2, the bridge release):
+Checks, both done (2026-11-22, in the updaters' source; 5d):
 
-1. **RecompLauncher's install key**: whether it keys an install by the catalog's repository, the entry's `name`, or an
-   id. Until it is known, RecompLauncher keeps reading `notquiteog/Hookshot` (5d).
-2. **AppImageUpdate and the `.zsync`**: whether AppImageUpdate (and Gear Lever) follow a `.zsync` whose URL is on
-   another repository, and what file name they save. If not, the bridge also carries the AppImage, once (5d).
+1. **RecompLauncher's install key**: the catalog id; updates follow the catalog entry's `repo`. No catalog entry reads
+   `notquiteog/Hookshot`, so the bridge carries no RecompLauncher zip; an NX2PC catalog entry is asked for in c2 (the
+   user's OK).
+2. **AppImageUpdate and the `.zsync`**: zsync2 follows an absolute `URL:`, so the bridge's `.zsync` is NX2PC's with the
+   `URL:` rewritten; Gear Lever ignores it and needs the AppImage in the same release, so the bridge carries
+   `Hookshot-v3.0.0-x86_64.AppImage` once.
