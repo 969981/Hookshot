@@ -17,11 +17,14 @@ the lessons carried over from MKW: [design.md](design.md).
 ## Use
 
 Requirements: Python 3 with `pip install -r requirements.txt` (`lz4`, `numpy`, `capstone`, `unicorn` 2.1,
-`zstandard`, and the button-prompt packages); a compiler: on Windows llvm-mingw
-(`HOOKSHOT_MINGW`, or an `llvm-mingw` folder in the clone), else emsdk's clang at `C:\emsdk` (or `EMSDK`) with Visual
-Studio's C++ tools; on Linux clang and lld. For the Vulkan back end: distro Vulkan / SPIR-V / VMA headers under
-`/usr`, or `HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or a CPM package cache
-(`RX_CPM`, else `cpm` in the clone, else the old caches in mkw-recomp's `work/eg` or `..\Eglantine\.cache\cpm`).
+`zstandard`, and the button-prompt packages; under `-I` they must be in the Python that runs the checks, a venv or
+the system's, not `pip install --user`); for the shader checks, glslang 16.6.0, the release CI downloads
+(`.github/workflows/source-regressions.yml`: another release compiles some shaders to other words); a compiler: on
+Windows llvm-mingw (`HOOKSHOT_MINGW`, or an `llvm-mingw` folder in the clone), else emsdk's clang at `C:\emsdk` (or
+`EMSDK`) with Visual Studio's C++ tools; on Linux clang and lld. For the Vulkan back end: distro Vulkan / SPIR-V / VMA
+headers under `/usr`, or `HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or a CPM
+package cache (`RX_CPM`, else `cpm` in the clone, else the old caches in mkw-recomp's `work/eg` or
+`..\Eglantine\.cache\cpm`).
 Without those the standalone build stops. [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the rest.
 
 On Linux, `make_game.py` checks the mandatory Python modules, compilers/linker, renderer headers and FFmpeg

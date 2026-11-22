@@ -79,7 +79,9 @@ def which(*names):
 
 
 def header_dir(env, cpm_name, probe):
-    """A headers folder: the environment variable, else the CPM cache nx2/build.py reads (RX_CPM, build-linux/deps/cpm)"""
+    """A headers folder: the environment variable, else the CPM cache nx2/build.py reads (RX_CPM, build-linux/deps/cpm),
+    else the system's (/usr/local, /usr), the last places nx2/build.py's header_package() looks: a PC whose build takes
+    the distro's headers runs the checks that need them instead of skipping them (CI names its pinned ones)"""
     if os.environ.get(env):
         return os.environ[env]
     for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):
@@ -88,6 +90,10 @@ def header_dir(env, cpm_name, probe):
             inc = os.path.join(d, sorted(os.listdir(d))[-1], "include")
             if os.path.exists(os.path.join(inc, probe)):
                 return inc
+    if not WINDOWS:
+        for prefix in ("/usr/local", "/usr"):
+            if os.path.exists(os.path.join(prefix, "include", probe)):
+                return os.path.join(prefix, "include")
     return None
 
 

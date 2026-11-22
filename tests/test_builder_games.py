@@ -185,19 +185,38 @@ def check_wpf_fixture(dotnet, outs):
         shutil.copyfile(ROOT / "tests" / "builder_games_test.cs", root / "Program.cs")
         shutil.copyfile(ROOT / "builder" / "HookshotBuilder" / "Games.cs", root / "Games.cs")
         (root / "NuGet.Config").write_text("<configuration><packageSources><clear/></packageSources></configuration>", encoding="utf-8")
-        (root / "Fixture.csproj").write_text('''<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
-<OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings>
-<Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors><NuGetAudit>false</NuGetAudit>
-</PropertyGroup></Project>''', encoding="utf-8")
+        project = root / "Fixture.csproj"
         args = list(outs) + ["--folder"] + [x for pair in pairs for x in pair] + ["--base"] + bases
-        r = subprocess.run([dotnet, "run", "--project", str(root / "Fixture.csproj"), "--configuration", "Release", "--"] + args,
-                           capture_output=True, text=True, encoding="utf-8")
+        r = run_fixture(dotnet, project, args, "net8.0")
+        if r.returncode and no_net8_pack(r.stdout + r.stderr) and os.environ.get("GITHUB_ACTIONS") != "true":
+            # (a PC whose .NET SDK is a later one alone, as tests/test_updater_asset_digest.py: built for that SDK's
+            # framework, with a line saying so. On a GitHub runner .NET 8 is installed, so it fails instead)
+            sdk = subprocess.run([dotnet, "--version"], capture_output=True, text=True, check=True).stdout.strip()
+            framework = "net%s.0" % sdk.split(".")[0]
+            print("this .NET SDK (%s) has no .NET 8 reference pack: Games.cs is built for %s, not the Builder's net8.0"
+                  % (sdk, framework), flush=True)
+            r = run_fixture(dotnet, project, args, framework)
         if r.returncode:
             print(r.stdout + r.stderr)
             check(False, "Games.cs's fixture did not build or run")
             return
         got = [line for line in r.stdout.splitlines() if line.strip()]
         check(got == want, "Games.cs lists what game_folders.py lists:\n  got  %r\n  want %r" % (got, want))
+
+
+def run_fixture(dotnet, project, args, framework):
+    project.write_text('''<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
+<OutputType>Exe</OutputType><TargetFramework>%s</TargetFramework><ImplicitUsings>enable</ImplicitUsings>
+<Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors><NuGetAudit>false</NuGetAudit>
+</PropertyGroup></Project>''' % framework, encoding="utf-8")
+    return subprocess.run([dotnet, "run", "--project", str(project), "--configuration", "Release", "--"] + args,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def no_net8_pack(out):
+    """A build that failed only for want of .NET 8's reference pack: NU1100 with the sources cleared, or NU1101 for the
+    pack where the SDK keeps a package folder of its own (Ubuntu's: /usr/lib/dotnet/library-packs)"""
+    return "NU1100" in out or "NU1101: Unable to find package Microsoft.NETCore.App.Ref" in out
 
 
 def main():

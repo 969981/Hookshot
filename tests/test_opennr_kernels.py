@@ -31,6 +31,20 @@ def fail(text):
     sys.exit(1)
 
 
+def glslang_note(glslang):
+    """The headers are made with the glslang CI downloads; another release can compile unchanged GLSL to other words, so
+    a mismatch on a PC with another one is the compiler's, not the source's"""
+    ci = (ROOT / ".github" / "workflows" / "source-regressions.yml").read_text(encoding="utf-8")
+    pinned = re.search(r"glslang/releases/download/([\d.]+)/", ci)
+    r = subprocess.run([glslang, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    here = re.search(r"Glslang Version: [\d]+:([\d.]+)", r.stdout.decode("utf-8", "replace"))
+    if not pinned or not here or here.group(1) == pinned.group(1):
+        return ""
+    return ("\n  (this is glslang %s; the headers are made with %s, the release CI downloads in "
+            ".github/workflows/source-regressions.yml: put that one first on PATH and run again)"
+            % (here.group(1), pinned.group(1)))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--glslang", required=True)
@@ -44,7 +58,8 @@ def main():
     print(out.strip())
     want = "13 kernels, %d khr variants and 3 frame passes match" % len(opennr_kernels.KHR_VARIANTS)
     if r.returncode or want not in out:
-        fail("the checked-in SPIR-V headers do not match their sources (python -I -B scripts/opennr_kernels.py)")
+        fail("the checked-in SPIR-V headers do not match their sources (python -I -B scripts/opennr_kernels.py)"
+             + glslang_note(a.glslang))
 
     # the khr variant table, twice: the script's (what each folder is compiled for) and the renderer's (what it chooses)
     header = (ROOT / "gpu" / "vk" / "opennr" / "opennr_khr.h").read_text(encoding="utf-8")
