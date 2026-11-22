@@ -95,6 +95,7 @@ void precompile_built_write(size_t n) {
 }
 void pcache_init() {}
 void driver_env_note() {}   // (vk_draw.cpp: a completed build records its driver environment; nothing to record here)
+void predicted_keys_write(std::vector<uint64_t>) {}   // (vk_draw.cpp: a given-up prediction is recorded as done; tests/test_predict_recorded.py)
 void pipeline_cache_save(bool) {}
 std::atomic<bool> prepare_saving_now{false};   // (vk_draw.cpp, main's #721: precompile_warm says its pipeline cache save is under way)
 struct NoteRef {};

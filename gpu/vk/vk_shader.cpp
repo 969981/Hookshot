@@ -680,6 +680,13 @@ Shader::Profile make_profile() {
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
     p.support_multi_viewport = true;
     p.support_sampled_image_array_nonuniform_indexing = true;
+    // (storage images, image buffers and texture buffers picked by an index that can differ between invocations: NonUniform on the
+    // index and what it reaches, as for sampled images, where the GPU indexes that kind of array nonuniformly (Vulkan 1.2's
+    // descriptor indexing; vk_main.cpp creates the device with every feature it reports). Without the feature the index is taken
+    // as the same in every invocation, as before: there an index that differs is undefined. In the cache's stamp)
+    p.support_storage_image_array_nonuniform_indexing = dev.vk12.shaderStorageImageArrayNonUniformIndexing;
+    p.support_uniform_texel_buffer_array_nonuniform_indexing = dev.vk12.shaderUniformTexelBufferArrayNonUniformIndexing;
+    p.support_storage_texel_buffer_array_nonuniform_indexing = dev.vk12.shaderStorageTexelBufferArrayNonUniformIndexing;
     // Unpinned SPIR-V 1.6 stages can use any supported subgroup size, even when the default is 32.
     // The stage-specific profiles below keep the short path only where pin_subgroup actually pins 32 lanes.
     p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32;
@@ -780,12 +787,23 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
 
 } // namespace
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
+thread_local uint64_t module_program = 0;   // (translate_into's program, for make_module's callers that do not name it)
+VkShaderModule make_module(const std::vector<uint32_t>& spirv, uint64_t program, bool* busy) {
+    if (!program) program = module_program;
+    if (driver_faulted_program(program)) return VK_NULL_HANDLE;
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
-    vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    IntelDriverGate gate(busy != nullptr);   // (busy given: Intel's gate only tried, the dispatch's program_cache_complete_ask)
+    if (gate.busy) {
+        *busy = true;
+        return VK_NULL_HANDLE;
+    }
+    if (const VkResult r = extern_guarded_shader_module(&ci, &m); r != VK_SUCCESS) {
+        if (r == (VkResult)-77) driver_faulted_module(program);
+        return VK_NULL_HANDLE;
+    }
     return m;
 }
 
@@ -1354,6 +1372,15 @@ uint64_t translator_stamp() {
     // without it, nor one made with RX_VK_NATIVE_FADD=0's loop wanted back once it is native again)
     const uint32_t float_add = profile().support_float32_atomic_add ? 1u : 0u;
     add(&float_add, sizeof float_add);
+    // (and which descriptor arrays the GPU indexes nonuniformly (make_profile): a program made with NonUniform on a storage image,
+    // image buffer or texture buffer array and that kind's capability is no use to a GPU without the feature, nor one made
+    // without them to a GPU that has it. Only when one is missing, so the GPUs that have all three keep one cache)
+    if (const uint32_t missing = (profile().support_storage_image_array_nonuniform_indexing ? 0u : 1u) |
+                                 (profile().support_uniform_texel_buffer_array_nonuniform_indexing ? 0u : 2u) |
+                                 (profile().support_storage_texel_buffer_array_nonuniform_indexing ? 0u : 4u)) {
+        const uint32_t no_nonuniform[] = {0x6e6e7561u, missing};   // ("nnua", and which)
+        add(no_nonuniform, sizeof no_nonuniform);
+    }
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     // (and every other switch the translation reads: the storage buffer pass's (RX_VK_NO_CBUF_LOAD_RULE, RX_VK_PTR_SPLIT_FALLBACK,
@@ -1373,10 +1400,15 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
     const auto t0 = std::chrono::steady_clock::now();
     QuestionsNoted noted{p};
     ptr_diag_reset();
+    struct ModuleProgram {
+        explicit ModuleProgram(uint64_t key) { module_program = key; }
+        ~ModuleProgram() { module_program = 0; }
+    } module_for{p.key};
     try {
         // (issue 1280: an allocation refused in the translation fails this program, as before the renderer's new_handler,
         // rather than wait 5 s and stop the game: a bad shader can ask for a size no PC has)
         const NewNothrow nothrow;
+        if (driver_faulted_program(p.key)) throw std::runtime_error("the driver faulted on this program before: not asked of it again");
         Shader::Backend::Bindings bindings{};
         int questions = 0;
         std::vector<std::vector<uint32_t>> kept;   // (each stage's SPIR-V, for the program cache)

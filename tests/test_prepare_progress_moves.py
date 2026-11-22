@@ -67,6 +67,7 @@ std::string pipe_notes_path() { return folder + "/hookshot_pipelines.bin"; }
 void precompile_built_write(size_t) {}
 void pcache_init() {}
 void pipeline_cache_save(bool) {}
+static std::atomic<bool> prepare_saving_now{false};   // (Longshot #721: the start-up screen says the cache is written)
 void driver_env_note() {}   // (vk_draw.cpp: the driver's shader cache's line, #902)
 bool env_on(const char*) { return false; }
 bool prepare_stopped() { return false; }

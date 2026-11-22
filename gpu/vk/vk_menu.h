@@ -87,6 +87,8 @@ struct Options {
     int sampler_cache = 0;     // sampler ids answer their parameters without the registrations' lock (gpu/vk/vk_draw.cpp; RX_VK_SAMPLER_CACHE)
     int astc_rgba8 = 0;   // (hookshot) big ASTC textures kept as decoded RGBA8, not re-encoded to BC3 (gpu/vk/vk_texture.cpp bc_ready;
                           // RX_VK_ASTC_RGBA8 over it): the AMD texture workaround. Read once, at the start
+    int intel_compiles = 0;   // (hookshot) Intel's shader compiler on Windows: 0 one thread at a time, 1 side by side (vk_internal.h
+                              // IntelDriverGate; RX_VK_NO_INTEL_SERIAL=1 over it). Read once, at the start
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+),
                           // 6 Auto (this PC), kAutoPreset (its tier's budgets: budget)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB

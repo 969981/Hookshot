@@ -121,6 +121,43 @@ struct Device {
 };
 extern Device dev;
 
+/// (hookshot) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once. An Arc
+/// A750 froze the PC on four compute pipelines (issue 496). An Intel UHD on Windows read address 0x170 inside igvk64
+/// during the first scene's compiles (two frames in hookshot_vk.dll, and no "driver faulted compiling" line, so the
+/// call was not inside guarded_graphics). One thread enters vkCreateShaderModule and vkCreate*Pipelines.
+/// Other vendors, and Intel on other systems, are not held. The Intel shader compiles row's Side by side, or
+/// RX_VK_NO_INTEL_SERIAL=1 over it: side by side, as before.
+/// ask: a create that compiles nothing (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT), on the replay thread so a
+/// draw or dispatch never waits for a compile. It never waits here either: while a worker holds the gate, busy is set and
+/// the caller answers VK_PIPELINE_COMPILE_REQUIRED (cold) without asking the driver.
+bool intel_compiles_side_by_side();   // (vk_menu.cpp: the row as this run started with it)
+inline bool intel_gate_on() {
+#ifdef _WIN32
+    static const bool on = !intel_compiles_side_by_side() && dev.props.vendorID == 0x8086;
+    return on;
+#else
+    return false;
+#endif
+}
+struct IntelDriverGate {
+    std::unique_lock<std::mutex> hold;
+    bool busy = false;
+    explicit IntelDriverGate(bool ask = false) {
+        if (!intel_gate_on()) return;
+        static std::mutex mu;
+        static std::once_flag once;
+        std::call_once(once, [] {
+            logf("vk: Intel's compiler is entered by one thread (Intel shader compiles row, RX_VK_NO_INTEL_SERIAL: side by side)");
+        });
+        if (ask) {
+            hold = std::unique_lock<std::mutex>(mu, std::try_to_lock);
+            busy = !hold.owns_lock();
+        } else {
+            hold = std::unique_lock<std::mutex>(mu);
+        }
+    }
+};
+
 /// (hookshot) Where a storage buffer binding starts: the address rounded down to this, the shaders' offsets counted from there
 /// (vk_shader.cpp make_profile / host_info, the translator's ssbo_align_mask; vk_draw.cpp's descriptor writer). At least 16
 /// bytes, whatever the device allows: the translator reads 8- and 16-byte accesses through vector views (offset >> 3, >> 4),
@@ -269,6 +306,7 @@ uint64_t memory_capture_view();          // (bumped when a capture is published 
 uint32_t memory_page_stamp(uint64_t gpu); // (that address's page only)
 uint64_t gpu_pool_end(uint64_t gpu);   // (hookshot) where the memory pool holding that address ends, 0: in none (vk_memory.cpp)
 uint64_t gpu_pool_start(uint64_t gpu); // (EvilOOT) and where it begins
+uint64_t gpu_pool_piece(uint64_t gpu, uint64_t n, bool& in_pool);   // (hookshot) how much of a range from gpu one import can hold (vk_memory.cpp)
 bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation,
                           void** mapped, bool dedicated = false);   // (vk_vma.cpp: cached host memory, mapped)
 void flush_mapped(VmaAllocation allocation, uint64_t size);
@@ -412,6 +450,9 @@ void prepare_stop();
 bool prepare_stopped();
 int driver_faults();   // (hookshot, vk_draw.cpp) the driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute)
 void prepare_left_workers_note();   // (hookshot, vk_draw.cpp) predict_run or precompile_run left workers inside the driver
+/// (hookshot, vk_draw.cpp) The pipeline cache is being written out before the game (precompile_warm, a GB and more): every
+/// pipeline is counted by then, and the start-up screen says what it waits on
+bool prepare_saving();
 bool prepare_left_workers();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp
 // the game profile's program keys: the runtime's (HOOKSHOT_PROFILE_*), else the built-in header's (vk_draw.cpp)

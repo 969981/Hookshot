@@ -49,6 +49,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -2217,7 +2218,7 @@ Pool* pool_of(uint64_t guest, uint64_t size) {
 std::mutex bg_mu;
 std::condition_variable bg_cv, bg_done_cv;
 std::deque<std::pair<uint64_t, uint64_t>> bg_queue;
-std::vector<uint64_t> bg_inflight;           // (lo of the ranges queued or being imported)
+std::map<uint64_t, uint64_t> bg_inflight;   // [lo, hi) queued or being imported, under bg_mu
 std::vector<std::pair<uint64_t, Pool>> bg_ready;
 int64_t st_bg_imports, st_bg_waits, st_prefetch_sent, st_prefetch_used, st_prefetch_dropped;
 void bg_main();
@@ -2244,7 +2245,7 @@ void bg_main() {
         std::lock_guard lk(bg_mu);
         p.prefetched = true;
         if (ok) bg_ready.push_back({r.first, p}), st_bg_imports++;
-        std::erase(bg_inflight, r.first);
+        bg_inflight.erase(r.first);
         bg_done_cv.notify_all();
     }
 }
@@ -2319,10 +2320,10 @@ void prefetch_chunks(uint64_t lo, uint64_t hi, uint64_t chunk) {
     std::lock_guard lk(bg_mu);
     for (const auto& [a, b] : want) {
         if (b > (1ull << 40) || !in_game_pool(a, b) || imported_over(a, b)) continue;
-        if (std::find(bg_inflight.begin(), bg_inflight.end(), a) != bg_inflight.end()) continue;
+        if (bg_inflight.contains(a)) continue;
         if (bg_inflight.size() >= 16) break;
         bg_start();
-        bg_inflight.push_back(a);
+        bg_inflight.emplace(a, b);
         bg_queue.push_back({a, b});
         st_prefetch_sent++;
     }
@@ -2401,7 +2402,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         {
             std::unique_lock lk(bg_mu);
             auto under_way = [&] {   // (the pool's own import, or a chunk of the range imported ahead)
-                for (const uint64_t x : bg_inflight)
+                for (const auto& [x, end] : bg_inflight)
                     if (x == range.lo || (chunk && x >= want_lo && x < want_hi)) return true;
                 return false;
             };
@@ -2569,11 +2570,11 @@ bool import_in_background(uint64_t guest, uint64_t size) {
         return false;
     }
     std::lock_guard lk(bg_mu);
-    for (const uint64_t x : bg_inflight)
+    for (const auto& [x, end] : bg_inflight)
         if (x >= lo && x < hi) return true;   // (under way)
     if (bg_inflight.size() >= 16) return false;
     bg_start();
-    bg_inflight.push_back(lo);
+    bg_inflight.emplace(lo, hi);
     bg_queue.push_back({lo, hi});
     bg_cv.notify_one();
     if (st_async_sent++ % 32 == 0)
@@ -3100,11 +3101,14 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     const uint64_t lo = gpu & ~(align - 1), hi = (gpu + size + align - 1) & ~(align - 1);
     std::lock_guard lk(bg_mu);
     bg_start();
-    if (std::find(bg_inflight.begin(), bg_inflight.end(), lo) != bg_inflight.end()) return;
-    bg_inflight.push_back(lo);
+    if (bg_inflight.contains(lo)) return;
+    bg_inflight.emplace(lo, hi);
     bg_queue.push_back({lo, hi});
     bg_cv.notify_one();
 }
+
+struct DeadImport { VkBuffer buffer; VkDeviceMemory memory; uint64_t value; uint64_t lo, bytes; std::vector<VkDeviceMemory> pieces; };
+std::deque<DeadImport> dead_imports;   // (#468: retired imports whose memory is freed once the GPU is past them)
 
 // (hookshot) Whether one imported pool holds all of [lo, hi): a lookup there imports nothing (vk_texture.cpp
 // upload_unswizzle_gpu asks before it reaches for one)
@@ -3116,8 +3120,9 @@ int memory_guest_contained(uint64_t lo, uint64_t hi) {
     return it->second.lo <= lo && it->second.hi >= hi ? 1 : 0;
 }
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
+    if (hi <= lo) return 0;
     std::lock_guard lk(pools_mu);
-    auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
+    auto it = imported.lower_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
     while (it != imported.begin()) {
         --it;
         if (it->second.hi > lo) return 1;
@@ -3125,6 +3130,15 @@ int memory_guest_imported(uint64_t lo, uint64_t hi) {
     }
     for (const auto& nh : retired_pools)
         if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
+    for (const auto& pending : dead_imports)
+        if (pending.lo < hi && lo < pending.lo + pending.bytes) return 1;
+    // The worker imports outside pools_mu. It moves a range from inflight to ready under bg_mu;
+    // bg_drain moves it from ready to the active map while holding pools_mu.
+    std::lock_guard bg_lock(bg_mu);
+    for (const auto& [start, end] : bg_inflight)
+        if (start < hi && lo < end) return 1;
+    for (const auto& [start, p] : bg_ready)
+        if (start < hi && lo < p.hi) return 1;
     return 0;
 }
 
@@ -3196,6 +3210,30 @@ uint64_t gpu_pool_start(uint64_t gpu) {   // (EvilOOT) where it begins
     }
     const Pool* p = pool_of(gpu, 1);
     return p ? p->lo : 0;
+}
+/// (hookshot) How much of [gpu, gpu + n) from gpu on one import can hold: up to the end of the game pool holding gpu, since
+/// pool_lookup takes a range inside one pool only (and for a virtual pool's address, from 1 TB, only as far as the host maps it
+/// on). in_pool false: no pool holds gpu, so no import does, up to the next pool's start. Never 0 for n > 0 (vk_replay.cpp
+/// gpu_piece_bind: the replay's own writes go on a piece at a time)
+uint64_t gpu_pool_piece(uint64_t gpu, uint64_t n, bool& in_pool) {
+    in_pool = false;
+    uint64_t guest = gpu;
+    if (gpu >= (1ull << 40)) {
+        uint64_t avail = 0;
+        if (!host->gpu_ptr(gpu, &avail) || !avail) return n;
+        n = std::min(n, avail);
+        guest = host->gpu_guest(gpu);
+    }
+    if (!n) return 0;
+    ParLock plk;   // (before pools_mu, always)
+    std::lock_guard lk(pools_mu);
+    // (pool_lookup's pool: the last one starting at or below guest)
+    const auto it = std::upper_bound(guest_pools.begin(), guest_pools.end(), guest, [](uint64_t a, const GuestPool& p) { return a < p.lo; });
+    if (it != guest_pools.begin() && guest < (it - 1)->hi) {
+        in_pool = true;
+        return std::min(n, (it - 1)->hi - guest);
+    }
+    return it == guest_pools.end() ? n : std::min(n, it->lo - guest);
 }
 
 // (pools leaving, a mirror made, or the next submission: a remembered read binding is looked up again)
@@ -3384,8 +3422,6 @@ std::deque<DeadMirror> dead_mirrors;
 // Forest ~1.3 GB of imports, 15-45 ms a submission (3-4 fps on an RX 7800 XT with 11 ms of GPU time; issues 312, 413). Its
 // table entries went at its retirement, and its mirror goes before (mstate), so once the GPU is past retired_value nothing
 // reaches it. The node stays (pointers to it are kept elsewhere); only its buffer and memory go. RX_VK_KEEP_RETIRED=1: kept
-struct DeadImport { VkBuffer buffer; VkDeviceMemory memory; uint64_t value; uint64_t bytes; std::vector<VkDeviceMemory> pieces; };
-std::deque<DeadImport> dead_imports;
 uint64_t st_retired_imports_freed = 0, st_retired_import_bytes_freed = 0;
 uint64_t dead_import_bytes = 0;   // (queued in dead_imports: still in the heap's use until the GPU is past them)
 void reap_mirrors() {   // (pools_mu held)
@@ -3468,7 +3504,7 @@ void retired_imports_give_back() {   // (pools_mu held)
         if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && !p.inherit_pending &&
             p.retired_value <= mem_completed &&
             p.last_value <= mem_completed && retired_give_back::due(mode, idle, idle_ms, floor_ms, want > 0)) {
-            dead_imports.push_back({p.buffer, p.memory, std::max(mem_rec_value, p.last_value), p.hi - p.lo, std::move(p.pieces)});
+            dead_imports.push_back({p.buffer, p.memory, std::max(mem_rec_value, p.last_value), p.lo, p.hi - p.lo, std::move(p.pieces)});
             dead_import_bytes += p.hi - p.lo;
             p.pieces.clear();
             p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE, p.address = 0;
@@ -4177,14 +4213,15 @@ bool wbd_pipe_ready() {
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof WB_DIFF_COMP_SPV;
         mi.pCode = WB_DIFF_COMP_SPV;
-        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) == VK_SUCCESS) {
+        IntelDriverGate gate;
+        if (extern_guarded_shader_module(&mi, &m) == VK_SUCCESS) {
             VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
             ci.stage.module = m;
             ci.stage.pName = "main";
             ci.layout = wbd_pipe.layout;
-            if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &wbd_pipe.pipe) != VK_SUCCESS)
+            if (extern_guarded_compute(VK_NULL_HANDLE, &ci, &wbd_pipe.pipe) != VK_SUCCESS)
                 wbd_pipe.pipe = VK_NULL_HANDLE;
             vkDestroyShaderModule(dev.device, m, nullptr);
         }

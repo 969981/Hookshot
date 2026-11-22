@@ -37,17 +37,19 @@ def main():
     source += block(header, "struct Options {") + ';\nOptions opts;\n'
     source += block(menu, "enum MenuTab {") + ';\n'
     source += block(menu, "struct Row {") + ';\n'
-    for name in ("tx_onoff", "tx_damage_taken", "tx_robust"):
+    for name in ("tx_onoff", "tx_damage_taken", "tx_robust", "tx_intel_compiles"):
         source += block(menu, "const char* " + name + "(") + '\n'
     # Help text is not used by this navigation fixture.
     source += 'const char* hn_robust(int, int) { return nullptr; }\n'
     source += 'const char* hn_astc_rgba8(int, int) { return nullptr; }\n'
+    source += 'const char* hn_intel_compiles(int, int) { return nullptr; }\n'
     source += 'Row rows[] = {' + ',\n'.join(entries) + '};\n'
     source += 'constexpr int kRows = sizeof rows / sizeof rows[0];\n'
     source += '''
 bool cheats_env = false;
 bool reflex_available() { return false; }
 bool antilag_available() { return false; }
+bool intel_compiler_row() { return false; }   // (not Intel graphics on Windows: the Developer section's rows as before)
 int upscalers_available() { return 1; }
 constexpr int DLSS_OK = 0;
 int dlss_why() { return 1; }

@@ -131,6 +131,7 @@ typedef struct {
     void *mf;                        /* (hookshot) an AV1 decoder of our own instead of ctx (av1: which one) */
     const Av1Decoder *av1;
     int64_t decode_ns, decode_worst_ns, decoded, skipped;   /* (hookshot) the movie's decoding, logged when it stops */
+    int64_t recent_ns;   /* (hookshot) the recent pictures' decode time, for the catch-up (dec_acquire) */
     int64_t first_pts, end_pts;
     AVPacket *pkt;
     AVFrame *frame;
@@ -588,6 +589,7 @@ static void decode_next(Dec *d) {
         if (!d->phead) d->ptail = NULL;
         if (d->npending > 0) d->npending--;
         const int64_t t0 = hos_now_ns();
+        const int picture = n->pkt != NULL;
         if (n->pkt) {
             if (!d->decoded++) d->first_pts = n->pkt->pts;
             d->end_pts = n->pkt->pts;
@@ -622,6 +624,7 @@ static void decode_next(Dec *d) {
         const int64_t ns = hos_now_ns() - t0;
         d->decode_ns += ns;
         if (ns > d->decode_worst_ns) d->decode_worst_ns = ns;
+        if (picture) d->recent_ns = d->recent_ns ? (d->recent_ns * 7 + ns) / 8 : ns;   /* (about the last 8) */
         free(n);
     }
 }
@@ -649,7 +652,7 @@ static void movie_report(Dec *d) {
     }
     d->out_ns = d->gap_worst_ns = 0;
     memset(d->gaps, 0, sizeof d->gaps);
-    d->decode_ns = d->decode_worst_ns = d->decoded = d->skipped = d->refused = 0;
+    d->decode_ns = d->decode_worst_ns = d->decoded = d->skipped = d->refused = d->recent_ns = 0;
 }
 static void pending_push(Dec *d, AVPacket *pkt) {
     Pending *n = (Pending *)calloc(1, sizeof *n);
@@ -967,7 +970,7 @@ static void dec_acquire(Ctx *c) {
     if (ARG(1)) G64(ARG(1)) = 0;
     if (!d) { RET(RESULT_NO_OUTPUT); return; }
     /* (the library aborts on any failure here: the hardware call waits for a picture. Up to ~100 ms for one decoded
-       by another thread's submission; then a free buffer as it was, so the caller is never refused) */
+       by another thread's submission. Then a free buffer as it was, so the caller is never refused) */
     /* (hookshot, #1929) and no virtual core held through it: the decoding blocks (dav1d waits for its own frame
        threads), and with the core held the movie thread kept it 100-270 ms on Linux while a thread waiting for that core
        ran without one. It is taken again only once d->lock is let go, as in hos_cv_sleep: waiting for a core while
@@ -978,8 +981,9 @@ static void dec_acquire(Ctx *c) {
     decode_pending(d);
     /* (hookshot) The wait is for a picture another thread's submission is about to bring, ~100 ms of it. It was 50 tries of a
        2 ms sleep, and such a sleep takes 4-5 ms: 245-257 ms, on the thread a movie's end joins (title to game: the game's main
-       thread in hos_thread_join for a frame of ~250 ms, every start). Now by the clock, and none after a Stop or a Flush with
-       nothing submitted since: no picture is coming then. HOS_VIDEO_ACQUIRE_TRIES=1: 50 tries, as before */
+       thread in hos_thread_join for a frame of ~250 ms, every start). Now by the clock, ~100 ms, and none after a Stop or a Flush
+       with nothing submitted since: no picture is coming then. Not longer for the first: decode_pending above has decoded
+       what was submitted already, so a longer wait only held the first frame back. HOS_VIDEO_ACQUIRE_TRIES=1: 50 tries */
     static int by_tries = -1;
     if (by_tries < 0) by_tries = env_on("HOS_VIDEO_ACQUIRE_TRIES");
     const int64_t wait_until = hos_now_ns() + 100000000;
@@ -1020,8 +1024,13 @@ static void dec_acquire(Ctx *c) {
         return;
     }
     {   /* (hookshot) The game takes one picture a frame, and the sound plays on: under 60 fps the movie fell behind its
-           sound (the intro "slow motion, audio ahead", issues 146 and 179). Pictures behind the movie's clock are skipped:
-           the next ones decoded, as the whole movie is submitted at once. HOS_VIDEO_NO_CATCHUP=1: as before */
+           sound (the intro "slow motion, audio ahead", issues 146 and 179). Pictures already decoded are skipped.
+           Decoding the next one in order to skip it is not, when that decode takes longer than the gap between
+           pictures: the clock gains the decode and the picture is thrown away, so the next acquire is further behind
+           (Windows, Intel UHD, 19.5 ms a picture against 16.7, skipped 1933 of 2221). The decode time is the recent
+           pictures' (recent_ns), not the movie's mean, which the slow first decode held high: a decoder that keeps up
+           now decodes ahead again, and a picture late for another reason is made up. At most one picture's time of
+           decoding ahead in an acquire, so the frame that takes it waits no longer. HOS_VIDEO_NO_CATCHUP=1: nothing skipped */
         static int off = -1;
         if (off < 0) off = env_on("HOS_VIDEO_NO_CATCHUP") || !GAME_VIDEO_CATCHUP;   /* (the game profile's) */
         const int64_t now = hos_now_ns(), late = 25000000;   /* (a frame and a half at 60 fps) */
@@ -1033,6 +1042,8 @@ static void dec_acquire(Ctx *c) {
             if (d->queue[d->qhead].pts + late >= due) break;
             if (d->qn < 2) {
                 if (!d->phead) break;
+                const int64_t spacing = d->decoded > 1 ? (d->end_pts - d->first_pts) / (d->decoded - 1) : 0;
+                if (spacing > 0 && (d->recent_ns > spacing || hos_now_ns() - now >= spacing)) break;
                 decode_next(d);
                 continue;
             }

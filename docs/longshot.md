@@ -168,3 +168,39 @@ are taken without their crash-record parts, and #1459 without its crash window.
 in one file, which this tree keeps in `nx2/build.py`) comes with the perf batch. Not taken: #602 and #1267 (Longshot's
 play profiles, not here), #1602 (no `.def` or `.inl` files here), and the setup and Builder fixes (#151, #465, #540,
 #641, #690, #1453), which go to the Builders with their rename.
+
+### Renderer fixes (A2)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#50](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/50) | mooki | test(vk): execute startup pool placement and fallback checks |
+| [#189](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/189) | Guep | fix(vk): on Intel iGPUs a split submission's uniform updates are written by its last part |
+| [#191](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/191) | Guep | fix(vk): Intel's Windows driver no longer loses the device on float adds to storage buffers: they are the GPU's own atomic |
+| [#219](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/219) | TrashPanda | fix(vk): task + mesh compute fallback by default for Navi 23 on Windows, one rule for the IDs |
+| [#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252) | Yeetbot90 | fix(vk): a slow movie shows its pictures, and a fault in Intel's Windows compiler leaves that shader out |
+| [#307](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/307) | Amateurwizrd | fix(vk): a picture larger than the window is filtered over all its pixels, not sampled |
+| [#329](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/329) | klimovich008 | fix(vk): order overlapping inline buffer updates |
+| [#346](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/346) | jarynclouatre | fix(vk): the page files' room to grow counts before the commit rule cuts the textures |
+| [#350](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/350) | mooki | test(vk): restore the framegen resource and module identifier checks |
+| [#403](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/403) | jcabarca | fix(vk): give image descriptors a dummy view when nullDescriptor is off |
+| [#440](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/440) | mooki | fix(vk): the replay's own buffer writes stay in command order when unaligned or split |
+| [#443](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/443) | nyannoying | fix(vk): Arc B580 no longer draws white shards while moving: a part ends only right before a plain draw |
+| [#444](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/444) | nyannoying | fix(vk): Arc B-series no longer loses the device in Kokiri Forest: float adds are the GPU's own atomic |
+| [#450](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/450) | mooki | fix(vk): image, image-buffer and texture-buffer arrays are arrays in the SPIR-V |
+| [#468](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/468) | Zelda Ootr | fix(vk): retain guest pages during import handoff and retirement |
+| [#469](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/469) | Zelda Ootr | fix(vk): release pages ending at a GPU import boundary |
+| [#489](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/489) | Yeetbot90 | fix(vk): the graphics in AMD's desktop CPUs decode ASTC on the CPU, so Kokiri Forest no longer resets the GPU |
+| [#499](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/499) | jarynclouatre | fix(vk): on Linux the texture helpers started inside a replay run on every core again |
+| [#502](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/502) | mooki | fix(vk): storage image and texel buffer arrays are indexed nonuniformly where the GPU can |
+| [#551](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/551) | Zelda Ootr | fix(vk): a mesh fallback program with bigger payloads reuses the record arena |
+| [#553](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/553) | Zelda Ootr | fix(vk): a read-back after a timed-out one waits for the GPU, and its textures are kept |
+| [#554](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/554) | Zelda Ootr | fix(vk): a timed-out read-back's source images are kept until the GPU is past the copy |
+| [#556](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/556) | Zelda Ootr | fix(vk): FSR 3.1 frees its images once the chain lets it go, not at its next upscale |
+| [#559](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/559) | Zelda Ootr | fix(vk): Auto settings take SteamDeck=1 as a handheld only on an integrated GPU |
+| [#621](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/621) | jcabarca | fix(vk): read and publish a compute program's pipeline atomically |
+| [#661](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/661) | jcabarca | fix(vk): read RX_VK_SHADOW_BIAS once, safely across recording threads |
+| [#672](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/672) | jcabarca | fix(vk): keep a copy into BC3 to whole blocks or the level's edge |
+| [#713](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/713) | klimovich008 | fix(pipelines): run All prediction after preparing on Most |
+| [#721](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/721) | HumanBean | fix(vk): the start-up screen counts the compute pipelines and says when it writes the pipeline cache |
+
+Fitted to this tree: #252's Intel compiler gate goes on this tree's `guarded_graphics` and `guarded_compute`, without Longshot's fetch lock (#190, below); #307's filter reads through this tree's `pixel()` and `bilinear()`, its SPIR-V regenerated; #553's poll of a timed-out read-back replaces this tree's own wait, and also notes a lost device; #554 keeps a timed-out read-back's textures, while a render target's image goes to the pool at once here (upstream Hookshot #2766), ordered on the one queue after the copy; #721's saving flag sits beside this tree's own count of the compute pipelines (Hookshot #73). Already here: #60 (upstream Hookshot #2897, which it ported) and #101 (this tree's #32). Moved: #190, #404 and #415 to the pipeline cache batch with #416; #223 and the evicted pools' check of #324 to the memory batch; #59 to frame generation; #769 and #928 to the render-thread series; #342 and #526 to B2, with #162 and #248. #500 (B) and #781 come after this batch, on #252's gate.
