@@ -35,7 +35,7 @@ struct Hardware {
 // (ur::kPercent's index). The Output resolution is a size, which the menu finds among its choices (vk_menu.cpp apply_auto: the
 // screen's resolutions and the common ones, #2566); 0 x 0, the game's 2048 x 1152
 struct Choice {
-    int tier = 0;               // (the preset whose memory budgets and scaling hold: 1 Minimum ... 5 Ultra)
+    int tier = 0;               // (the preset whose scaling holds: 1 Minimum ... 5 Ultra; VRAM budgets: texture_budget.h)
     int upscaler = 0;
     int resolution = 0;         // (0: the tier's own, as the preset sets it)
     int output_w = 0, output_h = 0;
@@ -58,17 +58,18 @@ enum { RES_QUALITY = 3, RES_PERFORMANCE = 4, RES_BALANCED = 5 };
 // own, with the game's own upscaler
 constexpr int kTierResolution[] = {0, 4, 2, 1, 1, 1};
 
-// The memory tier: the presets' own steps (Minimum 4 GB, Low 6, Balanced 8, High 12, Ultra 16+). High from 11.5 GB: its 7.5 GB
-// of textures and 2 GB of mirrors leave a 10 or 11 GB card (RTX 3080, RX 6700, RTX 2080 Ti) too little for its targets and the
-// upscaler, and 12 GB cards report 12,000-12,288 MB. An integrated GPU, a handheld or a card without mesh shaders starts at
+// The memory tier: the presets' own steps (Minimum 4 GB, Low 6, Balanced 8, High 12, Ultra 16+). High from 11.5 GB: chosen when
+// High's 7.5 GB of textures and 2 GB of mirrors left a 10 or 11 GB card (RTX 3080, RX 6700, RTX 2080 Ti) too little for its
+// targets and the upscaler, and 12 GB cards report 12,000-12,288 MB. An integrated GPU, a handheld or a card without mesh shaders starts at
 // Minimum whatever its memory says: the memory it reports is shared with the system, or the fallback costs the frame more than
-// the memory saves
+// the memory saves. The tier sets the scaling rows only: the VRAM budgets are the card's own (texture_budget.h, mirror_budget.h),
+// the sizes these presets gave the cards they were for
 inline int tier_of(const Hardware& h) {
     if (h.integrated || h.handheld || !h.mesh_native) return 1;
     const uint32_t mb = h.vram_mb;
     int t = mb <= 4608 ? 1 : mb <= 6656 ? 2 : mb <= 11776 ? 3 : mb <= 13312 ? 4 : 5;
     // (under 12 GB of RAM the game's memory and the copies the driver keeps of its textures leave little: a lower tier's
-    // smaller budgets)
+    // lighter rows, and texture_budget.h's smaller texture budget for such a PC)
     if (h.ram_mb && h.ram_mb < 12288 && t > 2) t = 2;
     return t;
 }

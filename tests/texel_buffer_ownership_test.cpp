@@ -199,7 +199,7 @@ void run(const std::string& test) {
             tex.d.width++; create_result = VK_ERROR_OUT_OF_HOST_MEMORY; assert(!get(tex));
             create_result = VK_SUCCESS; mapping = second_pool.lo; assert(get(tex)); assert(creates == 3);
         } else if (test == "retirement" || test == "reuse-handle") {
-            dead_imports.push_back({first_pool.buffer, {}, 4, 64, {}});
+            dead_imports.push_back({first_pool.buffer, {}, 4, 0, 64, {}});
             dead_import_bytes = 64;
             mem_completed = 3; reap_mirrors(); assert(live.count(first) && destroyed_buffers == 0);
             assert(dead_import_bytes == 64);

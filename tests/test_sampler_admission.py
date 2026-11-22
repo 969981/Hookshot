@@ -1,8 +1,9 @@
-"""Execute sampler creation and every handle-cache layer with authored failures."""
+"""Execute sampler creation and every handle-cache layer with authored failures, and a driver with a low sampler limit."""
 import argparse
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
@@ -25,11 +26,21 @@ def main():
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     nvn = (a.source / "gpu/render/rx_nvn.h").read_text(encoding="utf-8")
-    actual = "\n".join(block(source, marker) for marker in [
+    # The samplers' section up to its first function: what owns the samplers made (the book, sampler_room and the rest)
+    head = source[source.index("// ---- samplers (by NVN sampler parameters) ----"):source.index("VkSamplerAddressMode wrap(")]
+    actual = head + "\n".join(block(source, marker) for marker in [
         "VkSamplerAddressMode wrap(", "uint32_t aniso_override() {", "VkCompareOp compare_op(",
-        "VkSampler sampler_make(int id, bool compare) {", "VkSampler sampler_for(int id, bool compare) {"])
+        "VkSampler sampler_make(int id, bool compare, bool one_level) {",
+        "VkSampler sampler_for(int id, bool compare, bool one_level) {"])
     # Keep standard-container behavior, replacing only the allocator to target an individual cache.
-    for old, new in [
+    owner = [
+        ("std::unordered_map<SamplerInfo, Made, SamplerInfoHash> made", "FaultMap<SamplerInfo, Made, Owner, SamplerInfoHash> made"),
+        ("std::unordered_map<uint64_t, Made*> keys", "FaultMap<uint64_t, Made*, Alias> keys"),
+        ("std::vector<Retired> retired", "FaultVector<Retired, Retire> retired"),
+    ]
+    if "struct SamplerBook {" not in head:   # (a tree before sampler reuse, --source: one map by key owned them)
+        owner = [("std::unordered_map<uint64_t, VkSampler> samplers", "FaultMap<uint64_t, VkSampler, Owner> samplers")]
+    for old, new in owner + [
         ("std::unordered_map<int, std::pair<uint32_t, nvn_samp_par>> seen", "FaultMap<int, std::pair<uint32_t, nvn_samp_par>, Seen> seen"),
         ("std::unordered_map<uint64_t, VkSampler> mine", "FaultMap<uint64_t, VkSampler, Mine> mine"),
         ("std::unordered_set<uint64_t> failed", "FaultSet<uint64_t, Failure> failed"),
@@ -50,10 +61,12 @@ def main():
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
              "compare-pcf-off", "custom-border", "standard-border", "reduction", "compare-reduction", "anisotropy",
              "anisotropy-row", "anisotropy-game", "anisotropy-env-off", "anisotropy-change",
-             "anisotropy-no-mips", "anisotropy-nearest-mip",
+             "anisotropy-no-mips", "anisotropy-nearest-mip", "anisotropy-one-level",
              "upscale-bias", "upscale-bias-plain", "upscale-bias-change",
              "unknown-id", "force-linear", "wrap", "lod-clamp", "custom-reduction",
-             "descriptor-push", "descriptor-pool", "descriptor-compute", "descriptor-old", "descriptor-whole"]
+             "descriptor-push", "descriptor-pool", "descriptor-compute", "descriptor-old", "descriptor-whole",
+             "limit", "limit-full", "limit-reuse", "limit-alias-commit", "limit-retire-commit"]
+    failed = []
     with tempfile.TemporaryDirectory(prefix="sampler-admission-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
@@ -63,9 +76,18 @@ def main():
                         str(cpp), "-o", str(exe)], check=True)
         for route in ["id", "make", "cache-off"]:
             for case in cases:
-                subprocess.run([str(exe), route, case], check=True, timeout=20)
-    print(f"{len(cases) * 3} sampler cache/admission/policy cases passed")
+                r = subprocess.run([str(exe), route, case], timeout=20, capture_output=True, text=True)
+                if r.returncode:
+                    last = (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1]
+                    failed.append(f"{route} {case}: {last}")
+    for f in failed:
+        print("FAIL: " + f)
+    if failed:
+        print(f"{len(failed)} of {len(cases) * 3} sampler cache/admission/policy/limit cases failed")
+        return 1
+    print(f"{len(cases) * 3} sampler cache/admission/policy/limit cases passed")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

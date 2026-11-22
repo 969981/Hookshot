@@ -39,6 +39,7 @@ static std::map<uint32_t, int> shadow_regions;
 static long long erased, guest_asked, written;
 static void shadow_erase(uint32_t) { erased++; }
 static bool wb_diff_on() { return true; }
+static bool mirror_on() { return true; }   // (#590: the bookkeeping is only kept with mirrors)
 constexpr int kPageShift = 12;
 static int shadow_written_by_replay;
 static void shadow_written_to(int, const uint32_t*, int k) { written += k; }

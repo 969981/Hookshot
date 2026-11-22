@@ -56,6 +56,7 @@
 #include "dlss_actor.h"
 #include "dlss_checks.h"
 #include "dlss_math.h"
+#include "hidden_mesh.h"
 #include "temporal_jitter.h"
 #include "upscaler_rows.h"
 #include "vk_dlss.h"
@@ -356,11 +357,12 @@ bool make_pipeline(const uint32_t* code, size_t size, const VkDescriptorType* ty
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mi.codeSize = size, mi.pCode = code;
     VkShaderModule m{};
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return undo();
+    IntelDriverGate gate;
+    if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return undo();
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", spec};
     ci.layout = layout;
-    const bool ok = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) == VK_SUCCESS;
+    const bool ok = extern_guarded_compute(VK_NULL_HANDLE, &ci, &pipe) == VK_SUCCESS;
     vkDestroyShaderModule(dev.device, m, nullptr);
     return ok || undo();
 }
@@ -466,13 +468,14 @@ bool make_actor_pipeline() {
     VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &s.actor_layout) != VK_SUCCESS) return false;
+    IntelDriverGate gate;
     VkShaderModule m[2]{};
     const uint32_t* code[2] = {DLSS_ACTOR_VERT_SPV, DLSS_ACTOR_FRAG_SPV};
     const size_t size[2] = {sizeof DLSS_ACTOR_VERT_SPV, sizeof DLSS_ACTOR_FRAG_SPV};
     for (int i = 0; i < 2; i++) {
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = size[i], mi.pCode = code[i];
-        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m[i]) != VK_SUCCESS) return false;
+        if (extern_guarded_shader_module(&mi, &m[i]) != VK_SUCCESS) return false;
     }
     VkPipelineShaderStageCreateInfo stages[2]{};
     for (int i = 0; i < 2; i++) {
@@ -504,7 +507,7 @@ bool make_actor_pipeline() {
     gi.stageCount = 2, gi.pStages = stages;
     gi.pVertexInputState = &vi, gi.pInputAssemblyState = &ia, gi.pViewportState = &vp, gi.pRasterizationState = &rs;
     gi.pMultisampleState = &ms, gi.pColorBlendState = &cb, gi.pDynamicState = &ds, gi.layout = s.actor_layout;
-    const bool ok = vkCreateGraphicsPipelines(dev.device, VK_NULL_HANDLE, 1, &gi, nullptr, &s.actor) == VK_SUCCESS;
+    const bool ok = extern_guarded_graphics(VK_NULL_HANDLE, &gi, &s.actor) == VK_SUCCESS;
     for (VkShaderModule x : m) vkDestroyShaderModule(dev.device, x, nullptr);
     if (!ok) s.actor = VK_NULL_HANDLE, logf("vk: upscaler: the actor motion's pipeline was not made: camera motion alone");
     return ok;
@@ -914,6 +917,36 @@ void temporal_idle() {
     s.last_frame = 0;   // (a new history when it comes back)
     free_dead(false);
     s.holding = !s.dead.empty();
+}
+
+// ---- (hookshot, #1370) the depth draws of hidden meshes (vk_draw.cpp hidden_depth_draw has the why) ----
+int replay_par_threads();   // (vk_replay.cpp par_threads: RX_VK_PARALLEL, else the game profile's HOOKSHOT_PROFILE_VK_PARALLEL)
+int temporal_hidden_mesh_mode() {
+    static const int mode = [] {
+        const bool rule = env_switch("RX_VK_DLSS_FADED") != 0;          // (unset: on)
+        const bool detail = env_switch("RX_VK_DLSS_FADED_LOG") == 1;   // (unset: off)
+        // (the parallel replay on 2 threads or more (vk_replay.cpp par_threads: RX_VK_PARALLEL, or the game profile's
+        // vk_parallel, as Mario Kart World's 4) draws a frame's segments on several threads at once, where the one table is
+        // drawn from by one thread at a time: nothing here runs then)
+        const bool parallel = replay_par_threads() >= 2;
+        if (parallel)
+            logf("vk: upscaler: faded: the parallel replay is on (%d threads, RX_VK_PARALLEL or the game profile): hidden meshes' "
+                 "depth draws are drawn", replay_par_threads());
+        else if (rule)
+            logf("vk: upscaler: faded: while a temporal upscaler or frame generation draws, the depth draws of a skinned mesh "
+                 "that had colour and has had none for %u frames are left out until its colour is back (RX_VK_DLSS_FADED=0 "
+                 "draws them)", hidden_mesh::kHiddenAfter);
+        else
+            logf("vk: upscaler: faded: RX_VK_DLSS_FADED=0: hidden meshes' depth draws are drawn");
+        return parallel ? 0 : (rule ? 1 : 0) | (detail ? 2 : 0);
+    }();
+    return mode;
+}
+
+bool temporal_scene_depth_is(const Texture* depth) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    return depth && s.cam.valid && s.cam.depth == depth && s.cam.frame == texture_frame_no();
 }
 
 void temporal_note_skinned_draw(const SkinnedDraw& k) {

@@ -197,7 +197,8 @@ def main():
         "static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; } static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; }",
         "static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; } static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }",
         "static int closes; static int CloseHandle(HANDLE h) { (void)h; closes++; return 1; }",
-        "typedef struct { HANDLE h; volatile LONG refs; } Handle; static Handle *handles[4096];",
+        "typedef struct { HANDLE h; volatile LONG refs; int writable; } Handle; static Handle *handles[4096];",
+        "static int writes_open;   /* (CloseFile uncounts a file opened for writing: #1422) */",
         block(fs, "static Handle *get_file(Ctx *c, uint64_t id)"), block(fs, "static void put_file(Handle *h)"),
         block(fs, "static void free_handle(uint64_t id)"), block(fs, "HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE)")])
     mem = read("host/hos_mem.c")

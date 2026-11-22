@@ -54,7 +54,7 @@ Identity (the whole bake is keyed on this):
 | graphics program key | `:733-743` (`graphics_key`) | `vs.key ^ fs.key*31`, FNV-mixed with used-generic attribute types + written colour types |
 | mesh program key | `:744-752` (`mesh_key`) | `FNV("mesh")` + task/fs keys + primitive SPH + written types |
 | variant | `:642-647` (`answers_hash`) | per texture/image answer actually bound |
-| disk stamp | `:837-864`, `nx2/build.py:691-699` | translator SHA-1 + depth bit + ABI sizes + env allowlist |
+| disk stamp | `:837-864`, `nx2/translator_files.py` | translator SHA-1 + depth bit + ABI sizes + env allowlist |
 
 Deduped on `code_key` (not the census's advisory SHA-1: `seed_open`
 recomputes FNV either way, `:1872`), a stage is the same two runs of bytes
@@ -95,8 +95,9 @@ boost/fmt (same CPM externals the game build uses; `EXT=...` overrides).
 
 Translator stamp (all three agree): `56b84e3925680030` on this tree. The
 formula is `sorted(translator-tree) + [vk_shader.cpp, vk_bank.cpp,
-vk_state.h, vk_api.h]` appended **after** the sort (`nx2/build.py:691-699`);
-see §6 trap #4.
+vk_state.h]` appended **after** the sort (`nx2/translator_files.py`, which
+`nx2/build.py` and the three bake tools all call; `vk_api.h` left it in
+2026-11); see §6 trap #4.
 
 ## 3. What each leg does
 

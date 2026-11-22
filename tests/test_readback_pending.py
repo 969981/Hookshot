@@ -23,7 +23,8 @@ def body_of(src, head):
 
 def main():
 	tex = (VK / "vk_texture.cpp").read_text(encoding="utf-8")
-	if "bool rb_pending = false;" not in tex:
+	# (Longshot #553 declares rb_lost beside it: a wait that failed otherwise)
+	if "bool rb_pending = false;" not in tex and "bool rb_pending = false, rb_lost = false;" not in tex:
 		raise SystemExit("a timed-out read-back is not remembered")
 	begin = body_of(tex, "bool readback_begin() {")
 	pend = begin.find("if (rb_pending)")
@@ -36,7 +37,9 @@ def main():
 	if "vkDestroyCommandPool(dev.device, rb_pool, nullptr);" not in made or "rb_pool = VK_NULL_HANDLE" not in made:
 		raise SystemExit("a read-back pool whose command buffer or fence failed is kept half made")
 	submit = body_of(tex, "bool readback_submit_wait() {")
-	if "rb_pending = vkWaitForFences(" not in submit:
+	# (#553 waits into r, then notes a timeout from it)
+	if "rb_pending = vkWaitForFences(" not in submit and not (
+			"const VkResult r = vkWaitForFences(dev.device, 1, &rb_fence" in submit and "rb_pending = r == VK_TIMEOUT" in submit):
 		raise SystemExit("readback_submit_wait does not note a wait that timed out")
 	print("the read-back command buffer is never reused while pending, nor used half made")
 

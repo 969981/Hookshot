@@ -18,6 +18,14 @@ Model:
   - Pointer authentication is the identity, as in Eglantine's dynarmic: PAC*/AUT* (register forms) and XPAC* leave
     Xd unchanged, PACGA writes 0. Nothing in the game's own code can tell, since no pointer is ever signed.
   - MTE: tags are always 0. STG/ST2G only do their base-register writeback.
+  - SCVTF / UCVTF (scalar, fixed-point: Sd, Sn, #fbits and Dd, Dn, #fbits), which suyu's translator lacks and the
+    game's own code doesn't use (a mod's code may): the integer in Vn's low 32 or 64 bits over 2^fbits, through suyu's
+    own recomp_fixed_to_fp (the helper of its general-register fixed-point form: the FPCR's rounding, IXC), the rest
+    of Vd cleared.
+
+One form suyu does know is written here too, because its C is wrong for one input and the vendored kit is not edited:
+  - SDIV: suyu's C divides as C does, and the most negative number divided by -1 is undefined there. x86's idiv traps
+    on it (#DE), where AArch64 gives the dividend back. sdiv() writes suyu's text with that case added.
 """
 import a64emit
 import a64_lift
@@ -116,6 +124,22 @@ def stg(w):
         return "/* stg: memory tags are not modelled */"
     return "c->x[%d] += (uint64_t)(int64_t)%d; /* st%sg, writeback: tags are not modelled */" % (
         rn, imm, "2" if opc == 2 else "")
+
+
+def sdiv(w):
+    """SDIV Xd, Xn, Xm and Wd, Wn, Wm, as suyu writes them (arm64_to_c.h: 0 for a divisor of 0, a W result
+    zero-extended) but for the one quotient that does not fit: the most negative number divided by -1. AArch64 wraps
+    it, which gives the dividend back; C leaves that division undefined and x86's idiv traps on it, so lifted code
+    dividing like that killed the game with no message (SIGFPE; 0xC0000095 on Windows). A divisor of -1 is therefore
+    a negation in unsigned arithmetic, which wraps to the same value for every dividend. tests/test_sdiv_overflow.py"""
+    sf, rm, rn, rd = w >> 31, (w >> 16) & 31, (w >> 5) & 31, w & 31
+    if rd == 31:
+        return None   # (the result is dropped: suyu writes no division for it either)
+    if sf:
+        return ("{ int64_t _a=(int64_t)%s,_b=(int64_t)%s; "
+                "c->x[%d]=(uint64_t)(_b==-1?(int64_t)(0-(uint64_t)_a):_b?_a/_b:0); }" % (xr(rn), xr(rm), rd))
+    return ("{ int32_t _a=(int32_t)(uint32_t)%s,_b=(int32_t)(uint32_t)%s; "
+            "c->x[%d]=(uint64_t)(uint32_t)(_b==-1?(int32_t)(0u-(uint32_t)_a):_b?_a/_b:0); }" % (xr(rn), xr(rm), rd))
 
 
 # ---- the few SIMD forms suyu lacks that MKW's sdk uses (62 sites) -------------------------------------
@@ -245,7 +269,22 @@ def emit(w):
         return "/* pac/aut: pointer authentication is the identity */"
     if (w & 0xFF200000) == 0xD9200000:
         return stg(w)
+    if (w & 0x7FE0FC00) == 0x1AC00C00:                # SDIV (suyu's own C traps on x86 for INT_MIN / -1)
+        return sdiv(w)
+    if (w & 0xDF80FC00) == 0x5F00E400 and (w >> 21) & 3:   # SCVTF / UCVTF (scalar, fixed-point), S or D
+        return fixed_to_fp(w)
     return None
+
+
+def fixed_to_fp(w):
+    """SCVTF / UCVTF Sd, Sn, #fbits or Dd, Dn, #fbits: immh 01xx is S (fbits = 64 - immh:immb), 1xxx is D
+    (fbits = 128 - immh:immb); immh 001x (H) is not taken. U (bit 29) is UCVTF"""
+    width = 64 if (w >> 22) & 1 else 32
+    fbits = 2 * width - ((w >> 16) & 0x7F)
+    rd, rn, signed = w & 31, (w >> 5) & 31, 0 if (w >> 29) & 1 else 1
+    mask = "UINT64_MAX" if width == 64 else "UINT64_C(0xffffffff)"
+    return ("{ uint64_t _r = recomp_fixed_to_fp(c->vreg[%d][0] & %s, %d, %d, %d, %d, c->fpcr, &c->fpsr); "
+            "c->vreg[%d][0] = _r; c->vreg[%d][1] = 0; }" % (rn, mask, width, width, fbits, signed, rd, rd))
 
 
 def is_identity_model(w):

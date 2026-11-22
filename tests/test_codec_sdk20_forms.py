@@ -71,6 +71,7 @@ static uint8_t mem[0x10000];
 #define HLE(sym) static void imp_##sym(Ctx *c)
 #define POOL_MAGIC 0x4c4f4f50u
 static void hos_fatal(void *c, const char *m) { (void)c; fprintf(stderr, "%s\n", m); exit(2); }
+static void *hos_xcalloc(size_t n, size_t size, const char *what) { void *p = calloc(n, size); if (!p) hos_fatal(NULL, what); return p; }
 static void hos_log(const char *f, ...) { (void)f; }
 static int video_log(void) { return 0; }
 static uint64_t host_obj; static uint32_t host_magic; static void *host_p;

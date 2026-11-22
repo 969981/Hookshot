@@ -28,8 +28,9 @@ out_start = replay.index('static bool present_out(uint32_t index, std::unique_lo
 present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
-acquire_wait = re.search(r'    waits\[0\]\.semaphore = [^;]+;', present)[0]
-assert 'acquire_timeout, f.acquired, VK_NULL_HANDLE, &index)' in present
+# (#1376: the acquire signals its fence, waited for on the CPU; the copy's submission waits for nothing of the acquire's on the
+# GPU: tests/test_present_image_free.py)
+assert 'acquire_timeout, VK_NULL_HANDLE, acquire_fence, &index)' in present
 # Include the actual creation attempt: passing oldSwapchain retires it even on failure.
 start = main.index('    ci.oldSwapchain = dev.swapchain;')
 end = main.index('    logf("vk: swapchain', start)
@@ -171,14 +172,11 @@ void present_begin() {
     if(!dev.swapchain || !chains.count(dev.swapchain) || retired.count(dev.swapchain))bad_chain=true;
     ++acquires; // The real prefix must return before the frame fence/acquire on failure.
 }
-struct Frame {uint64_t rendered,acquired;};
 uint64_t choose(unsigned index,unsigned frame_slot) {
-    Frame f{100+frame_slot,200+frame_slot};struct{uint64_t semaphore;}signal{};
-    struct{uint64_t semaphore;}waits[1]{};
+    (void)frame_slot;struct{uint64_t semaphore;}signal{};
     struct{const uint64_t* pWaitSemaphores;}pi{};
-''' + signal + '\n' + wait + '\n' + acquire_wait + r'''
+''' + signal + '\n' + wait + r'''
     if(signal.semaphore!=*pi.pWaitSemaphores)return 0;
-    if(waits[0].semaphore!=200+frame_slot)return 0;
     used.insert(signal.semaphore);
     return signal.semaphore;
 }

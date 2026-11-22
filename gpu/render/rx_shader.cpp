@@ -1041,19 +1041,26 @@ NvnCode read_nvn_code(const nvn_stage_data& sd) {
     using Shader::Ampere::Instruction;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
+    // (hookshot) a word that would branch outside every program is no instruction of this one: the capture read on past
+    // the program's end. The program ends before it if it lowers so; refused for that word only if it does not (as
+    // gpu/vk/vk_shader.cpp parse_code)
+    uint32_t outside = ~0u;
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
         const auto r = capture.Observe(insn, i);
         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
-            log_limited("nvn_capture", 8, "rx: NVN2 program %016llx: branch outside the program at +%#x",
-                        (unsigned long long)c.key, i * 16);
-            return c;
+            native.pop_back();
+            outside = i;
+            break;
         }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     const auto lowered = Shader::Ampere::LowerToMaxwell(native);
     if (!lowered) {
+        if (outside != ~0u)
+            log_limited("nvn_capture", 8, "rx: NVN2 program %016llx: branch outside the program at +%#x, and the code before "
+                        "it does not lower", (unsigned long long)c.key, outside * 16);
         const uint32_t at = lowered.error_offset / 16;
         const uint64_t lo = at < native.size() ? (uint64_t)native[at].words[0] | (uint64_t)native[at].words[1] << 32 : 0,
                        hi = at < native.size() ? (uint64_t)native[at].words[2] | (uint64_t)native[at].words[3] << 32 : 0;
@@ -1063,6 +1070,9 @@ NvnCode read_nvn_code(const nvn_stage_data& sd) {
                     (unsigned long long)hi, (unsigned long long)lo, (unsigned)(lo & 0xfff));
         return c;
     }
+    if (outside != ~0u)
+        log_limited("nvn_capture", 8, "rx: NVN2 program %016llx ends at +%#x, before the word at +%#x that would branch "
+                    "outside it", (unsigned long long)c.key, lowered.source_size, outside * 16);
     c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
     if (graphics) std::memcpy(c.code.data(), area.data(), sizeof(Shader::ProgramHeader));
     for (const uint64_t instruction : lowered.instructions) {

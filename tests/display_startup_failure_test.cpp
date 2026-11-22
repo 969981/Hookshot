@@ -102,6 +102,7 @@ static void load_hookshot_env() {}
 static void game_profile_env() {}   // (the renderer's program keys from the game profile, host/hos_main.c)
 static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 static void driver_cache_folder() {}   // (host/hos_main.c: the folder __GL_SHADER_DISK_CACHE_PATH names, made)
+static void driver_env_choose() {}   // (host/hos_main.c: RADV_FORCE_VRS_CONFIG_FILE dropped)
 
 #include "display_startup_actual.inc"
 

@@ -87,15 +87,13 @@ struct Options {
     int sampler_cache = 0;     // sampler ids answer their parameters without the registrations' lock (gpu/vk/vk_draw.cpp; RX_VK_SAMPLER_CACHE)
     int astc_rgba8 = 0;   // (hookshot) big ASTC textures kept as decoded RGBA8, not re-encoded to BC3 (gpu/vk/vk_texture.cpp bc_ready;
                           // RX_VK_ASTC_RGBA8 over it): the AMD texture workaround. Read once, at the start
+    int intel_compiles = 0;   // (hookshot) Intel's shader compiler on Windows: 0 one thread at a time, 1 side by side (vk_internal.h
+                              // IntelDriverGate; RX_VK_NO_INTEL_SERIAL=1 over it). Read once, at the start
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+),
-                          // 6 Auto (this PC), kAutoPreset (its tier's budgets: budget)
-    int vram_mb = 0;      // dynamic texture cache budget limit in MB
-    int mirror_mb = 0;    // staging mirror limit in MB
-    int budget = 0;       // the preset whose memory budgets (vram_mb, mirror_mb) hold: kept when another row turns the preset
-                          // to Custom, so tuning Resolution after Low (6GB) keeps its cap. Saved as memory_budget; 0: none
-    // (hookshot) the VRAM budget row: 0 Auto (the renderer's own rule), 1..7 a texture budget of 2.2, 3.6, 4.8, 6, 7.5, 9 or 11 GB
-    // and its mirrors (vram_mb, mirror_mb come from it). A preset sets it; set on the row it is the player's (budget 0)
-    int vram_budget = 0;
+                          // 6 Auto (this PC), kAutoPreset (its tier: budget)
+    int budget = 0;       // the preset the settings came from, kept when another row turns the preset to Custom: Minimum's (1)
+                          // trims the textures' mips on a small card (vk_texture.cpp low_vram_texture_mips). Saved as memory_budget;
+                          // 0: none. No preset or row sets the VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
     // (hookshot) DLSS 5 neural rendering (gpu/vk/vk_dlssnr.h). Off out of the box, like every other
     // feature here. The model's own knobs are percentages because that is what a slider can say; the
     // backend divides by 100 for the float Streamline wants.
@@ -164,10 +162,6 @@ inline NrSettings nr_settings() {
 }
 
 constexpr int kAutoPreset = 6;   // (the Quality preset Auto (this PC): menu_auto_for_gpu, auto_settings.h)
-/// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
-/// video memory than the preset is for. A 4GB preset on an 8 GB card kept 256 MB of mirrors and 2.2 GB of textures: the
-/// game's memory was read over PCIe and the textures made again every frame, 5 fps with the CPU idle (Discord, 11-08)
-bool preset_caps_memory();
 
 void menu_init();             // (the options from the file, once)
 void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings::Hardware hw);   // (the card chosen: Auto's profile)

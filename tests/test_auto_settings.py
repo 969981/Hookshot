@@ -44,7 +44,7 @@ def check_source():
                                # kept across restarts)
                                "::auto_settings::tune(tuning,", 'fprintf(f, "auto_tuned=%016llx\\n"', 'fprintf(f, "auto_steps=%d,%d\\n"',
                                'if (!strcmp(line, "auto_steps"))', 'fprintf(f, "auto_output=%ux%u\\n"',
-                               # (the hardware changed: the exempt rows the player set under Auto stay theirs)
+                               # (the hardware changed: the exempt row the player set under Auto, the Output resolution, stays theirs)
                                "apply_auto(!first);", "apply_auto(false);"])
     need("vk_menu.h", (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8"), ["constexpr int kAutoPreset = 6;"])
     if "constexpr int kAutoPreset" in menu:

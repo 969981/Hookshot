@@ -19,6 +19,7 @@
 #endif
 #include "hos_paths.h"
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
+#include "ws_floor.h"        /* (the game's memory kept in RAM: HOS_WS_FLOOR_MB) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include <math.h>
@@ -76,6 +77,22 @@ static void no_power_throttling(void) {
         s.control = 0x1;
         set(GetCurrentProcess(), 4, &s, sizeof s);
     }
+}
+#endif
+
+#ifdef _WIN32
+/* (hookshot) The game's memory kept in RAM under memory pressure: a soft working-set minimum (host/ws_floor.h, HOS_WS_FLOOR_MB) */
+static void ws_floor(void) {
+    uint64_t mb, ram_mb;
+    unsigned long err;
+    const int r = ws_floor_apply(getenv("HOS_WS_FLOOR_MB"), &mb, &ram_mb, &err);
+    if (r > 0)
+        hos_log("mem: the working set's minimum is %llu MB of the PC's %llu MB: Windows keeps that much of the game in RAM before "
+                "it trims below it (HOS_WS_FLOOR_MB=0: Windows' own)", (unsigned long long)mb, (unsigned long long)ram_mb);
+    else if (!r)
+        hos_log("mem: the working set's minimum is Windows' own (HOS_WS_FLOOR_MB=0)");
+    else
+        hos_log("mem: a working set minimum of %llu MB was refused (error %lu): Windows' own stays", (unsigned long long)mb, err);
 }
 #endif
 
@@ -233,7 +250,6 @@ static int reserve_guest(void) {
            needed. HOS_GUEST_MEMFD=1: the memfd all the same) */
         const char *e = getenv("HOS_GUEST_MEMFD");
         int usable = 0;
-        unsigned long long limit_mb = 0;
         {
             const int u = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
             if (u < 0 && (errno == EACCES || errno == EPERM)) {
@@ -251,16 +267,19 @@ static int reserve_guest(void) {
             if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
+                /* (issue 1135) usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
+                   default, 64 MB, when it can't (gpu/vk/vk_memory.cpp import_dma_buf), and a limit too small only makes more
+                   dma-bufs. A Flatpak's or Steam's container shows /dev/udmabuf but not /sys/module */
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
-                if (f) {
-                    if (fscanf(f, "%llu", &limit_mb) != 1) limit_mb = 0;
+                if (f)
                     fclose(f);
-                }
-                usable = limit_mb > 0;
+                else
+                    hos_log("mem: udmabuf's size_limit_mb cannot be read (in a container?): its default, 64 MB, assumed");
+                usable = 1;
             }
             if (!usable && !e)
-                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): %s",
-                        u < 0 ? "/dev/udmabuf cannot be opened" : "udmabuf's size_limit_mb cannot be read");
+                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): "
+                        "/dev/udmabuf cannot be opened");
         }
         if (e ? atoi(e) != 0 : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "hookshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
@@ -464,23 +483,46 @@ static const char *saves_dir(const char *beside) {
     char real[MAX_PATH];
     move_old = realpath(beside, real), move_from = beside, move_new = dir;
     /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
-       The others used to go all the same, and the game then ran here without them) */
+       The others used to go all the same, and the game then ran here without them. So does one that cannot go, a copy that
+       fails (a full disk): the entries that went before it come back, and a copied one's old place goes only once all are
+       there. They used to stay in the new place, and the next start found them there and kept the old place without them) */
+    struct { char *name; int copied; } *went = NULL;
+    size_t n_went = 0;
     for (int move = 0; move < 2 && !kept; move++) {
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h == INVALID_HANDLE_VALUE) return dir;
         do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..") || (move && kept)) continue;
             char from[MAX_PATH], to[MAX_PATH];
             snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
             snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-            if (!move) kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
-            else if (!has_link(from) && MoveFileExA(from, to, 0)) moved++;
-            else if (copy_tree(from, to)) delete_tree(from), moved++;
-            else delete_tree(to), kept++;
+            if (!move) {
+                kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
+                continue;
+            }
+            void *more = realloc(went, (n_went + 1) * sizeof *went);
+            char *name = more ? strdup(fd.cFileName) : NULL;
+            if (more) went = more;
+            if (!name) kept++;
+            else if (!has_link(from) && MoveFileExA(from, to, 0)) went[n_went].name = name, went[n_went++].copied = 0;
+            else if (copy_tree(from, to)) went[n_went].name = name, went[n_went++].copied = 1;
+            else delete_tree(to), free(name), kept++;
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
+    for (size_t i = 0; i < n_went; i++) {
+        char from[MAX_PATH], to[MAX_PATH];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, went[i].name);
+        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, went[i].name);
+        if (!kept) {
+            moved++;
+            if (went[i].copied) delete_tree(from);
+        } else if (went[i].copied) delete_tree(to);
+        else if (!MoveFileExA(to, from, 0)) hos_log("saves: %s could not come back to %s", to, from);
+        free(went[i].name);
+    }
+    free(went);
     if (kept) {
         hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
         return beside;
@@ -507,14 +549,17 @@ static const char *saves_dir(const char *beside) {
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
    player's hookshot_env.txt as it is.
    (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
-   HOOKSHOT_, EDEN_, NVN_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
-   path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
-   the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
+   HOOKSHOT_, EDEN_, NVN_ and SDL_ names), never HOS_ENV_FILE, HOS_CONTROL_PEER_SID or SDL's library override, and no
+   value that is a path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can
+   load code, and the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
 static int env_line_allowed(const char *name, const char *value) {
     static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "SDL_"};
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    /* (hookshot) nor HOS_CONTROL_PEER_SID: it lets one more account into the control bridge's pipe (host/control.c), so a
+       shared file would let another user of this PC steer the game and read its memory. The environment still sets it */
+    if (!strcmp(name, "HOS_CONTROL_PEER_SID")) return 0;
     /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
        SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
     if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
@@ -1847,6 +1892,12 @@ static void memory_notice(void) {
     MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
 }
 #endif
+/* (hookshot, linux) What driver_env_choose did with the driver's environment, said again in the game's own log once it is open
+   (it runs before, when stderr is still the launcher's) */
+static char driver_env_said[1024];
+static void driver_env_log(void) {
+    if (driver_env_said[0]) hos_log("%s", driver_env_said);
+}
 #ifdef _WIN32
 /* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -1922,7 +1973,32 @@ static int game_main(int argc, char **argv) {
         }
 #endif
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-        if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
+        const DWORD err_kind = (!err || err == INVALID_HANDLE_VALUE) ? FILE_TYPE_UNKNOWN : GetFileType(err);
+        /* Steam markers say the process came from Steam, not that its stderr is Steam's log pipe: the launcher's build
+           steps (nx2/make_game.py's run: stdout=PIPE, stderr merged into it, its lines read for @@progress and its
+           silence accounted) keep Steam's markers through game_env's filter, and their stderr is a pipe the builder
+           reads. A --prepare-shaders run is that builder subprocess, never a played game: its pipe stays the
+           builder's, the log gate does not fire for it. (An icon start under UNKNOWN still writes its log as always;
+           only the new PIPE arm steps aside for the build step.) */
+        int prepare_only = 0;
+        for (int i = 1; i < argc; i++)
+            if (!strcmp(argv[i], "--prepare-shaders")) prepare_only = 1;
+        /* (Steam's Gaming mode hands the game its own log pipe on stderr — measured on Deck hardware 2026-11-17: fd/2 is an
+           anonymous FIFO shared with Steam, drained into Steam's console-linux.txt. The player cannot see that sink, and a
+           Gaming-mode crash came with no game log (Longshot #1259): the game saw "external stderr" and wrote no file.
+           Steam's own pipe counts as nowhere-to-log-to like /dev/null does: the game writes its own log, exactly as in
+           Desktop mode. Two things say this pipe is STEAM's rather than a
+           pipe the player chose or a developer's live stream: Steam's marker variables (SteamGameId/SteamAppId, set in
+           everything Steam starts, non-Steam games and the launcher's routed Play included), and stdin — Steam gives
+           the programs it starts /dev/null there (measured), while a developer's own terminal session has a tty and
+           keeps its live stream even with Steam's markers in the environment. A player's `game | tee` carries neither
+           marker; a terminal stderr streams; a redirect to a real file (DISK) is honored as it was) */
+        if (err_kind == FILE_TYPE_UNKNOWN
+#ifndef _WIN32
+            || (!prepare_only && err_kind == FILE_TYPE_PIPE &&
+                (getenv("SteamGameId") || getenv("SteamAppId")) && !isatty(STDIN_FILENO))
+#endif
+            ) {
             char path[MAX_PATH + 32];
             DWORD n = hos_game_path_a(path, MAX_PATH);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
@@ -1939,11 +2015,18 @@ static int game_main(int argc, char **argv) {
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
             startup_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
 #endif
-            if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            /* (opened first: freopen closes stderr when it cannot open the file, and the next file opened would take its
+               descriptor. A log that cannot be written leaves the stderr the game was started with) */
+            FILE *log = fopen(path, "w");
+            if (log) {
+                fclose(log);
+                if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            }
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     game_profile_log();
+    driver_env_log();
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
@@ -2131,6 +2214,7 @@ static int game_main(int argc, char **argv) {
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();
+    ws_floor();   /* (the game's memory kept in RAM under memory pressure: host/ws_floor.h) */
 #endif
     void hos_display_start(void);
     hos_display_start();  /* the game's window; HOS_HEADLESS=1 for none */
@@ -2208,6 +2292,37 @@ static void driver_cache_folder(void) {
         *p = '/';
     }
 }
+/* (hookshot, linux) RADV_FORCE_VRS_CONFIG_FILE dropped before anything loads Vulkan. The Steam Deck's Game Mode sets it for
+   Steam and everything it starts, naming a file it writes the Half Rate Shading rate to (/tmp/radv_vrs.<random>, "1x1" when
+   off). When that file exists, RADV forces VRS for the device and puts that into every graphics pipeline's key, so nothing
+   built without it is found, in the driver's cache or in ours: measured on a Steam Deck OLED (RADV, Mesa 26.2.0-devel), the
+   same install compiled its 32,438 noted pipelines at about 20 a second (25-30 minutes) with the variable naming a file, empty
+   or "1x1", and loaded them in 22 s without it or with it naming no file. The preparation (the Builder, a first start from the
+   desktop) runs without it, so every start from Game Mode compiled again what it built. Dropped only when it names a file that
+   exists, which is when RADV reads it; no other driver reads it. RX_VK_HALF_RATE_SHADING=1 keeps it: Steam's Half Rate Shading
+   works for the game then (little: RADV leaves a fragment program that reads its position at full rate, and nearly all of
+   ours do), and the starts in Game Mode compile their own pipelines. RADV_FORCE_VRS, a rate someone set by hand, is kept.
+   The variable is named in HOOKSHOT_DRIVER_ENV_SET for the renderer's driver cache line. A restart (hos_relaunch.c) starts
+   again from the first environment and drops it again */
+static void driver_env_choose(void) {
+    const char *file = getenv("RADV_FORCE_VRS_CONFIG_FILE");
+    struct stat st;
+    if (!file || !*file || stat(file, &st) != 0) return;
+    const char *keep = getenv("RX_VK_HALF_RATE_SHADING");
+    if (keep && !strcmp(keep, "1")) {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE kept (RX_VK_HALF_RATE_SHADING=1): Steam's Half Rate Shading reaches the game, "
+                 "and RADV gives every graphics pipeline another key than the preparation's, so they are compiled again");
+    } else {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE=%.300s dropped: with it RADV gives every graphics pipeline another key than the "
+                 "preparation's and compiles them all again; Steam's Half Rate Shading has no effect on the game "
+                 "(RX_VK_HALF_RATE_SHADING=1 keeps it)", file);
+        unsetenv("RADV_FORCE_VRS_CONFIG_FILE");
+        setenv("HOOKSHOT_DRIVER_ENV_SET", "RADV_FORCE_VRS_CONFIG_FILE", 1);
+    }
+    fprintf(stderr, "%s\n", driver_env_said);
+}
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
@@ -2215,6 +2330,7 @@ int main(int argc, char **argv) {
     game_profile_env();
     driver_cache_room();
     driver_cache_folder();
+    driver_env_choose();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

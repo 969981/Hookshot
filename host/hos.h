@@ -14,6 +14,7 @@
 #define HOS_H
 #include "a64.h"
 #include <stdarg.h>
+#include <stddef.h>
 
 #define HLE(sym) void imp_##sym(Ctx *c)
 /* HOS_GAME_VERSION: the game update the address hooks below are for, from the build (build.py reads the main
@@ -54,6 +55,17 @@ int hos_game_is_mkw(void);
 int hos_game_profile_live(void);   /* the image is the build the game profile is for (hos_main.c) */
 #define HOS_GAME_TITLE "Hookshot"
 void hos_commit(uint64_t addr, uint64_t size);         /* (mkw_glue.c) guest pages made usable by host APIs */
+/* (mkw_glue.c, issue 333) host memory the game cannot go on without: never NULL (but for 0 bytes). At the commit limit a failed
+   allocation is tried again for up to 5 s, as a guest commit is; then the out-of-memory line and notice, and the game stops.
+   what names it in the log. hos_out_of_memory: that line and notice, once a run (wait: shown here, or waited for, before the
+   caller stops the game) */
+void *hos_xmalloc(size_t size, const char *what);
+void *hos_xcalloc(size_t count, size_t size, const char *what);
+void *hos_xrealloc(void *old, size_t size, const char *what);
+void hos_out_of_memory(int wait);
+/* (mkw_glue.c, issue 1280) the end of hos_alloc_failed's wait: the line, the notice and the stop (n 0: the size not known, as for
+   the renderer's C++ allocations, MkwVkHost out_of_memory). Does not return */
+void hos_alloc_gave_up(size_t n, const char *what);
 int hos_mem_region(uint64_t addr, uint64_t size);      /* (hos_mem.c) the control bridge: 0 if not wholly in mapped guest memory */
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);   /* (hos_mem.c: guest memory written by host code, native soft watch) */

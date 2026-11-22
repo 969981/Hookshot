@@ -48,6 +48,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
 import bounded   # noqa: E402 (decompression with a ceiling)

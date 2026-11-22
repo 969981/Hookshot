@@ -770,7 +770,8 @@ bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
-           (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8"));   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8")) ||   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"));
 }
 const char* tx_output_res(int v) {
     static char b[40];
@@ -941,34 +942,6 @@ const char* tx_preset(int v) {
                               "Auto (this PC)"};
     return t[std::min(std::max(v, 0), 6)];
 }
-// (hookshot) The VRAM budget row's choices: the texture and mirror budgets in MB (0: Auto, the renderer's own rule). The presets'
-// budgets are among them (preset_vram_budget), so a preset sets the row, and the row can also be chosen on its own (null and
-// Gummi, #dev-work 2026-11-10: the presets were the only way to set a limit)
-constexpr int kVramBudgets = 8;
-constexpr int kVramMinimumOnly = 1;   // (2.2 GB: set by the Minimum (4GB) preset only; the row's own steps go past it)
-constexpr int kVramTextureMb[kVramBudgets] = {0, 2200, 3600, 4800, 6144, 7500, 9216, 11000};
-constexpr int kVramMirrorMb[kVramBudgets] = {0, 256, 512, 1024, 1536, 2048, 2560, 3072};
-int preset_vram_budget(int p) {
-    static const int of[] = {0, 1, 2, 3, 5, 7};   // (none: Auto; Minimum 2.2 GB, Low 3.6, Balanced 4.8, High 7.5, Ultra 11)
-    return of[std::min(std::max(p, 0), 5)];
-}
-void vram_budget_sync() {
-    const int b = std::min(std::max(opts.vram_budget, 0), kVramBudgets - 1);
-    opts.vram_mb = kVramTextureMb[b];
-    opts.mirror_mb = kVramMirrorMb[b];
-}
-const char* tx_vram_budget(int v) {
-    static const char* t[kVramBudgets] = {"Auto", "2.2 GB (4GB preset)", "3.6 GB", "4.8 GB", "6 GB", "7.5 GB", "9 GB", "11 GB"};
-    return t[std::min(std::max(v, 0), kVramBudgets - 1)];
-}
-MENU_HINTS(hn_vram_budget, 0, "Set from what the driver allows: 70% of it, 45% on cards of 8 GB or less, at most 6 GB.",
-           "For 4 GB cards.", "For 6 GB cards.", "For 8 GB cards.", "The most Auto ever sets.", "For 12 GB cards.", nullptr,
-           "For 16 GB cards.")
-/// a preset's budgets (0: none, Auto): the VRAM budget row set to them
-void sync_preset_budgets(int p) {
-    opts.vram_budget = preset_vram_budget(p);
-    vram_budget_sync();
-}
 // (Sharpness: tuned for the window pass's neighbours one picture pixel apart, each about the old setting's sharpening on a
 // 3840 x 2160 window at that preset's picture, 2048 x 1152 or the handheld profile's 1536 x 864: same frame, mean |Laplacian|
 // of the window and of the picture, on the slider's steps)
@@ -1019,22 +992,20 @@ void apply_preset(int p) {
     // (the Upscaler and Frame generation are the player's: a preset never turns DLSS or made frames on or off. With DLSS
     // its resolution is DLSS's nearest mode)
     if (p > 0) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
-    opts.budget = p;   // (Custom chosen on this row: no budget, as before)
-    sync_preset_budgets(p);
+    opts.budget = p;   // (Custom chosen on this row: none, as before)
 }
-/// keep_own (Auto choosing again for new hardware): the preset-exempt rows the player set under Auto stay theirs, the Output
-/// resolution (another than the one Auto set, auto_output) and the VRAM budget row (budget 0, set_row). Mesh shaders Auto never
-/// sets (RX_VK_MESH_SHADERS), and the fingerprint has the card's mesh shaders, not this run's mode
+/// keep_own (Auto choosing again for new hardware): the preset-exempt row the player set under Auto stays theirs, the Output
+/// resolution (another than the one Auto set, auto_output). Mesh shaders Auto never sets (RX_VK_MESH_SHADERS), and the
+/// fingerprint has the card's mesh shaders, not this run's mode
 void apply_auto(bool keep_own) {
     const ::auto_settings::Choice& c = auto_choice;
     if (c.tier < 1) return;
     const Out set = output_at(opts.output_res);
     const bool own_output = keep_own && auto_output.w && !(set.w == auto_output.w && set.h == auto_output.h);
-    const bool own_budget = keep_own && opts.preset == kAutoPreset && opts.budget == 0;
-    const int output = opts.output_res, vram_budget = opts.vram_budget;
+    const int output = opts.output_res;
     env_release(&opts.dlss);
     opts.dlss = c.upscaler;   // (before the tier's rows: apply_preset snaps its Render resolution to this upscaler)
-    apply_preset(c.tier);   // (the tier's scaling rows and memory budgets)
+    apply_preset(c.tier);   // (the tier's scaling rows)
     if (c.tier == 1) opts.upscale = 0, opts.sharpness = 0;   // (the plain scale, as RX_VK_LOW_SPEC: the lightest)
     opts.handheld = 0;   // (docked: the handheld profile gave a GTX 1050 a black picture; the Render resolution lightens the card)
     if (c.resolution) opts.resolution = ur::snap_render(c.upscaler, c.resolution);
@@ -1054,18 +1025,13 @@ void apply_auto(bool keep_own) {
         const Out o = output_at(at);
         auto_output.w = o.w, auto_output.h = o.h;
     }
-    if (own_budget) {
-        opts.budget = 0;
-        opts.vram_budget = vram_budget;
-        vram_budget_sync();
-    }
     auto_tuned = 0;   // (chosen again: measured again in play)
     auto_tuning = {};
     opts.preset = kAutoPreset;   // (apply_preset set the tier's number)
     auto_for = auto_fp;          // (chosen for this PC, whether at a start or on the menu's row)
 }
 
-MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom; the VRAM budget row keeps its value.",
+MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
            "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
            "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
            "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
@@ -1251,6 +1217,17 @@ MENU_HINTS(hn_texture_detail, 0, "Full detail, but on a card with 4.5 GB or less
            "Every texture at the game's own size (the very largest still trimmed to fit).",
            "The big textures' largest level left out above 1024 texels: about a quarter of their memory.",
            "The big textures down to 512 texels: the least memory, the softest picture.")
+const char* tx_intel_compiles(int v) { return v ? "Side by side" : "One at a time"; }
+/// (the Intel shader compiles row's line: RX_VK_NO_INTEL_SERIAL holds it, as RX_VK_ASTC_RGBA8 the ASTC row)
+const char* hn_intel_compiles(int v, int variant) {
+    if (variant <= 0 && getenv("RX_VK_NO_INTEL_SERIAL"))
+        return "Set by RX_VK_NO_INTEL_SERIAL (hookshot_env.txt or the environment): remove that line to choose here.";
+    static const char* const t[] = {"The safe choice, and the best on a CPU with 4 cores or fewer: a shader Intel's compiler "
+                                    "faults on is left out instead of closing the game.",
+                                    "Shaders are built faster on a CPU with many cores, but Intel's driver can crash the game "
+                                    "while it builds them."};
+    return hint_in(t, 2, 0, v, variant);
+}
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
@@ -1281,8 +1258,8 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "A at the bottom, B on the right; X and Y as on the Switch.",
            "Bindings of your own, from the Controls page.")
 MENU_HINTS(hn_prompts, 0,
-           "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
-           "alone).",
+           "Those of the first controller, from its type and name (SDL's). With none, the keyboard's (the Switch's "
+           "with XInput alone).",
            "The Switch's buttons.", "An Xbox controller's.", "A PlayStation 4 controller's.", "A PlayStation 5 controller's.",
            "A Steam Deck's.", "The keys and mouse buttons your controls put each action on.")
 
@@ -1291,7 +1268,7 @@ Row rows[] = {
     // Quality preset first, as it sets rows in every section. (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where
     // they run here; HDR's paper white and peak brightness only with HDR on: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 6, 1, tx_preset,
-     "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
+     "Sets the scaling rows for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, its sharpening; then
     // the frames, and the window it is shown in)
@@ -1375,9 +1352,6 @@ Row rows[] = {
     {TAB_GRAPHICS, "GPU and memory", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    {TAB_GRAPHICS, "VRAM budget", &opts.vram_budget, 0, kVramBudgets - 1, 1, tx_vram_budget,
-     "How much video memory the game's textures may use, and its copies of game memory with them. Lower it if the game "
-     "stutters after a while of play; a preset sets it.", hn_vram_budget, false, true},
     // (no Mesh shaders row: changing it translated every shader again at the next start, for nothing a player gains. A launch
     // switch now, RX_VK_MESH_SHADERS: gpu/vk/mesh_mode.h)
 
@@ -1585,6 +1559,9 @@ Row rows[] = {
     {TAB_NEURAL, "Auto mask", &opts.nr_auto_mask, 0, 1, 1, tx_onoff,
      "Lets the model find the characters in the frame by itself, which is what Skin structure needs. Also helps it leave "
      "the HUD and text alone, which it has no reason to rebuild.", nullptr, false, true},
+    // (hookshot, Intel graphics on Windows only: row_shown) IntelDriverGate, vk_internal.h
+    {TAB_DEBUG, "Intel shader compiles", &opts.intel_compiles, 0, 1, 1, tx_intel_compiles,
+     "Intel graphics: how many shaders Intel's compiler is given at once. Applies after a restart.", hn_intel_compiles, true, true},
     // (hookshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
@@ -1847,10 +1824,18 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 /// runs); HDR's paper white, peak brightness and contrast only with HDR on. A row that comes or goes moves those after it: the
 /// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
 /// and menu_tick brings back one past the end
+/// (hookshot) The Intel shader compiles row: Intel graphics on Windows, the only place IntelDriverGate holds the compiler
+bool intel_compiler_row() {
+#ifdef _WIN32
+    return dev.props.vendorID == 0x8086;
+#else
+    return false;
+#endif
+}
 bool row_shown(int i) {
     const int* v = rows[i].value;
     return ((rows[i].cheat < 0 && v != &opts.damage_taken) || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
-           (v != &opts.antilag || antilag_available()) &&
+           (v != &opts.antilag || antilag_available()) && (v != &opts.intel_compiles || intel_compiler_row()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0) &&
@@ -2067,6 +2052,8 @@ void save() {
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
             // (and the Mesh shaders row's line, no longer read (gpu/vk/mesh_mode.h): dropped, not kept for nothing)
             mine |= key == "mesh_shaders";
+            // (and the VRAM budget row's, removed: one rule by the card, texture_budget.h and mirror_budget.h)
+            mine |= key == "vram_budget";
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
@@ -2553,10 +2540,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
-    // (hookshot) the VRAM budget row steps past 2.2 GB: the Minimum (4GB) preset's, too few textures on a bigger card (a 12 GB
-    // card's walk made 2-3 times as many textures again as at Auto, 1% lows of 5-7 fps; hckrman101, #dev-work). The preset still
-    // sets it, and the row shows it then
-    if (r.value == &opts.vram_budget && v == kVramMinimumOnly) v += dir;
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
@@ -2574,13 +2557,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             const int out = output_for_aspect(*r.value);
             if (out != opts.output_res) opts.output_res = out, env_release(&opts.output_res);
         }
-        if (r.value == &opts.vram_budget) {   // (hookshot: set on the row, the budget is the player's, on any card)
-            opts.budget = 0;
-            vram_budget_sync();
-        }
         if (!r.preset_exempt) {   // (rows no preset sets: the controls, the window, the counter...)
-            // (Custom, with the memory budgets of the preset it came from: they went with it, and Low (6GB) then a Resolution
-            // step left a 6 GB card without its texture cap, past its VRAM, and Streamline refused DLSS frames)
+            // (Custom, still the preset it came from in opts.budget: Minimum's mip trimming on a small card stays with it)
             opts.preset = 0; // Custom
         }
     }
@@ -4306,7 +4284,6 @@ void menu_init() {
                          "Windows NVIDIA Streamline's headers, at build time (readme.md says how to build with them).";
             }
     bool has_options = false;
-    bool has_vram_budget = false;   // (hookshot: a file from before the VRAM budget row: its preset's, memory_budget's)
     bool has_memory_budget = false;   // (a file from before memory_budget: its preset's)
     const char* cheats = getenv("HOS_OOT_CHEATS");
     cheats_env = cheats && !strcmp(cheats, "1");
@@ -4358,7 +4335,6 @@ void menu_init() {
                     auto_tuning.steps = std::max(steps, 0), auto_tuning.went_down = down != 0;
             }
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
-            has_vram_budget |= !strcmp(line, "vram_budget");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
             }
@@ -4406,8 +4382,6 @@ void menu_init() {
     }
     if (opts.preset > 0 && !has_memory_budget) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
     if (opts.preset == kAutoPreset && !has_memory_budget) opts.budget = 0;   // (Auto: its tier's, menu_auto_for_gpu)
-    if (!has_vram_budget) opts.vram_budget = preset_vram_budget(opts.budget);   // (a file from before the row)
-    vram_budget_sync();
     menu_debug_rows(opts.descriptor_reuse, opts.sampler_cache);   // (the Debug rows that apply in play: what was loaded)
     fps_level_now.store(fps_stats::level_of(opts.show_fps), std::memory_order_relaxed);
     // (the environment over the saved rows, for this run only: env_override, save)
@@ -4421,6 +4395,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_SKIP_OPENING")) env_override(&opts.skip_opening, !env_value_off(e));
     // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
     if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
+    if (const char* e = getenv("RX_VK_NO_INTEL_SERIAL")) env_override(&opts.intel_compiles, !env_value_off(e));
     if (const char* e = getenv("HOS_OUTPUT_RES")) {
         player_custom_output = custom_output;   // (parse_output replaces the player's own size with the environment's)
         env_override(&opts.output_res, parse_output(e));
@@ -4454,11 +4429,14 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
         logf("vk: Auto (this PC) would be: %s (%s)", auto_choice.why, hw_line);   // (for a bug report: what Auto would choose)
         return;
     }
+    // (an options file from the VRAM budget row, set under Auto: memory_budget=0, the preset Auto's tier is again, for Minimum's
+    // mip trimming: low_vram_texture_mips)
+    if (opts.budget == 0) opts.budget = auto_choice.tier;
     if (fp == auto_for) {
         logf("vk: Auto (this PC): the settings chosen for this PC before (%s)", hw_line);
         return;
     }
-    apply_auto(!first);   // (the hardware changed: the Output resolution and VRAM budget the player set stay theirs)
+    apply_auto(!first);   // (the hardware changed: the Output resolution the player set stays theirs)
     restart_init();   // (what this run starts with: the Output resolution applies at the next start, unless this is the first)
     save();   // (host/nn_applet.c reads handheld_profile and output_res from the file when the game first asks its mode, after this)
     logf("vk: Auto (this PC): %s: %s (%s)", first ? "first start" : "the hardware changed", auto_choice.why, hw_line);
@@ -4466,6 +4444,7 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
 
 // (the switches read once, at the first present: they are for the whole run, and each present asked twice)
 int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : 0; return run ? run : opts.vsync; }
+bool intel_compiles_side_by_side() { return opts.intel_compiles != 0; }   // (RX_VK_NO_INTEL_SERIAL in it: menu_init)
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
     const float s = upscaler_rows::percent(ur::snap_render(upscaler(), opts.resolution)) / 100.0f;

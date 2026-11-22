@@ -133,6 +133,9 @@ void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn)
 /// program_cache_load): its SPIR-V is read and its module made here, before the first use of the module (vk_draw.cpp dispatch).
 /// True: it is whole (or was). False: its code did not read or made no module; it is marked failed
 bool program_cache_complete(Program& p);
+/// (hookshot) The same without waiting for Intel's compiler gate on Windows (IntelDriverGate): while another thread holds it,
+/// *busy is set, false comes back and the program is left as it was, its code still to read (a worker completes it)
+bool program_cache_complete_ask(Program& p, bool* busy);
 /// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
 std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
 const Program* program_find(uint64_t key, uint64_t variant);

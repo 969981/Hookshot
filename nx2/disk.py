@@ -132,25 +132,43 @@ def _mounted_from(path, mountinfo="/proc/self/mountinfo", sysfs="/sys"):
     return [node]
 
 
-def _device_rotational(node, depth=0):
+def _device_rotational(node):
     """The device behind sysfs's node: its slaves decide for device-mapper and RAID (any spinning one makes it slow), and a
     partition's own folder has no queue/rotational, so the disk above it is read"""
-    path = os.path.realpath(node)
-    if depth < 4:
-        slaves = os.path.join(path, "slaves")
-        try:
-            names = sorted(os.listdir(slaves))
-        except OSError:
-            names = []
-        answers = [a for a in (_device_rotational(os.path.join(slaves, n), depth + 1) for n in names) if a is not None]
-        if answers:
-            return any(answers)
-    while True:
-        try:
-            with open(os.path.join(path, "queue", "rotational"), encoding="ascii") as f:
-                return f.read().strip() == "1"
-        except OSError:
-            up = os.path.dirname(path)
-            if up == path:
-                return None
-            path = up
+    root = os.path.realpath(node)
+    answers, active = {}, set()
+    pending = [(root, None)]
+    while pending:
+        path, children = pending.pop()
+        if children is None:
+            if path in answers or path in active:
+                continue
+            active.add(path)
+            slaves = os.path.join(path, "slaves")
+            try:
+                names = sorted(os.listdir(slaves))
+            except OSError:
+                names = []
+            children = [os.path.realpath(os.path.join(slaves, n)) for n in names]
+            # Postorder without recursion or a depth cap. A back edge has no answer;
+            # completed nodes are cached so shared slaves are only read once.
+            pending.append((path, children))
+            pending.extend((child, None) for child in reversed(children))
+            continue
+        known = [answers[c] for c in children if answers.get(c) is not None]
+        answer = any(known) if known else None
+        if not known:
+            parent = path
+            while True:
+                try:
+                    with open(os.path.join(parent, "queue", "rotational"), encoding="ascii") as f:
+                        answer = f.read().strip() == "1"
+                    break
+                except OSError:
+                    up = os.path.dirname(parent)
+                    if up == parent:
+                        break
+                    parent = up
+        answers[path] = answer
+        active.remove(path)
+    return answers[root]

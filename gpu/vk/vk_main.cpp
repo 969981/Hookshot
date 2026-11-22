@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "vk_draw.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
+#include "vk_new.h"
 #include "presenter_queue.h"
 static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
@@ -39,6 +41,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_progress.h"
 #include "vk_programs.h"
 #include "mesh_mode.h"
+#include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -84,6 +87,8 @@ void load_device(VkDevice device) {
 } // namespace vkx
 
 namespace mkwvk {
+
+bool predicted_complete();   // vk_draw.cpp: completion of explicit All preparation, including zero keys
 
 int display_refresh_mhz();   // (below, outside the unnamed namespace)
 
@@ -133,6 +138,51 @@ void logf_at(LogLevel level, const char* fmt, ...) {
     va_start(a, fmt);
     vlogf(level, fmt, a);
     va_end(a);
+}
+
+// (hookshot, issue 1280) The renderer's C++ allocations at Windows' commit limit (RAM plus the page file full). operator new got
+// nothing from malloc and threw std::bad_alloc; nothing caught it (often nothing could: the unwind itself failed on its way up,
+// 0xc00000ff), and the game ended with exception 0x20474343, "An unexpected error", with no wait and no out-of-memory notice.
+// The host's own allocations wait there since issue 333 (host/mkw_glue.c hos_alloc_failed); this is the same for the renderer's.
+// new_refused is the renderer's new_handler (mkwvk_init): operator new calls it each time malloc refuses and tries again when it
+// returns. It returns after 50 ms, for up to 5 s, while the textures give commit back; then the host's out-of-memory line and
+// notice, and the game stops (MkwVkHost out_of_memory, API version 23; an older host: thrown, as before). A refusal more than
+// kNewApartMs after this thread's last try is a new one, with a whole wait of its own. In a NewNothrow scope (vk_new.h) it
+// throws at once: that nothrow new's caller has a fallback for its null.
+// HOS_TEST_ALLOC_REFUSE=<text> (host/mkw_glue.c's test) whose text is in kNewWhat: at the 600th present one allocation too large
+// for any PC is asked for, to see the wait, the line, the notice and the stop in a run (new_refuse_test)
+static constexpr int kNewTries = 100;            // (100 x 50 ms: 5 s, as the host's hos_alloc_failed and commit_wait)
+static constexpr int kNewTryMs = 50;
+static constexpr int64_t kNewApartMs = 250;
+static constexpr char kNewWhat[] = "the renderer's C++ allocations";
+constinit thread_local int t_new_tries = 0;
+constinit thread_local int64_t t_new_last_ms = 0;
+static void new_sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+void new_refused() {
+    if (t_new_nothrow) throw std::bad_alloc();   // (libc++'s and libstdc++'s nothrow new: the caller's null)
+    if (t_new_tries && steady_ms() - t_new_last_ms > kNewApartMs) t_new_tries = 0;
+    if (!t_new_tries) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1, std::memory_order_relaxed) < 8)
+            logf("vk: a C++ allocation refused (at the commit limit?): tried again for up to %d s", kNewTries * kNewTryMs / 1000);
+    }
+    if (t_new_tries < kNewTries) {
+        t_new_tries++;
+        new_sleep_ms(kNewTryMs);
+        t_new_last_ms = steady_ms();
+        return;   // (operator new asks malloc again)
+    }
+    t_new_tries = 0;
+    if (host && host->version >= 23 && host->out_of_memory) host->out_of_memory(kNewWhat);   // (does not return)
+    throw std::bad_alloc();
+}
+void new_refuse_test(int64_t presents) {   // (the replay's present, its count)
+    static const char* const e = getenv("HOS_TEST_ALLOC_REFUSE");
+    if (!e || !*e || presents != 600 || !std::strstr(kNewWhat, e)) return;
+    logf("vk: HOS_TEST_ALLOC_REFUSE: one C++ allocation of 1 PB, refused on any PC, to see what a player sees at the commit limit");
+    static void* volatile kept;   // (kept: a new and delete of nothing else may be left out by the compiler)
+    kept = ::operator new(size_t(1) << 50);
+    ::operator delete(kept);
 }
 
 namespace {
@@ -291,12 +341,20 @@ bool pick_device() {
 
 /// (hookshot) Whether the shaders' float adds to storage buffers are asked to be the GPU's own atomic (create_device):
 /// RX_VK_NATIVE_FADD by the switches' rule (hookshot_env.h env_value_off: 0, false, off, no or empty is off, any other
-/// value on); unset, only with NVIDIA's driver, the one the native add was tried on in the game (an RTX 4090 in Kakariko
-/// and on Death Mountain Trail). AMD's RDNA 3 and later and Intel's Arc report the feature too but were not tried: they
-/// keep the loop unless the switch asks, until runs on them say otherwise
-static bool native_fadd_wanted(const char* env, VkDriverId driver) {
+/// value on); unset, with NVIDIA's driver (an RTX 4090 in Kakariko and on Death Mountain Trail) and with Intel's Windows
+/// driver on the GPU families it was run on: the Xe-LPG iGPUs of Meteor Lake and Arrow Lake (PCI device 0x7Dxx; run on a
+/// 0x7D55 in Kokiri Forest, Kakariko and on Death Mountain Trail), from that driver, 101.9175, on (Intel's Windows
+/// driverVersion is 101 << 14 | 9175); and the Arc B-series cards, Battlemage (PCI device 0xE2xx; run on a B580, 0xE20B,
+/// in Kokiri Forest: the loop lost the device in the sky's light sums, 499dbfd0, on entering it in every run), from the
+/// driver that was run, 101.9154, on. Intel's other GPUs on Windows (Iris Xe and UHD, Arc A-series, Lunar Lake), older
+/// drivers, AMD's RDNA 3 and later and Mesa's Intel driver report the feature too but were not tried: they keep the loop
+/// unless the switch asks, until runs on them say otherwise
+static bool native_fadd_wanted(const char* env, VkDriverId driver, uint32_t device, uint32_t version) {
     if (env) return !env_value_off(env);
-    return driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    if (driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY) return true;
+    if (driver != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) return false;
+    return ((device & 0xFF00u) == 0x7D00u && version >= (101u << 14 | 9175u)) ||
+           ((device & 0xFF00u) == 0xE200u && version >= (101u << 14 | 9154u));
 }
 
 bool create_device() {
@@ -385,8 +443,9 @@ bool create_device() {
     opennr::device_extensions(want, exts);   // (hookshot: open neural rendering's, vk_opennr.cpp; nothing unless selected)
     // (hookshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
     // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
-    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver only (native_fadd_wanted);
-    // RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop on every one, the extension not even enabled
+    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver, and Intel's Windows driver on the
+    // Meteor Lake and Arrow Lake iGPUs (native_fadd_wanted); RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop
+    // on every one, the extension not even enabled
     const char* const fadd_env = getenv("RX_VK_NATIVE_FADD");
     VkPhysicalDeviceDriverProperties fadd_driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     {
@@ -394,7 +453,7 @@ bool create_device() {
         p2.pNext = &fadd_driver;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
     }
-    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID);
+    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID, dev.props.deviceID, dev.props.driverVersion);
     bool atomic_float = false;
     if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
@@ -604,7 +663,10 @@ bool create_device() {
                                                      : "compare-exchange loop (no VK_EXT_shader_atomic_float)";
         if (fadd_env) logf("vk: float atomic add on storage buffers: %s, RX_VK_NATIVE_FADD=%s", how, fadd_env);
         else logf("vk: float atomic add on storage buffers: %s, %s", how,
-                  fadd_wanted ? "NVIDIA's driver" : "by default only with NVIDIA's driver (RX_VK_NATIVE_FADD=1: native where the GPU has it)");
+                  !fadd_wanted ? "by default only with NVIDIA's driver and Intel's Windows driver on Meteor Lake, Arrow Lake and Battlemage "
+                                 "(RX_VK_NATIVE_FADD=1: native where the GPU has it)"
+                  : fadd_driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ? "NVIDIA's driver"
+                                                                            : "Intel's Windows driver, Meteor Lake, Arrow Lake or Battlemage");
     }
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
@@ -709,13 +771,9 @@ bool create_device() {
     if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     bool task_mesh_fallback = false;
 #ifdef _WIN32
-    // Navi 22 can time out on task + mesh draws in the AMD Windows driver (issue 996), and so can Navi 21: on an RX 6800 XT
-    // (driver 0x800161) the native path lost the device within minutes at Hyrule Castle's entrance, while the fallback played
-    // 25 minutes there with none. Navi 21 is 0x73bf (RX 6800, 6800 XT, 6900 XT), 0x73af (RX 6900 XT, XTXH boards) and 0x73a5
-    // (RX 6950 XT): the same chip on the same driver, not tested on their own. Navi 22 is 0x73df (RX 6700 XT)
-    task_mesh_fallback = dev.props.vendorID == 0x1002 &&
-                         (dev.props.deviceID == 0x73bf || dev.props.deviceID == 0x73af || dev.props.deviceID == 0x73a5 ||
-                          dev.props.deviceID == 0x73df);
+    // (https://github.com/NotRexed/Hookshot/issues/996) AMD's RDNA 2 cards, Navi 21 to 23, can time out on task + mesh draws
+    // in the Windows driver: mesh_mode.h
+    task_mesh_fallback = mesh_rule::task_mesh_fallback_default(dev.props.vendorID, dev.props.deviceID);
 #endif
     if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
@@ -1326,6 +1384,7 @@ void prepare_with_screen() {
             StartupState st;
             st.stage = stage, st.done = done, st.total = total, st.left = left, st.secs = secs;
             st.prepared = prepared, st.finished = finished, st.stopping = prepare_stopped();
+            st.saving = prepare_saving();
             st.whole = whole;
             const StartupView view = startup_view(st);
             startup_screen(&view);
@@ -1410,7 +1469,8 @@ bool started_up() {
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
         // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
-        const bool predict = (prepared || predict_pending()) && compile_all();
+        // An explicit All request also upgrades a folder prepared on Most. Completed All work stays skipped.
+        const bool predict = compile_all() && (prepared || predict_pending() || !predicted_complete());
         if (!prepared && !bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
         // (no prediction: its part of the bar goes. On Most after a preparation too: left in, the step to the noted pipelines
         // counted it done at its guess, and the bar jumped by the prediction's share, about half of it)
@@ -1553,11 +1613,17 @@ void auto_profile() {
     hw.mesh_native = dev.mesh_capable;   // (the card's, not this run's mode: Linux AMD's Automatic is Compute, #2245)
     hw.mesh_as_compute = dev.mesh_capable && !dev.mesh_shader;
     hw.rtx = hw.vendor == ::auto_settings::NVIDIA && strstr(p.deviceName, "RTX");
-    // (RDNA 4: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
-    hw.rdna4 = hw.vendor == ::auto_settings::AMD && (strstr(p.deviceName, "RX 9") || strstr(p.deviceName, "GFX12"));
-    // (the Steam Deck's APU, LCD and OLED, or SteamOS's own flag)
+    // (RDNA 4 by PCI device id, from Longshot #1839 by gmourao: Navi 48, 0x7550 RX 9070 series and 0x7551 Radeon AI PRO R9700;
+    // Navi 44, 0x7590 RX 9060 series. A driver may name the card "AMD Radeon Graphics", which the name check missed; the name
+    // stays the fallback for cards not yet listed: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
+    hw.rdna4 = hw.vendor == ::auto_settings::AMD &&
+               (p.deviceID == 0x7550 || p.deviceID == 0x7551 || p.deviceID == 0x7590 || strstr(p.deviceName, "RX 9") ||
+                strstr(p.deviceName, "GFX12"));
+    // (the Steam Deck's APU, LCD and OLED, or Steam's flag on an integrated GPU: Steam sets SteamDeck=1 wherever it runs as on a
+    // Deck, Gaming Mode sessions on desktops with a discrete card too, which are no handheld)
     const char* deck = getenv("SteamDeck");
-    hw.handheld = (deck && atoi(deck) == 1) || strstr(p.deviceName, "Custom GPU 0405") || strstr(p.deviceName, "Custom GPU 0932");
+    hw.handheld = (deck && atoi(deck) == 1 && hw.integrated) || strstr(p.deviceName, "Custom GPU 0405") ||
+                  strstr(p.deviceName, "Custom GPU 0932");
     hw.dlss_built = dlss_built();
     hw.fsr4_built = fsr4_built();
     hw.threads = (int)std::thread::hardware_concurrency();
@@ -1649,9 +1715,10 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
-// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
-// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
-// pipeline). Looked up by name, so an executable and a back end of different versions still close
+// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process). First the files
+// that count the starts that crashed in a step are put back as this start found them (crash_markers.h): a quit is not a crash.
+// Then, while the shaders are prepared, their workers are stopped and what they made is kept (10 s at most: a driver can take
+// longer on one pipeline). Looked up by name, so an executable and a back end of different versions still close
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1660,6 +1727,10 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    // (before anything that takes time: the caches' saves below and the 10 s for the workers, with the window not answering. A
+    // player who quits again then ends the process (Force Quit, End task), and so does the system at a log-out: that end comes
+    // after a quit, and must not count as a crash either)
+    crash_markers::close();
     programs_census_log("close");
     module_ids_flush();
     fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)
@@ -1686,6 +1757,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         return nullptr;
     }
     host = h;
+    std::set_new_handler(new_refused);   // (issue 1280: a refused C++ allocation waits, then says out of memory)
     if (!load_global()) {
         logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
         return nullptr;

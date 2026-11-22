@@ -158,6 +158,7 @@ using mkwvk::PipelineCacheFile;
 #undef rename
 #endif
 #endif
+[[maybe_unused]] static void helper_thread_start() {}   // (vk_texture.cpp: registers a thread made inside a ReplayPin on Linux)
 #include "pipeline_cache_save.inc"
 #ifdef CACHE_VECTOR_BASELINE
 #undef fwrite

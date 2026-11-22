@@ -45,7 +45,7 @@ uint64_t max_import_size=128ull<<20;
 int failures=0,imports=0,retires=0,bg_starts=0;
 int64_t st_bg_waits=0,st_prefetch_used=0,st_prefetch_sent=0,st_prefetch_dropped=0;
 struct { bool external_memory_host=true; } dev;
-std::mutex bg_mu;std::condition_variable bg_done_cv,bg_cv;std::vector<uint64_t> bg_inflight;
+std::mutex bg_mu;std::condition_variable bg_done_cv,bg_cv;std::map<uint64_t,uint64_t> bg_inflight;
 std::deque<std::pair<uint64_t,uint64_t>> bg_queue;
 void bg_start() { bg_starts++; } // Recording spy: no thread or GPU import is started.
 void logf(const char*,...){} void bg_drain(){}
@@ -83,6 +83,7 @@ int check_prefetch(int mode) {
     CHECK(demand && !demand->prefetched && imports==1 && st_prefetch_used==1);
     CHECK(bg_queue.size()==(mode==1?3u:0u) && bg_starts==(mode==1?3:0) && st_prefetch_sent==(mode==1?3:0));
     CHECK(bg_inflight.size()==bg_queue.size() && st_prefetch_dropped==0 && st_bg_waits==0);
+    for(const auto& [lo, hi] : bg_queue) CHECK(bg_inflight.at(lo)==hi);
     std::printf("PASS: prefetched first use, reuse, unprefetched lookup, neighbour queueing (mode %d)\\n",mode);
     return 0;
 }

@@ -88,19 +88,11 @@ def code_key(control: bytes, area: bytes) -> int:
 
 
 def translator_stamp(vk_dir: str = None) -> str:
-    """Mirror of the HOOKSHOT_SHADER_STAMP block (nx2/build.py:693-699)."""
-    vk = vk_dir or os.path.join(ROOT, "gpu", "vk")
-    stamp = hashlib.sha1(usedforsecurity=False)
-    translator = [os.path.join(d, f) for top in ("eden", "sirit", "compat")
-                  for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
-    names = sorted(translator) + [os.path.join(vk, n) for n in
-                                  ("vk_shader.cpp", "vk_bank.cpp",
-                                   "vk_state.h", "vk_api.h")]
-    for f in names:
-        with open(f, "rb") as src:
-            stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode()
-                         + src.read().replace(bytes((13, 10)), bytes((10,))))
-    return stamp.hexdigest()[:16]
+    """HOOKSHOT_SHADER_STAMP as nx2/build.py makes it: nx2/translator_files.py's."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import translator_files
+    return translator_files.stamp(vk_dir or os.path.join(ROOT, "gpu", "vk"))
 
 
 def parse_seed(path: str):

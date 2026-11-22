@@ -49,8 +49,11 @@ ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 import game_profile   # noqa: E402  (which builds have a game profile, nx2/game_profile.py)
 import game_folders   # noqa: E402  (each game's own folders beside the default game's, nx2/game_folders.py)
+import object_store as _object_store   # noqa: E402  (the object cache's folder and what it forgets, nx2/object_store.py)
 # The default game's build, as the docs quote it (Ocarina's e0f3ccfa: the version its patches, the hot list and the
 # profile were made from). Which builds are accepted is the game profiles' list (supported_build), not this one.
 BUILD_ID = game_profile.GAMES[game_profile.DEFAULT].build_id[:8]
@@ -67,6 +70,7 @@ def supported_build(bid):
     return p if p.build_id else None
 import toolchain as _toolchain
 import disk as _disk
+import log_redact as _log_redact
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -244,9 +248,15 @@ def build_log(path):
         log = open(path, "w", encoding="utf-8", newline="\n")
     except OSError as e:
         fail("Could not open build log %s: %s" % (path, e))
+    # (the file without the player's user name, as the game writes its own log: players attach it to build problems. The
+    # console, which a launcher reads, as it is: nx2/log_redact.py)
+    saved = _log_redact.RedactedLines(log)
     with log:
-        with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
-            yield
+        try:
+            with contextlib.redirect_stdout(LogStream(sys.stdout, saved)), contextlib.redirect_stderr(LogStream(sys.stderr, saved)):
+                yield
+        finally:
+            saved.close()
 
 
 TIMES_FORMAT = 1
@@ -886,6 +896,44 @@ def bundled_mingw():
     return os.environ.get("HOOKSHOT_MINGW", "")
 
 
+def compiler_failure(r):
+    """What a compiler run that failed said, for one line of a message: its first error, else its last line (issue 1010: clang that
+    could not start said only "<clang.exe>: permission denied", and the message had "no message"), with the exit code when it
+    names no error. A Windows code is an NTSTATUS in hex (0xC0000135: a DLL not found; 0xC0000022: access denied)"""
+    lines = [l.strip() for l in (r.stderr + "\n" + r.stdout).splitlines() if l.strip()]
+    errors = [l for l in lines if "error" in l]
+    if errors:
+        return errors[0]
+    code = "exit code 0x%08X" % (r.returncode & 0xFFFFFFFF) if os.name == "nt" else "exit code %d" % r.returncode
+    return "%s, %s" % (lines[-1], code) if lines else "no output, %s" % code
+
+
+def unlistable_above(path):
+    """(issue 1010) The highest folder above path that Windows lets no program list, or None. The compiler (LLVM) looks up its own
+    long name as it starts (GetLongPathNameW), which lists every folder on the way: C:\\Users\\<name>\\Cookies and the other junctions
+    Windows keeps for old programs deny everyone that, and a Desktop moved into one took the launcher there. The launcher says it
+    before it runs the builder (MakeGameRun.Blocked); this is for a builder run otherwise. Windows only"""
+    if os.name != "nt":
+        return None
+    chain = []
+    at = os.path.dirname(os.path.abspath(path))
+    while True:
+        chain.append(at)
+        up = os.path.dirname(at)
+        if up == at:
+            break
+        at = up
+    for folder in reversed(chain):   # (the drive first: the folder named is the one to move out of)
+        try:
+            with os.scandir(folder) as entries:
+                next(entries, None)
+        except PermissionError:
+            return folder
+        except OSError:
+            pass   # (a folder not there, or another error: not this one's to say)
+    return None
+
+
 def check_mingw():
     """The bundled compiler builds and links a Windows program: found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
@@ -902,9 +950,12 @@ def check_mingw():
                            [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
-        errors = [l for l in r.stderr.splitlines() if "error" in l]
+        blocked = unlistable_above(cc)
+        if blocked:   # (issue 1010: LLVM's tools stop at once there, "<clang.exe>: permission denied", before they compile anything)
+            fail("Windows doesn't let programs look inside %s, a folder above the builder's own compiler, so it can't start. Move "
+                 "Hookshot's folder out of it (for example to C:\\Hookshot) and start Hookshot from there." % blocked)
         fail("The builder's own compiler (tools/llvm-mingw) could not build a test program: %s. Unpack the zip again into a folder "
-             "your antivirus allows." % (errors[0] if errors else "no message"))
+             "your antivirus allows." % compiler_failure(r))
     print("the compiler: %s (no Visual Studio needed)" % os.environ["HOOKSHOT_MINGW"], flush=True)
 
 
@@ -1101,6 +1152,45 @@ def _cleanup_build_child(child, parent):
     script, options = c
     return ("--standalone" in options and
             (_cleanup_path(script) == _cleanup_path(expected) or ntpath.normcase(script) == "nx2\\build.py"))
+
+
+WORK_LOCK = "make_game.lock"   # (in the work folder: held by the build using it, lock_work)
+_WORK_LOCK = []   # ([its path, the open lock file], kept open for the whole run: closing it, or the process ending, lets it go)
+
+
+def lock_work(work):
+    """One build at a time in a work folder. Two builds in one share its lift, its object cache and its lists: a player's second
+    build, started 7.5 minutes after the first into the same work folder, found the lift done and compiled again every object the
+    first had not cached yet (197 of 480 files, 451 s of compiling, the two ending 19 s apart), and one can delete or cut short the
+    other's files (issue 1197). The second now stops at once, saying so. A lock, not a file that says so: it goes with the process
+    that held it, however that ended, so a stopped build never keeps the next one out. A second main() in the same process (the
+    tests) keeps the lock it holds on that folder, and lets go of one on another"""
+    path = os.path.join(os.path.abspath(work), WORK_LOCK)
+    if _WORK_LOCK and _WORK_LOCK[0] == path:
+        return
+    release_work()
+    f = open(path, "a+b")
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        fail("Another build is using the work folder %s. Wait for it to end (or stop it), then build again." % work)
+    _WORK_LOCK[:] = [path, f]
+
+
+def release_work():
+    """Let go of the work folder's lock, if this process holds one. A build doesn't need to: the lock goes when its process ends.
+    The tests do, after running main() in their own process: Windows can't delete a temporary work folder while its
+    make_game.lock is still open"""
+    if _WORK_LOCK:
+        _WORK_LOCK[1].close()
+        _WORK_LOCK.clear()
 
 
 def stop_stray_compilers(work, default_work):
@@ -1551,10 +1641,11 @@ def build_language(a, out):
     return a.language or kept or (system_language() if a.prepare else None) or "en-US"
 
 
-def profile_readable(prof):
+def profile_readable(prof, any_os=False):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
-    build. Then the game is built without it (a little slower in play), not at all"""
-    if not LINUX:
+    build. Then the game is built without it (a little slower in play), not at all. any_os: asked on Windows too (the renderer's
+    committed profile is recorded on Linux, and llvm-mingw's clang is another LLVM)"""
+    if not LINUX and not any_os:
         return True
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
@@ -1562,12 +1653,50 @@ def profile_readable(prof):
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write("int f(int x) { return x + 1; }" + chr(10))
+        quiet = {"creationflags": 0x08000000} if os.name == "nt" else {}   # (CREATE_NO_WINDOW: no console from the launcher)
         r = subprocess.run([toolchain.find("clang"), "-O2", "-Wno-everything", "-fprofile-instr-use=" + prof, "-c", src, "-o",
-                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace", **quiet)
     if r.returncode:
         print("this compiler cannot read the play profile (%s): building without it" % (r.stderr.strip().splitlines() or ["?"])[-1],
               flush=True)
     return r.returncode == 0
+
+
+VK_PROFILE = "hookshot_vk.profdata"   # (the renderer's play profile, llvm-profdata's merge of an RX_VK_PGO=gen run's counters)
+# (the one every build uses: committed, xz, with its note in assets/profiles/README.md; unpacked into the work folder under its
+# own name, so a developer's work/hookshot_vk.profdata copied there earlier is never mistaken for it)
+VK_PROFILE_SHIPPED = os.path.join("assets", "profiles", VK_PROFILE + ".xz")
+VK_PROFILE_UNPACKED = "hookshot_vk.shipped.profdata"
+
+
+VK_PGO_ON = ("1", "on", "yes", "true")
+
+
+def vk_profile_for(work, environ, readable=None, root=ROOT):
+    """The renderer's profile nx2/build.py is given (RX_VK_PGO), or None. Off by default: only RX_VK_PGO=1 (on, yes, true) asks for
+    one, and then it is the checkout's work/hookshot_vk.profdata when it has one (a developer's recording, copied to <work> by
+    main), else the committed assets/profiles/hookshot_vk.profdata.xz, unpacked into <work>; either only when this compiler reads
+    it (on every system: the committed one comes from another LLVM than llvm-mingw's). The committed profile is Ocarina's
+    recording, of a renderer the four games share, and measured nothing in Ocarina (#119): a game turns it on when it gains.
+    RX_VK_PGO=gen or a profile's path is the developer's, passed to nx2/build.py as set. After ProjectReLink's make_game.py"""
+    if (environ.get("RX_VK_PGO") or "").strip().lower() not in VK_PGO_ON:
+        return None
+    own = os.path.join(work, VK_PROFILE)
+    if os.path.exists(os.path.join(root, "work", VK_PROFILE)) and os.path.exists(own):
+        prof = own
+    elif os.path.exists(os.path.join(root, VK_PROFILE_SHIPPED)):
+        import lzma
+        with lzma.open(os.path.join(root, VK_PROFILE_SHIPPED)) as f:
+            data = f.read()
+        prof = os.path.join(work, VK_PROFILE_UNPACKED)
+        # (written only when it differs: the object keys are its contents, and a compiler still ending from a cancelled build
+        # keeps the file mapped on Windows, WinError 1224)
+        if not os.path.exists(prof) or open(prof, "rb").read() != data:
+            with open(prof, "wb") as f:
+                f.write(data)
+    else:
+        return None
+    return prof if (readable or (lambda p: profile_readable(p, any_os=True)))(prof) else None
 
 
 def copy_writable(src, dst):
@@ -1579,6 +1708,58 @@ def copy_writable(src, dst):
             return
         os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
     shutil.copyfile(src, dst)
+
+
+def romfs_needed_for(exefs):
+    """What the romfs of the game whose code is in exefs must hold: its game profile's romfs_needed (nx2/game_profile.py), as
+    (any one of its names, a test). The profile is the one for main's build id; none when main can't be read here (its own
+    check says so) or no profile knows the build. Only Ocarina's names files so far: another game's romfs is its own"""
+    bid = ""
+    try:   # (read here, not with build_id: a main that is not there or not a game's is its own check's to say, not this one's)
+        with open(os.path.join(exefs, "main"), "rb") as f:
+            head = f.read(0x60)
+        bid = head[0x40:0x60].hex() if exefs and head[:4] == b"NSO0" else ""
+    except (OSError, TypeError):
+        pass
+    prof = game_profile.for_build(bid[:8]) if bid else None
+    tests = {"file": os.path.isfile, "dir": os.path.isdir}
+    return tuple((names, tests[kind]) for names, kind in (prof.romfs_needed if prof else ()))
+
+
+def romfs_missing(romfs, exefs=None):
+    """The first of what the game's profile needs (romfs_needed_for) that romfs lacks (its first name), or None. With nothing
+    named, a romfs that holds nothing at all is missing its files"""
+    folder = long_path(romfs)   # (a dump's deepest paths pass 260 characters: #1468)
+    needed = romfs_needed_for(exefs)
+    if not needed:
+        try:
+            with os.scandir(folder) as entries:   # (closed at once: on Windows an open listing keeps the folder from being deleted)
+                return None if any(True for _ in entries) else "files"
+        except OSError:
+            return "files"
+    return next((names[0] for names, there in needed
+                 if not any(there(os.path.join(folder, *name.split("/"))) for name in names)), None)
+
+
+def check_romfs_folder(romfs, exefs=None):
+    """A chosen romfs folder holds what the build and the game's start need (romfs_needed_for), said before the game folder is
+    made. Issue 467: another tool's packed copy (index.json and one romfs.bin) was built for 15 minutes into 27 GB, and the
+    game stopped at boot without its system files"""
+    folder = long_path(romfs)
+    missing = romfs_missing(romfs, exefs)
+    if missing:
+        packed = (" It holds a romfs.bin, a packed copy of the game's files: extract it first."
+                  if os.path.isfile(os.path.join(folder, "romfs.bin")) else "")
+        fail("The romfs folder %s does not hold the game's files (no %s): choose the extracted RomFS.%s" % (romfs, missing, packed))
+
+
+def check_unpacked_romfs(romfs, source, exefs=None):
+    """The same for a romfs this builder unpacked from a .nup, or kept in the game folder for an update (source says which):
+    a game built from it could not start. Before the build, as for a chosen folder"""
+    missing = romfs_missing(romfs, exefs)
+    if missing:
+        fail("%s does not hold all of the game's files (no %s): a game built from it could not start. Dump the game again and "
+             "choose the complete dump in Hookshot Builder." % (source, missing))
 
 
 def refuse_dump_links(folder):
@@ -1692,8 +1873,9 @@ def note_shader_list(work, romfs, out):
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 # (the compile's own switches, read by nx2/build.py alone: the hot pieces' level and their profile. They are not the lift's, so a
 # development build at RX_HOT_OPT=O1 keeps the lifted C instead of translating the game again; tests/test_lift_cache.py checks
-# that nothing else the key covers reads them)
-COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO")
+# that nothing else the key covers reads them. The renderer's profile too, after ProjectReLink: a renderer profile made, changed or
+# taken away does not translate the game again)
+COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO", "RX_VK_PGO", "RX_VK_PGO_FILE")
 
 
 LIFT_SCRIPTS = ("lift.py", "split_hot.py")   # (in nx2/: the two steps of the lift)
@@ -1894,7 +2076,31 @@ def generated_names(work):
     return names
 
 
-def forget_failed_build(work, linked, failed=()):
+def forget_renderer_objects(work):
+    """The renderer's objects (sa/build/obj/vk_*, nx2/build.py's vk_jobs) out of the work folder, its object cache and the store:
+    the next build compiles the renderer again, and nothing else"""
+    obj_dir = os.path.join(work, "sa", "build", "obj")
+    try:
+        names = [f for f in os.listdir(obj_dir) if f.startswith("vk_")]
+    except OSError:
+        return
+    keys = []
+    for f in names:
+        if f.endswith(".sha1"):
+            with contextlib.suppress(OSError), open(os.path.join(obj_dir, f)) as h:
+                keys.append(h.read().strip())
+    store = _object_store.folder(work)
+    if store:
+        _object_store.forget(store, keys)
+    for key in keys:
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(work, "objcache", key + ".o"))
+    for f in names:
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(obj_dir, f))
+
+
+def forget_failed_build(work, linked, failed=(), game_linked=False):
     """(hookshot) After a compile or link that failed. It forgets the lift: the next build translates the game again. A lifted file
     cut short (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder
     left (20 undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching.
@@ -1906,7 +2112,16 @@ def forget_failed_build(work, linked, failed=()):
     failed: the files build.py could not compile, alone too (its "FAILED <name>" lines). When every one is a source of the
     repository (host/, gpu/, third_party/), none the lift's or build.py's own, the translation is not what failed: it is kept, and
     the next build compiles the files not compiled yet without translating the game again (a typo in a host file cost a whole
-    lift, ~5 minutes on Windows). A build stopped without such a line, or one with a generated file among them, forgets it as before"""
+    lift, ~5 minutes on Windows). A build stopped without such a line, or one with a generated file among them, forgets it as before.
+    game_linked: the game itself linked (build.py's "linked <exe>: N MB"), and what failed came after it: the renderer's link or its
+    unresolved symbols (check_vk_symbols), made only of gpu/vk and its libraries. The translation and the game's objects linked, so
+    they are kept; only the renderer's objects go, in case a cached one is what failed (issue 1076: an extern written inside an
+    anonymous namespace in gpu/vk cost a whole lift and compile)"""
+    if game_linked:
+        forget_renderer_objects(work)
+        print("the build failed after the game linked, in the renderer: the next one keeps the translation and the game's "
+              "objects, and compiles only the renderer again", flush=True)
+        return
     if not linked and failed:
         generated = generated_names(work)
         if not any(name.startswith("code_") or name in generated for name in failed):
@@ -2338,10 +2553,13 @@ def main(a=None):
         a.out = a.update
     if not a.out or not (a.update or a.nup or (a.romfs and a.exefs)):
         fail("needs --out, and --nup or --romfs with --exefs")
+    if not (a.update or a.nup):
+        check_romfs_folder(a.romfs, a.exefs)   # (before any folder is chosen or made: #534)
     if getattr(a, "out_from_game", False) and not a.update:   # (--prepare, no --out: the game's own folder)
         game_folders_for_dump(a)
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    lock_work(work)   # (before anything is read or cleared in it: stop_stray_compilers, drop_stale_objects, the lift)
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
@@ -2383,6 +2601,7 @@ def main(a=None):
             fail("This game folder has no copy of the game files to update from: it was built before updates came in. Choose your game files "
                  "in Hookshot Builder and build into the same folder once; updates after that work by themselves.")
         check_cache_paths(out, (kept, romfs))
+        check_unpacked_romfs(romfs, "This game folder's copy of the game files (%s)" % romfs, kept)
         shutil.copytree(kept, exefs)
         check_modules(exefs)
         stand_in_damaged_files(out, romfs)   # (a folder unpacked by an earlier builder from a 23.3 GB dump)
@@ -2404,6 +2623,7 @@ def main(a=None):
             same = read_stamp(good).strip() == stamp
         if same:
             print("the game was read from this .nup before: reading it again is skipped", flush=True)
+            check_unpacked_romfs(romfs, "Your .nup file %s" % a.nup, kept)   # (unpacked by a builder before this check)
             shutil.copytree(kept, exefs)
         else:
             shutil.rmtree(game, ignore_errors=True)
@@ -2417,6 +2637,7 @@ def main(a=None):
                 check_supported_build(staged_exefs)
                 if not os.path.isdir(os.path.join(game, "romfs")):
                     fail("The package did not contain a romfs folder.")
+                check_unpacked_romfs(os.path.join(game, "romfs"), "Your .nup file %s" % a.nup, staged_exefs)
             except (OSError, SystemExit):
                 try:
                     shutil.rmtree(game)
@@ -2454,7 +2675,8 @@ def main(a=None):
     check_supported_build(exefs)
 
     # (made once on the development PC: lists of addresses and counts, no game code)
-    for name in ("hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", "hookshot.res"):
+    # (hookshot_vk.profdata: the renderer's own profile, counts over Hookshot's own code)
+    for name in ("hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", VK_PROFILE, "hookshot.res"):
         src = os.path.join(ROOT, "work", name)
         dst = os.path.join(work, name)
         # (copied only when it differs: a compiler still ending from a cancelled build keeps the profile mapped, WinError 1224)
@@ -2469,6 +2691,9 @@ def main(a=None):
         env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
+    vk_profile = vk_profile_for(work, os.environ)
+    if vk_profile:
+        env["RX_VK_PGO"] = vk_profile
 
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
@@ -2587,10 +2812,13 @@ def main(a=None):
                 plan[:] = [int(parts[1]), int(parts[2])]
     linking = []   # (build.py's "compiled in Ns, 0 failed": every object made, the link next)
     failed = []   # (build.py's "FAILED <name> (...": a file that did not compile, alone either)
+    game_linked = []   # (build.py's "linked <...>/hookshot[.exe]: N MB": the game linked, the renderer's link next)
 
     def compile_line(line):
         if re.match(r"compiled in \d+s, 0 failed$", line):
             linking.append(line)
+        if re.match(r"linked .*[\\/]hookshot(\.exe)?: \d+ MB \(", line):
+            game_linked.append(line)
         m = re.match(r"FAILED (\S+) \(", line)
         if m:
             failed.append(m.group(1))
@@ -2608,7 +2836,7 @@ def main(a=None):
             done["n"] = 0.0
             run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line)
     except SystemExit:
-        forget_failed_build(work, bool(linking), failed)
+        forget_failed_build(work, bool(linking), failed, bool(game_linked))
         raise
     compile_seconds = time.time() - compile_started
 

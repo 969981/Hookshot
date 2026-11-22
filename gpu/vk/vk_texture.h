@@ -244,4 +244,9 @@ bool texels_fit(const nvn_tex* t, const NVNcopyRegion* r, uint64_t row, uint64_t
 void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, uint8_t* dst,
                          uint64_t row, uint64_t img, bool write);
 
+/// (hookshot) Called first on a thread that the replaying thread may have made: on Linux a new thread inherits its maker's
+/// affinity, the replay's one core inside a ReplayPin (vk_replay.cpp), until it registers with host/posix/win32_posix.c,
+/// which gives it the process's affinity, as Windows starts a new thread. Nothing on Windows (vk_texture.cpp)
+void helper_thread_start();
+
 } // namespace mkwvk

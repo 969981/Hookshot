@@ -290,7 +290,10 @@ bool make_pipeline(Pipeline& p, const PassInfo& info) {
     mi.codeSize = info.spv_bytes;
     mi.pCode = info.spv;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    {
+        IntelDriverGate gate;   // (released before shared_compute_pipeline, which takes the same lock)
+        if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
+    }
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
@@ -513,6 +516,9 @@ void release() {
     for (Image* t : all_images()) drop_image(*t);   // (retired: freed once the GPU's uses of them are done)
     g.render_width = g.render_height = g.upscale_width = g.upscale_height = 0;
     free_dead();
+    // (what the GPU still uses is freed by the chain a few frames on: otherwise only FSR 3.1's next upscale freed it, and
+    // after the row went back to the game's upscaler its images stayed for the session)
+    if (!g.dead.empty()) temporal_later([] { free_dead(); });
 }
 
 bool upscale(VkCommandBuffer cmd, const Inputs& in) {
@@ -748,7 +754,10 @@ bool make_out_pipeline() {
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mi.codeSize = sizeof DLSS_OUT_COMP_SPV, mi.pCode = DLSS_OUT_COMP_SPV;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    {
+        IntelDriverGate gate;   // (released before shared_compute_pipeline, which takes the same lock)
+        if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
+    }
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};

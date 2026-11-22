@@ -5,6 +5,7 @@ compiled (not linked) with --cc gcc or --cc clang: CI needs no game linker.
 HOOKSHOT_LINUX_PREFLIGHT_SOURCE selects another checkout's nx2 sources for the
 exact same fail-before checks.
 """
+from functools import partial
 import argparse
 import contextlib
 import importlib.util
@@ -58,6 +59,7 @@ class LinuxPreflightTests(unittest.TestCase):
         self.real_compile = False
         self.runner = self.stack.enter_context(mock.patch.object(subprocess, "run", side_effect=self.run_process))
         self.make = load("linux_make_game", SOURCE / "nx2/make_game.py")
+        self.addCleanup(getattr(self.make, "release_work", lambda: None))   # (Windows deletes no work folder with its lock open)
         self.build = load("build", SOURCE / "nx2/build.py")
         sys.modules["build"] = self.build
         self.processes.clear()
@@ -65,6 +67,9 @@ class LinuxPreflightTests(unittest.TestCase):
         self.checkout.mkdir()
         (self.checkout / "requirements.txt").write_bytes((ROOT / "requirements.txt").read_bytes())
         self.stack.enter_context(mock.patch.object(self.make, "ROOT", str(self.checkout)))
+        # (the renderer's committed play profile (#569) looked up in the authored checkout too, not the import-time ROOT)
+        self.stack.enter_context(mock.patch.object(self.make, "vk_profile_for",
+                                                  partial(self.make.vk_profile_for, root=str(self.checkout))))
         self.stack.enter_context(mock.patch.object(self.make, "LINUX", True))
         self.stack.enter_context(mock.patch.object(self.make, "CROSS", False))
         self.stack.enter_context(mock.patch.object(self.build, "LINUX", True))
@@ -126,6 +131,13 @@ class LinuxPreflightTests(unittest.TestCase):
             dest = Path(cmd[cmd.index("--extract") + 1])
             (dest / "exefs").mkdir(parents=True)
             (dest / "romfs").mkdir()
+            for names, kind in self.make.game_profile.OOT.romfs_needed:   # (what Ocarina's romfs must hold: authored stand-ins, as zstd)
+                path = dest / "romfs" / names[0]
+                if kind == "dir":
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"authored stand-in")
             header = bytearray(0x60)
             header[:4] = b"NSO0"
             header[0x40:0x44] = bytes.fromhex(self.make.BUILD_ID)

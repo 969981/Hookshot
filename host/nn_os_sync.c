@@ -337,10 +337,33 @@ static void poke_multiwait(Obj *o) {
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
+/* HOS_SPIN_ALWAYS (gpu/vk/switches.def), read at the first spin: spin_adaptive is -1 until then. Threads spinning for
+   the first time at once: one reads it under spin_adaptive_lock, the others wait there for its value; after that, one
+   atomic load per spin */
+static int spin_adaptive = -1;
+static SRWLOCK spin_adaptive_lock = SRWLOCK_INIT;
 static int spin_begin(Obj *o, int *misses) {
     if (hos_spin_ns() <= 0) return 0;
-    static int adaptive = -1;
-    if (adaptive < 0) adaptive = !env_on("HOS_SPIN_ALWAYS");
+    int adaptive = __atomic_load_n(&spin_adaptive, __ATOMIC_RELAXED);
+    if (adaptive < 0) {
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        const int64_t lock_start = hos_now_ns();
+#endif
+        AcquireSRWLockExclusive(&spin_adaptive_lock);
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        const int64_t lock_wait = hos_now_ns() - lock_start;
+#endif
+        adaptive = __atomic_load_n(&spin_adaptive, __ATOMIC_RELAXED);
+        if (adaptive < 0) {
+            adaptive = !env_on("HOS_SPIN_ALWAYS");
+            __atomic_store_n(&spin_adaptive, adaptive, __ATOMIC_RELAXED);
+        }
+        ReleaseSRWLockExclusive(&spin_adaptive_lock);
+#ifdef HOS_TEST_SPIN_LOCK_TIME
+        /* Test builds only: one line per cold acquisition, outside the lock and before this thread spins. */
+        hos_log("spin: cold lock wait %lld ns", (long long)lock_wait);
+#endif
+    }
     *misses = __atomic_load_n(&o->spin_misses, __ATOMIC_RELAXED);
     return !(adaptive && *misses >= 4 && (__atomic_add_fetch(&o->spin_waits, 1, __ATOMIC_RELAXED) & 31));
 }

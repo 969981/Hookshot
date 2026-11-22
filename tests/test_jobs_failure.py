@@ -52,6 +52,7 @@ def resource_fixture():
 #include <memory>
 #include <vector>
 constexpr uintptr_t VK_NULL_HANDLE = 0;
+using VkPipeline = uintptr_t;
 struct Program {
     bool failed = false;
     std::atomic<bool> ready{false};

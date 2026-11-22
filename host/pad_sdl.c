@@ -66,6 +66,7 @@ static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
 static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
+static int state_type, state_sdl;   /* and its SDL type (the loaded SDL's numbers, 0 unknown), and that SDL (3, 2; 0 none) */
 static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 /* the game's own vibration values per side (0 left, 1 right: {amp_low, freq_low, amp_high, freq_high}), for the pads
    that play HD rumble; silence until the game sends one */
@@ -482,10 +483,19 @@ static void pads_poll(void) {
         memcpy(state_stick, s, sizeof s);
         state_count = count;
         state_name[0] = 0;
+        state_type = state_sdl = 0;
         for (int i = 0; i < MAX_PADS; i++)
             if (pads[i].gc && !pads[i].motion_only) {   /* (the stand-in's name, not its motion-only pad's) */
                 const char *name = hos_sdl_pad_name(pads[i].gc);
                 snprintf(state_name, sizeof state_name, "%s", name ? name : "");
+                static int sdl;   /* (loaded already: a pad is open; the same SDL the whole run) */
+                if (!sdl) sdl = hos_sdl_load();
+                /* (read each time, as the name: Steam Input's stand-in learns the pad behind it after it opens, and can
+                   change to another. A stand-in for a Nintendo pad says no type: Steam can swap its buttons to the letters
+                   printed on them, so its name's face, as before) */
+                const int type = hos_sdl_pad_type(pads[i].gc);
+                state_type = pads[i].steam && hd_rumble_kind(sdl, type) != HD_RUMBLE_NONE ? 0 : type;
+                state_sdl = sdl;
                 break;
             }
         ReleaseSRWLockExclusive(&state_lock);
@@ -553,10 +563,13 @@ int hos_sdl_motion_history(HosMotionSample *out, int max) {
 }
 /* (the Insert menu's Motion controls row) 0 no controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
 int hos_sdl_gyro_status(void) { return (int)gyro_status; }
-/* The first open controller's name into out ("" with none) */
-void hos_sdl_pad_first_name(char *out, size_t cap) {
+/* The first open controller's name into out ("" with none), its SDL type into *type (0 with none, or unknown) and that SDL
+   into *sdl (3, 2; 0 with none), each when not NULL */
+void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl) {
     AcquireSRWLockShared(&state_lock);
     snprintf(out, cap, "%s", state_name);
+    if (type) *type = state_type;
+    if (sdl) *sdl = state_sdl;
     ReleaseSRWLockShared(&state_lock);
 }
 

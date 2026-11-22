@@ -81,7 +81,8 @@ class Profile(object):
 
     def __init__(self, key, game, program_id=None, version=None, build_id=None, main_base=None,
                  patch_modules=(), code_patch_module=None, gfx=EMPTY_GFX, upscale=EMPTY_UPSCALE, hooks=EMPTY_HOOKS,
-                 npad_players=1, account_users=1, video_catchup=True, vk_parallel=None, released=True, graphics_scale=None, version_name="", notes=""):
+                 npad_players=1, account_users=1, video_catchup=True, vk_parallel=None, released=True, graphics_scale=None, version_name="", notes="",
+                 romfs_needed=()):
         self.key = key                                # HOOKSHOT_GAME=<this>
         self.game = game                              # the game's name, for logs
         self.program_id = program_id                  # as nx2/dump.py reports it
@@ -114,6 +115,10 @@ class Profile(object):
         # None: the host's own answer (1, or 0 when an output size is set)
         self.graphics_scale = graphics_scale
         self.notes = notes
+        # What this game's romfs must hold for the build and its start, each (any one of its names, "file" or "dir"):
+        # make_game.py refuses a romfs without one before the build (#534, #863). A profile that names none gets only the
+        # check that the romfs holds something: another game's files are its own (MKW and Bananza have no ZsDic.pack.zs)
+        self.romfs_needed = tuple(romfs_needed)
 
     def __repr__(self):
         return "<Profile %s: %s>" % (self.key, self.game)
@@ -123,6 +128,13 @@ OOT = Profile(
     key="oot",
     game="The Legend of Zelda: Ocarina of Time",
     program_id="0400486024DEC000",
+    # (Longshot #534 and #863) the build reads Pack/ZsDic.pack.zs and System/Resource (prompt_assets.py, shader_census.py), and
+    # the game cannot start without its heap definition, which it opens as Product. then Default. (#689 and a player's
+    # v3.0.0-rc.4: a romfs with no System folder crashed at boot every time, "write 0x100000000000, guest 0", its heaps set
+    # up without their sizes; that file alone missing does too)
+    romfs_needed=((("Pack/ZsDic.pack.zs",), "file"), (("System/Resource",), "dir"),
+                  (("System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs",
+                    "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"), "file")),
     version=131072,                 # the update; base v65536
     version_name="version 131072",
     build_id="e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348",

@@ -4,12 +4,12 @@
    the face's icon of the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So
    the icons say which button to press on this pad, custom controls too.
 
-   The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
+   The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's type and name
    (SDL; with none, and none through XInput, the keyboard's), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam
    Deck, 6 Keyboard. The keyboard face (nx2/prompt_keys.py) points each Switch button at the icon of the first key bound to it,
-   the sticks at the keys that move (WASD) and the mouse that turns the camera, and keeps the Switch's textures and the Talk
-   ring's places. The game reads the font once, at its start; a new face or new controls are written where it keeps it, and its
-   texts drawn again (the live part, below).
+   the sticks at the keys that move (the Controls page's: stick_shows) and the mouse that turns the camera, and keeps the
+   Switch's textures and the Talk ring's places. The game reads the font once, at its start; a new face or new controls are
+   written where it keeps it, and its texts drawn again (the live part, below).
 
    The font as built: an OpenType font behind an 8-byte header, XORed per little-endian word with the key the header's magic
    (0x18029a7f) gives. Its cmap has, for each face, one icon per pad input at U+F700 + 32 x HOS_PROMPT_* + HOS_PAD_* and the
@@ -30,10 +30,11 @@
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
 #include "zstd.h"   /* (third_party/zstd: a mod's size table) */
+#include "hd_rumble.h"   /* (hd_rumble_kind: SDL's types of the Switch's controllers) */
 
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
-void hos_sdl_pad_first_name(char *out, size_t cap);
+void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl);
 int hos_mods_file(const char *rel, char *out, size_t cap);   /* mods.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c: the game's RomFS folder */
 int hos_xinput_pads(void);   /* nn_hid.c */
@@ -54,7 +55,10 @@ int rx_option(int id, int otherwise);   /* rx_backend.c: the Insert menu's rows 
 #define SLOTS 320
 #define STICK_KEYS 0xF8C0
 #define STICK_GAME 0xF8D0
-#define BINDS (2 * HOS_SW_N)   /* (what the prompts follow: each Switch button's pad input, then its first key: current_binds) */
+/* what the prompts follow (current_binds): each Switch button's pad input, then its first key (BUTTON_BINDS: all the textures
+   and the layouts follow), then the first key of each way the keys move (HOS_KEY_MOVE_*'s order: the sticks' icons in texts) */
+#define BUTTON_BINDS (2 * HOS_SW_N)
+#define BINDS (BUTTON_BINDS + 4)
 static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck", "keyboard"};
 /* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
@@ -70,6 +74,10 @@ static const uint16_t static_code[3] = {0xE049, 0xE064, 0xE065};
    any way; R the same; R's four ways */
 static const uint16_t stick_code[15] = {0xE050, 0xE052, 0xE054, 0xE058, 0xE05A, 0xE05C, 0xE05E, 0xE051, 0xE053, 0xE055,
                                         0xE059, 0xE05B, 0xE05D, 0xE05F, 0xE068};
+/* the ways each of L's icons means (a bit each, in HOS_KEY_MOVE_*'s order: up, down, left, right), and the keys the build drew
+   on the icons of more than one way (nx2/prompt_keys.py MOVE: host/nn_hid.c's default movement keys) */
+static const unsigned char stick_ways[7] = {2, 1, 12, 8, 4, 3, 15};
+static const unsigned char move_default[4] = {0x57, 0x53, 0x41, 0x44};
 
 static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
     char path[MAX_PATH];
@@ -90,16 +98,37 @@ static int contains(const char *text, const char *word) {   /* (any case) */
     return 0;
 }
 
-/* the face of a controller by its name (SDL's), HOS_PROMPT_*: "" no controller, the Switch's (the keyboard, the game's own
-   icons; or XInput without SDL) */
-static int face_of_name(const char *name) {
+/* the face of a controller by the type SDL gives it (sdl: the SDL it came from, 3 or 2; type: SDL_GetGamepadType's or
+   SDL_GameControllerGetType's number), HOS_PROMPT_*; -1 a type that names no face (unknown, standard, virtual, the others):
+   its name says then. SDL knows the type from the pad's USB ids, where names vary ("Wireless Controller" is a DualShock 4 or a
+   DualSense on some systems), and through Steam Input from the pad behind the stand-in */
+static int face_of_type(int sdl, int type) {
+    if (hd_rumble_kind(sdl, type) != HD_RUMBLE_NONE) return HOS_PROMPT_SWITCH;   /* (a Pro Controller, Joy-Cons) */
+    if (sdl == 3) {   /* (SDL_GAMEPAD_TYPE_XBOX360 2, XBOXONE 3, PS3 4, PS4 5, PS5 6) */
+        if (type == 2 || type == 3) return HOS_PROMPT_XBOX;
+        if (type == 4 || type == 5) return HOS_PROMPT_PS4;
+        if (type == 6) return HOS_PROMPT_PS5;
+    } else if (sdl == 2) {   /* (SDL_CONTROLLER_TYPE_XBOX360 1, XBOXONE 2, PS3 3, PS4 4, PS5 7) */
+        if (type == 1 || type == 2) return HOS_PROMPT_XBOX;
+        if (type == 3 || type == 4) return HOS_PROMPT_PS4;
+        if (type == 7) return HOS_PROMPT_PS5;
+    }
+    return -1;
+}
+
+/* the face of a controller by its name (SDL's) and type (face_of_type), HOS_PROMPT_*: "" no controller, the Switch's (the
+   keyboard, the game's own icons; or XInput without SDL). A name that says the maker's buttons wins, then the type (a name
+   that says none of them: "Wireless Controller", Steam Input's "Steam Virtual Gamepad"), else the Xbox's */
+static int face_of_pad(const char *name, int sdl, int type) {
     if (!name[0]) return HOS_PROMPT_SWITCH;
+    /* (a Steam Controller names its buttons as the Deck does: L1/R1, View, Menu, Steam. SDL3 calls it "Steam Controller";
+       SDL has no type for either, and Steam Input's stand-in for one says Xbox) */
+    if (contains(name, "steam deck") || contains(name, "steam controller")) return HOS_PROMPT_STEAMDECK;
     if (contains(name, "dualsense") || contains(name, "ps5")) return HOS_PROMPT_PS5;
     if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) return HOS_PROMPT_PS4;
-    /* (a Steam Controller names its buttons as the Deck does: L1/R1, View, Menu, Steam. SDL3 calls it "Steam Controller") */
-    if (contains(name, "steam deck") || contains(name, "steam controller")) return HOS_PROMPT_STEAMDECK;
     if (contains(name, "nintendo") || contains(name, "switch") || contains(name, "joy-con")) return HOS_PROMPT_SWITCH;
-    return HOS_PROMPT_XBOX;   /* (Xbox pads, and the many that copy their layout) */
+    const int by_type = face_of_type(sdl, type);
+    return by_type >= 0 ? by_type : HOS_PROMPT_XBOX;   /* (Xbox pads, and the many that copy their layout) */
 }
 
 /* the first key bound to Switch button b (a Windows key code, the second slot's when the first is clear), 0 none */
@@ -110,16 +139,31 @@ static int first_key(int b) {
 }
 
 /* the controls now (BINDS: hos_binding's, as the Controls page sets them): the pad input bound to each Switch button, then its
-   first key */
+   first key, then the first key of each way the keys move */
 static void current_binds(int *bind) {
     for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0), bind[HOS_SW_N + b] = first_key(b);
+    for (int m = 0; m < 4; m++) bind[BUTTON_BINDS + m] = first_key(HOS_KEY_MOVE_UP + m);
+}
+
+/* the code whose icon the keyboard face shows for stick icon i (stick_code's order) with these movement keys (move: the first
+   key of up, down, left, right, 0 none). R's: the mouse's, as built. L's: the keys drawn on it at the build (W A S D) while
+   its ways are on those keys. On others, one way shows its key's icon; several ways, or a way on no key, the game's own stick
+   icon, since the font has no picture of other keys together */
+static unsigned stick_shows(int i, const int *move) {
+    if (i >= 7) return STICK_KEYS + (unsigned)i;
+    const unsigned ways = stick_ways[i];
+    for (int m = 0; m < 4; m++)
+        if ((ways >> m & 1) && move[m] != move_default[m])
+            return ways == 1u << m && move[m] ? KEY_BASE + (unsigned)move[m] : STICK_GAME + (unsigned)i;
+    return STICK_KEYS + (unsigned)i;
 }
 
 static int keyboard_built;   /* (the build made the keyboard face: prompts/keyboard/; choose_face) */
 
-/* Auto's face: the first controller's (by SDL's name); with none, and none through XInput either, the keyboard's */
-static int auto_face(const char *name) {
-    return !name[0] && keyboard_built && !hos_xinput_pads() ? HOS_PROMPT_KEYBOARD : face_of_name(name);
+/* Auto's face: the first controller's (by SDL's name and type: sdl, the SDL it came from); with none, and none through XInput
+   either, the keyboard's */
+static int auto_face(const char *name, int sdl, int type) {
+    return !name[0] && keyboard_built && !hos_xinput_pads() ? HOS_PROMPT_KEYBOARD : face_of_pad(name, sdl, type);
 }
 
 /* HOS_PROMPT_* (faces[]) */
@@ -138,15 +182,16 @@ static int choose_face(const char *dir) {
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
     /* Auto: the first controller SDL opens (it scans every second: up to 1.5 s for one, at the game's start) */
     char name[128] = "";
+    int type = 0, sdl = 0;
     uint64_t b = 0;
     int32_t s[4] = {0};
     for (int i = 0; i < 30 && !name[0]; i++) {
         hos_sdl_pads(&b, s);
-        hos_sdl_pad_first_name(name, sizeof name);
+        hos_sdl_pad_first(name, sizeof name, &type, &sdl);
         if (!name[0]) Sleep(50);
     }
-    const int face = auto_face(name);
-    hos_log("prompts: auto: controller \"%s\": %s", name[0] ? name : "(none)", faces[face]);
+    const int face = auto_face(name, sdl, type);
+    hos_log("prompts: auto: controller \"%s\" (SDL%d type %d): %s", name[0] ? name : "(none)", sdl, type, faces[face]);
     return face;
 }
 
@@ -186,8 +231,8 @@ static int cmap4_point(uint8_t *st, unsigned segs, unsigned code, unsigned gid) 
 }
 
 /* the face's icons: each Switch button's segment pointed at the face's icon of its pad input (unbound: of its default's; the
-   keyboard face: the icon of its first key, if it has one), the d-pad's at the face's, and the sticks' at the keyboard's or the
-   game's own; how many buttons bound */
+   keyboard face: the icon of its first key, if it has one), the d-pad's at the face's, and the sticks' at the keyboard's for
+   the movement keys now (stick_shows; a key without an icon: the game's own) or the game's own; how many buttons bound */
 static int cmap4_bind(uint8_t *st, size_t n, int face) {
     const unsigned segs = rd16(st + 6) / 2;
     if (14 + 8 * (size_t)segs + 2 > n) return 0;   /* (as cmap4_glyph: the ranges' last entry too) */
@@ -209,8 +254,11 @@ static int cmap4_bind(uint8_t *st, size_t n, int face) {
         const unsigned gid = cmap4_glyph(st, n, base + STATIC_AT + (unsigned)k);
         if (gid) cmap4_point(st, segs, static_code[k], gid);
     }
+    int move[4];
+    for (int m = 0; m < 4; m++) move[m] = keys ? first_key(HOS_KEY_MOVE_UP + m) : 0;
     for (int i = 0; i < 15; i++) {   /* (a font built without the keyboard face has none of these: nothing changes) */
-        const unsigned gid = cmap4_glyph(st, n, (keys ? STICK_KEYS : STICK_GAME) + (unsigned)i);
+        unsigned gid = keys ? cmap4_glyph(st, n, stick_shows(i, move)) : 0;
+        if (!gid) gid = cmap4_glyph(st, n, STICK_GAME + (unsigned)i);
         if (gid) cmap4_point(st, segs, stick_code[i], gid);
     }
     return done;
@@ -451,7 +499,9 @@ static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32
    u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
    controls or the blocks changed (prompts/Common.key) */
 /* out: the game's file (game) with the runs written over it (a later one over an earlier where they meet), as raw zstd blocks;
-   written again only when its key (keypath: the hash h of what chose the runs) changed */
+   written again only when its key (keypath: the hash h of what chose the runs) changed. Written beside it first (out.tmp), and
+   moved over it with the key removed until then: a failed write leaves the last good file and its key, a stop between the
+   steps leaves no key (written again at the next start) */
 static int write_patched(const char *game, const char *out, const char *keypath, uint64_t h, Run *runs, size_t nruns) {
     qsort(runs, nruns, sizeof *runs, run_cmp);
     char keyline[32] = "", want[32];
@@ -463,7 +513,9 @@ static int write_patched(const char *game, const char *out, const char *keypath,
     snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
     int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
     if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
-        FILE *in = fopen(game, "rb"), *o = fopen(out, "wb");
+        char tmp[MAX_PATH + 8];
+        snprintf(tmp, sizeof tmp, "%s.tmp", out);
+        FILE *in = fopen(game, "rb"), *o = fopen(tmp, "wb");
         uint8_t *chunk = (uint8_t *)malloc(131072);
         ok = in && o && chunk;
         if (ok) {
@@ -498,6 +550,9 @@ static int write_patched(const char *game, const char *out, const char *keypath,
         if (in) fclose(in);
         if (o) ok &= fclose(o) == 0;
         free(chunk);
+        ok = ok && (GetFileAttributesA(keypath) == INVALID_FILE_ATTRIBUTES || DeleteFileA(keypath)) &&
+             MoveFileExA(tmp, out, MOVEFILE_REPLACE_EXISTING);
+        if (!ok) DeleteFileA(tmp);
         if (ok && (f = fopen(keypath, "w"))) {
             fputs(want, f);
             fclose(f);
@@ -551,7 +606,7 @@ static int build_textures(char *out, size_t cap) {
     if (!t) return 0;   /* (built without the textures: the game's) */
     int bind[BINDS], own[HOS_SW_N];
     current_binds(bind);
-    uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, sizeof bind), t, (size_t)tn);
+    uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, BUTTON_BINDS * sizeof *bind), t, (size_t)tn);
     size_t nruns;
     Run *runs = texture_runs(t, tn, texture_bind(face, bind, own), &nruns);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
@@ -956,7 +1011,8 @@ static int font_point(uint8_t *otf, size_t n, unsigned code, unsigned to) {
 
 /* the keyboard face's codes in texts: one for each Switch button and key shown, given out as they come (from SLOT_BASE: a code
    whose glyph the game has never drawn) and pointed at the key's icon where the game keeps the font; the font served again
-   (live_font) keeps them (slots_point) */
+   (live_font) keeps them (slots_point). L's icon of one way on a key other than the build's takes one as a button does (as
+   button HOS_SW_N + its place in stick_code) */
 static SRWLOCK slot_lock = SRWLOCK_INIT;
 static uint8_t slot_button[SLOTS], slot_key[SLOTS];
 static volatile int nslots;
@@ -965,7 +1021,8 @@ static void slots_point(uint8_t *otf, size_t n) {   /* (slot_lock held) */
     for (int s = 0; s < nslots; s++) font_point(otf, n, SLOT_BASE + (unsigned)s, KEY_BASE + slot_key[s]);
 }
 
-/* the code of Switch button b on key k in a text; -1 when the key has no icon, the font is not found, or all are given out */
+/* the code of Switch button b (or stick icon b - HOS_SW_N) on key k in a text; -1 when the key has no icon, the font is not
+   found, or all are given out */
 static int key_slot(int b, int k) {
     AcquireSRWLockExclusive(&slot_lock);
     int s = 0;
@@ -988,13 +1045,20 @@ static int key_slot(int b, int k) {
 }
 
 static int text_code(unsigned c, int face, const int *bind) {   /* the code that shows c's button now, else -1 */
-    int b = -1, k = -1;
-    for (int i = 0; i < 15 && keyboard_built; i++)   /* (a stick's: the keyboard's keys, or the game's own icon) */
-        if (c == stick_code[i] || c == STICK_KEYS + (unsigned)i || c == STICK_GAME + (unsigned)i)
-            return (face == HOS_PROMPT_KEYBOARD ? STICK_KEYS : STICK_GAME) + i;
+    int b = -1, k = -1, stick = -1;
+    for (int i = 0; i < 15 && keyboard_built && stick < 0; i++)
+        if (c == stick_code[i] || c == STICK_KEYS + (unsigned)i || c == STICK_GAME + (unsigned)i) stick = i;
     for (int i = 0; i < HOS_SW_N && b < 0; i++)
         if (c == switch_code[i]) b = i;
     if (c >= SLOT_BASE && c < SLOT_BASE + SLOTS && (int)(c - SLOT_BASE) < nslots) b = slot_button[c - SLOT_BASE];
+    if (b >= HOS_SW_N) stick = b - HOS_SW_N;
+    if (stick >= 0) {   /* (a stick's: the keyboard's keys as they are bound now, or the game's own icon) */
+        const unsigned shows = face == HOS_PROMPT_KEYBOARD ? stick_shows(stick, bind + BUTTON_BINDS) : STICK_GAME + (unsigned)stick;
+        if (shows < KEY_BASE || shows >= KEY_BASE + 256) return (int)shows;
+        /* (a key's icon: the code the game drew for this stick before may show another key, so one of its own) */
+        const int s = key_slot(HOS_SW_N + stick, (int)(shows - KEY_BASE));
+        return s >= 0 ? s : STICK_GAME + stick;
+    }
     for (int i = 0; i < 3 && k < 0; i++)
         if (c == static_code[i]) k = i;
     if (c >= BIND_BASE && c < BIND_BASE + HOS_PROMPT_N * HOS_SW_N * HOS_PAD_ART_N) b = (int)((c - BIND_BASE) / HOS_PAD_ART_N % HOS_SW_N);
@@ -1118,8 +1182,9 @@ static int live_face(void) {
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
     if (choice < 0) return live_face_now;   /* (no menu: the start's) */
     char name[128] = "";
-    hos_sdl_pad_first_name(name, sizeof name);
-    return auto_face(name);
+    int type = 0, sdl = 0;
+    hos_sdl_pad_first(name, sizeof name, &type, &sdl);
+    return auto_face(name, sdl, type);
 }
 
 /* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed, or a
@@ -1147,13 +1212,14 @@ void hos_prompts_live(void) {
         const int found[PARTS] = {0, lay.base != 0, font.at != 0};   /* (the textures: looked at under tex_lock) */
         char dir[MAX_PATH];
         int start, ready = -1;
-        if (tex.l.base && (part_face[PART_TEXTURES] != face || memcmp(part_bind[PART_TEXTURES], bind, sizeof bind)) &&
+        if (tex.l.base && (part_face[PART_TEXTURES] != face || memcmp(part_bind[PART_TEXTURES], bind, BUTTON_BINDS * sizeof *bind)) &&
             (ready = setup(dir, sizeof dir, &start)))
             texture_bin(dir, face);   /* (read before tex_lock) */
         for (int p = 0; p < PARTS; p++) {
             if (p == PART_TEXTURES) AcquireSRWLockExclusive(&tex_lock);   /* (the pool kept, or let go, till its writes end) */
             const int here = p == PART_TEXTURES ? tex.l.base != 0 : found[p];
-            if (here && (part_face[p] != face || memcmp(part_bind[p], bind, sizeof bind))) {
+            const size_t follows = (p == PART_FONT ? BINDS : BUTTON_BINDS) * sizeof *bind;   /* (the movement keys: the font alone) */
+            if (here && (part_face[p] != face || memcmp(part_bind[p], bind, follows))) {
                 if (ready < 0) ready = setup(dir, sizeof dir, &start);
                 if (ready && p == PART_TEXTURES) live_textures(dir, face, bind);
                 if (ready && p == PART_LAYOUTS) live_layouts(dir, face, bind);

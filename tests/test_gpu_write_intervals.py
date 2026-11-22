@@ -108,7 +108,8 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    code = (DRIVER.replace("/* WRITER */", block(src, "void texture_gpu_wrote(uint64_t gpu, uint64_t size) {"))
+    regions = (ROOT / "gpu/vk/wrote_regions.h").read_text(encoding="utf-8").replace("#pragma once", "")   # (texture_gpu_wrote and gpu_wrote_into ask it first)
+    code = (DRIVER.replace("/* WRITER */", regions + block(src, "void texture_gpu_wrote(uint64_t gpu, uint64_t size) {"))
             .replace("/* READER */", block(src, "bool gpu_wrote_into(Texture& tex) {")))
     with tempfile.TemporaryDirectory(prefix="gpu-write-intervals-") as tmp:
         cpp, exe = Path(tmp) / "intervals.cpp", Path(tmp) / "intervals.exe"

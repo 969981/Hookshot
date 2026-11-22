@@ -87,6 +87,7 @@ inline void note_work() {
 #define vkCmdSetCheckpointNV(...) (::mkwvk::rec::rx_vkCmdSetCheckpointNV(__VA_ARGS__))
 #define vkCmdWriteTimestamp2(...) (::mkwvk::rec::rx_vkCmdWriteTimestamp2(__VA_ARGS__))
 #define vkCmdResetQueryPool(...) (::mkwvk::rec::rx_vkCmdResetQueryPool(__VA_ARGS__))
+#define vkCmdCopyQueryPoolResults(...) (::mkwvk::note_work(), ::mkwvk::rec::rx_vkCmdCopyQueryPoolResults(__VA_ARGS__))
 
 // (RX_VK_RECORDER=defer) the calls that begin, end or reset command buffers, submit, present or wait, read back what the GPU did,
 // or let go of what recorded commands use: the thread's held packets reach the driver first (rec::boundary(): a relaxed load and
@@ -133,3 +134,5 @@ inline void note_work() {
 #define vmaDestroyBuffer(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyBuffer), ::vmaDestroyBuffer(__VA_ARGS__))
 #define vmaDestroyImage(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyImage), ::vmaDestroyImage(__VA_ARGS__))
 #define vmaInvalidateAllocation(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaInvalidateAllocation), ::vmaInvalidateAllocation(__VA_ARGS__))
+// (hookshot: a sparse mirror's blocks, vk_vma.cpp)
+#define vmaFreeMemory(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaFreeMemory), ::vmaFreeMemory(__VA_ARGS__))

@@ -654,7 +654,9 @@ class PromptDependencyTests(unittest.TestCase):
                     [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
                 for module in modules:
                     if (SOURCE / (module.split(".")[0] + ".py")).is_file():
-                        self.assertIn(module, sources | {"kit"}, "new prompt dependency needs fingerprint coverage")
+                        # (kit puts the modules on the path; long_paths, #1115, lets a path past 260 characters be opened:
+                        # neither changes what is drawn, so neither is in the prompt key)
+                        self.assertIn(module, sources | {"kit", "long_paths"}, "new prompt dependency needs fingerprint coverage")
         self.assertIn("SOURCE_DATE_EPOCH", P.PROMPT_ENV)
         self.assertIn("FREETYPE_PROPERTIES", P.PROMPT_ENV)
         self.assertIn("archspec", P.PROMPT_PACKAGES)

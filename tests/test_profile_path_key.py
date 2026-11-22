@@ -7,6 +7,7 @@ python -I -B tests/test_profile_path_key.py
 import importlib.util
 from pathlib import Path
 import sys
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +27,11 @@ class ProfilePathTests(unittest.TestCase):
 
     def test_the_hot_flags_name_the_profiles_contents_wherever_they_name_its_path(self):
         src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        uses = [line for line in src.splitlines() if '"-fprofile-instr-use=" +' in line]
+        lines = src.splitlines()
+        # (each use with its next line: the renderer's flags (RX_VK_PGO, #569) name its hash there, as HOOKSHOT_VK_PROFILE_SHA1)
+        uses = [lines[i] + lines[i + 1] for i, line in enumerate(lines) if '"-fprofile-instr-use=" +' in line]
         self.assertTrue(uses)
-        self.assertTrue(all("-DHOOKSHOT_PROFILE_SHA1=" in line for line in uses), uses)
+        self.assertTrue(all(re.search(r"-DHOOKSHOT_(VK_)?PROFILE_SHA1=", use) for use in uses), uses)
 
 
 if __name__ == "__main__":

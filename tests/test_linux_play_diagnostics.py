@@ -39,7 +39,7 @@ def logging_game(cxx, exe):
     """A game that prints a line before its log opens, then opens hookshot_log.txt only when stderr is nowhere to log, as
     host/hos_main.c does, by the shim's own GetFileType, and logs 16384 lines (more than Play's 64 KiB)."""
     game_main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
-    assert "GetFileType(err) == FILE_TYPE_UNKNOWN" in game_main and '"hookshot_log.txt"' in game_main, \
+    assert ": GetFileType(err);" in game_main and "err_kind == FILE_TYPE_UNKNOWN" in game_main and '"hookshot_log.txt"' in game_main, \
         "host/hos_main.c no longer opens hookshot_log.txt when GetFileType(stderr) is FILE_TYPE_UNKNOWN: update this test"
     shim = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     source = "\n".join([

@@ -37,14 +37,14 @@ def main():
     end = replay.index("        if (res == VK_ERROR_DEVICE_LOST) device_lost();", start)
     end += len("        if (res == VK_ERROR_DEVICE_LOST) device_lost();")
     fixture = fixture.replace("/* SEGMENT */", replay[start:end])
-    cases = ["single", "grow", "reuse", "empty", "batch", "segments", "failed-segment", "allocation-failure"]
+    cases = ["single", "grow", "reuse", "empty", "batch", "segments", "failed-segment", "allocation-failure", "first-stream-failure"]
     if a.case != "all":
         assert a.case in cases
         cases = [a.case]
     with tempfile.TemporaryDirectory(prefix="draw-stream-visibility-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-include", ENV_ON_H, "-O1", "-pthread", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
+        subprocess.run([a.cxx, "-std=c++20", "-include", ENV_ON_H, "-include", str(ROOT / "gpu" / "vk" / "flat_map.h"), "-O1", "-pthread", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
                         "-I" + str(a.headers), str(cpp), "-o", str(exe)], check=True)
         for cache in (["coherent", "noncoherent"] if a.cache == "all" else [a.cache]):
             for case in cases:

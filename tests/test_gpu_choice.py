@@ -39,7 +39,7 @@ def main():
         raise SystemExit("pick_device takes the GPU row before RX_VK_DEVICE")
     menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
     if not preset_exempt(menu, "gpu_device"):
-        raise SystemExit("vk_menu.cpp: changing the GPU row resets the quality preset (and its VRAM budget) to Custom")
+        raise SystemExit("vk_menu.cpp: changing the GPU row resets the quality preset to Custom")
     with tempfile.TemporaryDirectory(prefix="gpu-choice-") as tmp:
         exe = Path(tmp) / "gpu-choice"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",

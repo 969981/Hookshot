@@ -1,7 +1,7 @@
 // (hookshot) The program cache: hookshot_programs.bin (and its .idx) beside the game, what translation made, kept between runs; its
 // reads for play, the precompile, the prediction and the prepare; and the sizes of the prepare's worker pools.
 //
-// Not part of the translator stamp (nx2/build.py hashes vk_shader.cpp, vk_bank.cpp, vk_state.h, vk_api.h and the recompiler's
+// Not part of the translator stamp (nx2/translator_files.py: vk_shader.cpp, vk_bank.cpp, vk_state.h and the recompiler's
 // folders): a change here keeps every player's translated programs. What the cache is good for is program_cache_stamp: the
 // translator's stamp (translator_stamp, vk_shader.cpp) and kProgramCacheFormat below. A change to what a record holds or how it is
 // laid out (put_head/get_head, put_info/get_info, program_cache_save/program_cache_read, the file and index heads) must raise
@@ -504,7 +504,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                 ok = false;
                 break;
             }
-            st.module = make_module(spirv);
+            st.module = make_module(spirv, key, nullptr);
             st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
             ok = ok && st.module;
         }
@@ -599,11 +599,13 @@ std::unique_ptr<Program> program_cache_read_light(FILE* in, std::mutex* mu, uint
     return p;
 }
 namespace {
-/// (in: a handle on the cache's file, used under mu when given) the code read and the module made
-bool complete_from(Program& p, FILE* in, std::mutex* mu) {
+/// (in: a handle on the cache's file, used under mu when given) the code read and the module made. busy: Intel's compiler
+/// gate only tried (make_module); while another thread holds it, *busy is set, false comes back and the program is as it was
+bool complete_from(Program& p, FILE* in, std::mutex* mu, bool* busy = nullptr) {
     if (!p.code_words) return !p.failed;
     const int64_t code_at = p.code_at;
-    std::vector<uint32_t> spirv((size_t)p.code_words);
+    const uint64_t words = p.code_words;
+    std::vector<uint32_t> spirv((size_t)words);
     p.code_words = 0;
     bool ok = in != nullptr;
     if (ok) {
@@ -613,7 +615,11 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu) {
         ok = fread(spirv.data(), 4, spirv.size(), in) == spirv.size();
     }
     Stage& st = p.stages[0];
-    if (ok) st.module = make_module(spirv);
+    if (ok) st.module = make_module(spirv, p.key, busy);
+    if (ok && !st.module && busy && *busy) {   // (not made yet, not failed: a worker completes it, behind the gate)
+        p.code_at = code_at, p.code_words = words;
+        return false;
+    }
     if (!ok || !st.module) {
         static std::atomic<int> logged{0};
         if (logged++ < 20)
@@ -630,6 +636,23 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu) {
 bool program_cache_complete(Program& p) {
     std::lock_guard lk(light_mu);
     return complete_from(p, disk_in, &disk_mu);
+}
+/// (the dispatch's, on the replay thread) program_cache_complete with Intel's compiler gate only tried: while a worker holds
+/// it, *busy is set, false comes back and the program is left as it was, for a worker to complete (vk_draw.cpp dispatch)
+bool program_cache_complete_ask(Program& p, bool* busy) {
+    *busy = false;
+    // (with Intel's gate on, light_mu is only tried too: a worker's program_cache_complete holds it while it waits at the gate for
+    // another compile, and the dispatch would wait behind that. Held, the program goes to a worker as when the gate is held)
+    std::unique_lock<std::mutex> lk(light_mu, std::defer_lock);
+    if (intel_gate_on()) {
+        if (!lk.try_lock()) {
+            *busy = true;
+            return false;
+        }
+    } else {
+        lk.lock();
+    }
+    return complete_from(p, disk_in, &disk_mu, busy);
 }
 /// (the load at a program's create call, vk_programs.cpp) the same for a program no other thread has yet, with the worker's
 /// own handle on the file: neither light_mu nor disk_mu is held through its read, which a dispatch on the replay's thread

@@ -21,7 +21,7 @@ Hookshot's shader hashes; their notes say how. They hold the same records as any
   `hookshot_pipeline_states_shipped.bin`. The first start's shader preparation then builds these pipelines before the
   title screen, so the first field load doesn't wash out white while they compile. Every start also keeps the listed
   compute programs' pipelines ready, together with the ones the player's own play has run, so a program is not set up
-  the first time the game runs it. `nx2/pipeline_states.py check` stops when the merged list names more than 1024
+  the first time the game runs it. `nx2/pipeline_states.py check` stops when the merged list names more than 2560
   compute programs (`COMPUTE_MOST`): the game keeps memory for each one listed and never drops one itself, so raise
   the number with a measurement or prune the list.
 

@@ -3,6 +3,9 @@
    (hookshot_vk.so) beside the executable. Decided at rx_start, before any other rx_* call; a DLL that is missing or finds no usable Vulkan
    device leaves the WebGPU renderer in place (logged). */
 #include "hos.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -235,6 +238,9 @@ extern _Thread_local int64_t hos_slept_ns[2];
 extern volatile int64_t hos_poll_slept_ns, hos_acquire_slept_ns;
 extern volatile int hos_fps_timing;
 static void host_fps_timing(int on) { __atomic_store_n(&hos_fps_timing, on != 0, __ATOMIC_RELAXED); }
+/* (version 23, from Longshot #1291, issue 1280) the renderer's C++ allocations that its new_handler gave up on: the size
+   is not known there */
+static void host_out_of_memory(const char *what) { hos_alloc_gave_up(0, what); }
 static void host_slept_ns(int64_t out[2]) {
     out[0] = __atomic_load_n(&hos_poll_slept_ns, __ATOMIC_RELAXED);
     out[1] = hos_slept_ns[1] + __atomic_load_n(&hos_acquire_slept_ns, __ATOMIC_RELAXED);
@@ -248,7 +254,7 @@ static const MkwVkHost vk_host = {
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
     host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_screen_size,
-    hos_wide_cover,
+    hos_wide_cover, host_out_of_memory,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -438,10 +444,10 @@ static void forward(const early_call *c) {
     switch (c->kind) {
     case 0: {
         const nvn_view *v = c->has_view ? &c->v : NULL;
-        vk ? vk->nvn_register_texture(c->id, &c->t, v) : wgr_nvn_register_texture(c->id, &c->t, v);
+        vk ? vk->nvn_register_texture_copy(c->id, &c->t, v) : wgr_nvn_register_texture(c->id, &c->t, v);   /* (our copies: issue 1117's) */
         break;
     }
-    case 1: vk ? vk->nvn_register_sampler(c->id, &c->p) : wgr_nvn_register_sampler(c->id, &c->p); break;
+    case 1: vk ? vk->nvn_register_sampler_copy(c->id, &c->p) : wgr_nvn_register_sampler(c->id, &c->p); break;
     case 2: vk ? vk->nvn_set_texture_pool_size(c->id) : wgr_nvn_set_texture_pool_size(c->id); break;
     case 3: vk ? vk->nvn_texture_released(&c->t) : wgr_nvn_texture_released(&c->t); break;
     case 4: if (vk && vk->nvn_texture_created) vk->nvn_texture_created(&c->t); break;
@@ -463,27 +469,41 @@ static const nvn_tex *safe_tex(const nvn_tex *in, nvn_tex *copy, const char *wha
                 copy->d.width, copy->d.height, copy->d.depth, copy->d.levels, copy->d.target, (unsigned)copy->d.format, copy->d.samples);
     return NULL;
 }
+/* (hookshot) whether the n bytes at host pointer p are all guest memory: the game's objects are (nvn_native.c checks them
+   whole with PN), and the copies made of them here are what the renderer takes */
+static int in_guest(const void *p, size_t n) {
+    const uintptr_t q = (uintptr_t)p, base = (uintptr_t)hos_guest_base();
+    return q >= base && hos_guest_range(q - base, n) != NULL;
+}
+/* The registrations hand the renderer the host's own copies, through the entries that take them as such
+   (nvn_register_texture_copy, _sampler_copy: API 24): the game's object checked here once, its texture's layout made from its
+   description (safe_tex), the copy read at once. Handed through nvn_register_texture, a copy outside guest memory was checked
+   again for every registration with a VirtualQuery, which reads /proc/self/maps on Linux (host/posix/win32_posix.c) and is a
+   system call on Windows: 38% of Ocarina's main thread in play, at half its frame rate (#102) */
 void rx_nvn_register_texture(int id, const nvn_tex *t_in, const nvn_view *v_in) {
     nvn_tex tc;
     nvn_view vc;
+    if (t_in && !in_guest(t_in, sizeof *t_in)) return;
     const nvn_tex *t = safe_tex(t_in, &tc, "registration");
     if (t_in && !t) return;
-    const nvn_view *v = v_in ? (vc = *v_in, &vc) : NULL;
+    const nvn_view *v = v_in && in_guest(v_in, sizeof *v_in) ? (vc = *v_in, &vc) : NULL;   /* (a bad view only loses the view) */
     if (!started && t) {
         early_call c = {0, id};
         c.t = *t;
         if (v) c.v = *v, c.has_view = 1;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_texture(id, t, v) : wgr_nvn_register_texture(id, t, v);
+    vk ? vk->nvn_register_texture_copy(id, t, v) : wgr_nvn_register_texture(id, t, v);
 }
-void rx_nvn_register_sampler(int id, const nvn_samp_par *p) {
-    if (!started && p) {
+void rx_nvn_register_sampler(int id, const nvn_samp_par *p_in) {
+    if (!p_in || !in_guest(p_in, sizeof *p_in)) return;
+    const nvn_samp_par pc = *p_in, *p = &pc;
+    if (!started) {
         early_call c = {1, id};
         c.p = *p;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_sampler(id, p) : wgr_nvn_register_sampler(id, p);
+    vk ? vk->nvn_register_sampler_copy(id, p) : wgr_nvn_register_sampler(id, p);
 }
 void rx_nvn_set_texture_pool_size(int n) {
     if (!started) {
@@ -516,12 +536,27 @@ void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(
 void rx_nvn_program_created(const nvn_prog *p) {
     if (vk && vk->nvn_program_created) vk->nvn_program_created(p);
 }
+/* (hookshot) A texture's texels read or written by the CPU (nvnTextureReadTexels / WriteTexels) wait in the Vulkan back end
+   for the GPU to finish everything submitted before (vk_replay.cpp finish), and that work can itself wait for a signal the
+   game's main thread makes later (seen with the next frame's work held at OoT's frame limiter). The calling thread held its
+   virtual core through that wait, and the main thread's frame needed a worker allowed on that core only: SceneLowPriority's
+   WriteTexels at an area change (and BootupBackgroundWorkThread's at the boot) held core 2 for ~1 s (until the present gave
+   up waiting for the signal, RX_VK_FRAME_GATE_MS), ModuleSystemWorker2 waited for it and the game stood still for that
+   second. The core is given up for the call, as for an invalidate or a remap (below). HOS_TEXELS_KEEP_CORE=1: kept, as
+   before (the switches' one rule: 1, true, yes or on) */
+static int texels_keep_core(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_on("HOS_TEXELS_KEEP_CORE");
+    return keep;
+}
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r_in, uint8_t *dst,
                         size_t row, size_t img) {
     nvn_tex tc;
     if (!r_in || !(t = safe_tex(t, &tc, "ReadTexels"))) return;
     const NVNcopyRegion rc = *r_in, *r = &rc;
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();
     vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r_in, const uint8_t *src,
                          size_t row, size_t img) {
@@ -546,8 +581,10 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
             }
         }
     }
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();   /* (the wait for the GPU: texels_keep_core above) */
     vk ? vk->nvn_write_texels(t, level, layer0, r, src, row, img)
        : wgr_nvn_write_texels(t, level, layer0, r, src, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     /* The callback can wait for replay or GPU write-back: let another guest thread use this core meanwhile. */

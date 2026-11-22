@@ -185,8 +185,11 @@ static void thread_unref(HThread *t) {
         free(t);
     }
 }
+/* (NULL when calloc is refused: CreateThread then fails as Windows' does, rather than write through NULL; issue 333's notice
+   thread is started after a host allocation kept failing, when this one may be refused too) */
 static HThread *thread_new(void) {
     HThread *t = (HThread *)calloc(1, sizeof *t);
+    if (!t) return NULL;
     t->h.type = H_THREAD;
     monitor_init(&t->mu, &t->cv);
     return t;
@@ -214,6 +217,22 @@ static void apply_process_affinity(pthread_t th) {
     for (int i = 0; i < 64; i++) if (process_affinity >> i & 1) CPU_SET(i, &want);
     pthread_setaffinity_np(th, sizeof want, &want);
 }
+/* A thread this file did not start gives its record back when it ends: the key's destructor (a std::thread that called
+   GetCurrentThread or GetCurrentThreadId, one per helper of a big texture). CreateThread's threads leave the key clear:
+   thread_finish gives theirs back, and clears the key first for a registered thread that calls ExitThread. The main thread
+   keeps its record */
+static pthread_key_t self_key;
+static pthread_once_t self_key_once = PTHREAD_ONCE_INIT;
+static void thread_done(HThread *t, DWORD code) {
+    pthread_mutex_lock(&t->mu);
+    t->done = 1, t->code = code;
+    pthread_cond_broadcast(&t->cv);
+    pthread_mutex_unlock(&t->mu);
+    self_thread = NULL;
+    thread_unref(t);
+}
+static void self_key_end(void *p) { thread_done((HThread *)p, 0); }
+static void self_key_make(void) { pthread_key_create(&self_key, self_key_end); }
 static HThread *thread_self(void) {
     if (!self_thread) {   /* (a thread this file did not start: the main thread, a library's) */
         HThread *t = thread_new();
@@ -221,6 +240,8 @@ static HThread *thread_self(void) {
         t->tid = (pid_t)syscall(SYS_gettid);
         t->refs = 1;   /* (kept for the thread's life) */
         self_thread = t;
+        pthread_once(&self_key_once, self_key_make);
+        pthread_setspecific(self_key, t);
         apply_process_affinity(t->th);
     }
     return self_thread;
@@ -233,12 +254,9 @@ static HThread *thread_of(HANDLE h) {
 static void thread_finish(DWORD code) {
     HThread *t = self_thread;
     if (!t) return;
-    pthread_mutex_lock(&t->mu);
-    t->done = 1, t->code = code;
-    pthread_cond_broadcast(&t->cv);
-    pthread_mutex_unlock(&t->mu);
-    self_thread = NULL;
-    thread_unref(t);
+    pthread_once(&self_key_once, self_key_make);
+    pthread_setspecific(self_key, NULL);   /* (a registered thread's ExitThread: given back here, not again by the key) */
+    thread_done(t, code);
 }
 static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
@@ -251,6 +269,10 @@ static void *thread_entry(void *p) {
 HANDLE CreateThread(void *attr, SIZE_T stack, LPTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id) {
     (void)attr;
     HThread *t = thread_new();
+    if (!t) {
+        last_error = ERROR_NOT_ENOUGH_MEMORY;
+        return NULL;
+    }
     t->fn = fn, t->arg = arg, t->refs = 2;   /* (the handle's and the thread's own) */
     pthread_attr_t a;
     pthread_attr_init(&a);
@@ -299,7 +321,10 @@ BOOL SetThreadPriority(HANDLE h, int p) {
     if (!t) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
     t->priority = p;
     const int nice = p <= THREAD_PRIORITY_IDLE ? 19 : p <= THREAD_PRIORITY_LOWEST ? 10 : p == THREAD_PRIORITY_BELOW_NORMAL ? 5 : 0;
-    if (nice && t->tid) setpriority(PRIO_PROCESS, (id_t)t->tid, nice);
+    if (!nice) return TRUE;
+    /* (a thread just made has no id until it runs: hos_thread_start lowers it right after CreateThread) */
+    while (!t->tid && !t->done) sched_yield();
+    if (t->tid) setpriority(PRIO_PROCESS, (id_t)t->tid, nice);
     return TRUE;
 }
 int GetThreadPriority(HANDLE h) {

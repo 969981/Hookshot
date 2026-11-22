@@ -42,8 +42,30 @@ def release(root=ROOT):
     return name or "unknown"
 
 
+def long_path(p):
+    """(Windows) p as an extended-length path (\\\\?\\...): a builder unpacked in a deep folder has sources past 260
+    characters (#1115: a portable launcher in Downloads), which a plain path can't open and a plain walk doesn't list.
+    Python takes these without Windows' long-paths setting. Elsewhere, or one already: as is (nup.py's)"""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    return "\\\\?\\UNC\\" + p[2:] if p.startswith("\\\\") else "\\\\?\\" + p
+
+
+def walk(top):
+    """os.walk(top), folders past 260 characters included, each folder given back in top's own form (not \\\\?\\...): the
+    paths go on to command lines and into keys as before. (A plain walk leaves such a folder out without a word.)"""
+    long_top = long_path(top)
+    for d, dirs, files in os.walk(long_top):
+        rel = d[len(long_top):].lstrip("\\/")
+        yield (os.path.join(top, rel) if rel else top), dirs, files   # (as os.walk joins them: top's own spelling kept)
+
+
 def fingerprint(root=ROOT):
     h = hashlib.sha1(usedforsecurity=False)
+    root = long_path(root)   # (walked, opened and made relative as one long path, so the names hashed are as before)
     for top in SOURCES:
         base = os.path.join(root, top)
         for d, dirs, files in os.walk(base):
