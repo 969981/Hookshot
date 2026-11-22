@@ -413,6 +413,8 @@ F(vkCmdSetCheckpointNV, (VkCommandBuffer cb, const void* m), handle(cb), handle(
 F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool p, uint32_t q), handle(cb), put(s), handle(p), put(q);
   fx(cb, 1, (uint64_t)(uintptr_t)p << 16 | q);)
 F(vkCmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), handle(cb), handle(p), put(f), put(n);)
+F(vkCmdCopyQueryPoolResults, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n, VkBuffer b, VkDeviceSize o, VkDeviceSize s,
+  VkQueryResultFlags fl), handle(cb), handle(p), put(f), put(n), handle(b), put(o), put(s), put(fl);)
 
 static VkResult VKAPI_CALL fake_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* bi) {
     Guard g_(cb, "vkBeginCommandBuffer", false);
@@ -833,6 +835,9 @@ static void frame() {
         vkCmdClearDepthStencilImage(cmd, H<VkImage>(0xD109), VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &dr);
         if (g_mutate) poison(&ds), poison(&dr), poison(ranges, 2);
     }
+    // (vk_replay.cpp occ_copy_part, RX_VK_OCC_COPY: a recording's occlusion queries copied into host memory at its end)
+    vkCmdCopyQueryPoolResults(cmd, H<VkQueryPool>(0x401), 3, 97, H<VkBuffer>(0xE200), 48, 16,
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, H<VkQueryPool>(0x400), 1);
 }
 

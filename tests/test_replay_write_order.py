@@ -477,6 +477,12 @@ int main() { return mkwvk::run(); }
 '''
 
 
+def payload_helpers(replay):
+    """payload()'s own helper, Longshot #231's short-copy path (vk_replay.cpp payload_short), where the replay has it"""
+    m = re.search(r"\[\[gnu::noinline, gnu::cold\]\] void payload_short\([^)]*\) \{[^\n]*\}\n", replay)
+    return m.group(0) if m else ""
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="clang++")
@@ -501,7 +507,7 @@ def main():
             code.append(block(replay, marker))
     source = (PREFIX.replace("@@NVN@@", clear[0]).replace("@@BUFFERREF@@", block(internal, "struct BufferRef {")) +
               "\n".join(code) +
-              SUFFIX.replace("@@PAYLOAD@@", "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
+              SUFFIX.replace("@@PAYLOAD@@", payload_helpers(replay) + "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
                     .replace("@@CLEAR@@", block(replay, "case NOP_CLEAR_BUF: {")))
     with tempfile.TemporaryDirectory(prefix="replay-write-order-") as tmp:
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / ("t.exe" if os.name == "nt" else "t")

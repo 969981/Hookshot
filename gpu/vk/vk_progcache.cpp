@@ -1,7 +1,7 @@
 // (hookshot) The program cache: hookshot_programs.bin (and its .idx) beside the game, what translation made, kept between runs; its
 // reads for play, the precompile, the prediction and the prepare; and the sizes of the prepare's worker pools.
 //
-// Not part of the translator stamp (nx2/build.py hashes vk_shader.cpp, vk_bank.cpp, vk_state.h, vk_api.h and the recompiler's
+// Not part of the translator stamp (nx2/translator_files.py: vk_shader.cpp, vk_bank.cpp, vk_state.h and the recompiler's
 // folders): a change here keeps every player's translated programs. What the cache is good for is program_cache_stamp: the
 // translator's stamp (translator_stamp, vk_shader.cpp) and kProgramCacheFormat below. A change to what a record holds or how it is
 // laid out (put_head/get_head, put_info/get_info, program_cache_save/program_cache_read, the file and index heads) must raise

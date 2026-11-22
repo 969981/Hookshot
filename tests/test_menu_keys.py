@@ -214,9 +214,10 @@ static int loaded_as(int shortcut, int version) {
     }
     opts = Options{};
     mic_want.clear();
-    bool has_options = false, has_vram_budget = false, has_memory_budget = false;
+    bool has_options = false, has_memory_budget = false;
+    [[maybe_unused]] bool has_output = false;   // (menu_init's: an output_res= line read)
     // LOAD_OPTIONS
-    CHECK(has_options && !has_vram_budget && !has_memory_budget);
+    CHECK(has_options && !has_memory_budget);
     return opts.menu_shortcut;
 }
 

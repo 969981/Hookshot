@@ -1641,10 +1641,11 @@ def build_language(a, out):
     return a.language or kept or (system_language() if a.prepare else None) or "en-US"
 
 
-def profile_readable(prof):
+def profile_readable(prof, any_os=False):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
-    build. Then the game is built without it (a little slower in play), not at all"""
-    if not LINUX:
+    build. Then the game is built without it (a little slower in play), not at all. any_os: asked on Windows too (the renderer's
+    committed profile is recorded on Linux, and llvm-mingw's clang is another LLVM)"""
+    if not LINUX and not any_os:
         return True
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
@@ -1652,12 +1653,50 @@ def profile_readable(prof):
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write("int f(int x) { return x + 1; }" + chr(10))
+        quiet = {"creationflags": 0x08000000} if os.name == "nt" else {}   # (CREATE_NO_WINDOW: no console from the launcher)
         r = subprocess.run([toolchain.find("clang"), "-O2", "-Wno-everything", "-fprofile-instr-use=" + prof, "-c", src, "-o",
-                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace", **quiet)
     if r.returncode:
         print("this compiler cannot read the play profile (%s): building without it" % (r.stderr.strip().splitlines() or ["?"])[-1],
               flush=True)
     return r.returncode == 0
+
+
+VK_PROFILE = "hookshot_vk.profdata"   # (the renderer's play profile, llvm-profdata's merge of an RX_VK_PGO=gen run's counters)
+# (the one every build uses: committed, xz, with its note in assets/profiles/README.md; unpacked into the work folder under its
+# own name, so a developer's work/hookshot_vk.profdata copied there earlier is never mistaken for it)
+VK_PROFILE_SHIPPED = os.path.join("assets", "profiles", VK_PROFILE + ".xz")
+VK_PROFILE_UNPACKED = "hookshot_vk.shipped.profdata"
+
+
+VK_PGO_ON = ("1", "on", "yes", "true")
+
+
+def vk_profile_for(work, environ, readable=None, root=ROOT):
+    """The renderer's profile nx2/build.py is given (RX_VK_PGO), or None. Off by default: only RX_VK_PGO=1 (on, yes, true) asks for
+    one, and then it is the checkout's work/hookshot_vk.profdata when it has one (a developer's recording, copied to <work> by
+    main), else the committed assets/profiles/hookshot_vk.profdata.xz, unpacked into <work>; either only when this compiler reads
+    it (on every system: the committed one comes from another LLVM than llvm-mingw's). The committed profile is Ocarina's
+    recording, of a renderer the four games share, and measured nothing in Ocarina (#119): a game turns it on when it gains.
+    RX_VK_PGO=gen or a profile's path is the developer's, passed to nx2/build.py as set. After ProjectReLink's make_game.py"""
+    if (environ.get("RX_VK_PGO") or "").strip().lower() not in VK_PGO_ON:
+        return None
+    own = os.path.join(work, VK_PROFILE)
+    if os.path.exists(os.path.join(root, "work", VK_PROFILE)) and os.path.exists(own):
+        prof = own
+    elif os.path.exists(os.path.join(root, VK_PROFILE_SHIPPED)):
+        import lzma
+        with lzma.open(os.path.join(root, VK_PROFILE_SHIPPED)) as f:
+            data = f.read()
+        prof = os.path.join(work, VK_PROFILE_UNPACKED)
+        # (written only when it differs: the object keys are its contents, and a compiler still ending from a cancelled build
+        # keeps the file mapped on Windows, WinError 1224)
+        if not os.path.exists(prof) or open(prof, "rb").read() != data:
+            with open(prof, "wb") as f:
+                f.write(data)
+    else:
+        return None
+    return prof if (readable or (lambda p: profile_readable(p, any_os=True)))(prof) else None
 
 
 def copy_writable(src, dst):
@@ -1834,8 +1873,9 @@ def note_shader_list(work, romfs, out):
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 # (the compile's own switches, read by nx2/build.py alone: the hot pieces' level and their profile. They are not the lift's, so a
 # development build at RX_HOT_OPT=O1 keeps the lifted C instead of translating the game again; tests/test_lift_cache.py checks
-# that nothing else the key covers reads them)
-COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO")
+# that nothing else the key covers reads them. The renderer's profile too, after ProjectReLink: a renderer profile made, changed or
+# taken away does not translate the game again)
+COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO", "RX_VK_PGO", "RX_VK_PGO_FILE")
 
 
 LIFT_SCRIPTS = ("lift.py", "split_hot.py")   # (in nx2/: the two steps of the lift)
@@ -2635,7 +2675,8 @@ def main(a=None):
     check_supported_build(exefs)
 
     # (made once on the development PC: lists of addresses and counts, no game code)
-    for name in ("hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", "hookshot.res"):
+    # (hookshot_vk.profdata: the renderer's own profile, counts over Hookshot's own code)
+    for name in ("hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", VK_PROFILE, "hookshot.res"):
         src = os.path.join(ROOT, "work", name)
         dst = os.path.join(work, name)
         # (copied only when it differs: a compiler still ending from a cancelled build keeps the profile mapped, WinError 1224)
@@ -2650,6 +2691,9 @@ def main(a=None):
         env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
+    vk_profile = vk_profile_for(work, os.environ)
+    if vk_profile:
+        env["RX_VK_PGO"] = vk_profile
 
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A

@@ -50,6 +50,7 @@ import logo_rgba
 import imgui_backend
 import ui_fonts
 import toolchain
+import translator_files
 import version
 import win_manifest
 
@@ -413,6 +414,16 @@ def ngx_link(sdk, mingw):
     if not sdk:
         return []
     return [ngx_library(sdk, False), "-ladvapi32"] + (["-Wl,-Xlink=/nodefaultlib:libcpmt"] if mingw else [])
+
+
+def vk_pgo_setting(value):
+    """RX_VK_PGO's value for the renderer's play profile: "gen" (count its branches), a profile's path, or None for none: unset,
+    empty, 0, off, no or false (the default), and 1, on, yes or true too, which make_game.py turns into the committed profile's
+    path before it runs this (nx2/make_game.py vk_profile_for): run alone, nothing here finds one"""
+    v = (value or "").strip()
+    if not v or v.lower() in ("0", "off", "no", "false", "1", "on", "yes", "true"):
+        return None
+    return v
 
 
 def vk_sources():
@@ -1421,13 +1432,8 @@ def main():
         fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
         ui_fonts.write(fonts_cpp)
         # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
-        # keeps them)
-        stamp = hashlib.sha1(usedforsecurity=False)
-        translator = [os.path.join(d, f) for top in ("eden", "sirit", "compat") for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
-        for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")]:
-            with open(f, "rb") as src:
-                stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
-        shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
+        # keeps them: nx2/translator_files.py names it, for scripts/dev_packs.py and the bake tools too)
+        shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)
         # (hookshot) Say what this back end is being built with: "is DLSS actually in this release?"
         # has been asked of a build three times and guessed at twice, and the answer belongs in the
         # build log and so in CI's.
@@ -1509,11 +1515,32 @@ def main():
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
         vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
                         b""))
+        # (hookshot, after ProjectReLink) RX_VK_PGO=gen: the back end's own files (not Eden's recompiler, sirit, Dear ImGui or
+        # zstd) count their branches, and host/pgo_rt.c in the module writes them (RX_VK_PGO_FILE=<path>, <path>.reset and
+        # <path>.dump as HOS_PGO's). RX_VK_PGO=<merged .profdata>: built with that profile. The replay on the game's render
+        # thread is the frame's limit in heavy places (Kokiri Forest). Neither set: the build as it was, the same object keys.
+        # (the profile's contents in the flags the object keys hash, as RX_PGO's: another profile at the same path builds the
+        # back end's own objects again, and nothing else)
+        vk_pgo = vk_pgo_setting(os.environ.get("RX_VK_PGO"))
+        vk_pgo_flags = []
+        if os.environ.get("RX_VK_PGO") and vk_pgo is None:
+            print("the Vulkan back end: built without a play profile (RX_VK_PGO=%s%s)" % (os.environ.get("RX_VK_PGO"),
+                  ": no profile this compiler reads" if os.environ.get("RX_VK_PGO", "").strip().lower() in ("1", "on", "yes", "true") else ""),
+                  flush=True)
+        if vk_pgo == "gen":
+            vk_pgo_flags = ["-fprofile-instr-generate", "-mllvm", "-disable-vp=true"]
+            print("the Vulkan back end: counting its branches for a profile (RX_VK_PGO=gen; RX_VK_PGO_FILE=<file> in a run)", flush=True)
+        elif vk_pgo:
+            with open(vk_pgo, "rb") as f:
+                vk_pgo_flags = ["-fprofile-instr-use=" + vk_pgo,
+                                "-DHOOKSHOT_VK_PROFILE_SHA1=" + hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()[:16]]
+            print("the Vulkan back end: built with the profile %s" % vk_pgo, flush=True)
         for src in vk_sources():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
-                            vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
+                            vflags + ([] if lib else vk_pgo_flags) +
+                            ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) in ngx_files else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
@@ -1541,6 +1568,11 @@ def main():
             pdeps = tree_headers(POSIX)
             for f in ("win32_posix.c",):
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
+        if vk_pgo == "gen":   # (the counters' writer, the module's own copy: the sections it reads are the module's)
+            vk_jobs.append((cc, os.path.join(HOST, "pgo_rt.c"), os.path.join(obj_dir, "vk_pgo_rt.o"),
+                            target() + (CPU + ["-fPIC", "-D_GNU_SOURCE", "-I" + POSIX] if LINUX else []) +
+                            ["-O2", "-g0", "-Wno-everything", '-DPGO_ENV="RX_VK_PGO_FILE"'],
+                            tree_headers(POSIX) if LINUX else b""))
         jobs += vk_jobs
     vk_only = kit.env_on("RX_VK_ONLY")   # (the renderer alone, the game's objects as they are)
     if vk_only:
@@ -1699,9 +1731,11 @@ def main():
             link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", "-o", vdll] + \
                 linker("-Map=" + vdll + ".map") + ["-Wl,-Bsymbolic", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
-        else:
+        else:   # (RX_VK_PGO=gen: no profile library, as in the game's link; host/pgo_rt.c writes the counters)
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll] + linker("/map:" + vdll[:-4] + ".map") + ["@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw()) + streamline_link()
+                ["-shared", "-o", vdll] + linker("/map:" + vdll[:-4] + ".map") + ["@" + vrsp, "-luser32", "-lgdi32"] + \
+                (linker("/nodefaultlib:clang_rt.profile.lib") if os.environ.get("RX_VK_PGO") == "gen" else []) + \
+                (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw()) + streamline_link()
         r = run_link(link, vdll)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

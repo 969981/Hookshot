@@ -1425,23 +1425,43 @@ static size_t ndead, cap_dead;
    address, so it is used only when it is in the set, never on what the memory at that address holds. */
 static uint64_t *live_handles;
 static size_t live_cap, nlive;
+/* (hookshot) The set as check_handle reads it without copy_lock (live_handle_seen): the table and its size, published together
+   at each growth. A table is never freed, since a reader may still be in an older one; growth doubles it, so the old ones take
+   at most as much again. The slots are written with atomic stores, so a reader sees each slot whole */
+typedef struct { uint64_t *slots; size_t cap; } live_table;
+static live_table *live_pub;
 static size_t live_at(uint64_t h, size_t cap) { return (size_t)((h * 0x9E3779B97F4A7C15ull) >> 24) & (cap - 1); }
 static void live_handle_add(uint64_t h) {   /* (copy_lock held exclusively) */
     if ((nlive + 1) * 2 > live_cap) {
         const size_t cap = live_cap ? live_cap * 2 : 65536;
         uint64_t *t = (uint64_t *)hos_xcalloc(cap, sizeof *t, "native NVN: recording handle set");
+        live_table *pub = (live_table *)hos_xcalloc(1, sizeof *pub, "native NVN: recording handle set");   /* (#766: the table published to the readers; hos_x: it waits at the commit limit) */
         for (size_t i = 0; i < live_cap; i++) {
             if (!live_handles[i]) continue;
             size_t k = live_at(live_handles[i], cap);
             while (t[k]) k = (k + 1) & (cap - 1);
             t[k] = live_handles[i];
         }
-        free(live_handles);
-        live_handles = t, live_cap = cap;
+        live_handles = t, live_cap = cap;   /* (the old table stays: live_pub) */
+        pub->slots = t, pub->cap = cap;
+        __atomic_store_n(&live_pub, pub, __ATOMIC_RELEASE);
     }
     size_t k = live_at(h, live_cap);
     while (live_handles[k] && live_handles[k] != h) k = (k + 1) & (live_cap - 1);
-    if (!live_handles[k]) live_handles[k] = h, nlive++;
+    if (!live_handles[k]) __atomic_store_n(&live_handles[k], h, __ATOMIC_RELEASE), nlive++;
+}
+/* Whether h is in the set, without copy_lock: a hit is a handle EndRecording added (the game got it from that call, so its
+   store is seen), a miss is not final. A removal running beside the probe can move an entry back past it (live_handle_remove's
+   backward shift), so check_handle asks a miss again under the lock. The probe ends at an empty slot or after the whole table */
+static int live_handle_seen(uint64_t h) {
+    const live_table *t = __atomic_load_n(&live_pub, __ATOMIC_ACQUIRE);
+    if (!h || !t) return 0;
+    for (size_t k = live_at(h, t->cap), n = 0; n < t->cap; k = (k + 1) & (t->cap - 1), n++) {
+        const uint64_t v = __atomic_load_n(&t->slots[k], __ATOMIC_ACQUIRE);
+        if (v == h) return 1;
+        if (!v) return 0;
+    }
+    return 0;
 }
 static int live_handle_has(uint64_t h) {   /* (copy_lock held) */
     if (!h || !live_cap) return 0;
@@ -1454,27 +1474,46 @@ static void live_handle_remove(uint64_t h) {   /* (copy_lock held exclusively; b
     size_t k = live_at(h, live_cap);
     while (live_handles[k] && live_handles[k] != h) k = (k + 1) & (live_cap - 1);
     if (!live_handles[k]) return;
-    live_handles[k] = 0, nlive--;
+    __atomic_store_n(&live_handles[k], 0, __ATOMIC_RELEASE), nlive--;
     for (size_t j = (k + 1) & (live_cap - 1); live_handles[j]; j = (j + 1) & (live_cap - 1)) {
         const size_t want = live_at(live_handles[j], live_cap);
-        /* (move it into the hole when its probe run starts at or before the hole) */
+        /* (move it into the hole when its probe run starts at or before the hole: into the hole first, then out of its slot, so a
+           reader without the lock sees it twice for a moment rather than not at all where it stops) */
         if (((j - want) & (live_cap - 1)) >= ((j - k) & (live_cap - 1))) {
-            live_handles[k] = live_handles[j], live_handles[j] = 0;
+            __atomic_store_n(&live_handles[k], live_handles[j], __ATOMIC_RELEASE);
+            __atomic_store_n(&live_handles[j], 0, __ATOMIC_RELEASE);
             k = j;
         }
     }
 }
+/* (hookshot) The least `after` of the dead copies (UINT64_MAX: none): every AddControlMemory went through all of them under the
+   exclusive lock, though none could go before the replay passed that one */
+static uint64_t dead_first = UINT64_MAX;
 static void free_dead_copies(void) {   /* (copy_lock held) */
     const uint64_t done = rx_nvn_replayed();
+    if (done < dead_first) return;
+    uint64_t first = UINT64_MAX;
     for (size_t i = 0; i < ndead;) {
         if (dead[i].after <= done) {
             InterlockedAdd64(&copy_bytes, -(LONG64)dead[i].p->bytes);
             pool_put(dead[i].p, (unsigned)dead[i].p->cls);
             dead[i] = dead[--ndead];
         } else {
+            if (dead[i].after < first) first = dead[i].after;
             i++;
         }
     }
+    dead_first = first;
+}
+static void dead_copy_add(copy_prefix *p, uint64_t after) {   /* (copy_lock held) */
+    if (ndead == cap_dead) {
+        cap_dead = cap_dead ? cap_dead * 2 : 1024;
+        dead = (dead_copy *)hos_xrealloc(dead, cap_dead * sizeof *dead, "native NVN: recording copies let go");   /* (it waits at the commit limit, C1's #341) */
+    }
+    dead[ndead].p = p;
+    dead[ndead].after = after;
+    ndead++;
+    if (after < dead_first) dead_first = after;
 }
 static void release_copies(uint64_t lo, uint64_t hi) {
     if (hi <= lo || !rec_buckets) return;
@@ -1495,13 +1534,7 @@ static void release_copies(uint64_t lo, uint64_t hi) {
             copy_prefix *p = (copy_prefix *)n->copy - 1;
             p->magic = 0;   /* (no submit names it any more) */
             live_handle_remove((uint64_t)(uintptr_t)n->copy);
-            if (ndead == cap_dead) {
-                cap_dead = cap_dead ? cap_dead * 2 : 1024;
-                dead = (dead_copy *)realloc(dead, cap_dead * sizeof *dead);
-            }
-            dead[ndead].p = p;
-            dead[ndead].after = after;
-            ndead++;
+            dead_copy_add(p, after);
             *pn = n->next;
             free(n);
             ncopies--;
@@ -1515,6 +1548,12 @@ static void release_copies(uint64_t lo, uint64_t hi) {
    control memory was never added again (MKW frees and reallocates its control memory) were kept for good otherwise:
    ~40 per 1000 recordings, ~100,000 after 20 minutes. Swept every 25,000 recordings. HOS_NVN_NO_SWEEP=1: not. */
 #define COPY_MARK 0x4b52414d59504f43ull   /* "COPYMARK" */
+/* (hookshot) A slice of the buckets at a time: SWEEP_SLICE of them every SWEEP_EVERY recordings, every bucket once in
+   REC_BUCKETS / SWEEP_SLICE * SWEEP_EVERY (~25,000) recordings, as the whole sweep every 25,000 was. That one read every live
+   copy's mark (~68,000 in the Market, scattered in guest memory) with copy_lock held exclusively, and every thread recording
+   or calling a recording waited behind it */
+#define SWEEP_EVERY 1024u
+#define SWEEP_SLICE 2688u   /* (65536 / 2688 * 1024: every bucket once in ~25,000 recordings) */
 static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
     static int off = -1;
     if (off < 0) off = env_on("HOS_NVN_NO_SWEEP");
@@ -1522,7 +1561,11 @@ static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
     free_dead_copies();
     const uint64_t after = rx_nvn_pushed() + held_count();
     size_t swept = 0;
-    for (unsigned b = 0; b < REC_BUCKETS; b++) {
+    static unsigned next_slice;   /* (the next slice's first bucket) */
+    const unsigned from = next_slice;
+    next_slice = (next_slice + SWEEP_SLICE) % REC_BUCKETS;
+    for (unsigned s = 0; s < SWEEP_SLICE; s++) {
+        const unsigned b = (from + s) % REC_BUCKETS;
         for (rec_node **pn = &rec_buckets[b]; *pn;) {
             rec_node *n = *pn;
             uint64_t mark[2];
@@ -1543,13 +1586,7 @@ static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
             copy_prefix *pre = (copy_prefix *)n->copy - 1;
             pre->magic = 0;
             live_handle_remove((uint64_t)(uintptr_t)n->copy);
-            if (ndead == cap_dead) {
-                cap_dead = cap_dead ? cap_dead * 2 : 1024;
-                dead = (dead_copy *)realloc(dead, cap_dead * sizeof *dead);
-            }
-            dead[ndead].p = pre;
-            dead[ndead].after = after;
-            ndead++;
+            dead_copy_add(pre, after);
             *pn = n->next;
             free(n);
             ncopies--;
@@ -1649,7 +1686,7 @@ NV(nvnCommandBufferEndRecording) {
     ncopies++;
     live_handle_add((uint64_t)(uintptr_t)copy);
     static uint64_t made;
-    if (++made % 25000 == 0) sweep_overwritten_copies();
+    if (++made % SWEEP_EVERY == 0) sweep_overwritten_copies();
     if (made % 50000 == 0)
         hos_log("nvn: %llu recordings made, %zu live copies (%.1f MB), %zu texture copies; %lld command buffers' segments "
                 "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
@@ -1663,10 +1700,18 @@ NV(nvnCommandBufferEndRecording) {
     RET((uint64_t)(uintptr_t)copy);
 }
 NV(nvnCommandBufferIsRecording) { RET(CB(P(0))->recording != 0); }
+/* (hookshot) Without copy_lock first: every CallCommands handle took it shared, and while a recording thread held it or waited
+   for it (EndRecording, AddControlMemory) the callers slept on it, about 5% of the time of the job workers on the frame's path in
+   the Market (RTX 3090, 7900X, Linux: the SRW lock is a pthread rwlock). A miss is asked again under the lock, as before. A hit
+   beside a removal of the same handle (the game calling a recording whose control memory it is adding again) reads the copy's
+   magic, which the removal cleared first; the copy itself is freed only once the replay passes the submits made before it */
 static void check_handle(uint64_t h) {
-    AcquireSRWLockShared(&copy_lock);
-    const int live = live_handle_has(h);
-    ReleaseSRWLockShared(&copy_lock);
+    int live = live_handle_seen(h);
+    if (!live) {
+        AcquireSRWLockShared(&copy_lock);
+        live = live_handle_has(h);
+        ReleaseSRWLockShared(&copy_lock);
+    }
     if (!live || ((const copy_prefix *)(uintptr_t)h - 1)->magic != COPY_MAGIC)
         die("command handle %#llx is not a live recording", (unsigned long long)h);
 }

@@ -49,16 +49,28 @@ def test_route():
     check("an unknown path builds the game", r(["somewhere/new.c"]) == "game")
 
 
-def test_stamp_matches_build():
-    """TRANSLATOR is nx2/build.py's shader stamp: a stamp file missing here would leave a runtime unprepared for a new translator"""
+def test_stamp_matches_build(d):
+    """A runtime prepares again when its build's shader stamp moved: the files nx2/translator_files.py names (the same module
+    nx2/build.py makes HOOKSHOT_SHADER_STAMP with), read from the checkout packed, or that module itself; a checkout from before
+    it by the files that one stamped"""
     src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    dirs = re.search(r'for top in \(([^)]*)\) for d, _, fs in os\.walk\(os\.path\.join\(vk, top\)\)', src)
-    files = re.search(r'\+ \[os\.path\.join\(vk, n\) for n in \(([^)]*)\)\]', src)
-    check("nx2/build.py's shader stamp found (anchor: 'for top in (...) for d, _, fs in os.walk(os.path.join(vk, top))')", dirs)
-    check("nx2/build.py's shader stamp files found (anchor: '+ [os.path.join(vk, n) for n in (...)]')", files)
-    names = lambda s: tuple(re.findall(r'"([^"]+)"', s))
-    check("the stamp's folders are dev_packs.STAMP_DIRS", names(dirs.group(1)) == packs.STAMP_DIRS)
-    check("the stamp's files are dev_packs.STAMP_FILES", names(files.group(1)) == packs.STAMP_FILES)
+    check("nx2/build.py makes HOOKSHOT_SHADER_STAMP with translator_files.stamp",
+          'shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)' in src)
+    check("cmd_pack prepares by translator_changed", "prepare = translator_changed(tree, changed) or SEED in extra" in
+          (ROOT / "scripts" / "dev_packs.py").read_text(encoding="utf-8"))
+    tree, old = d / "tree", d / "old"
+    write(tree / "nx2" / "translator_files.py", (ROOT / "nx2" / "translator_files.py").read_bytes())
+    old.mkdir()
+    for path, prepares in (("gpu/vk/eden/shader_recompiler/ir_opt/texture_pass.cpp", True), ("gpu/vk/sirit/src/a.cpp", True),
+                           ("gpu/vk/compat/hookshot_env.h", True), ("gpu/vk/vk_shader.cpp", True),
+                           ("gpu/vk/vk_bank.cpp", True), ("gpu/vk/vk_state.h", True), ("nx2/translator_files.py", True),
+                           ("gpu/vk/vk_api.h", False), ("gpu/vk/vk_draw.cpp", False), ("gpu/vk/vk_menu.cpp", False),
+                           ("nx2/build.py", False)):
+        check("%s %s the runtime prepare again" % (path, "makes" if prepares else "does not make"),
+              packs.translator_changed(str(tree), [path]) == prepares)
+    check("nothing changed: no prepare", not packs.translator_changed(str(tree), []))
+    check("a checkout without nx2/translator_files.py prepares by the files it stamped (vk_api.h among them)",
+          packs.translator_changed(str(old), ["gpu/vk/vk_api.h"]) and not packs.translator_changed(str(old), ["gpu/vk/vk_draw.cpp"]))
 
 
 def test_renderer_files_the_game_reads():
@@ -496,7 +508,6 @@ def test_busy_folders_above_hidden(d):
 
 def main():
     test_route()
-    test_stamp_matches_build()
     test_renderer_files_the_game_reads()
     test_stamped_objects_match_build()
     test_caches_named_in_renderer()
@@ -505,7 +516,7 @@ def main():
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
                         ("guard", test_guards), ("inside", test_resolves_inside), ("predict", test_predict_budget), ("warm", test_warm), ("busy", test_busy),
-                        ("hidden", test_busy_folders_above_hidden)):
+                        ("hidden", test_busy_folders_above_hidden), ("stamp", test_stamp_matches_build)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

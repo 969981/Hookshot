@@ -79,6 +79,7 @@ Host the_host;
 Host* host = &the_host;
 bool diff_on = true;
 bool wb_diff_on() { return diff_on; }
+bool mirror_on() { return true; }   // (the pools here have mirrors: without, nothing is noted, tests/test_mirror_bookkeeping.py)
 std::mutex shadow_written_mu;
 std::vector<uint32_t> shadow_written_pages, shadow_written_collected_list, shadow_written_by_replay;
 bool shadow_written_all = false;

@@ -36,6 +36,7 @@ def main():
 #include <vector>
 struct Pool { uint64_t lo; };
 struct VkBufferCopy { uint64_t srcOffset, dstOffset, size; };
+bool mirror_on() { return true; }   // (the pools here have mirrors: without, no word is noted, tests/test_mirror_bookkeeping.py)
 std::mutex cpu_words_mu;
 std::vector<uint64_t> cpu_words, cpu_words_recent, cpu_words_new;   // (the big and the recent sorted sets, and noted since: vk_memory.cpp)
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)

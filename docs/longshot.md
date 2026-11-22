@@ -204,3 +204,27 @@ play profiles, not here), #1602 (no `.def` or `.inl` files here), and the setup 
 | [#721](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/721) | HumanBean | fix(vk): the start-up screen counts the compute pipelines and says when it writes the pipeline cache |
 
 Fitted to this tree: #252's Intel compiler gate goes on this tree's `guarded_graphics` and `guarded_compute`, without Longshot's fetch lock (#190, below); #307's filter reads through this tree's `pixel()` and `bilinear()`, its SPIR-V regenerated; #553's poll of a timed-out read-back replaces this tree's own wait, and also notes a lost device; #554 keeps a timed-out read-back's textures, while a render target's image goes to the pool at once here (upstream Hookshot #2766), ordered on the one queue after the copy; #721's saving flag sits beside this tree's own count of the compute pipelines (Hookshot #73). Already here: #60 (upstream Hookshot #2897, which it ported) and #101 (this tree's #32). Moved: #190, #404 and #415 to the pipeline cache batch with #416; #223 and the evicted pools' check of #324 to the memory batch; #59 to frame generation; #769 and #928 to the render-thread series; #342 and #526 to B2, with #162 and #248. #500 (B) and #781 come after this batch, on #252's gate.
+
+### Renderer performance (B1)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#162](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/162) | klimovich008 | perf(vk): the recorder thread's slot resets without the wait and an idle that waits on its ring (RX_VK_RECORDER_OWN, RX_VK_RECORDER_IDLE=wait; opt-in) |
+| [#231](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/231) | dukenheimer | perf(vk): flat per-draw caches, inline op payload copies and a flat c1 map in the replay |
+| [#237](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/237) | i12bp8 | perf(vk): a 6 GB card mirrors a quarter of its VRAM, not an eighth or 512 MB |
+| [#238](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/238) | Hugo Claria | perf(vk): RX_VK_READBACK_LATE, the readbacks a rule names are read without their wait (opt-in) |
+| [#248](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/248) | SadTransGirl | perf(vk): fix the late pages on the GPU, word by word, instead of waiting for their write-back |
+| [#250](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/250) | SadTransGirl | perf(vk): sparse VRAM mirrors, memory only where a game pool is (on by default) |
+| [#370](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/370) | HumanBean | perf(vk): the shader caches' stamp leaves out vk_api.h, so a menu, input or audio change keeps every player's translated programs |
+| [#563](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/563) | SadTransGirl | perf(pipelines): 22,987 more pipelines prepared before the title, from a tour of every map, actor and cutscene |
+| [#569](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/569) | HumanBean | perf(vk): the renderer is built with a committed play profile, about 3-5 % less frame time |
+| [#590](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/590) | Hugo Claria | perf(vk): three small costs of the replay thread removed: unread bookkeeping without mirrors, 16 vertex bindings a change, a lock a sampled texture |
+| [#599](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/599) | HumanBean | perf(vk): the renderer's play profile covers the compute fallback, the overworld and the dungeons |
+| [#625](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/625) | Zelda Ootr | docs(profiles): the renderer profile's note has its Recorded line again |
+| [#735](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/735) | HumanBean | perf(vk): the VRAM budgets set by the card, not a menu row or a preset; 8 GB cards' mirrors 2 GB |
+| [#761](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/761) | nyannoying | perf(vk): Arc cards read the occlusion counts from a GPU copy: Castle Town's market from 34.8 to 45.8 fps on a B580 |
+| [#766](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/766) | HumanBean | perf(nvn): recording threads wait less on the recordings' copy lock |
+| [#775](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/775) | Yeetbot90 | perf(vk): integrated GPUs keep every large ASTC texture as BC3, whatever the driver allows them |
+| [#1689](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1689) | Jeff Aigner | fix(build): the translator stamp hashes a C or C++ file's tokens, so a comment edit no longer re-prepares every shader |
+
+#569's play profile is Longshot's recording of its own renderer (#599 adds to it, #625 its note), and is off by default here (`RX_VK_PGO=1` turns it on): in Ocarina it measured nothing outside the spread, and it is one game's recording of a renderer the four games share. #735's rule replaces the VRAM budget row; this tree's Auto still sets the Output resolution and keeps the player's. #1689 comes here with #370's `nx2/translator_files.py`. Not taken: #771 with #873 (#873 reverts #771 line for line). Moved: #500 opens Longshot's Intel compiler gate, which comes here with #252 (A2), so it follows A2. Adapted: #231 keeps this tree's direct-mapped view front, #248 folds into `cap_buf_usage()`, #766's allocations wait at the commit limit as C1's do, and #735 reads the system's RAM through Longshot #404's `system_ram_bytes()`.

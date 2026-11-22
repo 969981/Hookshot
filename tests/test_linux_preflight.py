@@ -5,6 +5,7 @@ compiled (not linked) with --cc gcc or --cc clang: CI needs no game linker.
 HOOKSHOT_LINUX_PREFLIGHT_SOURCE selects another checkout's nx2 sources for the
 exact same fail-before checks.
 """
+from functools import partial
 import argparse
 import contextlib
 import importlib.util
@@ -66,6 +67,9 @@ class LinuxPreflightTests(unittest.TestCase):
         self.checkout.mkdir()
         (self.checkout / "requirements.txt").write_bytes((ROOT / "requirements.txt").read_bytes())
         self.stack.enter_context(mock.patch.object(self.make, "ROOT", str(self.checkout)))
+        # (the renderer's committed play profile (#569) looked up in the authored checkout too, not the import-time ROOT)
+        self.stack.enter_context(mock.patch.object(self.make, "vk_profile_for",
+                                                  partial(self.make.vk_profile_for, root=str(self.checkout))))
         self.stack.enter_context(mock.patch.object(self.make, "LINUX", True))
         self.stack.enter_context(mock.patch.object(self.make, "CROSS", False))
         self.stack.enter_context(mock.patch.object(self.build, "LINUX", True))

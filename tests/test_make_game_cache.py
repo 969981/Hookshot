@@ -5,6 +5,7 @@ work/ (CONTRIBUTING.md puts it there) was copied in and probed with clang, a pro
 
 Run with: python -I tests/test_make_game_cache.py
 """
+from functools import partial
 import contextlib
 import errno
 import importlib.util
@@ -152,6 +153,9 @@ class NupCacheTests(unittest.TestCase):
             # (the hot list, link order, PGO profile and chunk boundaries come from <checkout>/work: an empty one here. The lift's
             # key hashes nx2/ relative to the checkout, which relpath refuses across drives (Windows CI): not what is checked here)
             stack.enter_context(mock.patch.object(make_game, "ROOT", str(self.root / "checkout")))
+            # (vk_profile_for's default root was bound at import: the authored checkout's, with no committed profile (#569))
+            stack.enter_context(mock.patch.object(make_game, "vk_profile_for",
+                                                  partial(make_game.vk_profile_for, root=make_game.ROOT)))
             stack.enter_context(mock.patch.object(make_game, "lift_key", return_value="test key"))
             stack.enter_context(mock.patch.object(make_game, "run", side_effect=run))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))

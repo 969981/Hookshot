@@ -43,6 +43,7 @@
 #include "vk_gprof.h"
 #include "vk_dump.h"
 #include "vk_jobs.h"
+#include "texture_budget.h"
 
 #include <span>
 
@@ -59,6 +60,7 @@
 #include "vram_compact.h"
 #include "commit_room.h"
 #include "evict_reason.h"
+#include "wrote_regions.h"
 #include "keep_rendered.h"
 #include "target_overlap.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
@@ -2445,12 +2447,16 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         static const uint64_t low = (uint64_t)(getenv("RX_VK_ASTC_BC_MB") ? atoi(getenv("RX_VK_ASTC_BC_MB")) : 2) << 20;
         // (issue 519: on a card the driver gives under 6 GB, the finer ones too. An RTX 3050 Laptop (4 GB, 3.3 allowed)
         // held 1.75 GB of decoded ASTC in Goron City, drawn every frame: 5.6 GB used of 3.3, paged, 4 fps. As BC3, a
-        // quarter. Now 8 GB cards too: astc_bc_policy.h. RX_VK_ASTC_BC_ALL=1 or 0 says so on any card)
+        // quarter. Now 8 GB cards and integrated GPUs too: astc_bc_policy.h. RX_VK_ASTC_BC_ALL=1 or 0 says so on any card)
         static const bool all = [] {
             if (const char* e = getenv("RX_VK_ASTC_BC_ALL")) return e[0] == '1';
             uint64_t used = 0, allowed = 0;
-            const bool small = vram_usage(&used, &allowed) && astc_bc_policy::all_by_vram(allowed);
-            if (small) logf("vk: %llu MB of VRAM allowed: all large ASTC textures kept as BC3", (unsigned long long)(allowed >> 20));
+            if (!vram_usage(&used, &allowed)) allowed = 0;
+            const bool integrated = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+            const bool small = astc_bc_policy::all(allowed, integrated);
+            if (small)
+                logf("vk: %llu MB of VRAM allowed%s: all large ASTC textures kept as BC3", (unsigned long long)(allowed >> 20),
+                     integrated ? ", an integrated GPU" : "");
             return small;
         }();
         const uint64_t min_bytes = (bw * bh >= 36 || all) ? low : 64ull << 20;
@@ -4118,6 +4124,7 @@ void texture_gpu_wrote(uint64_t gpu, uint64_t size) {
                  (unsigned long long)lo, (unsigned long long)size, (unsigned long long)wlo, (unsigned long long)whi,
                  (unsigned long long)frame_no, (unsigned long long)tl_watch_prog);
     }
+    wrote_regions::mark(lo, hi);   // (before the map has it: gpu_wrote_into asks the regions first, without the lock)
     std::lock_guard lk(gpu_wrote_mu);
     auto it = gpu_wrote.find(lo);
     if (it != gpu_wrote.end() && it->second.first >= hi) {
@@ -4142,9 +4149,12 @@ void texture_gpu_wrote(uint64_t gpu, uint64_t size) {
 }
 /// A finished GPU write into the texture's storage it was not uploaded after (and notes it as seen)
 bool gpu_wrote_into(Texture& tex) {
+    const uint64_t lo = tex.gpu, hi = tex.gpu + std::max<uint64_t>(tex.guest_size, 1);
+    // (hookshot: nearly every texture is in memory no GPU buffer write ever reached, and each one a submission samples asked
+    // here: the lock and the walk were 0.6 % of the replay thread on a Steam Deck. wrote_regions.h)
+    if (!wrote_regions::any(lo, hi)) return false;
     std::lock_guard lk(gpu_wrote_mu);
     if (gpu_wrote.empty()) return false;
-    const uint64_t lo = tex.gpu, hi = tex.gpu + std::max<uint64_t>(tex.guest_size, 1);
     uint64_t newest = 0;
     auto it = gpu_wrote.upper_bound(lo);
     if (it != gpu_wrote.begin()) --it;
@@ -4666,20 +4676,33 @@ Texture* texture_for_present(const nvn_tex* t) {
     return best ? best : tex;
 }
 
-/// (hookshot) The texture budget a quality preset sets, or the card's own (tests/test_preset_texture_budget.py). The preset's
-/// replaced `own` outright, and `own` is where RX_VK_VRAM_MB and an integrated GPU's cap are applied: with a preset on, the
-/// documented RX_VK_VRAM_MB did nothing (the mirrors' RX_VK_MIRROR_MB wins over the preset), and an integrated GPU on Low or
-/// Balanced got 3.6 or 4.8 GB of textures past the 2.5 GB that keeps a 16 GB laptop from running out of RAM. Now
-/// RX_VK_VRAM_MB wins over a preset, and on an integrated GPU the preset's budget is at most `own`
-uint64_t preset_texture_budget(uint64_t preset_mb, bool preset_applies, bool vram_env, bool integrated, uint64_t own) {
-    if (!preset_mb || !preset_applies || vram_env) return own;
-    const uint64_t b = preset_mb << 20;
-    return integrated ? std::min(b, own) : b;
-}
-
 int64_t texture_readback_wait_ns() { return st_readback_wait_ns.load(std::memory_order_relaxed); }
 int64_t texture_frame_ns() { return st_texture_frame_ns.load(std::memory_order_relaxed); }
 
+/// (Longshot #404's, for #735's texture budget by the card and the system's RAM) The system's RAM, read once: 0 when unknown
+uint64_t system_ram_bytes() {
+    static const uint64_t v = [] {
+        uint64_t ram = 0;
+#if defined(_WIN32)
+        MEMORYSTATUSEX m{};
+        m.dwLength = sizeof m;
+        if (GlobalMemoryStatusEx(&m)) ram = m.ullTotalPhys;
+#else
+        if (FILE* f = fopen("/proc/meminfo", "r")) {
+            char line[256];
+            unsigned long long kb = 0;
+            while (fgets(line, sizeof line, f))
+                if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) {
+                    ram = (uint64_t)kb << 10;
+                    break;
+                }
+            fclose(f);
+        }
+#endif
+        return ram;
+    }();
+    return v;
+}
 void texture_frame(uint64_t completed) {
     const TraceTimer timed{st_texture_frame_ns};   // (hookshot: the frame trace's tex_frame_ms)
     upload_frame_report();
@@ -4784,15 +4807,19 @@ void texture_frame(uint64_t completed) {
     if (frame_no % 10) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
-    if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
+    // (hookshot) RX_VK_VRAM_MB=<MB> for a test, else the one rule by what the driver allows at the first look: texture_budget.h.
+    // No menu row or Quality preset sets it
+    if (!own) {
+        const bool igpu = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        const uint64_t a = known ? allowed : 0;
         own = getenv("RX_VK_VRAM_MB") ? (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20
-              : known                ? std::min<uint64_t>(allowed / 100 * (allowed <= (8704ull << 20) ? 45 : 70), 6144ull << 20)
-                                     : 4096ull << 20;
-    // (hookshot: at most 6 GB: a 16 GB card's 10.8 GB filled up, read as a leak: 105, 106. On a card of 8 GB or less, 45% of what the
-    // driver allows, not 70%: the game's other VRAM (render targets, the pools' mirrors and imports, buffers, pipelines) is ~3.5-3.8 GB
-    // in Hyrule Field, so 70% (5.1 GB of an 8 GB card's 7.3) put the whole past what the card holds. The driver paged VRAM to system
-    // memory and the GPU time went from ~13 to 55 ms a frame for good: an RTX 3060 Ti at 14 fps ten seconds into play, #1400's
-    // RTX 4050 at 5 fps. RX_VK_VRAM_MB=<MB>: the old size, or any)
+              : igpu                 ? texture_rule::integrated_bytes(a, device_vram_bytes())
+                                     : texture_rule::dedicated_bytes(a, device_vram_bytes(), system_ram_bytes());
+        if (!igpu)   // (the integrated GPUs' own line follows, with their caps by the system's RAM)
+            logf("vk: texture budget: %llu MB (driver allows %llu MB, the card has %llu MB, RAM %llu MB%s)",
+                 (unsigned long long)(own >> 20), (unsigned long long)(a >> 20), (unsigned long long)(device_vram_bytes() >> 20),
+                 (unsigned long long)(system_ram_bytes() >> 20), getenv("RX_VK_VRAM_MB") ? ", RX_VK_VRAM_MB" : "");
+    }
     {   // (hookshot) an integrated GPU's "VRAM" is the system's RAM, dynamically calculated based on system RAM
         static bool told;
         if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
@@ -4860,15 +4887,7 @@ void texture_frame(uint64_t completed) {
             }
         }
     }
-    // (a smaller preset on a bigger card: the card's own; RX_VK_VRAM_MB and an integrated GPU's cap: preset_texture_budget)
-    const bool vram_env = getenv("RX_VK_VRAM_MB") != nullptr;
-    const bool preset_budget = opts.vram_mb > 0 && !vram_env && preset_caps_memory();
-    uint64_t budget = preset_texture_budget((uint64_t)std::max(opts.vram_mb, 0), preset_budget, vram_env,
-                                            dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, own);
-    if (preset_budget && known) {
-        // Safety clamp: do not exceed 75% of driver-allowed memory on constrained VRAM (prevents VK_ERROR_DEVICE_LOST)
-        budget = std::min(budget, (allowed / 4) * 3);
-    }
+    uint64_t budget = own;
     // (near what the driver allows, the budget shrinks by the excess. The excess of what the process holds less the
     // free space in VMA's blocks, which new images take before VMA makes a block: measured by the blocks alone, the
     // textures evicted freed space inside them that the driver still counted, so 10 frames later the budget shrank

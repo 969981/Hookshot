@@ -36,6 +36,7 @@
 #include "vk_paths.h"
 #include "pipeline_cache_file.h"
 #include "vk_draw.h"
+#include "flat_map.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
 #include "dlss_actor.h"
@@ -412,7 +413,8 @@ struct RecordingRes {
     size_t si = 0;                 // (the one in use)
     uint64_t before = 0;           // (what the recording used of the streams before this one)
     uint32_t idle = 0;             // (recordings of the slot that stayed in the first stream)
-    std::unordered_map<const void*, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage: uploaded once a recording)
+    // (flat (flat_map.h): an unordered_map put a malloc into every c1 upload kept, and a free into the next recording's clear)
+    FlatMap<uintptr_t, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage, by the stage's address: uploaded once a recording)
     // (hookshot-deck) a uniform buffer copied as submitted (RX_VK_UB_SNAPSHOT), by its address and size: the copy serves the
     // recording's later draws of it while the capture view is the same, as a read then would give the same bytes.
     // RX_VK_UB_SNAPSHOT_REUSE=0: a copy for every binding
@@ -2436,7 +2438,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         return e;
     };
     const uint64_t key = pipeline_key(p, s, at, topo);
-    static thread_local std::unordered_map<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache)
+    static thread_local FlatMap<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache)
     if (auto m = mine.find(key); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
     PROF_EXACT();   // (new to this thread, or new: rare, and a pipeline made can take milliseconds)
     ParLock lk;
@@ -3332,13 +3334,13 @@ bool handle_is_storage_pointer(const Shader::Info& info, const Shader::TextureDe
 struct HandleHit {
     VkImageView view;
     Texture* tex;
+    uint64_t destroy_gen;
     uint32_t level;   // (the image level the view starts at)
     uint32_t version; // (the slot's, when resolved)
-    uint64_t destroy_gen;
+    uint32_t tex_epoch;   // (the texture epoch it was last touched in)
     bool sampling;    // (its use reads the texture's contents)
-    uint64_t tex_epoch;   // (the texture epoch it was last touched in)
 };
-TLS_OBJECT(handle_hits, std::unordered_map<uint64_t, HandleHit>)
+TLS_OBJECT(handle_hits, FlatMap<uint64_t, HandleHit>)
 /* (hookshot) a direct-mapped front for handle_hits. The same texture bindings are resolved again and again (14.9 descriptors
    a draw, 725 draws, 10,600 a frame) and a hash map find for each was 0.9 ms a frame. The map stays the authority: this
    answers only a lookup whose key, slot version, destroy generation and texture epoch are all the ones it was filled with,
@@ -3463,7 +3465,7 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                      has_view && v.set_format ? v.format : 0, has_view && v.set_target ? v.target : -1, (int)want, (int)use);
         }
     }
-    handle_hits()[key] = {view, tex, level, version, dgen, use == ViewUse::Sample || use == ViewUse::Storage, texture_epoch()};
+    handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage};
     if (vf) vf->key = key, vf->view = view, vf->tex = tex, vf->level = level, vf->version = version, vf->destroy_gen = dgen,
             vf->tex_epoch = texture_epoch(), vf->sampling = use == ViewUse::Sample || use == ViewUse::Storage;
     if (tex_out) *tex_out = tex;
@@ -3559,7 +3561,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
     if (index == 1) {
         FINE_SCOPE(FT_C1);
         FINE_N(FC_C1_CALLS, 1);
-        const void* key = &st;
+        const uintptr_t key = (uintptr_t)&st;
         auto it = cur->c1_at.find(key);
         const uint64_t n = std::max<uint64_t>((st.c1.size() + 15) & ~15ull, 16);
         if (it != cur->c1_at.end()) return {it->second.first, it->second.second, n};
@@ -5691,8 +5693,11 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     if (!r.pool) {
         r.pool = make_pool();
     } else {
-        vkResetDescriptorPool(dev.device, r.pool, 0);
-        for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
+        {
+            rec::OwnSlot own;   // (RX_VK_RECORDER_OWN: the slot's own pools, vk_recorder.h; begin_recording's slot_begin)
+            vkResetDescriptorPool(dev.device, r.pool, 0);
+            for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
+        }
         r.extra.clear();
         // (the streams the last recording of the slot grew into: given back after 120 recordings that stayed in the first, the
         // slot's last one being done (recording_wait). RX_VK_STREAM_KEEP=1: kept)
@@ -5717,12 +5722,16 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     }
     if (r.before + r.used > stream_peak.load(std::memory_order_relaxed)) stream_peak.store(r.before + r.used, std::memory_order_relaxed);
     static int64_t begun;
+    static std::atomic<size_t> c1_peak{0};   // (the most c1 stages a recording uploaded: c1_at's size before its reset)
+    if (r.c1_at.size() > c1_peak.load(std::memory_order_relaxed)) c1_peak.store(r.c1_at.size(), std::memory_order_relaxed);
     if (++begun % 3000 == 0)
-        logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now)", res.size(),
+        logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now); "
+             "c1 stages: at most %zu a recording", res.size(),
              (unsigned long long)(kStream >> 20), (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10),
-             (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20));
+             (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20),
+             c1_peak.load(std::memory_order_relaxed));
     r.used = 0, r.before = 0;
-    r.c1_at.clear();
+    r.c1_at.reset();   // (its array kept: emptied at every recording's start, it fills again to about the same size)
     r.ub_snap.clear();
     cur = &r;
     pass() = Pass{};
@@ -7258,6 +7267,25 @@ bool vertex_set_same(uint64_t stamp, const uint64_t* addr, const uint64_t* size,
     }
     return true;
 }
+/// (hookshot) The vertex bindings that differ from the ones last bound on this command buffer: first..first+count, count 0
+/// when none does. Only those are bound again: the driver takes every binding it is handed, and all 16 were handed to it
+/// whenever one stream changed, the unused ones with the zero buffer again (1.1 % of the replay thread on a Steam Deck,
+/// in the driver). Nothing bound on this command buffer yet (valid false): all 16
+void vertex_bind_range(const VkBuffer* b, const VkDeviceSize* o, const VkDeviceSize* z, const VkDeviceSize* s, const VkBuffer* lb,
+                       const VkDeviceSize* lo, const VkDeviceSize* lz, const VkDeviceSize* ls, bool valid, uint32_t* first,
+                       uint32_t* count) {
+    if (!valid) {
+        *first = 0, *count = 16;
+        return;
+    }
+    uint32_t a = 16, e = 0;
+    for (uint32_t i = 0; i < 16; i++)
+        if (b[i] != lb[i] || o[i] != lo[i] || z[i] != lz[i] || s[i] != ls[i]) {
+            if (a == 16) a = i;
+            e = i + 1;
+        }
+    *first = a == 16 ? 0 : a, *count = a == 16 ? 0 : e - a;
+}
 /// The index buffer already bound on this command buffer (a new recording is not)
 bool index_bind_same(uint64_t buffer, uint64_t offset, uint32_t type, uint64_t cached_buffer, uint64_t cached_offset,
                      uint32_t cached_type, int on) {
@@ -8341,10 +8369,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             vbufs[b] = r.buffer, voffs[b] = r.offset, vsizes[b] = s.vbuf[b].size ? s.vbuf[b].size : VK_WHOLE_SIZE;
             vstrides[b] = s.vstream[b].stride;
         }
-        if (!last_vb_valid || std::memcmp(vbufs, last_vb.b, sizeof vbufs) || std::memcmp(voffs, last_vb.o, sizeof voffs) ||
-            std::memcmp(vsizes, last_vb.z, sizeof vsizes) || std::memcmp(vstrides, last_vb.s, sizeof vstrides)) {
+        // (only the bindings that changed: vertex_bind_range. RX_VK_VB_RANGE=0: all 16 at each change, as before)
+        static const bool vb_all = getenv("RX_VK_VB_RANGE") && atoi(getenv("RX_VK_VB_RANGE")) == 0;
+        uint32_t vb_first = 0, vb_count = 0;
+        vertex_bind_range(vbufs, voffs, vsizes, vstrides, last_vb.b, last_vb.o, last_vb.z, last_vb.s, last_vb_valid, &vb_first, &vb_count);
+        if (vb_count && vb_all) vb_first = 0, vb_count = 16;
+        if (vb_count) {
             FINE_N(FC_VBIND, 1);
-            vkCmdBindVertexBuffers2(cmd, 0, 16, vbufs, voffs, vsizes, vstrides);
+            vkCmdBindVertexBuffers2(cmd, vb_first, vb_count, vbufs + vb_first, voffs + vb_first, vsizes + vb_first, vstrides + vb_first);
             std::memcpy(last_vb.b, vbufs, sizeof vbufs), std::memcpy(last_vb.o, voffs, sizeof voffs);
             std::memcpy(last_vb.z, vsizes, sizeof vsizes), std::memcpy(last_vb.s, vstrides, sizeof vstrides);
             last_vb_valid = true;

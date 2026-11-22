@@ -89,7 +89,11 @@ The running game reads its switches from the environment or from `hookshot_env.t
 already set when the game starts keeps its value and the file's line for it is left out (the log says so). A switch
 that stands in for a menu row lasts for its run; the options file keeps the player's value (`env_override` in
 `gpu/vk/vk_menu.cpp`). Switches the shader translation reads are part of the program cache's stamp
-(`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). The build reads its own from the
+(`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). Its other part is the
+translator's own sources, as `nx2/translator_files.py` names them (`gpu/vk/{eden,sirit,compat}/`, `vk_shader.cpp`,
+`vk_bank.cpp`, `vk_state.h`; not `vk_api.h`, which the translator reads nothing from): any change to one of them, a comment
+included, has every player translate every program again at their next start, so what the translator does not read belongs
+elsewhere. The build reads its own from the
 environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
 `RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off
 experiments: `grep -rnE '(getenv|env_on)\("' host gpu/vk` lists them, and the comment where each is read says what it
@@ -123,7 +127,28 @@ frame in the Market on an RTX 3090, for a few more objects left out).
 `RX_VK_OCC_LOG` (set) logs every ~5,000 reports how many read 0, how many were left visible and why, how late they
 were written and what the reading cost;
 `RX_VK_OCC_DRY` (set, a test) makes and reads the queries but leaves the reports at 4096, to time the queries alone.
+With Intel's Windows driver on a discrete GPU (Arc) the counts are read from a copy: at the end of each recording the
+GPU copies the results of the queries it ran into a buffer in host memory (`vkCmdCopyQueryPoolResults`), and the reads
+are plain memory reads. Read from the query pool (`vkGetQueryPoolResults`), each query cost ~3.4 µs on an Arc B580
+(driver 101.9154): 7.4 ms of the render thread's 28.8 ms frame in the Market, where the copy made it 45.8 fps from 34.8
+on average (3 interleaved runs each, the median), for ~2 ms more GPU time a frame (12.2 ms from 10.2: ~1,400 queries
+copied a frame). A query the copy found not done, or one whose recording ended without a copy, is read from the pool once
+its submission is done, as before. Elsewhere the pool is read, as before: an iGPU is mostly held back by the GPU, where
+the copies' GPU time would cost frames, and other drivers' pool reads were not measured. `RX_VK_OCC_COPY=1` copies on
+any GPU, `RX_VK_OCC_COPY=0` reads from the pool; a device without coherent host memory and the parallel replay
+(`RX_VK_PARALLEL`) read from the pool.
 `HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
+
+A CPU read of GPU results waits for the write-back of the submission that writes them (`invalidate`, `vk_replay.cpp`).
+`RX_VK_READBACK_LATE=<rule>[,<rule>...]` names the ranges read without that wait, which then hold the frame before's
+values: `newest` (the range's writer is the newest submission handed out: the game reads it right after submitting the
+work that fills it, so it cannot count on that work being done) and a hex size (the ranges of exactly that many bytes);
+either rule is enough (`gpu/vk/readback_late.h`). Off unless set. On a Steam Deck OLED `newest` alone gives nearly all of
+the gain (a heavy view: 24.3 fps with no rule, 30.1 with `newest`, 24.9 with `3980`, 30.3 with both): two 0x3980-byte
+ranges are 40 to 45% of the readbacks' wait there, larger ranges the rest. It is not a rule for every range: the exposure
+meter read late is the white flashes the wait is there for. `RX_VK_LOG_READBACK_RANGES=1` logs the readbacks by range
+every 3,000 calls (calls, waits and their time, how many had the newest submission as their writer, how many were read
+late), which is how the ranges worth a rule are found on a PC.
 
 `RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA and AMD FSR 4 (and its Native AA)
 with Native HDR and PsychoV35. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
@@ -205,6 +230,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_LOG_PROGRAM_LIFE=1` | The programs' life: a log line at each program the game makes (its shaders set) or frees and at each program's first draw or dispatch (what it needed: a program read from the cache, a translation, a pipeline from a cache or compiled, left out, and how long after its create call), and a `program census` line every 600 presents |
 | `RX_VK_PRESENT_THREAD=1` | On (off by default: the game's thread presents). Where the device has a second queue that can present to the window (a second queue of the replay's family, else a compute family's): each present is made on a thread and queue of its own once the frame's copy into the window is done, and the game's thread goes on at once (with NVIDIA's driver on Wayland the present otherwise waits ~2.4 ms a frame for the GPU there). One present out at most; under V-Sync On (FIFO) with `VK_KHR_present_wait`, until it is shown. The log has the fence's and the present's time (and how long after it the frame was shown) every 600 presents |
 | `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |
+| `RX_VK_PGO_FILE=<file>` | The same in a run of an `RX_VK_PGO=gen` renderer, for the renderer's own counters ([the renderer's play profile](#the-renderers-play-profile)); set it in the environment too |
 
 The periodic `GPU-bound wait` log value is **recording-slot reuse only** (the line says so), not a bottleneck test.
 `host time in GPU resource waits` separately sums host-clock time inside nonzero-timeout Vulkan fence and timeline
@@ -240,9 +266,6 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_LOAD=create` or `start` | When programs and their pipelines are loaded from what the preparation kept. Without the switch: `create`, where the GPU has mesh shaders and where it draws mesh programs through the compute fallback (`start` there until rc.4: with the tour's list it kept 32,645 pipelines ready before the title, which left a 16 GB PC near its commit limit with the textures' budget at 0; issues 869, 933 and 805); and `start` on an install where first uses waited for loads for over 2 s in one session, or for over 500 ms in two sessions running (only waits longer than 20 ms count; one such session alone leaves `hookshot_load_start.txt.waited`, which the next start takes away), or where the loads found over 500 listed pipelines in no cache (draws left out for pipelines no list names are not counted: they happen in `start` too) (`hookshot_load_start.txt` in the game folder's `cache`, removed by a preparation or by hand). The first start of the game after a preparation builds every noted pipeline and every kept compute program's pipeline into the pipeline cache once, before the title, and lets each go; the preparation's own process does the same to fill the driver's cache but leaves no marker, since its pipeline cache does not answer the game's process on NVIDIA. With the compressed program cache (`RX_VK_PROGRAM_CACHE_ZSTD=1`) always `start`, whatever this switch says: its records are only read whole. The log says which and why. `start`: every listed one before the title, as before. `create`: none by a list; each program's kept variants and noted pipelines are loaded by a background job when the game makes the program (from the caches only: never a translation or a compile there), and a first draw that comes before its job ran runs it itself. The first start after a preparation builds each noted pipeline into the pipeline cache once and lets it go (before the title, with the precompile's progress), and only then loads at create. `RX_VK_LOAD_WORKERS=<n>` (2): the jobs that run at once (0, to measure: none, a draw loads what it needs itself); `RX_VK_LOAD_UNLISTED=1`: programs no list has a pipeline of are loaded at their create call too (otherwise at their first draw, as with `start`); `RX_VK_LOAD_WORKERS_LOADING=<n>`: while no frame was presented for 100 ms (the same unless set) |
 | `RX_VK_MODULE_IDS=0` | Shader module identifiers off (`VK_EXT_shader_module_identifier`). With them a compute program's module is learned by its identifier when it is first made from its code (`hookshot_module_ids.bin`, for one program cache and one driver), and in a later run the load at the program's create call makes that variant's pipeline from the caches without reading its code or making a module; where no cache has the pipeline the code is read as before |
 | `RX_VK_COMPILE_SHADERS=all` or `most` | What a preparation builds, over `compile_shaders` in `hookshot_options.ini` (the game's `--compile-shaders` sets it): `all` the predicted pipelines too (`predict_run`), `most` without them. The log's `vk: Compile shaders:` line says which and why. Most also removes what an earlier preparation on All left (`hookshot_pipelines.bin.predicting`, `.predicted`, `.predicted_keys`) |
-| `RX_VK_LOAD=create` or `start` | When programs and their pipelines are loaded from what the preparation kept. Without the switch: `create` where the GPU has mesh shaders, `start` where it draws mesh programs through the compute fallback; and `start` on an install where first uses waited for loads for over 2 s in one session, or for over 500 ms in two sessions running (only waits longer than 20 ms count; one such session alone leaves `hookshot_load_start.txt.waited`, which the next start takes away), or where the loads found over 500 listed pipelines in no cache (draws left out for pipelines no list names are not counted: they happen in `start` too) (`hookshot_load_start.txt` in the game folder, removed by a preparation or by hand). The first start of the game after a preparation builds every noted pipeline and every kept compute program's pipeline into the pipeline cache once, before the title, and lets each go; the preparation's own process does the same to fill the driver's cache but leaves no marker, since its pipeline cache does not answer the game's process on NVIDIA. With the compressed program cache (`RX_VK_PROGRAM_CACHE_ZSTD=1`) always `start`, whatever this switch says: its records are only read whole. The log says which and why. `start`: every listed one before the title, as before. `create`: none by a list; each program's kept variants and noted pipelines are loaded by a background job when the game makes the program (from the caches only: never a translation or a compile there), and a first draw that comes before its job ran runs it itself. The first start after a preparation builds each noted pipeline into the pipeline cache once and lets it go (before the title, with the precompile's progress), and only then loads at create. `RX_VK_LOAD_WORKERS=<n>` (2): the jobs that run at once (0, to measure: none, a draw loads what it needs itself); `RX_VK_LOAD_UNLISTED=1`: programs no list has a pipeline of are loaded at their create call too (otherwise at their first draw, as with `start`); `RX_VK_LOAD_WORKERS_LOADING=<n>`: while no frame was presented for 100 ms (the same unless set) |
-| `RX_VK_MODULE_IDS=0` | Shader module identifiers off (`VK_EXT_shader_module_identifier`). With them a compute program's module is learned by its identifier when it is first made from its code (`hookshot_module_ids.bin`, for one program cache and one driver), and in a later run the load at the program's create call makes that variant's pipeline from the caches without reading its code or making a module; where no cache has the pipeline the code is read as before |
-| `RX_VK_COMPILE_SHADERS=all` or `most` | What a preparation builds, over `compile_shaders` in `hookshot_options.ini` (the game's `--compile-shaders` sets it): `all` the predicted pipelines too (`predict_run`), `most` without them. The log's `vk: Compile shaders:` line says which and why. Most also removes what an earlier preparation on All left (`hookshot_pipelines.bin.predicting`, `.predicted`, `.predicted_keys`) |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_MESH_SHADERS=native` or `compute` | How task and mesh programs run, read as the device is made (`gpu/vk/mesh_mode.h`; it was the Graphics tab's Mesh shaders row). Unset or any other value: Automatic, the GPU's own mesh shaders where it has them; the compute fallback where it has not, on Linux AMD (RADV, issue 2245), and for the task + mesh draws of the GPUs `RX_VK_TASK_MESH_FALLBACK`'s default names. `native`: the GPU's own for every draw (a GPU without them still gets the fallback). `compute`: the fallback on every GPU. `RX_VK_FORCE_MESH_FALLBACK=1` is `compute` over it. The log's `vk: mesh shaders:` line says which and where it came from. A change translates the programs again, as the program cache's stamp holds the GPU's mesh path (and every `RX_VK_MESH*` switch's text). The old `mesh_shaders=` line in `hookshot_options.ini` is no longer read: the log names it, and the menu's next save drops it |
 | `RX_VK_PIPELINE_TRACE=1` | Log graphics program keys before pipeline construction and compute program keys before background compilation, so a long-running build can be identified before it returns. Off by default. |
@@ -264,10 +287,12 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
 | `RX_VK_SPLIT_UBFLUSH=0` or `1` | A submission cut into parts (`RX_VK_CHUNK`): 1 each part writes the uniform updates recorded so far into game memory at its end, as before; 0 only the last part writes them all, as an unsplit submission does. Default 0 on Intel without VRAM mirrors, the iGPUs (white blocks and flashes in Kokiri Forest otherwise, https://github.com/NotRexed/Hookshot/issues/999), 1 elsewhere, Arc discrete included (mirrors on), where it was not measured |
 | `RX_VK_SPLIT_BEFORE_DRAW=0` or `1` | A submission cut into parts (`RX_VK_CHUNK`): 1 a part ends only right before a plain draw (one with a vertex stage), so no cut leaves a part beginning with a mesh draw or a dispatch; 0 it ends after its 120th draw or dispatch, whatever follows, as before. Default 1 on Intel: on an Arc B580 (Windows, driver 32.0.101.9154) a command buffer that begins with mesh draws drew the plain draws after them as exploded triangles (white shards in Kokiri Forest while moving, ~2% of the frames); 0 elsewhere, where it was not measured |
-| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
+| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget (a quarter of the card, at most 2 GB under 15 GB and 3 GB from there, and at most 256 MB on cards of 4.5 GB or less: `gpu/vk/mirror_budget.h`; no menu row or Quality preset sets it) |
+| `RX_VK_MIRROR_SPARSE=0` | Whole VRAM mirrors, as before. By default they are sparse (`gpu/vk/sparse_mirror.h`): memory only for a mirror's 64 KB blocks that one of the game's pools is in, and blocks the game's pools have left given back. A block with none is reached in guest memory (the page table, and a binding until the next submission gives it memory); a binding whose blocks with none are all outside every game pool (a guessed size run past a pool's end) is served from the mirror. The log's `vk: sparse mirrors:` line counts them every 1200 submissions. Needs strict sparse residency for buffers: off on its own where the device lacks it, and the log says so (`vk: sparse VRAM mirrors (RX_VK_MIRROR_SPARSE): not on this device`). Off follows the on/off rule above (`0`, `false`, `off`, `no`) |
+| `RX_VK_SPARSE_WAIT=1` | Each bind of the sparse mirrors' blocks waited for on the CPU, as before. By default the binds signal a timeline semaphore that the submissions of recordings wait for on the GPU (`sparse_bind_infos`, `gpu/vk/vk_memory.cpp`); waited for on the CPU, an area change's longest frame was 1.2 s against 0.9 |
 | `RX_VK_MIRROR_TRIM=0` | An import whose mirror is mostly outside every game pool is no longer made again smaller (it is while VRAM is over 80% full: the previous scene's large pools otherwise keep their mirrors for the session; `gpu/vk/mirror_trim.h`) |
 | `RX_VK_CAPTURE_KEEP_OLD=1`, `RX_VK_CAP_BLOCKS=1` | A/B switches for capture buffers: keep the former size classes and 64 MB reuse limit; allocate large buffers from shared blocks instead of dedicated memory. Both are off by default and follow the on/off rule above, including `0`, `false`, `off` and `no` |
-| `RX_VK_VRAM_MB=<MB>` | The texture cache's budget in MiB, over a preset's and over the default (70% of what the driver allows the process, 45% where that is 8.5 GB or less, at most 6 GB; on an integrated GPU less, by the system's RAM: 1 GB with 8 GB of RAM, 2 GB with 12, 2.5 GB with 16, 3.5 GB with 24, 4 GB with 32, and up to 6 GB above that). What a texture counts: BC and natively sampled ASTC by whole blocks at each mip level, partial blocks included; decoded ASTC by its output format; and never less than the allocator's size (`RX_VK_COUNT_BY_ESTIMATE=1`: the estimate alone). The log prints these MiB as `MB` |
+| `RX_VK_VRAM_MB=<MB>` | The texture cache's budget in MiB, over the default (by the card: 7/12 of its memory or all but 5 GB, whichever is more, at most 11 GB, at most 2.2 GB on a card of 4.5 GB or less, and at most 75% of what the driver allows the process; under 12 GB of RAM on a card over 6.75 GB, 45% of what the driver allows up to 8.5 GB, else 70%, at most 6 GB: `gpu/vk/texture_budget.h`; no menu row or Quality preset sets it. On an integrated GPU 45% of the allowance up to 8.5 GB, else 70%, at most 6 GB, and less by the system's RAM: 1 GB with 8 GB of RAM, 2 GB with 12, 2.5 GB with 16, 3.5 GB with 24, 4 GB with 32, and up to 6 GB above that). What a texture counts: BC and natively sampled ASTC by whole blocks at each mip level, partial blocks included; decoded ASTC by its output format; and never less than the allocator's size (`RX_VK_COUNT_BY_ESTIMATE=1`: the estimate alone). The log prints these MiB as `MB` |
 | `RX_VK_AUTO_PRESET=0`, `RX_VK_AUTO_PRESET_VRAM_MB=<MB>` | A first start keeps the defaults instead of starting on the Quality preset Auto (this PC) (`gpu/vk/auto_settings.h`); the card's video memory taken as that many MB, to see what Auto chooses for a smaller or larger card |
 | `RX_VK_AUTO_TUNE=0` | Auto (this PC) keeps its Render resolution instead of measuring the GPU in play and stepping it: down while frames are missed with the GPU over 90% busy, up while the cap holds with it under half busy (`auto_settings.h` `tune`) |
 | `RX_VK_COMPACT=0`, `RX_VK_COMPACT_PCT=<50..90>`, `RX_VK_COMPACT_MB=<MB>` | VRAM compaction (on by default; `=0` turns it off): the textures that are not render targets in a pool of their own, moved out of sparsely used blocks a few a present so that the blocks go back to the driver, and the texture budget holding the driver's count at that share of what it allows (85) by letting go of the render targets drawn over since and of textures unused for ten seconds, with a reserve five points under it (80) where those unused for thirty seconds go (what the budget's size, the 90% rule and the driver's limit ask for on their own still goes from textures unused for a second, as with it off); the free space that starts a run (512; 192 while the count is over 90%) |
@@ -283,6 +308,8 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_SKIP_COMPRESSED_OVER_RT=1` | A compressed (ASTC, BC, ETC2/EAC) texture made over storage render targets used is not uploaded, as before: bosses and new enemies all blue the first time |
 | `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
 | `RX_VK_WB_DIFF=0` | Write-backs copy every byte again instead of only what changed against a VRAM shadow (the diff is on by default; v2.0.9 and v2.0.10 had it off, issue 1161) |
+| `RX_VK_LATE_FIX=0` | A capture whose pages a submission still on the GPU writes back (late pages) waits for that submission and copies them again, as before, instead of the GPU writing the write-backs' words into the capture (`shaders/late_fix.comp`; on by default, off under `RX_VK_PARALLEL` > 1) |
+| `RX_VK_SHADOW_FOLLOWS_SYNC=0` | The write-back shadow is filled from guest memory at the write-back, as before, instead of taking the same bytes as the mirror's sync (with it off the diff can write a capture's older words over the CPU's newer ones) |
 | `RX_VK_MSYNC_PASS=0` | A mirror sync copies the pages a capture holds into the mirror as copy regions again, as before. By default they go through the write-back diff's pass (`shaders/wb_diff.comp`, with the mirror as its own shadow, so a copy): one dispatch a sync, and one for every pool synced before a parallel replay's segments. A capture's buffer is host memory, and its regions, a page or a few each, were read over PCIe one after another (`msync_pass_add` in `gpu/vk/vk_memory.cpp`; the log's `vk: mirror syncs' pass` line every 600 submissions). A GPU without the write-back diff's pipeline (no subgroup votes) keeps the copies |
 | `RX_VK_WB_OBSERVE=1` | Opt-in diagnostics for actual mirror/shadow differences in the write-back diff pass. Reports completed chunks and bytes covered by changed chunks every 600 submissions; does not change copy decisions. See [write-back observations](writeback-observations.md) for interpretation and tests |
 | `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_REFLEX_SUBMIT_IDS=0`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame. `RX_VK_DLSS_HDR=0` keeps DLSS's LDR feature and clamped colour with Native HDR too, for comparisons. `RX_VK_REFLEX_SUBMIT_IDS=0` sends the queue submits without their game frame (`VkLatencySubmissionPresentIdNV`, `gpu/vk/vk_reflex.cpp`), for comparisons: with frame generation, Reflex's "to the GPU's end" timing then goes wrong by hundreds of ms. Hidden meshes (#1370, `gpu/vk/hidden_mesh.h`): the depth draws of a skinned mesh the game has stopped showing for 3 frames (Link, with the camera pushed into him) are left out; `RX_VK_DLSS_FADED=0` draws them again (for an A/B), `RX_VK_DLSS_FADED_LOG=1` logs the counts of the first frames and why a hidden mesh's draws were drawn (`vk: upscaler: faded:`) |
@@ -290,10 +317,12 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FSR3_HDR=0` | With HDR on Native, AMD FSR 3.1 on the chain gets the colour clamped at the paper white, as before, for comparisons (by default it takes the game's HDR colour as linear light while the game presents PQ: the log says `vk: fsr3 on the chain: HDR colour, linear`). Its own inputs (`RX_VK_FSR3_CHAIN=0`) are LDR either way |
 | `RX_VK_FSR3_CHAIN=0` | AMD FSR 3.1 upscales with inputs of its own (`vk_fsr3_inputs.cpp`: the camera's motion alone) instead of as an engine of `vk_temporal.cpp`'s chain (the skinned draws' own motion, as DLSS and FSR 4 get it), for comparisons. The log says `vk: fsr3 on the chain: N frames drawn` on the chain, `vk: fsr3 ... with assembled depth and camera motion` without |
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
+| `RX_VK_RECORDER_OWN` (set), `RX_VK_RECORDER_IDLE=wait` | With `RX_VK_RECORDER=thread` (the recorder thread, `gpu/vk/vk_recorder.h`): a recording slot's own command pool and descriptor pool resets at its reuse made without waiting for the recorder; and the recorder's idle a 20 us spin, then a wait on its ring (`WaitOnAddress`, a futex on Linux) instead of the adaptive spin. Both off by default; each named in the recorder's start line |
 | `RX_VK_DESC_REUSE=0/1/never` | Over the Descriptor reuse row for a run, with its values: 0 its Off (a draw keeps the descriptors of the draw before it while no registration at all was made), 1 its On (through registrations of slots it does not sample, the default); `never`: every draw builds its own |
 | `RX_VK_DESCRIPTOR_SETS=1` | Use pooled descriptor sets for game programs, including those that fit the push-descriptor limit. Restart to change it; changing layouts can require fresh driver pipeline compilation. Off by default; for comparing CPU descriptor-binding costs on a driver. Renderer helper passes retain their push descriptors. Sets use the existing per-recording pools, recycled after their GPU work completes; this can require more pool storage than pushing descriptors. |
 | `RX_VK_DESC_COUNTS=0` | A/B switch: a draw's descriptor build (`build_descriptors`, `gpu/vk/vk_draw.cpp`) counts the program's descriptors before every build, as before; by default the three counts are taken once and kept with the program (`Program::desc_counts`), once it is ready. The same writes and reserves either way |
 | `RX_VK_NAN_GUARD=0` | No NaN guard on float colour outputs (on by default on every card: one NaN texel spreads through bloom into glowing blocks) |
+| `RX_VK_VB_RANGE=0` | A/B switch: a draw whose vertex streams changed binds all 16 bindings again, as before, instead of only the ones that differ from what the command buffer has (`vertex_bind_range`, `gpu/vk/vk_draw.cpp`) |
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 | `HOS_VCORE_STARVE_US=<microseconds>` | A game thread that has waited this long for a virtual core (default 1000000, 1 s; 0: never) goes before every other waiter at the next release of a core it may use, and asks the holder to give the core up at its next checkpoint whatever the holder's priority, so a wait that better threads keep winning ends in a grant, not in the escape after 2 s (`HOS_VCORE_ESCAPE_US`, `HOS_VCORE_ESCAPE_EQ_US`). The `vcores:` line every 5 s counts these grants (`starved grants`) |
@@ -340,6 +369,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
 | `RX_RELEASE=1` | A release build (`make_game.py` sets it): no console window, the shaders prepared before the title |
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
+| `RX_VK_PGO=gen`, `RX_VK_PGO=<file>` or `RX_VK_PGO=1` | The Vulkan back end's own files counting their branches for a profile, or built with one (`make_game.py` passes `work/hookshot_vk.profdata` when it is there, else the committed `assets/profiles/hookshot_vk.profdata.xz`; a compiler that can't read it builds without): [the renderer's play profile](#the-renderers-play-profile). Unset (or `0`, `off`): no play profile, the default; `1` (or `on`): the committed one, or the checkout's own |
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
@@ -411,6 +441,57 @@ The report keeps its per-program counts and adds `code` rows with the native sta
 recorded, including programs loaded from the cache. The four keys are vertex/mesh/compute, fragment, task and the
 header-only stage; zero means no key was available. Distinct tuples for the same program stay separate. These are
 recorded-query identities, not a complete draw replay or display timestamps. The queries can perturb frame timing.
+#### The renderer's play profile
+
+The Vulkan back end can be built with a play profile of its own (after
+[ProjectReLink](https://github.com/pixl27/ProjectReLink)): `assets/profiles/hookshot_vk.profdata.xz`, committed, with
+its note in `assets/profiles/README.md` (where and how Longshot recorded it, and what it measured there: about -4 to -5 % frame
+time standing and -3 % running in the Market on an RTX 3090). **It is off by default.** The recording is Ocarina's, of a renderer
+the four games share, and here it measured nothing outside the spread in Ocarina (#119: +0.4 fps in Kokiri Forest, -0.7 in
+Hyrule Field, an RTX 5060 Ti): a game whose runs gain would have it turned on in its game profile (not wired yet). `RX_VK_PGO=1` (or `on`, `yes`,
+`true`) asks for it in a build: a player's (with DLSS or FSR 4 too), the AppImage's, a developer's; then a checkout's own
+`work/hookshot_vk.profdata` is used in its place. `RX_VK_PGO=gen` or another file, set by hand, is the developer's, in place of
+both. Recording a new one:
+
+1. **Build a renderer that counts**, `RX_VK_PGO=gen`: the back end's own files (`gpu/vk/*.cpp` and suyu's texture
+   decoders; not Eden's recompiler, sirit, Dear ImGui or zstd) are built with `-fprofile-instr-generate`, still at
+   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way),
+   or the renderer alone:
+   ```
+   RX_VK_PGO=gen python -I scripts/dev_packs.py pack <dir> vk-count
+   RX_VK_PGO=gen OOT_WORK=<work> RX_RELEASE=1 RX_VK_ONLY=1 python -I nx2/build.py --standalone
+   ```
+   It runs slower than the ordinary one (every branch of those files adds to a counter in memory, from every thread):
+   it is for recording, never for numbers.
+2. **Record a run**: start the game with `RX_VK_PGO_FILE=<file>` in the environment. Create `<file>.reset` once the
+   place has loaded (the counters start again), play the places the profile should know, then create `<file>.dump`:
+   the counters are written to `<file>` within half a second and the `.dump` file goes. Several places can each be
+   dumped to a file of their own.
+3. **Merge** with the `llvm-profdata` of the compiler that built it:
+   `llvm-profdata merge -o work/hookshot_vk.profdata <file> [<file> ...]`.
+4. **Build with it**: `make_game.py` copies `work/hookshot_vk.profdata` to its work folder and passes it
+   (`RX_VK_PGO=<file>`), unless `RX_VK_PGO` is set already; without one it unpacks the committed profile there
+   (`hookshot_vk.shipped.profdata`) and passes that. Either only when this compiler reads it, on every system (a
+   profile from a newer LLVM than the compiler's would stop the build): else the renderer is built without one.
+   To ship it: `xz -9e -c work/hookshot_vk.profdata > assets/profiles/hookshot_vk.profdata.xz`, the note in
+   `assets/profiles/README.md` updated, in a pull request. `nx2/build.py` run on its own takes it only from
+   `RX_VK_PGO`. `dev_packs.py` builds a pack of the renderer alone with its base's profile. The lift key leaves
+   `RX_VK_PGO` out, and only the back end's own objects (35 files) are named by the profile's contents: another profile
+   builds those again and nothing else, and the shader caches stay (their stamp is the translator's sources).
+
+A profile fits the compiler target it was recorded with: llvm-mingw's for Windows players, clang's for Linux (C++
+names differ between the two wherever a type's width does, and the code differs where it asks which system it is on).
+Runs from both can be merged into one file: a function is matched by its name and the hash of its shape, and what
+matches nothing is left out. For the same reason a profile ages rather than breaks: a function whose branches changed
+since the recording, or a new one, is compiled as if there were no profile (clang's warning for it is among those
+the build silences), the rest keep theirs. The committed profile is one for every build for now, recorded on Linux:
+a Windows build matches the renderer's own functions and leaves the C++ library's out. On Linux the AppImage's back
+end comes built (`HOOKSHOT_VK_PREBUILT`), with the profile `scripts/linux/appimage.sh` finds as `make_game.py` does; a
+player's build there compiles the back end, with the AppImage's copy of the profile, with DLSS or FSR 4.
+
+The file holds the names of the back end's functions (recorded on Longshot's renderer, #569 and #599), a hash of each one's shape and how often
+each branch ran: nothing of the game's code or data. It says which code paths the recorded places exercised, no more.
+
 #### Testing a change against a base
 
 A full build of a new game folder is more than an hour on some PCs, most of it the shader preparation, which starts
@@ -454,8 +535,8 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
     (`base` records them) that the change's build no longer makes is removed from the runtime; saves, settings and
     caches are never touched, and an adopted base records none.
   - **Prepare:** the runtime prepares again when the shader translator (`gpu/vk/{eden,sirit,compat}/`,
-    `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `vk_api.h`: what `build.py` stamps the shader caches with) or the
-    shader seed changed; `--prepare` / `--no-prepare` decide instead.
+    `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`: what `build.py` stamps the shader caches with, as
+    `nx2/translator_files.py` names them) or the shader seed changed; `--prepare` / `--no-prepare` decide instead.
   - **Where:** game packs share one work folder per base (`<base>/game-work`). The lift key holds that folder's
     path, so the first game pack translates the game once and the later ones skip the lift while the translator,
     the HLE functions and the hot list stay the same; the base's compiled objects are linked in. Build one pack at
