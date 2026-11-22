@@ -2538,6 +2538,27 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// cold: made only if the driver has it compiled already; set, and nothing made, when it would have had to compile
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
+    // (hookshot) What the game's state names is checked against what Vulkan and this device allow before the driver sees it
+    // (audit 2026-11-14, PR-C F6): patches need tessellation stages, which are never translated; a sample count the device
+    // has no framebuffer for is not one it can draw with. Either is left out, said once each
+    if (topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            logf("vk: program %016llx: drawn with patches, and tessellation is not translated: left out", (unsigned long long)p.key);
+        return VK_NULL_HANDLE;
+    }
+    {
+        const VkSampleCountFlags colour = dev.props.limits.framebufferColorSampleCounts,
+                                 depth = dev.props.limits.framebufferDepthSampleCounts;
+        const VkSampleCountFlags have = at.depth_format != VK_FORMAT_UNDEFINED ? colour & depth : colour;
+        if (!(have & (VkSampleCountFlags)at.samples)) {
+            static std::atomic<int> said{0};
+            if (said++ < 4)
+                logf("vk: program %016llx: %u samples, which this GPU has no framebuffer for (it has %#x): left out",
+                     (unsigned long long)p.key, (unsigned)at.samples, (unsigned)have);
+            return VK_NULL_HANDLE;
+        }
+    }
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     static const bool trace = env_on("RX_VK_PIPELINE_TRACE");
@@ -2580,7 +2601,21 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
                 zero_used = true;
                 continue;
             }
-            va.push_back({i, a.stream, supported_vertex_format(f), a.offset & 0x3FFF});
+            // (an offset or a stride past this device's limits is no attribute Vulkan can describe: it reads zeros, as an
+            // unset one does, rather than a pipeline the driver is not obliged to make. Said once)
+            const uint32_t off = a.offset & 0x3FFF;
+            if (off > dev.props.limits.maxVertexInputAttributeOffset ||
+                s.vstream[a.stream].stride > dev.props.limits.maxVertexInputBindingStride) {
+                static std::atomic<int> said{0};
+                if (said++ < 4)
+                    logf("vk: program %016llx: vertex attribute %u at offset %u, stride %u, past this GPU's %u / %u: read as zeros",
+                         (unsigned long long)p.key, i, off, s.vstream[a.stream].stride,
+                         dev.props.limits.maxVertexInputAttributeOffset, dev.props.limits.maxVertexInputBindingStride);
+                va.push_back({i, 15, VK_FORMAT_R32_SFLOAT, 0});
+                zero_used = true;
+                continue;
+            }
+            va.push_back({i, a.stream, supported_vertex_format(f), off});
             stream_used[a.stream] = true;
         }
     for (uint32_t b = 0; b < 15; b++)
@@ -2596,7 +2631,10 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             static std::atomic<int> logged{0};
             if (logged++ < 8)
                 logf("vk: vertex stream %u divisor %u%s", b, s.vstream[b].divisor, dev.vertex_divisor ? "" : " (not supported: 1)");
-            if (dev.vertex_divisor) vdivs.push_back({b, s.vstream[b].divisor});
+            // (no more than the device's most: VK_EXT_vertex_attribute_divisor's maxVertexAttribDivisor)
+            if (dev.vertex_divisor)
+                vdivs.push_back({b, dev.max_vertex_divisor ? std::min(s.vstream[b].divisor, dev.max_vertex_divisor)
+                                                           : s.vstream[b].divisor});
         }
     {   // (each NVN vertex format once: what the game draws with)
         static std::mutex mu;

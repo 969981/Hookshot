@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "opennr/opennr_khr.h"
 #include "opennr/opennr_net.h"
@@ -140,7 +141,9 @@ bool khr_forced() {
 
 /// OpenDLSS-NR's host code reads its kernels from a folder (shaders/*.spv, ptx/*.ptx; the khr route's from
 /// shaders-khr-<variant>/*.spv). The renderer carries them (the SPIR-V checked in, the PTX generated at build time) and
-/// writes them out once, to a folder named by their hash, so a stale folder from another build is never read.
+/// writes them out to a folder named by their hash, so a stale folder from another build is never read. Every file there is
+/// compared with the renderer's own bytes at each start and written again where it differs: the folder is in the game
+/// folder, and a kernel changed there was run as it was (the folder's "complete" mark alone was trusted).
 std::string materialize_kernels(std::string* error) {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](const void* data, size_t n) {
@@ -154,12 +157,22 @@ std::string materialize_kernels(std::string* error) {
     snprintf(tag, sizeof tag, "%016llx", (unsigned long long)h);
     const std::filesystem::path dir = std::filesystem::path(game_folder()) / "hookshot_opennr_kernels" / tag;
     std::error_code ec;
-    if (std::filesystem::exists(dir / "complete", ec)) return dir.string();
     std::filesystem::create_directories(dir / "shaders", ec);
     std::filesystem::create_directories(dir / "ptx", ec);
     std::filesystem::create_directories(dir / "no-ptx", ec);   // (the GLSL routes' empty PTX folder, opennr_net.cpp)
+    int rewritten = 0;
     auto write = [&](const std::filesystem::path& p, const void* data, size_t n) {
-        FILE* f = fopen(p.string().c_str(), "wb");   // (narrow paths are UTF-8: nx2/win_manifest.py)
+        {   // (already there with exactly these bytes: kept)
+            FILE* f = fopen(p.string().c_str(), "rb");   // (narrow paths are UTF-8: nx2/win_manifest.py)
+            if (f) {
+                std::vector<unsigned char> have(n + 1);
+                const size_t got = fread(have.data(), 1, n + 1, f);
+                fclose(f);
+                if (got == n && (n == 0 || memcmp(have.data(), data, n) == 0)) return true;
+                rewritten++;
+            }
+        }
+        FILE* f = fopen(p.string().c_str(), "wb");
         const bool ok = f && fwrite(data, 1, n, f) == n;
         if (f) fclose(f);
         if (!ok && error) *error = "cannot write " + p.string();
@@ -185,6 +198,8 @@ std::string materialize_kernels(std::string* error) {
     for (const auto& f : opennr_ptx::kFiles)
         if (!write(dir / "ptx" / f.name, f.text, strlen(f.text))) return {};
     if (!write(dir / "complete", "", 0)) return {};
+    if (rewritten) logf("vk: OpenDLSS-NR: %d of its kernel files in %s were not the renderer's: written again", rewritten,
+                        dir.string().c_str());
     return dir.string();
 }
 

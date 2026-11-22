@@ -76,6 +76,7 @@ struct {
     bool provoking_vertex = false, eds3_a2c = false, eds3_blend = false;
     bool task_mesh_fallback = false;
     VkPhysicalDeviceProperties props{};
+    uint32_t max_vertex_divisor = 0;
     VkDriverId driver_id = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
 } dev;
@@ -215,6 +216,10 @@ int main() {
     state.vstream[2].stride = 16;
     Targets targets{};
     dev.props.vendorID = 0x8086;
+    // (the limits build_graphics checks the state against: every sample count, and Vulkan's floors for offsets and strides)
+    dev.props.limits.framebufferColorSampleCounts = dev.props.limits.framebufferDepthSampleCounts = 0x7f;
+    dev.props.limits.maxVertexInputAttributeOffset = 2047;
+    dev.props.limits.maxVertexInputBindingStride = 2048;
     VkPipeline pipelines[3]{};
     for (int kind = 0; kind < 3; ++kind) {
         const char* name = kind == 0 ? "ordinary" : kind == 1 ? "native mesh" : "fallback";

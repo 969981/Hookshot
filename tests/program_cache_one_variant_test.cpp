@@ -107,11 +107,15 @@ std::atomic<int64_t> st_cache_hits{0};
 bool disk_zstd = false;
 constexpr size_t kZstdHead = 20;
 constexpr uint32_t kCompressedKind = 16;
+constexpr uint64_t kMaxUnpacked = 64ull << 20;   // (vk_progcache.cpp's cap on a record unpacked)
 extern "C" {
 size_t ZSTD_compressBound(size_t n) { return n + 64; }
 size_t ZSTD_compress(void*, size_t, const void*, size_t, int) { return (size_t)-1; }
 size_t ZSTD_decompress(void*, size_t, const void*, size_t) { return (size_t)-1; }
 unsigned ZSTD_isError(size_t n) { return n == (size_t)-1; }
+#define ZSTD_CONTENTSIZE_UNKNOWN (0ULL - 1)
+#define ZSTD_CONTENTSIZE_ERROR (0ULL - 2)
+unsigned long long ZSTD_getFrameContentSize(const void*, size_t) { return ZSTD_CONTENTSIZE_ERROR; }
 }
 // (the census's counters and the load at a program's create call, gpu/vk/vk_programs.h: counted, none here)
 struct { int64_t loads = 0, load_ns = 0; bool background = false; } use_counters;

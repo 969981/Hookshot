@@ -99,6 +99,7 @@ bool disk_on = true, disk_listing = true;
 bool disk_zstd = false;   // (vk_progcache.cpp's RX_VK_PROGRAM_CACHE_ZSTD; the tests below use the uncompressed records)
 constexpr size_t kZstdHead = 20;
 constexpr uint32_t kCompressedKind = 16;
+constexpr uint64_t kMaxUnpacked = 64ull << 20;   // (vk_progcache.cpp's cap on a record unpacked)
 // (the zstd calls the cache functions may make: a stub that copies, so the compressed record path and its 8-byte
 // unpacked size are exercised without linking zstd. It keeps the last plain payload for the matching decompress.)
 static std::vector<uint8_t> zstd_plain;
@@ -116,6 +117,10 @@ size_t ZSTD_decompress(void* dst, size_t cap, const void*, size_t) {
     return zstd_plain.size();
 }
 unsigned ZSTD_isError(size_t n) { return n == (size_t)-1; }
+// (program_cache_payload takes a record only when its frame says the size its head does: the payload kept above)
+#define ZSTD_CONTENTSIZE_UNKNOWN (0ULL - 1)
+#define ZSTD_CONTENTSIZE_ERROR (0ULL - 2)
+unsigned long long ZSTD_getFrameContentSize(const void*, size_t) { return zstd_plain.size(); }
 }
 FILE* disk_in = nullptr;
 FILE* disk_out = nullptr;
