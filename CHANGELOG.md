@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.37](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.36...v2.3.0-rc.37) (2026-11-22)
+
+
+### Performance Improvements
+
+* **vk:** Longshot's renderer performance picks from 514591a3..9dd41326 (B1) ([#119](https://github.com/notquiteog/Hookshot/issues/119)) ([fcc61e1](https://github.com/notquiteog/Hookshot/commit/fcc61e15130966e28d8991d0604782acdbcc0431))
+
 ## [2.3.0-rc.36](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.35...v2.3.0-rc.36) (2026-11-22)
 
 
