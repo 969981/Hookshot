@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.36](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.35...v2.3.0-rc.36) (2026-11-22)
+
+
+### Bug Fixes
+
+* **vk:** Longshot's renderer fixes from 514591a3..9dd41326 (A2) ([#120](https://github.com/notquiteog/Hookshot/issues/120)) ([71b33db](https://github.com/notquiteog/Hookshot/commit/71b33dbcf44368670a6e7713cea7f17f9e1c4bd6))
+
 ## [2.3.0-rc.35](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.34...v2.3.0-rc.35) (2026-11-21)
 
 
