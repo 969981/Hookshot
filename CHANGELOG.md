@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.40](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.39...v2.3.0-rc.40) (2026-11-22)
+
+
+### Bug Fixes
+
+* **vk:** MK World's road is drawn again: a copy into a BC3-kept texture of any size is made, by whole blocks ([#128](https://github.com/notquiteog/Hookshot/issues/128)) ([82bf212](https://github.com/notquiteog/Hookshot/commit/82bf212db53b3477b4acd9f1e11ea7136e8b6c01))
+
 ## [2.3.0-rc.39](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.38...v2.3.0-rc.39) (2026-11-22)
 
 
