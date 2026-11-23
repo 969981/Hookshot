@@ -56,3 +56,20 @@ line is `vk: PsychoV35 FSR 4: RGBA16F linear route`, the status lines count `AMD
 `the game's upscale runs` follows; there is no NVIDIA frame generation to check. A transitional packed-format
 frame after a hot switch is insufficient evidence; a menu selection alone is insufficient too. Record measured runs in
 `tested-configurations.md`.
+
+## DLSS feature creation and dynamic input sizes
+
+NGX feature creation uses the selected quality mode's recommended render dimensions from
+`NGX_DLSS_GET_OPTIMAL_SETTINGS`. The minimum and maximum dimensions returned by that call describe
+the supported dynamic-resolution range; they size the shared input images and decide when an existing
+feature can be reused. Each evaluation still receives the frame's actual render subrect. Native AA
+creates its feature at the full render/output size.
+
+Keep those dimensions separate: creating at the dynamic maximum instead of the recommendation can
+increase the cost of models L and M even when the evaluation's render subrect is smaller. NVIDIA's
+[Streamline DLSS implementation](https://github.com/NVIDIA-RTX/Streamline/blob/main/source/plugins/sl.dlss/dlssEntry.cpp)
+also creates the feature using the recommended dimensions. `tests/test_dlss_feature_size.py` compiles
+the actual preparation function with a recording SDK stand-in and checks creation, requested input
+dimensions, range reuse, rounded sizes, native AA and failed queries for K, L and M. The fixture does
+not allocate GPU images or execute NGX evaluation. In particular, a rounded Ultra Performance input
+of 1147x480 against an advertised 1146x480 maximum still needs validation with the real NGX runtime.

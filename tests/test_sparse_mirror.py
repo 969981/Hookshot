@@ -86,7 +86,7 @@ def check_source():
                                               "d.pool->release_gen[d.index] != d.gen", "sparse_bind_infos(infos, &unbound);", "free_sparse_block("], "sparse_reap()")
     need(block(mem, "void mirror_free(Pool& p) {"), ["dead_sparse.back().blocks.push_back(a)", "std::erase(sparse_wanted, &p);", "if (d.pool == &p) d.pool = nullptr;",
                                                      "mirror_bytes -= std::min(mirror_bytes, size);"], "mirror_free()")
-    need(block(mem, "void sparse_reap() {"), ["sparse_live.erase(dead_sparse.front().buffer)", "destroy_sparse_buffer(",
+    need(block(mem, "void sparse_reap() {"), ["sparse_live.erase(d.buffer);", "destroy_sparse_buffer(",
                                               "dead_sparse.front().value <= mem_completed"], "sparse_reap()'s freed mirrors")
     need(block(mem, "void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {"),
          ["if (p->sparse) {   // (hookshot: never from a sparse mirror's block with no memory",

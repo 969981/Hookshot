@@ -14,6 +14,14 @@
 
 namespace vram_compact {
 
+/// (#637) A card of less than 8 GB, the one its rules are for (the start's blocks, the dynamic floor, damped contraction, the
+/// runs' proportional start, the target pool's halving, VMA's smaller blocks): its device-local heap under 7.5 GB. An 8 GB card's
+/// heap reads just under 8 GB (8061 MB on one) and its driver allows less still, so neither a heap under 8 GB nor an allowance
+/// under 8 GB tells it from a 6 GB card; a card of 8 GB or more keeps every rule as it was. vram: the largest device-local heap,
+/// 0 when not known (not under 8 GB). Never an integrated GPU (the Steam Deck's heap is small, but its memory is the system's
+/// and its own rules are texture_budget.h's): #637's rules are for a discrete card paging over PCIe
+inline bool under_8gb(uint64_t vram, bool integrated = false) { return !integrated && vram && vram < (7ull << 30) + (512ull << 20); }
+
 /// Whether the textures are compacted, by RX_VK_COMPACT as the environment has it: on when it is not set, off for 0 (or empty).
 /// It was opt-in (RX_VK_COMPACT=1) while its hold could let go of textures in use; that is what hold_keeps and hold_met are for
 inline bool enabled(const char* env) { return !env || atoi(env) != 0; }
@@ -22,19 +30,25 @@ inline bool enabled(const char* env) { return !env || atoi(env) != 0; }
 inline bool pressed(uint64_t used, uint64_t allowed) { return allowed && used > allowed / 10 * 9; }
 
 /// The free space in the textures' pool from which a run starts: RX_VK_COMPACT_MB (512), 192 MB while pressed. The cache grows
-/// into what a run gave back while the next one waits: under a 9.8 GB allowance the count reached 10.2 GB with 1.1-1.6 GB free
+/// into what a run gave back while the next one waits: under a 9.8 GB allowance the count reached 10.2 GB with 1.1-1.6 GB free.
+/// (#637) Under 8 GB (under_8gb) proportional to the allowance instead: a sixteenth, 64 to 512 MB
+inline uint64_t default_min_free(uint64_t allowed, bool small) {
+    return small && allowed ? std::clamp<uint64_t>(allowed / 16, 64ull << 20, 512ull << 20) : (512ull << 20);
+}
 inline uint64_t run_from(uint64_t min_free, bool is_pressed) { return is_pressed ? std::min<uint64_t>(min_free, 192ull << 20) : min_free; }
 
 /// The blocks a pool starts with (#2438: each block made in play is a vkAllocateMemory on the replay thread, ~170 ms on AMD's
-/// Windows driver): 15% of the card's memory, 2 to 24, in the pool the sampled textures are made in (holds_textures) and in no
+/// Windows driver): 15% of the card's memory, 2 to 24 (#637: 8%, 2 to 12, under 8 GB), in the pool the sampled textures are made in (holds_textures) and in no
 /// other. They were the images' pool's, where the textures went when #2438 was measured; compacted, the textures have a pool of
 /// their own, and the images' pool is left DLSS's, the frame interpolation's and the scratch images. There the blocks stayed
 /// empty: the driver counted them (1152 MB on an 8 GB card), no texture could take them, so reclaimable() rightly left them in
 /// the count and the hold cut the texture budget by as much (#2690: an RTX 3070 in Castle Town Market, 31-36 fps against 54-56
 /// without them), and the textures' blocks were made in play as before. In the textures' pool the scene's textures fill them,
 /// and what they hold free is that pool's free space, which the budget takes off the count already
-inline uint64_t blocks_at_start(uint64_t heap, uint64_t block, bool holds_textures) {
-    return holds_textures && block ? std::clamp<uint64_t>(heap / 100 * 15 / block, 2, 24) : 0;
+inline uint64_t blocks_at_start(uint64_t heap, uint64_t block, bool holds_textures, bool integrated = false) {
+    if (!holds_textures || !block) return 0;
+    if (under_8gb(heap, integrated)) return std::clamp<uint64_t>(heap / 100 * 8 / block, 2, 12);   // (#637: under 8 GB)
+    return std::clamp<uint64_t>(heap / 100 * 15 / block, 2, 24);
 }
 
 /// The free space of the textures' pool a run can give back: not what the blocks made at the start hold (kept), which VMA
@@ -55,14 +69,47 @@ inline uint64_t rest(bool is_pressed) { return is_pressed ? 120 : 600; }
 /// it let the cache grow until the count was at the limit (99% eight times in five minutes, 850 MB free where no texture goes)
 inline uint64_t reclaimable(uint64_t block_free, uint64_t pool_free) { return std::min(block_free, pool_free); }
 
+/// (#637) The textures' floor under 8 GB (small: under_8gb), which no rule below cuts the budget under: 1800 MB, for the open
+/// areas' scenes. None on a card of 8 GB or more, as before
+inline uint64_t texture_min_floor(uint64_t allowed, bool small) { return small && allowed ? 1800ull << 20 : 0; }
+
+/// (#637) The dynamic floor under 8 GB: from texture_min_floor up to half the allowance, by 32 MB every look, while the count is
+/// under 86-92% of the allowance; down while it is over (95% used), and back to the floor over 97%. None on a card of 8 GB or more
+inline uint64_t update_dynamic_floor(uint64_t current_floor, uint64_t total_bytes, uint64_t used, uint64_t pressure, uint64_t allowed,
+                                     bool small) {
+    const uint64_t min_floor = texture_min_floor(allowed, small);
+    if (!min_floor) return 0;
+    const uint64_t max_floor = std::max(min_floor, allowed / 2);
+    uint64_t floor = current_floor ? std::clamp(current_floor, min_floor, max_floor) : min_floor;
+    const uint64_t sweet_low = allowed / 100 * 86, sweet_high = allowed / 100 * 92;
+    const uint64_t hard_high = allowed / 100 * 95, emergency_high = allowed / 100 * 97;
+    constexpr uint64_t kStep = 32ull << 20;
+    if (used > emergency_high) {
+        floor = min_floor;
+    } else if (pressure > sweet_high || used > hard_high) {
+        floor = floor > min_floor + kStep ? floor - kStep : min_floor;
+    } else if (pressure < sweet_low && used < sweet_high && total_bytes >= floor / 10 * 9) {
+        const uint64_t demand_cap = std::min<uint64_t>(max_floor, total_bytes + (64ull << 20));
+        if (floor < demand_cap) floor = std::min(demand_cap, floor + kStep);
+    }
+    return std::clamp(floor, min_floor, max_floor);
+}
+
+/// What an eviction's rule cuts the textures by when the count is `over` its line: all of it, or (#637, under 8 GB: damped) a
+/// quarter, so that a frame's passing spike does not let go of the scene's textures
+inline uint64_t cut_by(uint64_t over, bool damped) { return damped ? over / 4 : over; }
+
 /// The texture budget that holds the count, as it will be once a run has given `reclaim` back, at pct% of the allowance:
-/// what the textures hold (total) less the excess, and never more than the budget was
-inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint64_t reclaim, uint64_t allowed, uint64_t pct) {
+/// what the textures hold (total) less the excess, and never more than the budget was. (#637, under 8 GB) the excess damped
+/// (cut_by), and never under `floor` (update_dynamic_floor); with neither, as on every card of 8 GB or more, as before
+inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint64_t reclaim, uint64_t allowed, uint64_t pct,
+                            uint64_t floor = 0, bool damped = false) {
     const uint64_t line = allowed / 100 * pct;
     const uint64_t pressure = used - std::min(used, reclaim);
     if (!allowed || pressure <= line) return budget;
-    const uint64_t over = pressure - line;
-    return std::min(budget, total > over ? total - over : 0);
+    const uint64_t over = cut_by(pressure - line, damped);
+    const uint64_t held = std::min(budget, total > over ? total - over : 0);
+    return floor ? std::max(held, floor) : held;
 }
 
 /// What the hold lets go of has gone unused for this many presents (ten seconds at 60 fps). The eviction's own 60 is right for a

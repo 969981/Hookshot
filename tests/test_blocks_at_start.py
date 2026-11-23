@@ -43,7 +43,7 @@ def check_source(source):
                          "made in the images' pool, they stay empty while the textures are compacted in a pool of their own)")
     need("vk_vma.cpp: blocks_at_start()", block(vma, "static size_t blocks_at_start(bool holds_textures)"),
          ["if (!holds_textures) return 0;", 'getenv("RX_VK_IMAGE_PREALLOC")',
-          "vram_compact::blocks_at_start(heap, kImageBlock, holds_textures)"])
+          "vram_compact::blocks_at_start(device_local_heap_bytes(), kImageBlock, holds_textures,"])
     # (the images' pool only when the textures are made there, RX_VK_COMPACT=0; else the textures' own)
     need("vk_vma.cpp: images_pool()", block(vma, "VmaPool images_pool() {"),
          ['make_pool(pi, blocks_at_start(!vram_compact::enabled(getenv("RX_VK_COMPACT"))), image_pool)', "made at the start"])
@@ -78,6 +78,7 @@ constexpr int VK_SUCCESS = 0, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO = 1;
 constexpr int VK_IMAGE_TYPE_2D = 1, VK_FORMAT_R8G8B8A8_UNORM = 1, VK_SAMPLE_COUNT_1_BIT = 1;
 constexpr int VK_IMAGE_USAGE_SAMPLED_BIT = 1, VK_IMAGE_USAGE_TRANSFER_DST_BIT = 2, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 4;
 constexpr int VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE = 1, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 1, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT = 1;
+constexpr int VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU = 1;
 #define VK_NULL_HANDLE nullptr
 struct VkImageCreateInfo {
     explicit VkImageCreateInfo(int) {}
@@ -92,7 +93,7 @@ using VmaPool = Pool*;
 struct { struct {
     uint32_t memoryHeapCount = 1;
     struct { uint64_t size = 8ull << 30; int flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT; } memoryHeaps[1];
-} memory; } dev;
+} memory; struct { int deviceType = 2; } props; } dev;   // (a discrete card)
 int vma, calls, successes;
 bool fail_prealloc, fail_all;
 size_t requested[8]{};
@@ -156,8 +157,8 @@ int main(int argc, char** argv) {
 def compile_pools(source, cxx, tmp):
     vma = (source / "gpu/vk/vk_vma.cpp").read_text(encoding="utf-8")
     functions = []
-    for marker in ("static size_t blocks_at_start(", "static size_t make_pool(",
-                   "VmaPool images_pool() {", "VmaPool textures_pool() {"):
+    for marker in ("static uint64_t device_local_heap_bytes()", "static size_t blocks_at_start(",
+                   "static size_t make_pool(", "VmaPool images_pool() {", "VmaPool textures_pool() {"):
         if marker in vma:
             functions.append(block(vma, marker))
     fixture = tmp / "pools.cpp"

@@ -21,6 +21,14 @@ namespace mkwvk {
 
 VmaAllocator vma;
 
+/// Largest DEVICE_LOCAL heap size in bytes reported by Vulkan physical device memory properties.
+static uint64_t device_local_heap_bytes() {
+    uint64_t heap = 0;
+    for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, dev.memory.memoryHeaps[h].size);   // (Longshot's RX_VK_TEST_VRAM_MB, #1107, is not here)
+    return heap;
+}
+
 bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
     VmaVulkanFunctions f{};
     f.vkGetInstanceProcAddr = gipa;
@@ -33,7 +41,9 @@ bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
     ci.instance = dev.instance;
     ci.vulkanApiVersion = VK_API_VERSION_1_3;
     ci.pVulkanFunctions = &f;
-    ci.preferredLargeHeapBlockSize = 64ull << 20;   // (64 MB blocks: Eglantine found 256 MB ones wasted VRAM)
+    // (64 MB blocks: Eglantine found 256 MB ones wasted VRAM. #637: 32 MB on a discrete card under 8 GB, vram_under_8gb, half the
+    // fragmentation in the default heap's blocks)
+    ci.preferredLargeHeapBlockSize = vram_under_8gb() ? (32ull << 20) : (64ull << 20);
     return vmaCreateAllocator(&ci, &vma) == VK_SUCCESS;
 }
 
@@ -74,11 +84,13 @@ VmaPool target_images_pool() {
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     uint32_t type = 0;
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
+    // (#637: 16 MB blocks on a discrete card under 8 GB, vram_under_8gb)
+    const uint64_t block_size = vram_under_8gb() ? std::min<uint64_t>(kImageBlock, 16ull << 20) : kImageBlock;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
-    pi.blockSize = kImageBlock;
+    pi.blockSize = block_size;
     if (vmaCreatePool(vma, &pi, &target_image_pool) != VK_SUCCESS) target_image_pool = VK_NULL_HANDLE;
-    logf("vk: render targets' images from blocks of their own (%llu MB, memory type %u)%s", (unsigned long long)(kImageBlock >> 20),
+    logf("vk: render targets' images from blocks of their own (%llu MB, memory type %u)%s", (unsigned long long)(block_size >> 20),
          type, target_image_pool ? "" : ": not made");
     return target_image_pool;
 }
@@ -89,11 +101,9 @@ VmaPool target_images_pool() {
 // vram_compact::blocks_at_start. RX_VK_IMAGE_PREALLOC=<blocks>: that many, 0: none)
 static size_t blocks_at_start(bool holds_textures) {
     if (!holds_textures) return 0;
-    uint64_t heap = 0;
-    for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
-        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, dev.memory.memoryHeaps[h].size);
     if (const char* e = getenv("RX_VK_IMAGE_PREALLOC")) return (size_t)std::max(0, atoi(e));
-    return (size_t)vram_compact::blocks_at_start(heap, kImageBlock, holds_textures);
+    return (size_t)vram_compact::blocks_at_start(device_local_heap_bytes(), kImageBlock, holds_textures,
+                                                 dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
 }
 /// The pool with n blocks made now, or empty when there is no room for them (its blocks made as needed); the blocks made
 static size_t make_pool(VmaPoolCreateInfo pi, size_t n, VmaPool& pool) {

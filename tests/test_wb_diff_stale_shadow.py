@@ -83,6 +83,8 @@ bool mirror_on() { return true; }   // (the pools here have mirrors: without, no
 std::mutex shadow_written_mu;
 std::vector<uint32_t> shadow_written_pages, shadow_written_collected_list, shadow_written_by_replay;
 bool shadow_written_all = false;
+std::vector<uint32_t> shadow_forgotten_last;   // (the forget's list of the collection's and the replay's pages, for the late pages' fix)
+bool shadow_forgotten_all = false;             // (and whether its lists overflowed)
 int64_t st_wbd_known_game = 0, st_wbd_known_collected = 0, st_wbd_known_replay = 0;
 void shadow_written_to(std::vector<uint32_t>& list, const uint32_t* pages, int64_t n);
 void guest_cpu_wrote(uint64_t gpu, uint64_t n);

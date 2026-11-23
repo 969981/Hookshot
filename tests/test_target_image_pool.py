@@ -40,7 +40,7 @@ class TargetImagePoolTests(unittest.TestCase):
             self.assertIn(part, rule, part)
         cap = block(self.tex, "uint64_t pool_cap()")
         self.assertIn('getenv("RX_VK_TARGET_POOL_MB")', cap)
-        self.assertIn(": 256", cap)
+        self.assertIn("target_pool::default_mb(vram_usage(&used, &allowed) ? allowed : 0)", cap)
         self.assertIn("uint64_t pool_key = 0;", self.hdr)
 
     def test_a_texture_made_for_a_target_is_one_and_its_image_comes_from_the_targets_blocks(self):
@@ -53,14 +53,21 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
         self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
-        self.assertIn("pi.blockSize = kImageBlock;", pool)
+        self.assertIn("pi.blockSize = block_size;", pool)   # (kImageBlock, or 16 MB under 8 GB: #637)
+        self.assertIn("vram_under_8gb() ? std::min<uint64_t>(kImageBlock, 16ull << 20) : kImageBlock", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
-    def test_the_dead_targets_are_swept_every_ten_presents(self):
+    def test_the_dead_targets_are_swept_every_present_after_one_unused(self):
         frame = block(self.tex, "void texture_frame(uint64_t completed)")
-        self.assertIn('getenv("RX_VK_DEAD_EVERY")', frame)
-        self.assertIn(": 10;", frame[frame.index('getenv("RX_VK_DEAD_EVERY")'):])
+        every = block(self.tex, "uint64_t dead_every_presents()")
+        self.assertIn('getenv("RX_VK_DEAD_EVERY")', every)
+        self.assertIn(": 1;", every[every.index('getenv("RX_VK_DEAD_EVERY")'):])
         self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
+        unused = block(self.tex, "uint64_t dead_min_unused_presents()")
+        self.assertIn(": 1;", unused[unused.index('getenv("RX_VK_DEAD_MIN_UNUSED")'):])
+        # (and the pass that reads them is not the only one that looks: it runs at every tenth present, and on the presents
+        # between the sweep does. tests/test_dead_targets_sweep.py has the presents)
+        self.assertIn("dead_targets_sweep(completed);", frame)
 
     def test_a_dead_target_is_what_every_newer_target_over_it_has_drawn_together(self):
         # (several over parts of it add up; judged one by one they left the big ones, 3-4 GB, issue 2180)
@@ -109,14 +116,15 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertLess(loop.index("if (it->pool_key) {"), loop.index("destroy_image(it->image, it->allocation);"))
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
-        self.assertLess(trim, frame.index("if (frame_no % 10) return;"))   # (every present, not every tenth)
-        self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
+        self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
+        # (over 90% the pool is given back, as before; #637, under 8 GB: halved over 90%, given back over 97% of the count)
+        self.assertIn("pool_pressure = !known || pressure <= allowed / 10 * 9 ? 0 : !vram_under_8gb() || used > allowed / 100 * 97 ? 2 : 1;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
-        self.assertIn("frame_no - v[i].since <= 120", trim)
+        self.assertIn("const uint64_t cap = (pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap;", trim)
+        self.assertIn("const size_t most = (pool_pressure > 0) ? 64 : 16;", trim)
+        self.assertIn("!target_pool::idle_out(frame_no, v[i].since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(v[i]);", trim)
         destroy = block(self.tex, "void pool_destroy(Pooled& p)")

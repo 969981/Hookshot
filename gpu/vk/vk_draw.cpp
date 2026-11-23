@@ -8,6 +8,7 @@
 // Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
 #include <algorithm>
 #include "game_profile.h"   // (the program keys this game's renderer treats specially)
+#include "cold_check.h"   // (notes_lost_by_driver: once per driver)
 #include <filesystem>
 #include <iterator>
 #include <tuple>
@@ -9781,6 +9782,71 @@ void precompile_at_create(void (*progress)(size_t done, size_t total)) {
     predicted_check();
 }
 
+/// (hookshot) Whether the driver's own shader cache has lost what the notes name, at a start that would load at create calls: a
+/// sample of the notes asked without a compile, of the driver alone (an empty scratch pipeline cache: on NVIDIA ours only refers
+/// to the driver's). NVIDIA's cache is shared with every other game and evicts what it holds past its size, and a driver update
+/// empties it; the marker (precompile_built_write) still said every note had been built, so each listed pipeline was compiled in
+/// play with its draws left out (the gate route with NVIDIA's cache pointed at an empty folder: 10,263 in no cache, 702,312 draws
+/// left out in 140 s, 21 s of waits), and only the next start built them before the title (load_default's marker, which keeps
+/// them all for good). Now the warm pass runs again at this start, behind its progress. RX_VK_COLD_CHECK=0: not asked.
+/// Once per driver (cold_check.h): with the driver's own cache off, or too small for the notes, every start found them lost
+/// and built them all again before the title; a start whose driver they were built again for does not ask
+bool notes_lost_by_driver() {
+    static const bool off = getenv("RX_VK_COLD_CHECK") && atoi(getenv("RX_VK_COLD_CHECK")) == 0;
+    if (off || !dev.vk13.pipelineCreationCacheControl) return false;
+    const std::string rewarmed = pipe_notes_path() + ".rewarmed";
+    const std::string driver = cold_check::stamp(dev.props.vendorID, dev.props.deviceID, dev.props.driverVersion, dev.props.pipelineCacheUUID);
+    if (!cold_check::ask(rewarmed, driver)) {
+        logf("vk: the driver's shader cache is not asked: the notes were built again for this driver already (once per driver: with "
+             "its own cache off or too small, every start would build them; RX_VK_COLD_CHECK=0: never asked)");
+        return false;
+    }
+    constexpr size_t kSample = 48;
+    const std::vector<NoteRef> refs = pipe_notes_refs();
+    if (refs.size() < kSample) return false;
+    FILE* f = fopen(pipe_notes_path().c_str(), "rb");
+    if (!f) return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    VkPipelineCacheCreateInfo cci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache scratch = VK_NULL_HANDLE;
+    if (vkCreatePipelineCache(dev.device, &cci, nullptr, &scratch) != VK_SUCCESS) scratch = VK_NULL_HANDLE;
+    // (the thread's driver-only asking, the scratch cache and the file put back and let go however this ends: a throw from a
+    // borrow or a build would otherwise leave the thread asking the scratch cache's driver alone from then on)
+    struct Restore {
+        FILE* f;
+        VkPipelineCache scratch;
+        ~Restore() {
+            driver_cache_only = false, driver_ask_cache = VK_NULL_HANDLE;
+            if (scratch) vkDestroyPipelineCache(dev.device, scratch, nullptr);
+            fclose(f);
+        }
+    } restore{f, scratch};
+    driver_cache_only = true, driver_ask_cache = scratch;
+    size_t asked = 0, cold_n = 0;
+    auto note = std::make_unique<PipeNote>();
+    for (size_t i = 0; i < kSample; i++) {
+        const NoteRef& r = refs[i * refs.size() / kSample];
+        if (!pipe_note_at(f, r.at, note.get())) continue;
+        program_cache_borrow(note->prog, [&](Program& p) {
+            if (p.variant != note->variant) return;
+            ensure_layout(p);
+            bool cold = false;
+            const VkPipeline pl = build_graphics(p, note->s, note_targets(*note),
+                                                 pipeline_topology(p, (VkPrimitiveTopology)note->topo), -1, &cold);
+            if (pl) asked++, vkDestroyPipeline(dev.device, pl, nullptr);
+            else if (cold) asked++, cold_n++;
+        });
+    }
+    const bool lost = asked >= kSample / 3 && cold_n * 2 > asked;
+    logf("vk: the driver's shader cache has %zu of %zu noted pipelines asked (a sample, in %.0f ms)%s", asked - cold_n, asked,
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+         lost ? ": it lost them (a driver update, or evicted): they are built again before the title, once for this driver "
+                "(RX_VK_COLD_CHECK=0: not asked)"
+              : "");
+    if (lost) cold_check::record(rewarmed, driver);
+    return lost;
+}
+
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     // (hookshot, RX_VK_LOAD=create: only once every note has been built into the pipeline cache, so that a load from the
     // caches alone never meets a pipeline the prepare should have compiled. The first start after a preparation builds them
@@ -9788,6 +9854,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     if (programs_load_at_create()) {
         // (the pipeline cache's files dropped at this start, pcache_drop_stale: what the marker says is in them is gone)
         if (pcache_drop_stale()) remove(precompile_built_path().c_str());
+        // (and where the driver's own cache lost what the marker says was built: notes_lost_by_driver)
+        if (precompile_covers_notes() && !env_on("HOOKSHOT_PREPARE_ONLY") && notes_lost_by_driver())
+            remove(precompile_built_path().c_str());
         if (!precompile_covers_notes()) precompile_warm(progress);
         if (precompile_covers_notes()) return precompile_at_create(progress);
         // (the window was closed in it; or this is the preparation's own process, which leaves no marker: its warm filled

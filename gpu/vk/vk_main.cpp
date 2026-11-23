@@ -38,6 +38,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
+#include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "vk_programs.h"
 #include "mesh_mode.h"
@@ -838,6 +839,9 @@ bool create_device() {
     // (hookshot: what AMD's FSR 4 runtime offers here is asked on the start-up probes' thread, not here: vk_ffx.h probe)
     reflex_device_created();
     antilag_device_created();
+    // (hookshot: on the Steam Deck the GPU held at amdgpu's peak power state while the game runs (RX_VK_GPU_CLOCK=0: not), gpu_clock.h;
+    // the device's render node from VK_EXT_physical_device_drm, which needs no enabling to be asked)
+    gpu_clock_device_created(has_extension(exts, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME));
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -1749,6 +1753,7 @@ void mkwvk_close_asked(void) {
     }
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
 }
+
 
 extern "C"
 #ifdef _WIN32

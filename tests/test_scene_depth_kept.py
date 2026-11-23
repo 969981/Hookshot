@@ -2,8 +2,8 @@
 not while no texture at all went: texture_destroy_generation also moves for every sampled texture the budget lets go and
 every ASTC upload left for a later frame, and taken as "the scene depth may be gone" it handed the frame back to the game's
 upscale 1214 times in 48 minutes of one Windows log. Checks that both cameras use the depth counter, that every way a depth
-image goes or moves bumps it (destroy_later for a depth texture, a compaction pass), and that the eviction sweep is still
-the only place a Texture is freed (a camera's depth pointer is good while the counter has not moved). That destroy_later
+image goes or moves bumps it (destroy_later for a depth texture, a compaction pass), and that the two sweeps (the eviction's and the dead
+targets') are the only places a Texture is freed (a camera's depth pointer is good while the counter has not moved). That destroy_later
 moves it for a depth texture and not for a colour one is run in tests/test_target_image_reuse.py. No game or GPU required.
 
 python -I -B tests/test_scene_depth_kept.py
@@ -31,8 +31,11 @@ def main():
     compaction = compaction[:compaction.index("\n}\n")]
     if "depth_destroy_gen++;" not in compaction:
         raise SystemExit("a compaction pass moves images without the depth counter moving")
-    if tex.count("textures.erase(") != 1 or "destroy_later(*tex);" not in block(tex, "void texture_frame(uint64_t completed)"):
-        raise SystemExit("a Texture is freed somewhere other than the eviction sweep: check that it bumps the depth counter")
+    # (two places free a Texture: the eviction sweep, and between its passes the dead targets' sweep (dead_targets.h, Longshot
+    # #1255); each through destroy_later, which moves the depth counter for a depth image)
+    if (tex.count("textures.erase(") != 2 or "destroy_later(*tex);" not in block(tex, "void texture_frame(uint64_t completed)")
+            or "destroy_later(*tex);" not in block(tex, "void dead_targets_sweep(uint64_t completed)")):
+        raise SystemExit("a Texture is freed somewhere other than the two sweeps, or without destroy_later: check that it bumps the depth counter")
     if tex.count("depth_destroy_gen++") != 2:
         raise SystemExit("vk_texture.cpp bumps the depth counter somewhere new: say why here")
     for name in ("vk_temporal.cpp", "vk_fsr3_inputs.cpp"):
