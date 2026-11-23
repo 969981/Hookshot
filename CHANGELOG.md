@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0-rc.43](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.42...v2.3.0-rc.43) (2026-11-23)
+
+
+### Features
+
+* **builder:** every game in one library, with Install, Update and Update all ([#133](https://github.com/notquiteog/Hookshot/issues/133)) ([e204e5e](https://github.com/notquiteog/Hookshot/commit/e204e5e4ae3115af054971791b22108b0b87cbf7))
+
 ## [2.3.0-rc.42](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.41...v2.3.0-rc.42) (2026-11-23)
 
 
