@@ -180,7 +180,7 @@ See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-a
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `HOS_TEST_ALLOC_REFUSE=<text>` | A test, off when unset: every host allocation through `hos_xmalloc` / `hos_xcalloc` / `hos_xrealloc` (`host/mkw_glue.c`) whose label contains the text is refused, as at Windows' commit limit, to see what a player sees there: 5 s of tries, the out-of-memory line and notice, then the game stops. `recording handle set` fails at the first recording, before the title; `recording copy` in play. `renderer` (the renderer's C++ allocations, `gpu/vk/vk_main.cpp` `new_refused`, issue 1280): at the 600th present one allocation of 1 PB is asked for, refused on any PC, and waited for as at the limit |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
-| `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
+| `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`packs/oot/host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
 
 ### Input for scripted runs
@@ -224,7 +224,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents, and the game clock's speed (1.000: real time); a CSV line per game present with host-clock times before queue flushing, around the renderer call, after virtual-core reacquisition, and at the return counter. These are CPU wall times, not GPU completion or scanout; async rendering measures the enqueue call. Unset/empty trace adds no clock reads |
 | `HOS_FPS_MAX=30` or `<61-1000>` | A frame rate cap for one run, over the Game frame rate cap row (1000 is Uncapped's) |
 | `HOS_MOVIE_PACE=0` | Leave the pacing at the Game frame rate cap row while a movie plays, instead of raising it to 240 for the movie's pictures (issue #73) |
-| `HOS_FPS_FLOOR=0` | The game's own floor-carry gate above 100 fps, for comparisons: a moving floor then carries Link at a tenth of its speed (`host/oot_high_fps.h`). With `HOS_FPS_LOG`, every 600 updates: how many kept a tenth, how many the game's gate would have cut, and the last inverse step and cut |
+| `HOS_FPS_FLOOR=0` | The game's own floor-carry gate above 100 fps, for comparisons: a moving floor then carries Link at a tenth of its speed (`packs/oot/host/oot_high_fps.h`). With `HOS_FPS_LOG`, every 600 updates: how many kept a tenth, how many the game's gate would have cut, and the last inverse step and cut |
 | `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms. Also works with `HOS_HEADLESS`: CPU intervals after submitting the offscreen copy, without swapchain/display waits. Not `RX_VK_FRAMELOG` (no underscore: pictures, above) |
 | `RX_VK_PRESENTS_AHEAD=<1-8>` | How many presents the game may hand over ahead of the replay (2). Not `RX_VK_PRESENT_AHEAD` |
 | `RX_VK_PRESENT_AHEAD=0` | Frame generation's copies into the window submitted each at its own time, as before #1702 (default on: a set's copies go to the GPU together). Not `RX_VK_PRESENTS_AHEAD` |
@@ -789,6 +789,13 @@ A pack's code and data sit beside its manifest. Ocarina's:
 | `packs/oot/lift/` | the lift patch modules (`oot_wide`, `oot_fov`, `oot_jitter`, `oot_occlusion`) and the code patch module (`oot_patches`) its `lift` names | `game_profile.load_module`, which looks in the profile's pack |
 | `packs/oot/tools/` | the button prompts (`prompt_assets.py` and its faces) and the save copier (`oot_saves.py`) | the `prompts` build step; a person |
 | `packs/oot/assets/pipeline_states/` | the pipeline state list's sources | the `pipeline_states` build step |
+| `packs/oot/host/` | Ocarina's runtime C: the debug tools (`oot_cheats.c`), the teleport and age switch (`oot_teleport.c`), Skip opening (`oot_opening.c`), the ultrawide loading cover (`oot_wide_cover.c`), the hooks of `oot_*.c`, and `oot_pack.c`, its table of the runtime's hooks and its control bridge verbs | `nx2/build.py`, into Ocarina's runtime only |
+
+A pack's `host` list (pack.json) is its runtime C, compiled into that game's runtime only (`nx2/build.py`
+`pack_host`); a game whose pack has none links `host/game_none.c` (Bananza). The shared runtime asks the game through
+`host/nx2_pack.h`'s `NX2PackHost` (start, the control bridge's verbs, the debug cheats' live action, Auto run's
+player state, the loading cover, a present's pacer hooks, a thread dump's idle loop), and a pack's C includes only that
+header and the ones it names. Mario Kart World's `packs/mkw/host/` keeps its 1.8.0 pacer behind that build's check.
 
 `build_steps` in pack.json say which of `make_game.py`'s optional steps a game takes part in: a game whose pack names
 none (Bananza, MKW) gets no prompts and no shipped pipeline list. The lift's cache key hashes every pack.json's lift

@@ -87,7 +87,7 @@ def main():
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 typedef struct { uint64_t x[32]; uint64_t vreg[32][2]; } Ctx;
-static uint64_t pane_seen;   /* (the text size hook: host/oot_text_size.c, given the LetterAnimControl) */
+static uint64_t pane_seen;   /* (the text size hook: packs/oot/host/oot_text_size.c, given the LetterAnimControl) */
 static void hos_oot_text_pane(Ctx *c, uint64_t anim) { (void)c; pane_seen = anim; }
 static inline void a64_vset64(uint64_t *d, uint64_t v) { d[0] = v; d[1] = 0; }
 volatile float hos_text_scale = 1.0f;

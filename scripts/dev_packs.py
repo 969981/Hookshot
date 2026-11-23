@@ -101,14 +101,21 @@ def load_make_game(root=ROOT):
 
 
 def renderer_read_by_game(root):
-    """The renderer's files the game is built from as well: what host/ includes from gpu/, what nx2/build.py adds to the game's
+    """The renderer's files the game is built from as well: what host/ and the game packs' host/ (packs/<key>/host, compiled
+    with host/ on the include path: nx2/build.py pack_host) include from gpu/, what nx2/build.py adds to the game's
     dependencies from gpu/vk, and what those include in turn. A change there needs both modules"""
     todo = set()
-    for top, _, fs in os.walk(os.path.join(root, "host")):
-        for f in fs:
-            if f.endswith((".c", ".h", ".cpp")):
-                with open(os.path.join(top, f), encoding="utf-8", errors="replace") as src:
-                    todo.update(os.path.normpath(os.path.join(top, inc)) for inc in INCLUDE.findall(src.read()) if "gpu/" in inc)
+    host = os.path.join(root, "host")
+    tops = [(host, None)] + [(os.path.join(root, "packs", k, "host"), host) for k in sorted(os.listdir(os.path.join(root, "packs")))
+                             if os.path.isdir(os.path.join(root, "packs", k, "host"))] if os.path.isdir(os.path.join(root, "packs")) \
+        else [(host, None)]
+    for base, includes_from in tops:
+        for top, _, fs in os.walk(base):
+            for f in fs:
+                if f.endswith((".c", ".h", ".cpp")):
+                    with open(os.path.join(top, f), encoding="utf-8", errors="replace") as src:
+                        todo.update(os.path.normpath(os.path.join(includes_from or top, inc)) for inc in INCLUDE.findall(src.read())
+                                    if "gpu/" in inc)
     with open(os.path.join(root, "nx2", "build.py"), encoding="utf-8") as src:
         todo.update(os.path.join(root, "gpu", "vk", f) for f in re.findall(r'host_deps \+= open\(os\.path\.join\(GPU, "vk", "([^"]+)"\)', src.read()))
     found = set()

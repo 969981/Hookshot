@@ -44,6 +44,9 @@ def test_route():
     check("imgui builds the renderer alone", r(["third_party/imgui/imgui.cpp"]) == "renderer")
     check("a host change builds the game", r(["host/hos_thread.c"]) == "game")
     check("a game patch builds the game", r(["packs/oot/lift/oot_patches.py"]) == "game")
+    check("a pack's C builds the game", r(["packs/oot/host/oot_cheats.c"]) == "game")
+    check("a renderer header a pack's C includes builds the game too (oot_cheat_items.h: packs/oot/host and vk_menu.cpp)",
+          r(["gpu/vk/oot_cheat_items.h"]) == "game")
     check("a renderer file and a host file build the game (both modules)", r(["gpu/vk/vk_draw.cpp", "host/nvn_native.c"]) == "game")
     check("the WebGPU renderer is in the game", r(["gpu/render/x.c"]) == "game")
     check("a build script builds the game", r(["nx2/build.py"]) == "game")
@@ -136,7 +139,7 @@ def test_inputs_beside_the_objects():
     check("a translator data file shows in the objects (%s)" % data[:1], data and not lic(data[0]))
     md = packs.stamped_may_differ
     check("the version object's own source", md(["host/hos_main.c"], "host/hos_main.c"))
-    check("a header it may include (oot_cheat_items.h reaches hos_main.c and vk_menu.cpp)", md(["gpu/vk/oot_cheat_items.h"], "host/hos_main.c"))
+    check("a header it may include (oot_cheat_items.h reaches the pack's C and vk_menu.cpp)", md(["gpu/vk/oot_cheat_items.h"], "host/hos_main.c"))
     check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/hos_main.c"))
 
 

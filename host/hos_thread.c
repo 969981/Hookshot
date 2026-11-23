@@ -10,6 +10,7 @@
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
+#include "nx2_pack.h"   /* (the game's pack: its idle loop, in a thread dump) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -434,7 +435,7 @@ void hos_thread_dump(void) {
         bt[n] = 0;
         hos_log("thread %-24s lr %#llx sp %#llx x0 %#llx; frames%s", threads[i]->name, (unsigned long long)c->x[30],
                 (unsigned long long)c->x[31], (unsigned long long)c->x[0], bt);
-        if (hos_game_is_mkw() && c->x[30] == 0x825c6844ULL) continue;   /* (MKW's idle thread loop) */
+        if (hos_game_thread_idle(c)) continue;   /* (the game's own idle loop: its pack's, host/nx2_pack.h) */
         /* registers (current at the call out), with the text a register (or the word it points to) leads to */
         for (int r = 0; r < 29; r++) {
             uint64_t v = c->x[r], s = 0;

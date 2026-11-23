@@ -33,7 +33,7 @@ FORMAT = 1
 # The engine/pack interface (docs/game-packs.md section 4): a pack's "api" says the major it was written for and the
 # least minor it needs. During the migration the major is 0, where any minor may break, so a 0.x pack needs this minor
 # exactly; from 1.0 a pack works with any engine of its major whose minor is at least its own.
-NX2PC_PACK_API = (0, 2)   # (0.2: lift/, tools/ and assets/ are read from the pack, build_steps run)
+NX2PC_PACK_API = (0, 3)   # (0.2: lift/, tools/ and assets/ read from the pack, build_steps; 0.3: host/nx2_pack.h, host/)
 
 # Until packs.lock.json (b1) holds them: the profile order (make_game.py's known builds, --library, the launcher's
 # tiles) and the default game, whose folder takes no suffix (game_profile.DEFAULT, builder/setup/setup.c

@@ -2,7 +2,7 @@
 
 An event that takes Link (a map change, the age toggle's reload, a cutscene) waits for him to stand. The flight moved him
 to its own position every tick, so with it on he never stood: flying into an area's exit or toggling his age left the
-screen black until the flight was switched off. host/hos_main.c's oot_update_player_cheats now reads the event manager
+screen black until the flight was switched off. packs/oot/host/oot_cheats.c's oot_update_player_cheats now reads the event manager
 before it flies him, and starts the flight again from where he stands once the event has ended. And a Link the game
 moved while he flew (a respawn after a fall keeps his actor) was flown straight back to where the flight had him, over
 the same drop, again and again: the flight starts from where the game put him instead.
@@ -23,8 +23,8 @@ def need(ok, what):
 
 
 def main():
-    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    playing = block(source, "static int oot_event_playing(Ctx *c) {")
+    source = "\n".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "packs" / "oot" / "host").glob("*.c")))   # (Ocarina's pack's C)
+    playing = block(source, "int oot_event_playing(Ctx *c) {")
     need("oot_singleton(c, OOT_EVENTMGR_SLOT)" in playing and "events + 104" in playing,
          "oot_event_playing does not read the event manager's playing event")
     cheats = block(source, "static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {")

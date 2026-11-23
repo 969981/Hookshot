@@ -4,7 +4,7 @@
   "name": "Mario Kart World",
   "short_name": "Mario Kart World",
   "version": "1.0.0",
-  "api": {"major": 0, "minor": 2},
+  "api": {"major": 0, "minor": 3},
   "released": true,
   "program_id": "0400C3F00006E000",
   "builds": [
@@ -25,6 +25,7 @@
     "notes": "Identity measured on the dump; the parallel replay on 4 threads (measured in a race)."
   },
   "lift": {"patch_modules": [], "code_patch_module": null},
+  "host": ["host/*.c"],
   "license": "GPL-3.0-or-later",
   "comments": {
     "builds": "Measured on the dump (Mario Kart World [0400C3F00006E000][v0].nup, base v0 = 1.0.0, no update): nx2/make_game.py --check reported the program id and main's build id, and nx2/lift.py's image line put main at 0x80020000. The same build id and RomFS count (205,660 files) are mkw-recomp's 1.0.0 row (adriadam10/mkw-recomp@5ff4fbb, recomp/versions.py, MIT, Copyright (c) 2026 Adria). 1.8.0 (main d00e4f39...) is another executable, with other addresses: not this profile's. See docs/mario-kart-world.md.",

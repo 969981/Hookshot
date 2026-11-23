@@ -10,7 +10,7 @@ Checked:
 - report.txt's sections are the issue form's (.github/ISSUE_TEMPLATE/1-game-problem.yml), and scripts/hardware_report.py
   reads the GPU's vendor and class and the system from it as it reads an issue; its link fills in the form's own fields and
   stays within 2000 characters (GitHub's sign-in page fails on longer ones): more switches than fit are counted, not listed;
-- where the player is comes from the last map line (host/hos_main.c logs them), the run before's crash line is named;
+- where the player is comes from the last map line (Ocarina's pack logs them: packs/oot/host/oot_cheats.c), the run before's crash line is named;
 - the switches set are listed by name, and a value only when it is a number, a size or on/off and its name holds none of
   TOKEN, KEY, ROOM, SECRET, PASS, SERVER, USER: paths, addresses, scripts and secrets are left out; other variables are not
   listed; the link carries the switches' names and never a value;
@@ -212,7 +212,8 @@ def wiring():
     check("blit_crop(cmd, src, sw, sh, crop, ask_image," in record and "menu" not in record and "ReportShot" not in replay,
           "the picture is not copied from the game's frame into shot_ask's own image, or the menu is drawn into it")
     host = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    refresh = host[host.index("static void oot_inventory_refresh("):]
+    cheats = (ROOT / "packs" / "oot" / "host" / "oot_cheats.c").read_text(encoding="utf-8")   # (Ocarina's pack logs the map)
+    refresh = cheats[cheats.index("static void oot_inventory_refresh("):]
     refresh = refresh[:refresh.index("\n}\n")]
     check('hos_log("map: %s", line)' in refresh and "0x1d6189dau" in refresh,
           "the host does not log the map (Sequence_CurrentBanc) the report's place comes from")

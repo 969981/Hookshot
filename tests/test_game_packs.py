@@ -27,6 +27,14 @@ What this guards, and why each check is here rather than left to review:
 7. **The pack's folders are where the engine looks:** load_module finds a profile's modules in its pack's lift/, every
    module name is one pack's alone and shadows none of nx2/ or a64-kit's; build_steps are the packs' (Ocarina's prompts
    and pipeline list, none for Bananza and MKW), and an unknown step is refused.
+8. **A game's runtime C is its pack's, in its runtime only (a3).** nx2/build.py pack_host compiles Ocarina's packs/oot/host
+   into Ocarina's runtime, Mario Kart World's packs/mkw/host into its, and host/game_none.c into Bananza's and an unknown
+   game's; host/ holds no oot_ file, no function of Ocarina's debug tools, teleport, opening or loading cover, and none of
+   rule 3's Mario Kart World 1.8.0 literals; host/nx2_pack.h's interface version is nx2/packs.py's; every pack's table
+   and game_none.c's are of that version, and each hook the shared runtime calls is one of the table's. A pack object's
+   key follows every header its C includes, wherever it lives (gpu/vk/oot_cheat_items.h: an Inventory change rebuilds
+   Ocarina's cheats with the menu, #144's review), and the Windows CI compiles every pack's C and host/ (build.py
+   --host-only, windows-builder.yml's runtime job, which a release waits for).
 
     python -I -B tests/test_game_packs.py
 """
@@ -393,6 +401,11 @@ LIFT_A1 = {
     "nx2/oot_patches.py": "de0255d394b59de7f1aba4773f71cad9fa9c8918",
     "nx2/oot_wide.py": "79ba7a9d67e0985c7c005b1b4677e2a20a451ce4",
 }
+# The ones a later step changed on purpose, and what each is hashed as now: the key changed with them, once (a3: a comment
+# naming where hos_wide_cover went, in the release that also brought pack API 0.3)
+LIFT_SINCE_A1 = {
+    "nx2/oot_wide.py": ("a3", "7e2c6b444a96540a62e67f5a6eaca75c56f1b033"),
+}
 
 
 def check_lift_key():
@@ -403,11 +416,13 @@ def check_lift_key():
           "the lift's key does not hash its files in their names' order, each name once")
     lift = ROOT / "packs" / "oot" / "lift"
     for name, sha in LIFT_A1.items():
+        sha = LIFT_SINCE_A1.get(name, (None, sha))[1]
         path = lift / name.split("/")[-1]
         check(str(path) in sources, "the lift's key does not hash %s" % path.relative_to(ROOT))
         check(make_game.lift_source_name(str(path)) == name, "%s is not hashed as %s" % (path.relative_to(ROOT), name))
         check(make_game.lift_source_digest(str(path)).hex() == sha,
-              "%s is not hashed as the bytes %s had at a1: Ocarina's lift key would change" % (path.relative_to(ROOT), name))
+              "%s is not hashed as the bytes %s had at a1 (or since, LIFT_SINCE_A1): Ocarina's lift key would change"
+              % (path.relative_to(ROOT), name))
     check(not any(n.startswith("packs/oot/lift/") for n in names), "a pack's lift/ file is hashed under its new name")
     check(not (ROOT / "nx2" / "oot_patches.py").exists(), "nx2/oot_patches.py is still there beside the pack's")
     # (a pack.json: its lift fields only)
@@ -462,6 +477,95 @@ def check_pack_folders():
     check(not (ROOT / "assets" / "pipeline_states").exists(), "assets/pipeline_states/ is still there beside the pack's")
 
 
+# ---- a game's runtime C (a3) ----
+
+def check_pack_host():
+    import build
+    header = (ROOT / "host" / "nx2_pack.h").read_text(encoding="utf-8")
+    api = tuple(int(re.search(r"#define NX2_PACK_API_%s (\d+)" % n, header).group(1)) for n in ("MAJOR", "MINOR"))
+    check(api == packs.NX2PC_PACK_API, "host/nx2_pack.h's interface is %d.%d, nx2/packs.py's %d.%d" % (api + packs.NX2PC_PACK_API))
+    with tempfile.TemporaryDirectory(prefix="pack-host-") as tmp:
+        for key, want in (("oot", sorted((ROOT / "packs" / "oot" / "host").glob("*.c"))),
+                          ("mkw", sorted((ROOT / "packs" / "mkw" / "host").glob("*.c"))),
+                          ("dkb", [ROOT / "host" / "game_none.c"]), ("none", [ROOT / "host" / "game_none.c"])):
+            folder = Path(tmp, key)
+            folder.mkdir()
+            game_profile.write_header(str(folder), game_profile.GAMES[key])
+            got_key, got = build.pack_host(str(folder))
+            check(got_key == key and [Path(f) for f in got] == [w.resolve() for w in want] and want,
+                  "%s's runtime C is %r, not its pack's %r" % (key, [os.path.relpath(f, ROOT) for f in got],
+                                                               [os.path.relpath(f, ROOT) for f in want]))
+    check(len(list((ROOT / "packs" / "oot" / "host").glob("*.c"))) >= 11, "Ocarina's pack has not its runtime C")
+    # (none of it left in host/)
+    shared = {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8", errors="replace")
+              for p in sorted((ROOT / "host").rglob("*")) if p.suffix in (".c", ".h")}
+    check(not [n for n in shared if Path(n).name.startswith("oot_")], "host/ still has Ocarina's files")
+    for name in ("hos_oot_teleport_ask", "hos_oot_opening(", "oot_update_player_cheats", "hos_wide_cover(void) {",
+                 "oot_destinations[]", "occlusion_switch", "HOS_OOT_PROTECT_HEARTS", "hos_oot_live_action",
+                 "hos_oot_player_free", "hos_oot_flight_shortcut_ready", "oot_cheat_items.h"):
+        where = [n for n, text in shared.items() if name in game_profile_code(text)]
+        check(not where, "%s is in the shared runtime: %s" % (name, where))
+    for literal in ("hos_game_is_mkw", "0x806bce28", "0x825c6844", "0x837de940", "HOS_MKW_INTERVAL", "hos_mkw_pacer",
+                    "d00e4f399e411d0613aa8d26b1c02fef"):
+        where = [n for n, text in shared.items() if literal in game_profile_code(text)]
+        check(not where, "Mario Kart World 1.8.0's %s is in the shared runtime: %s" % (literal, where))
+    mkw = (ROOT / "packs" / "mkw" / "host" / "mkw_pacer.c").read_text(encoding="utf-8")
+    for literal in ("0x806bce28", "0x825c6844", "0x837de940", "HOS_MKW_INTERVAL", "d00e4f399e411d0613aa8d26b1c02fef"):
+        check(literal in mkw, "Mario Kart World's pack lost %s" % literal)
+    # (the pacer is noted only in 1.8.0, behind the check, and the present hooks do nothing without it)
+    check(mkw.count("mkw_180() &&") == 2 and "if (hos_mkw_pacer && forced" in mkw and "if (pacer && freq)" in mkw,
+          "Mario Kart World 1.8.0's hooks are not behind its build check")
+    # (every pack's table and game_none.c's: the version and size, and only the table's own members)
+    members = re.findall(r"\(\*(\w+)\)\(", header[header.index("typedef struct NX2PackHost"):header.index("} NX2PackHost;")])
+    check(members[:1] == ["start"] and len(members) >= 10, "NX2PackHost's hooks: %r" % members)
+    tables = [p for p in sorted((ROOT / "packs").glob("*/host/*.c")) if "static const NX2PackHost" in p.read_text(encoding="utf-8")]
+    check([p.relative_to(ROOT).as_posix() for p in tables] == ["packs/mkw/host/mkw_pacer.c", "packs/oot/host/oot_pack.c"],
+          "the packs' tables are not Mario Kart World's and Ocarina's: %r" % tables)
+    for path in [ROOT / "host" / "game_none.c"] + tables:
+        text = path.read_text(encoding="utf-8")
+        check(".version = NX2_PACK_API_MAJOR << 16 | NX2_PACK_API_MINOR," in text and ".size = sizeof(NX2PackHost)," in text
+              and "const NX2PackHost *nx2_pack_host(void)" in text, "%s's table has no version, size or nx2_pack_host" % path.name)
+        used = set(re.findall(r"^\s*\.(\w+) = ", text[text.index("static const NX2PackHost"):], re.M))
+        check(used <= set(members) | {"version", "size", "key"}, "%s sets a member the table has not: %r" % (path.name, used))
+    check((ROOT / "packs" / "mkw" / "host" / "mkw_pacer.c").read_text(encoding="utf-8").count("const NX2PackHost *nx2_pack_host(void)") == 1,
+          "Mario Kart World's pack has no table")
+
+
+def check_pack_object_key():
+    """A pack object's key follows every header its C includes: the Inventory's items (gpu/vk/oot_cheat_items.h, which the
+    menu and Ocarina's cheats both read) changed, oot_cheats.o is compiled again with vk_menu.cpp"""
+    import build
+    key, srcs = build.pack_host_files("oot", packs.tree()["oot"])
+    dirs = sorted({os.path.dirname(f) for f in srcs}) + [build.HOST, build.GAME]
+    headers = [os.path.realpath(h) for h in build.included_headers(srcs, dirs)]
+    items = os.path.realpath(ROOT / "gpu" / "vk" / "oot_cheat_items.h")
+    check(items in headers, "Ocarina's pack's C does not see gpu/vk/oot_cheat_items.h: %r" % headers[:8])
+    check(os.path.realpath(ROOT / "host" / "nx2_pack.h") in headers and os.path.realpath(ROOT / "gpu" / "vk" / "vk_api.h") in headers,
+          "the pack's headers miss nx2_pack.h or vk_api.h (included through it)")
+    paths = build.included_headers(srcs, dirs)
+    before = build.headers_bytes(paths)
+    after = build.headers_bytes(paths, read=lambda path: open(path, "rb").read() + (b"\n/* an item */\n" if os.path.realpath(path) == items else b""))
+    cheats = next(f for f in srcs if f.endswith("oot_cheats.c"))
+    check(before != after and build.object_key(cheats, ["-O2"], before) != build.object_key(cheats, ["-O2"], after),
+          "a change to gpu/vk/oot_cheat_items.h leaves the key of Ocarina's oot_cheats.o")
+    check(build.show_path(cheats) == "packs/oot/host/oot_cheats.c", "build.show_path: %r" % build.show_path(cheats))
+    hosts = dict(build.all_pack_hosts())
+    check(sorted(hosts) == ["mkw", "none", "oot"] and hosts["none"][0].endswith("game_none.c")
+          and len(hosts["oot"]) == len(srcs), "--host-only does not compile every pack's C and game_none.c: %r" % sorted(hosts))
+    yml = (ROOT / ".github" / "workflows" / "windows-builder.yml").read_text(encoding="utf-8")
+    job = yml[yml.index("\n  runtime:\n"):]
+    job = job[:job.index("\n  dav1d:\n")]
+    check("nx2/build.py --standalone --host-only" in job and "runs-on: windows-2022" in job and "release_parts.py part" in job,
+          "windows-builder.yml has no job compiling the runtime's and the packs' C for Windows")
+    check("needs: [package, vulkan, runtime]" in yml, "a Windows release does not wait for the runtime's C to compile")
+
+
+def game_profile_code(text):
+    """C without its comments: a comment may say where a thing went"""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
 # ---- the Builders' copies ----
 
 def check_builders():
@@ -490,6 +594,8 @@ def main():
     check_travels()
     check_lift_key()
     check_pack_folders()
+    check_pack_host()
+    check_pack_object_key()
     check_builders()
     for f in FAILURES:
         print("FAIL: " + f)

@@ -1,8 +1,8 @@
-"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (host/oot_heap_retry.c, packs/oot/lift/oot_patches.py).
+"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (packs/oot/host/oot_heap_retry.c, packs/oot/lift/oot_patches.py).
 
 Issue 1697 (thread OptimizeChangeBanc writes guest 0x8 a few frames after loading a save) and TomShafford/Hookshot's crash at
 backflip + attack: a model's CPU buffer (a heap's tryAlloc) or GPU memory (f_80522050) came back null from a full heap and the
-game wrote through it. Builds host/oot_heap_retry.c, as it is, over a guest memory of its own with made-up sead heaps (name,
+game wrote through it. Builds packs/oot/host/oot_heap_retry.c, as it is, over a guest memory of its own with made-up sead heaps (name,
 size, parent, a vtable with tryAlloc and getFreeSize) and a stand-in for the game's f_80522050, then checks:
 
 - an allocation that succeeds is the game's alone: one call, nothing logged, nothing changed;
@@ -284,7 +284,7 @@ def main():
         tmp = Path(tmp)
         (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
         (tmp / "fixture.c").write_text(FIXTURE, encoding="utf-8")
-        (tmp / "oot_heap_retry.c").write_text((ROOT / "host" / "oot_heap_retry.c").read_text(encoding="utf-8"),
+        (tmp / "oot_heap_retry.c").write_text((ROOT / "packs" / "oot" / "host" / "oot_heap_retry.c").read_text(encoding="utf-8"),
                                               encoding="utf-8")
         exe = tmp / ("fixture.exe" if os.name == "nt" else "fixture")
         subprocess.run([cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(tmp), str(tmp / "fixture.c"),

@@ -1,4 +1,4 @@
-"""The mouse in the game's own menus (host/oot_menu.c): where it points, what it asks of the game.
+"""The mouse in the game's own menus (packs/oot/host/oot_menu.c): where it points, what it asks of the game.
 
 The file is compiled on its own against a fake guest memory holding menu screens as the game lays them out: a screen's
 list of entries (+136 the head, +144 the first node, +156 the entry's offset from its node; entry+24 the button), a
@@ -338,7 +338,7 @@ int main(void) {
 class OotMenuMouseTests(unittest.TestCase):
     def test_points_and_clicks_the_menus(self):
         if sys.platform != "win32":
-            self.skipTest("the game's menus' mouse is Windows' (host/oot_menu.c: _WIN32)")
+            self.skipTest("the game's menus' mouse is Windows' (packs/oot/host/oot_menu.c: _WIN32)")
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
@@ -352,7 +352,7 @@ class OotMenuMouseTests(unittest.TestCase):
             # (and the real "../gpu/vk/compat/hookshot_env.h": env_on, the switches' rule)
             (tmp / "gpu" / "vk" / "compat").mkdir()
             shutil.copy(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h", tmp / "gpu" / "vk" / "compat" / "hookshot_env.h")
-            shutil.copy(ROOT / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
+            shutil.copy(ROOT / "packs" / "oot" / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
             (tmp / "host" / "keys.h").write_text(KEYS_H, encoding="utf-8")
             (tmp / "host" / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"

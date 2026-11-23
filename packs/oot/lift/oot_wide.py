@@ -23,7 +23,7 @@ UI_M00, UI_M11 = "(2.0f / 3840.0f)", "(2.0f / 2160.0f)"   # (the UI's full-scree
 # item wheel's background (the last frame of play, blurred, HUD and all), and bit 2, the fades, keep covering it all: bit 0
 # cleared, that capture went into the middle at twice its width. Screen 3, the loading fade between two areas, is noted
 # for the host as its projection is set up, at each area change: in the middle it leaves the sides open, and the renderer
-# closes them by as much as it is closed, host/hos_main.c hos_wide_cover)
+# closes them by as much as it is closed, packs/oot/host/oot_wide_cover.c hos_wide_cover)
 KEEP_VTABLES = (MAIN + 0x4bed098, MAIN + 0x4be4fb0, MAIN + 0x4be61c8, MAIN + 0x4be7b30)
 
 

@@ -7,6 +7,9 @@ and the play profile (addresses and counts made on the development PC).
         being made); prints that release's tag. Exits 1 when no repository has one.
     python -I scripts/release_parts.py profile <setup list> <work folder>
         the play profile (tools/work of the list's app part) into <work folder>
+    python -I scripts/release_parts.py part <setup list> <name> <folder>
+        the list's part <name> (cpm, python, third_party, ...: its tools/<name>) unpacked into <folder>, its size and SHA-256
+        checked; prints the folder. The Windows runtime check takes FFmpeg's headers so, as a player's build does
     python -I scripts/release_parts.py llvm-mingw <folder> [--name]
         llvm-mingw as scripts/make_setup_parts.py names it (its official release, SHA-256 checked) unpacked into <folder>;
         prints its folder. --name: only prints its name (a cache key)
@@ -345,6 +348,20 @@ def cpm_add(list_path, add, tools):
     return 0
 
 
+def part(a):
+    """One part of a setup list, its tools/<name>, unpacked into a folder"""
+    path = named_part(a.list, a.name)
+    if not path:
+        print("error: %s names no %s part" % (a.list, a.name), file=sys.stderr)
+        return 1
+    n = extract(path, "HookshotBuilder/tools/%s/" % a.name, a.folder)
+    if not n:
+        print("error: %s holds no tools/%s" % (os.path.basename(path), a.name), file=sys.stderr)
+        return 1
+    print(os.path.abspath(a.folder))
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -355,6 +372,10 @@ def main():
     s = sub.add_parser("profile")
     s.add_argument("list")
     s.add_argument("work")
+    s = sub.add_parser("part")
+    s.add_argument("list")
+    s.add_argument("name")
+    s.add_argument("folder")
     s = sub.add_parser("llvm-mingw")
     s.add_argument("folder", nargs="?", default="")
     s.add_argument("--name", action="store_true")
@@ -369,7 +390,7 @@ def main():
     s.add_argument("--repository", help="(hookshot) owner/name the release is from, into tools/repository.txt")
     s.add_argument("--cpm-add")
     a = p.parse_args()
-    return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
+    return {"previous": previous, "profile": profile, "part": part, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
 
 if __name__ == "__main__":

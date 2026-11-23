@@ -75,12 +75,12 @@ def main():
     cheat_state = re.search(r"^static uint64_t flight_input;\nstatic uint64_t free_camera_axes;\nstatic int free_camera_height;\n"
                             r"static int move_stick_held;", hid, re.M).group(0)
     cheat_spies = """
-volatile int hos_oot_live_action;
-int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
+static void hos_game_cheat_action(int action) { (void)action; }
+static int hos_game_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
-int hos_oot_player_free(void) { return 1; }
+static int hos_game_player_free(void) { return 1; }
 """
-    # (the host's own presses and stick, for the game's menus' mouse (host/oot_menu.c): none here; the player's input
+    # (the host's own presses and stick, for the game's menus' mouse (packs/oot/host/oot_menu.c): none here; the player's input
     # time it hides the mouse by: not looked at)
     host_spies = """
 static void host_taps(void) {}

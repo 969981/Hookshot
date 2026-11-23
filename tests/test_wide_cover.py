@@ -1,4 +1,4 @@
-"""Ultrawide's loading cover (issue 2220), game-free: host/hos_main.c's hos_wide_cover and packs/oot/lift/oot_wide.py's HUD site,
+"""Ultrawide's loading cover (issue 2220), game-free: packs/oot/host/oot_wide_cover.c's hos_wide_cover and packs/oot/lift/oot_wide.py's HUD site,
 compiled around an authored layout.
 
 With the menus in the middle 16:9 the game draws the loading cover between two areas there too, so the renderer closes
@@ -157,10 +157,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--cc", default="cc")
     a = p.parse_args()
-    host = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    host = (ROOT / "packs" / "oot" / "host" / "oot_wide_cover.c").read_text(encoding="utf-8")
     host_c = cut(host, "volatile uint64_t hos_wide_cover_screen;", "    return level;\n}\n")
     if oot_wide.KEEP_VTABLES[3] != oot_wide.MAIN + 0x4be7b30 or "0x80020000ULL + 0x4be7b30" not in host_c:
-        raise SystemExit("FAIL: the cover's vtable in host/hos_main.c is not packs/oot/lift/oot_wide.py's KEEP_VTABLES[3]")
+        raise SystemExit("FAIL: the cover's vtable in packs/oot/host/oot_wide_cover.c is not packs/oot/lift/oot_wide.py's KEEP_VTABLES[3]")
     src = (FIXTURE.replace("HOST_C", host_c).replace("SITE_C", oot_wide.HUD)
            .replace("COVER_VTABLE", "0x%xULL" % oot_wide.KEEP_VTABLES[3])
            .replace("KEEP_VTABLES", ", ".join("0x%xULL" % v for v in oot_wide.KEEP_VTABLES))

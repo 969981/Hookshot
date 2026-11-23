@@ -1,4 +1,4 @@
-"""Above a 60 fps cap the sound job runs at 60 Hz and the physics solver keeps whole-frame steps (host/oot_high_fps.h,
+"""Above a 60 fps cap the sound job runs at 60 Hz and the physics solver keeps whole-frame steps (packs/oot/host/oot_high_fps.h,
 packs/oot/lift/oot_patches.py patch_sound_job and patch_solver_steps).
 
 Sound: under a Frame rate cap above 60 the frame step is the frame's own time (0.5 at 120 fps). The sound manager's job (f_80435300)
@@ -140,7 +140,7 @@ class HighFpsTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "host"), str(tmp / "t.c"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "host"), "-I", str(ROOT / "packs" / "oot" / "host"), str(tmp / "t.c"),
                                     "-o", str(binary), "-lm"], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)

@@ -3,7 +3,7 @@
 host/auto_run.h keeps A held for the game after it was held for 0.4 s while the left stick was pushed and then let go,
 until the stick is let go, A is pressed again, Plus or Minus is pressed, or Link is no longer the player's to move (an
 event, the pause, the Insert menu, the ocarina's note wait). host/nn_hid.c runs it on each read of the controller with the row
-(HOS_OPT_AUTO_RUN, answered by gpu/vk/vk_replay.cpp) and host/hos_main.c's hos_oot_player_free. This compiles the
+(HOS_OPT_AUTO_RUN, answered by gpu/vk/vk_replay.cpp) and Ocarina's pack's hos_oot_player_free (packs/oot/host/oot_cheats.c, through host/nx2_pack.h). This compiles the
 header alone and plays presses through it, and checks that the row, its answer, the call and the readme are there.
 
 python -I -B tests/test_auto_run.py [--cc gcc]
@@ -43,11 +43,14 @@ def source_checks():
     hid = read("host/nn_hid.c")
     check('#include "auto_run.h"' in hid, "nn_hid.c does not include auto_run.h")
     check(re.search(r"buttons = hos_auto_run\(&auto_run, buttons, stick\[0\], stick\[1\], on,\s*"
-                    r"!menu_open && hos_oc_wait != 1 && hos_oot_player_free\(\),\s*hos_now_ns\(\)\)", hid),
+                    r"!menu_open && hos_oc_wait != 1 && hos_game_player_free\(\),\s*hos_now_ns\(\)\)", hid),
           "nn_hid.c does not run Auto run with the row, the Insert menu, the ocarina's note wait and "
-          "hos_oot_player_free")
-    main = read("host/hos_main.c")
-    check("int hos_oot_player_free(void)" in main, "hos_main.c has no hos_oot_player_free")
+          "the game's pack's player_free (host/nx2_pack.h hos_game_player_free)")
+    pack = read("host/nx2_pack.h")
+    check("return p->player_free ? p->player_free() : 0;" in pack, "hos_game_player_free does not ask the game's pack")
+    main = read("packs/oot/host/oot_cheats.c")
+    check("int hos_oot_player_free(void)" in main, "Ocarina's pack has no hos_oot_player_free")
+    check(".player_free = hos_oot_player_free," in read("packs/oot/host/oot_pack.c"), "Ocarina's pack does not take the hook")
     check(re.search(r"__atomic_store_n\(&player_free_seen, oot_event_playing\(c\) \? 0 : hos_now_ns\(\)", main),
           "Link's update does not note whether he is the player's to move")
     readme = read("readme.md")

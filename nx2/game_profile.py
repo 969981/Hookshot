@@ -8,8 +8,8 @@ keys, and the one build make_game.py accepted. This is the seam the engine's for
 World, Dragoon: Kirby Air Riders) built and converged on, so that a second game is a profile and its own patch modules,
 not an edit to the engine (docs/one-engine.md):
 
-  - the game is chosen by the build id of the dump's main (for_build), as host/hos_main.c's hos_game_is_mkw() always
-    did; HOOKSHOT_GAME=<key> only overrides it, and a build no profile knows gets NONE, which patches nothing;
+  - the game is chosen by the build id of the dump's main (for_build), as the runtime's MKW 1.8.0 check (now
+    packs/mkw/host/mkw_pacer.c) always did; HOOKSHOT_GAME=<key> only overrides it, and a build no profile knows gets NONE, which patches nothing;
   - the return addresses the runtime recognises are the profile's (Hooks), and are recognised only in the build the
     profile is for (host/hos_main.c hos_game_profile_live);
   - the renderer is built once for every game, so it is handed the game's program keys at run time (HOOKSHOT_PROFILE_*);

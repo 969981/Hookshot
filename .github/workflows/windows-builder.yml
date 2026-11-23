@@ -413,6 +413,53 @@ jobs:
           path: ${{ runner.temp }}/vk-work/sa/build/hookshot_vk.dll
           if-no-files-found: error
 
+  # The runtime's C for Windows, every file of it: host/ and every game pack's host/ (packs/<key>/host, and host/game_none.c),
+  # compiled by llvm-mingw with the runtime's own flags (nx2/build.py --host-only), nothing lifted or linked. The renderer
+  # job above builds with RX_VK_ONLY, which compiles none of it, and the game itself is built only on a player's PC: without
+  # this a Windows-only error in the runtime or a pack's C was first seen there (#144's review). FFmpeg's and Vulkan's
+  # headers come from the latest release's CPM part, as a player's build takes them.
+  runtime:
+    name: Windows runtime C (llvm-mingw)
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly' && github.ref_name != 'rc'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: llvm-mingw version
+        id: llvm
+        run: echo "name=$(python -I scripts/release_parts.py llvm-mingw --name)" >> "$GITHUB_OUTPUT"
+      # (a release unpacks llvm-mingw from its checked download, not from a cache other runs write)
+      - if: env.RELEASE_TAG == ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/llvm
+          key: ${{ steps.llvm.outputs.name }}
+      - name: llvm-mingw
+        run: echo "HOOKSHOT_MINGW=$(python -I scripts/release_parts.py llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
+      - name: The latest release's CPM part (Vulkan's and FFmpeg's headers)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -I scripts/release_parts.py previous "$RUNNER_TEMP/previous-setup.txt" \
+            --repo "$GITHUB_REPOSITORY" --repo notquiteog/Hookshot
+          python -I scripts/release_parts.py part "$RUNNER_TEMP/previous-setup.txt" cpm "$RUNNER_TEMP/cpm"
+      - name: host/ and packs/*/host/ for Windows
+        run: |
+          OOT_WORK="$RUNNER_TEMP/host-work" RX_CPM="$RUNNER_TEMP/cpm" \
+            python -I nx2/build.py --standalone --host-only --jobs "$NUMBER_OF_PROCESSORS" | tee "$RUNNER_TEMP/host-build.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          # (every pack with C, and game_none.c, was compiled: a pack left out would pass for nothing)
+          for key in oot mkw none; do grep -q "^game pack: $key, its C" "$RUNNER_TEMP/host-build.log"; done
+          grep -q "^host only: .* compiled for Windows, nothing linked" "$RUNNER_TEMP/host-build.log"
+
   # dav1d for the AV1 movies (issue 2316: the CPM cache's FFmpeg has none), made as scripts/windows/dav1d.sh makes it, with
   # the same llvm-mingw release on Linux, and checked under Wine by the test of host/dav1d_av1.c. The artifact is a CPM
   # folder (dav1d/<version>): the package job adds it to the CPM part when the latest release's lacks it, and the new
@@ -464,7 +511,7 @@ jobs:
       ((inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
       && github.ref_name != 'nightly' && github.ref_name != 'rc')) && vars.CI_RELEASE_WINDOWS != 'false')
       || (!inputs.tag && github.event_name == 'push' && github.ref == 'refs/heads/main')
-    needs: [package, vulkan]
+    needs: [package, vulkan, runtime]   # (runtime: the runtime and the packs' C compile for Windows)
     runs-on: ubuntu-24.04
     timeout-minutes: 30   # (the full setup: ~0.5 GB of parts fetched, zipped and uploaded)
     # (id-token and attestations: SHA256SUMS, when it is made here)

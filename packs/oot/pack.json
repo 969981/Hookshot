@@ -4,7 +4,7 @@
   "name": "The Legend of Zelda: Ocarina of Time",
   "short_name": "Ocarina of Time",
   "version": "1.0.0",
-  "api": {"major": 0, "minor": 2},
+  "api": {"major": 0, "minor": 3},
   "released": true,
   "program_id": "0400486024DEC000",
   "builds": [
@@ -32,6 +32,7 @@
            "env_prefixes": ["OOT_"]},
   "build_steps": ["prompts", "pipeline_states"],
   "saves_dir": "hookshot",
+  "host": ["host/*.c"],
   "license": "GPL-3.0-or-later",
   "comments": {
     "builds.0.version": "the update; base v65536",

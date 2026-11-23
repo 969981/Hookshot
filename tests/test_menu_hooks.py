@@ -1,4 +1,4 @@
-"""The game's menus' mouse (host/oot_menu.c) hooks two functions of the lifted game at their heads: a menu screen's handler of
+"""The game's menus' mouse (packs/oot/host/oot_menu.c) hooks two functions of the lifted game at their heads: a menu screen's handler of
 a pane getting the focus (f_802ed660: hos_oot_menu_focus) and a menu screen's update (f_802f1380: hos_oot_menu_tick). The
 button prompts (host/prompts.c) hook a text box's draw (f_8152b670: hos_prompts_text_draw), its layout (f_8152aec0:
 hos_prompts_text_layout) and FreeType's glyph render (f_81680c60: hos_prompts_glyph) the same way.

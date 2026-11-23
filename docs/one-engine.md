@@ -39,9 +39,10 @@ agents who work on any of the four.
 2. **Every fork merges `main`** after each Hookshot release, and sooner when a fix it needs lands. That is how a
    rendering or performance fix made for one game reaches the others.
 3. **One game's code goes behind the profile, never in place of another game's.** Shared code keeps no game's
-   addresses, offsets, keys or build ids without a profile check. Known exceptions to remove:
-   `host/hos_thread.c` 0x8348c770 and 0x825c6844, `host/nvn_native.c` 0x806bce28, `host/nn_vi.c` 0x837de940 and
-   `host/hos_main.c` `hos_game_is_mkw`.
+   addresses, offsets, keys or build ids without a profile check. A game's runtime code is its pack's
+   (`packs/<key>/host/`, compiled into that game's runtime only, through `host/nx2_pack.h`): Mario Kart World 1.8.0's
+   pacer and idle loop (0x806bce28, 0x825c6844, 0x837de940, `HOS_MKW_INTERVAL`) are in `packs/mkw/host/` behind
+   its build check, kept for a later 1.8.0 profile ([game packs](game-packs.md) a3).
 4. **Keep merges cheap.** In a fork, don't rename, move or reformat shared files: add new files for game code. Name
    things by the profile (`PROJECT` in `nx2/game_profile.py`), not by a literal "Hookshot", so that a fork's name is
    one line: `scripts/product_name.sh` is the pattern.

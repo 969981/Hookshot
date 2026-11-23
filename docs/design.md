@@ -121,8 +121,9 @@ second game.
    raised by default (`HOS_VCORES`, `RX_VK_CAPTURE_THREADS`, `HOS_THREAD_TIMES=<seconds>`, the `HOS_SAMPLE` profiler
    with `scripts/prof.py`).
 
-Also inherited, and game-specific in MKW: MKW's frame-pacer hooks at fixed guest addresses are gated on MKW's build
-id (`hos_game_is_mkw`); OoT gets its own once its pacer is found, never by address coincidence.
+Also inherited, and game-specific in MKW: MKW's frame-pacer hooks at fixed guest addresses are gated on MKW 1.8.0's
+build id, now in the mkw pack's C (`packs/mkw/host/mkw_pacer.c`, through `host/nx2_pack.h`); OoT gets its own once
+its pacer is found, never by address coincidence.
 
 ## 5. What OoT needs that MKW did not (checked on the dump, 2026-11-04)
 

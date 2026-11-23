@@ -1,4 +1,4 @@
-"""A moving floor carries Link above 100 fps as it does at 60 (host/oot_high_fps.h oot_floor_cut, packs/oot/lift/oot_patches.py
+"""A moving floor carries Link above 100 fps as it does at 60 (packs/oot/host/oot_high_fps.h oot_floor_cut, packs/oot/lift/oot_patches.py
 patch_floor_carry).
 
 The character controller's three follow-surface updates (f_8015d490, f_80159dc0, f_838baa40) keep only a tenth of the
@@ -120,7 +120,7 @@ def main():
         directory = Path(directory)
         (directory / "a64.h").write_text(CONTEXT, encoding="utf-8")
         source, binary = directory / "fixture.c", directory / "fixture.exe"
-        command = [args.cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-label", "-I", str(ROOT / "host"),
+        command = [args.cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-label", "-I", str(ROOT / "host"), "-I", str(ROOT / "packs" / "oot" / "host"),
                    str(source), "-o", str(binary)]
         source.write_text(FIXTURE.replace("@GATES@", patched.replace('#include "a64.h"\n', "")), encoding="utf-8")
         subprocess.run(command, check=True)
