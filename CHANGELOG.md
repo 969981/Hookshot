@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0-rc.45](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.44...v2.3.0-rc.45) (2026-11-23)
+
+
+### Code Refactoring
+
+* **packs:** Ocarina's runtime C in its pack, compiled into its runtime only; MKW 1.8.0's pacer to its pack (game packs a3) ([#144](https://github.com/notquiteog/Hookshot/issues/144)) ([c6a4c00](https://github.com/notquiteog/Hookshot/commit/c6a4c00bb749e4d5ec42f3d5958dd10f46c0497f))
+
+
+### Documentation
+
+* **tested:** B2 ([#123](https://github.com/notquiteog/Hookshot/issues/123), 8cf07dd8) in Bananza and MKW on a quiet PC ([#145](https://github.com/notquiteog/Hookshot/issues/145)) ([0fc3cc7](https://github.com/notquiteog/Hookshot/commit/0fc3cc764f3da666ef0c1cc8c3c95983bc2e9a88))
+
 ## [2.3.0-rc.44](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.43...v2.3.0-rc.44) (2026-11-23)
 
 
