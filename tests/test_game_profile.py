@@ -1,4 +1,5 @@
-"""The game profile seam holds: a second game is described in nx2/game_profile.py and nowhere else, a dump is matched
+"""The game profile seam holds: a second game is described in its game pack (packs/<key>/pack.json, built into
+nx2/game_profile.py's profiles; tests/test_game_packs.py checks the packs) and nowhere else, a dump is matched
 to its profile by main's build id, an unknown or unmeasured game is patched and hooked by nothing, and the committed C
 view of the profile is the one the profile emits.
 

@@ -9,8 +9,9 @@ Checked here:
     list in place of the one "Play the game built in" button, and its Play goes through play_folder_for (--play/--game);
   - the Qt Builder (builder/py): core.built_games is the tools' built_games, the list is filled with the form and after a build,
     and its Play goes through game_folders.folder;
-  - the WPF Builder (builder/HookshotBuilder/Games.cs): its profiles are game_profile.py's that build (key, name, build id, in
-    order) and its default key game_profile.DEFAULT; the window fills the list with the form and after a build and plays the
+  - the WPF Builder (builder/HookshotBuilder/Games.cs): its profiles are the game packs' (packs/<key>/pack.json through
+    nx2/packs.py: key, name, build id, in order), which are game_profile.py's that build, and its default key the packs'
+    (packs.DEFAULT, game_profile.DEFAULT); the window fills the list with the form and after a build and plays the
     folder by the rule; and with .NET (Windows), Games.cs compiled with tests/builder_games_test.cs lists the same games, folders
     and bases as built_games for the same placeholder folders.
 
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import game_folders  # noqa: E402
 import game_profile  # noqa: E402
+import packs  # noqa: E402
 
 failures = []
 
@@ -153,9 +155,11 @@ def cs_profiles():
 
 def check_wpf_builder():
     rows, default = cs_profiles()
-    want = [(p.key, p.game, p.build_id) for p in game_folders.buildable()]
-    check(rows == want, "Games.cs's profiles are game_profile.py's that build: %r, not %r" % (rows, want))
-    check(default == game_profile.DEFAULT, "Games.cs's default key is game_profile.DEFAULT (%r)" % (default,))
+    want = [(k, m["name"], m["builds"][0]["build_id"]) for k, m in packs.tree().items()]
+    check(rows == want, "Games.cs's profiles are the game packs': %r, not %r" % (rows, want))
+    check(want == [(p.key, p.game, p.build_id) for p in game_folders.buildable()],
+          "the packs' games are not game_profile.py's that build")
+    check(default == packs.DEFAULT == game_profile.DEFAULT, "Games.cs's default key is the packs' DEFAULT (%r)" % (default,))
     window = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
     fill = window[window.index("    void FillGames()"):window.index("    Border Chip(string path)")]
     check("Games.Built(OutPath.Text.Length > 2 ? OutPath.Text : null)" in fill, "the WPF Builder's list is from its game folder")

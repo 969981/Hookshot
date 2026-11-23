@@ -738,6 +738,7 @@ through (inputs timed in frames, screenshots, waits for the game's state, the In
 |---|---|
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run. Every script the build runs calls `long_paths.install()` as it loads, so its file calls take paths past Windows' 260 characters (a Builder, work folder or game folder deep in the file system, #1115); a new one does too, and joins `ENTRY_SCRIPTS` in `tests/test_build_long_paths.py` |
+| `packs/` | the game packs in the tree: each game's `pack.json` (below) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
@@ -748,3 +749,17 @@ through (inputs timed in frames, screenshots, waits for the game's state, the In
 
 License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is
 GPL-3.0.
+
+### Packs in the tree
+
+Each game's identity and profile data is its game pack's manifest, `packs/<key>/pack.json` (`oot`, `dkb`, `mkw`): the
+program id, the build and where main is, the graphics module's offsets, the return addresses, the program keys, the
+player counts and the rest of what `nx2/game_profile.py`'s `Profile` holds, with addresses as hex strings and a
+`comments` object that says where each value was measured. `nx2/packs.py` loads and checks them (format 1: a missing,
+unknown or mistyped field is refused with the file and the field named; `python -I nx2/packs.py` lists them), and
+`nx2/game_profile.py` builds `GAMES` from them, so a profile change is an edit to the pack.json, followed by
+`python -I nx2/game_profile.py --emit-header` when it is the default game's. `nx2/packs.py` also holds the profile order
+and the default game (Ocarina), which `builder/HookshotBuilder/Games.cs` and `builder/setup/setup.c` copy;
+`tests/test_game_packs.py` holds those copies, and every profile's values and headers, to the packs. Every pack.json is
+in the lift's cache key, as `game_profile.py` was. This is the first step of moving each game into its own repository:
+the format, the steps after this one and what a pack may carry are in [game packs](game-packs.md).

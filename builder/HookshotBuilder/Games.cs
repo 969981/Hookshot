@@ -3,18 +3,19 @@ using System.IO;
 namespace HookshotBuilder;
 
 /// "Your games": the games built beside the Builder's game folder, each with Play. The same rule as nx2/game_folders.py
-/// (built_games), which the Linux and Qt Builders use: every game profile that builds (nx2/game_profile.py, a build id set),
+/// (built_games), which the Linux and Qt Builders use: every game profile that builds (its game pack, packs/<key>/pack.json),
 /// in its own folder, the default game's <base> and another's <base>-<key>, base being the Builder's game folder (or the base
 /// it is another game's folder of). A folder is listed when it holds a built game: image.bin and the game (bin\hookshot.exe,
 /// or hookshot.exe in a folder built before the launcher). Play starts that folder as `--play <base> --game <key>` does
 /// (builder/setup/setup.c play_target), the path RecompLauncher's tiles take. tests/test_builder_games.py holds the profiles
-/// and the folders to nx2/game_folders.py's
+/// and the folders to nx2/game_folders.py's, and tests/test_game_packs.py the table and the default key to the packs
 static class Games
 {
-    /// nx2/game_profile.py DEFAULT: its folder takes no suffix, so Ocarina's stays where it always was
+    /// nx2/packs.py DEFAULT (game_profile.DEFAULT): its folder takes no suffix, so Ocarina's stays where it always was
     public const string DefaultKey = "oot";
 
-    /// Every profile that builds, in game_profile.py's order: its key, the game's name, main's build id
+    /// Every pack's profile that builds, in nx2/packs.py's order: its key, the game's name (pack.json name), main's build id
+    /// (builds[0].build_id). A copy of the packs' data until the Builder reads `game_folders.py --library --json`
     public static readonly (string Key, string Name, string BuildId)[] Profiles =
     {
         ("oot", "The Legend of Zelda: Ocarina of Time", "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"),

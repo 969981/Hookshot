@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "key": "dkb",
+  "name": "Donkey Kong Bananza",
+  "short_name": "Donkey Kong Bananza",
+  "version": "1.0.0",
+  "api": {"major": 0, "minor": 1},
+  "released": true,
+  "program_id": "040074A01BF12000",
+  "builds": [
+    {"build_id": "e25c90c1c136638885659fd55bf8a03b3403489d", "version": 458752, "version_name": "3.2.0",
+     "main_base": "0x80020000"}
+  ],
+  "profile": {
+    "gfx": {"frame_limiter": null, "nominal_fps": null, "vrr_mode": null, "vrr_gate": null, "controller": null,
+            "controller_words": [], "controller_rate_words": []},
+    "upscale": {"taau": [], "gameplay": [], "network_keep": []},
+    "hooks": {"gfx_clock": null, "present_poll": null, "present_events": []},
+    "npad_players": 1,
+    "account_users": 1,
+    "video_catchup": false,
+    "vk_parallel": null,
+    "graphics_scale": 0,
+    "romfs_needed": [],
+    "notes": "Identity measured on the dump; movie catch-up off (the guide player counts every picture)."
+  },
+  "lift": {"patch_modules": [], "code_patch_module": null},
+  "license": "GPL-3.0-or-later",
+  "comments": {
+    "builds": "Measured on the dump (Donkey Kong Bananza.nup: base v0, update v458752 = 3.2.0, add-on content 040074a01bf13001): nx2/dump.py reported the program id and main's build id (sdk 18265dae..., SDK and NVN 20.5.19, no subsdk modules), nx2/nup.py the update's version, and nx2/lift.py's image line put main at 0x80020000. Its ExeFS is byte-identical to dkb-pc-recomp's dkb458752 target, whose 3.2.0 addresses therefore apply to this lift unchanged.",
+    "profile": "Empty on purpose until measured, as a number that looks right is worse than none: patch modules (none needed to play the tunnel), gfx (the frame limiter: HOS_FPS_LOG once its module is known), upscale (program keys, from RX_VK_SHADER_CENSUS), hooks (gfx_clock: HOS_TICK_LOG lists GetSystemTick's callers).",
+    "profile.video_catchup": "The guide movies' player counts every picture it submitted: one the catch-up skips is never handed back, and the player aborts at its loop's flush (main+0xe1ada0 from 0x8189b900; with skips, after 1-2 loops).",
+    "profile.graphics_scale": "Bananza sizes its render targets by GetCurrentGraphicsScale's enum (main 0x8033e9b4 / 0x80569324 keep it as a mode byte, 0x803ad180 / 0x805695d0 index a float table {3, 12, 16} with it): with the host's 1 it drew at 80% of its 2880x1620 (2304x1296; scenes 1536x864 / 1676x943), with 0 at the full size (2880x1620; 1920x1080 / 2095x1179)",
+    "released": "In the release: its own tile in RecompLauncher (recomplauncher.json games[]), its own copy asked for (inputs[]), which the builder checks against this profile's build id (make_game.py --game-<key>)"
+  }
+}

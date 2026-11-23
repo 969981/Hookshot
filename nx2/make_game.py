@@ -2077,7 +2077,10 @@ def lift_sources():
     for prof in game_profile.GAMES.values():
         for name in prof.patch_modules + ((prof.code_patch_module,) if prof.code_patch_module else ()):
             todo.append(os.path.join(HERE, name + ".py"))
-    seen = set()
+    # (and the packs' manifests, packs/<key>/pack.json, which the profiles are built from: what game_profile.py's own text
+    # was to the key before the packs, every game's, for the same reason. docs/game-packs.md 3.3 narrows it to the active
+    # game's pack later)
+    seen = set(game_profile.packs.manifest_paths())
     while todo:
         f = todo.pop()
         if f in seen:

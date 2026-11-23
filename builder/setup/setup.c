@@ -1054,8 +1054,9 @@ static int launch_installed(const wchar_t *args) {
 
 /* (RecompLauncher's Play) --play <game folder>: bin\hookshot.exe there, started like the game folder's launcher starts it but without
    its update question, and waited for, so the launcher knows when the session ends. */
-/* (hookshot) The default game's profile key (nx2/game_profile.py DEFAULT): its folder takes no suffix, so Ocarina's
-   stays where it always was (nx2/game_folders.py). tests/test_launcher_games.py holds the two the same. */
+/* (hookshot) The default game's profile key (nx2/packs.py DEFAULT, the packs' default game): its folder takes no
+   suffix, so Ocarina's stays where it always was (nx2/game_folders.py). tests/test_launcher_games.py and
+   tests/test_game_packs.py hold the two the same. */
 #ifndef HOOKSHOT_DEFAULT_GAME
 #define HOOKSHOT_DEFAULT_GAME "oot"
 #endif

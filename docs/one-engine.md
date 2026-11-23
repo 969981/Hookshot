@@ -18,7 +18,8 @@ agents who work on any of the four.
 - **One build of the engine.** The lifter and build (`nx2/`), the Horizon runtime and its HLE (`host/`), the Vulkan
   back end (`gpu/vk/`), the builder, the control bridge and the tests are shared. The renderer `hookshot_vk` is already
   built once and shipped for every game. Only the runtime is compiled per game.
-- **A game is a profile.** `nx2/game_profile.py` gives a game's identity (program id, version, main's build id), its
+- **A game is a profile.** Its game pack's `pack.json` (`packs/<key>/`, built into `nx2/game_profile.py`'s profiles;
+  [game packs](game-packs.md)) gives a game's identity (program id, version, main's build id), its
   patch modules, the offsets and return addresses the runtime recognises, its shader program keys and its defaults. Its
   game patches live in their own files. **The dump decides the game:** the profile is chosen by main's build id, and
   `HOOKSHOT_GAME=<key>` only overrides it. A build no profile knows gets an empty profile, so no game's patches are

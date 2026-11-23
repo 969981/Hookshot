@@ -59,8 +59,9 @@ T=$APPDIR/usr/share/hookshot
 L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
-# (game/: the game profile's C view, nx2/game_profile.py, which the runtime and the back end compile with)
-cp -a nx2 host game scripts LICENSE readme.md assets "$T/"
+# (game/: the game profile's C view, nx2/game_profile.py, which the runtime and the back end compile with; packs/: the
+# game packs the profiles are built from)
+cp -a nx2 host game packs scripts LICENSE readme.md assets "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 # (hookshot) the repository releases come from, for the update checks (nx2/version.py repository, builder/linux/linux_update.py)

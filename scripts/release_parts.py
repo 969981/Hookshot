@@ -12,8 +12,8 @@ and the play profile (addresses and counts made on the development PC).
         prints its folder. --name: only prints its name (a cache key)
     python -I scripts/release_parts.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
                                        [--list <setup list>] [--python-packages <requirements>] [--cpm-add <CPM folder>]
-        the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2
-        and scripts under tools/, the pipeline state list's sources (assets/pipeline_states/, which must be there and read),
+        the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2,
+        packs and scripts under tools/, the pipeline state list's sources (assets/pipeline_states/, which must be there and read),
         tools/work (the profile) and tools/third_party: the tracked files and, from the list's
         third_party part, the prebuilt files the repository does not carry (a64emit.dll, lld-link.exe, SDL2.dll, SDL3.dll,
         zbic.dll; rebuilt on the player's PC when their sources' stamps differ). Python, emsdk, CPM and wgpu-native are not
@@ -206,7 +206,7 @@ def package(a):
     copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (the builder's Repair runs it)
     copy(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
     tools = os.path.join(out, "tools")
-    for f in tracked("game", "gpu", "host", "nx2", "scripts", "third_party"):   # (game/: the game profile header)
+    for f in tracked("game", "gpu", "host", "nx2", "packs", "scripts", "third_party"):   # (game/: the profile header; packs/: its packs)
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:

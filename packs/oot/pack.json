@@ -1,0 +1,53 @@
+{
+  "format": 1,
+  "key": "oot",
+  "name": "The Legend of Zelda: Ocarina of Time",
+  "short_name": "Ocarina of Time",
+  "version": "1.0.0",
+  "api": {"major": 0, "minor": 1},
+  "released": true,
+  "program_id": "0400486024DEC000",
+  "builds": [
+    {"build_id": "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348", "version": 131072, "version_name": "version 131072",
+     "main_base": "0x80020000"}
+  ],
+  "profile": {
+    "gfx": {"frame_limiter": "0xfc", "nominal_fps": "0x2c8", "vrr_mode": "0x231", "vrr_gate": "0x232",
+            "controller": "0x270", "controller_words": ["0x58", "0x28", "0x2c", "0x30"],
+            "controller_rate_words": ["0x58", "0x28", "0x2c"]},
+    "upscale": {"taau": ["fd029a317a9a4b94"], "gameplay": ["0xfd029a317a9a4b94", "0x9dc98871eb7fc101"],
+                "network_keep": ["fd029a317a9a4b94", "9dc98871eb7fc101"]},
+    "hooks": {"gfx_clock": "0x8348c770", "present_poll": "0x80590520", "present_events": ["0x805904a0", "0x80590530"]},
+    "npad_players": 1,
+    "account_users": 1,
+    "video_catchup": true,
+    "vk_parallel": null,
+    "graphics_scale": null,
+    "romfs_needed": [[["Pack/ZsDic.pack.zs"], "file"], [["System/Resource"], "dir"],
+                     [["System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs",
+                       "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"], "file"]],
+    "notes": "The game this engine was retargeted to; every value here was measured on its dump."
+  },
+  "lift": {"patch_modules": ["oot_wide", "oot_fov", "oot_jitter", "oot_occlusion"], "code_patch_module": "oot_patches"},
+  "saves_dir": "hookshot",
+  "license": "GPL-3.0-or-later",
+  "comments": {
+    "builds.0.version": "the update; base v65536",
+    "builds.0.main_base": "after rtld's 0x20000 bytes in Eden's layout (nx2/image.py)",
+    "lift.patch_modules": "the order lift.py has always installed them in: two modules may add C at one site, in this order",
+    "profile.gfx.frame_limiter": "int: the rate f_8042cd20 sleeps to",
+    "profile.gfx.nominal_fps": "int: the nominal rate the engine steps game time by (60 / it)",
+    "profile.gfx.vrr_mode": "byte: logged beside the gate; 1 in every run seen",
+    "profile.gfx.vrr_gate": "byte: f_804fc0f0 stores a rate into +0xfc only while this is set",
+    "profile.gfx.controller": "the adaptive controller's object; the words below are offsets inside it",
+    "profile.gfx.controller_words": "what HOS_FPS_LOG prints: all four read 60 at 60 fps",
+    "profile.gfx.controller_rate_words": "what HOS_FPS_FORCE raises (not +0x30, not nominal_fps)",
+    "profile.upscale.network_keep": "9dc98871 resolves the dynamic-resolution scene to 2048x1152; left out, the 3D picture is black under the HUD",
+    "profile.hooks.gfx_clock": "main+0x346c770: after the bl of the graphics module's frame-end GetSystemTick",
+    "profile.hooks.present_poll": "the SleepThread in 0x80590500's `while (nvnEventGetValue(e) != 1)` loop",
+    "profile.npad_players": "Ocarina reads Npad No.1 alone, with every device merged into it",
+    "profile.account_users": "one user, \"Player\": the one there always was",
+    "profile.romfs_needed": "(Longshot #534 and #863) the build reads Pack/ZsDic.pack.zs and System/Resource (prompt_assets.py, shader_census.py), and the game cannot start without its heap definition, which it opens as Product. then Default. (#689 and a player's v3.0.0-rc.4: a romfs with no System folder crashed at boot every time, \"write 0x100000000000, guest 0\", its heaps set up without their sizes; that file alone missing does too)",
+    "saves_dir": "Ocarina's saves folder on Linux has always been hookshot; every other game's is hookshot-<key>"
+  }
+}

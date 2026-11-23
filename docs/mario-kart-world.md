@@ -1,7 +1,7 @@
 # Mario Kart World on this engine
 
-*Mario Kart World* (Switch 2) builds and plays from this repository with its own game profile (`mkw` in
-`nx2/game_profile.py`, chosen by main's build id). It is in the release: RecompLauncher shows it as a
+*Mario Kart World* (Switch 2) builds and plays from this repository with its own game profile (`mkw`, its game
+pack `packs/mkw/pack.json`, chosen by main's build id). It is in the release: RecompLauncher shows it as a
 tile of its own, which asks for its own copy (`recomplauncher.json` `games[]` and `inputs[]`, written by
 `nx2/game_folders.py`), and the builder checks that copy against the profile (`make_game.py --game-mkw=<copy>`). The
 AppImage's builder, `HookshotBuilder.exe` and `nx2/make_game.py` build it too. Game data never enters this repository: the dump is read where it lies,

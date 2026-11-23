@@ -16,8 +16,12 @@ not an edit to the engine (docs/one-engine.md):
   - every profile's patch modules are roots of the lift's cache key (nx2/make_game.py lift_sources), and load_module is
     the one place they are imported by name.
 
-What belongs here: the game's identity (program id, version, main's build id) as nx2/dump.py reports it; the base of
-its main in the lifted image; which lift patch modules and which code patch module apply; the offsets into its
+Each game's profile is its game pack's manifest, packs/<key>/pack.json (nx2/packs.py loads and checks it;
+docs/game-packs.md): this file holds the Profile class, the empty profile NONE, the choice of profile and the C view, and
+builds GAMES from the packs. A game's values are edited in its pack.json, then the header is emitted as below.
+
+What belongs in a profile: the game's identity (program id, version, main's build id) as nx2/dump.py reports it; the
+base of its main in the lifted image; which lift patch modules and which code patch module apply; the offsets into its
 graphics module the frame pacing reads; the return addresses the runtime recognises; the shader program keys the
 renderer treats specially; its default player count. What does not: anything true of every Switch 2 title, and the C
 text a patch writes, which lives with the patch.
@@ -33,7 +37,7 @@ no build id to go by (a build or a check without a dump), DEFAULT. A dump whose 
 patches nothing and hooks nothing: lifting an unknown game must not apply Ocarina's patches to it.
 
     python -I nx2/game_profile.py                       # what the profiles hold
-    python -I nx2/game_profile.py --emit-header         # rewrite game/game_profile.h (DEFAULT's) from this file
+    python -I nx2/game_profile.py --emit-header         # rewrite game/game_profile.h (DEFAULT's) from its pack
     python -I nx2/game_profile.py --check-header        # the committed header still matches (tests/test_game_profile.py)
     python -I nx2/game_profile.py --emit-header --game oot --out <dir>   # one game's header, as a lift writes it
 """
@@ -45,6 +49,10 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
+import packs  # noqa: E402  (the game packs the profiles are built from)
+
 HEADER = os.path.join(HERE, "..", "game", "game_profile.h")
 
 # The project's own name, which is not game data: it names the release files (scripts/product_name.sh). A fork's
@@ -124,117 +132,57 @@ class Profile(object):
         return "<Profile %s: %s>" % (self.key, self.game)
 
 
-OOT = Profile(
-    key="oot",
-    game="The Legend of Zelda: Ocarina of Time",
-    program_id="0400486024DEC000",
-    # (Longshot #534 and #863) the build reads Pack/ZsDic.pack.zs and System/Resource (prompt_assets.py, shader_census.py), and
-    # the game cannot start without its heap definition, which it opens as Product. then Default. (#689 and a player's
-    # v3.0.0-rc.4: a romfs with no System folder crashed at boot every time, "write 0x100000000000, guest 0", its heaps set
-    # up without their sizes; that file alone missing does too)
-    romfs_needed=((("Pack/ZsDic.pack.zs",), "file"), (("System/Resource",), "dir"),
-                  (("System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs",
-                    "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"), "file")),
-    version=131072,                 # the update; base v65536
-    version_name="version 131072",
-    build_id="e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348",
-    main_base=0x80020000,           # after rtld's 0x20000 bytes in Eden's layout (nx2/image.py)
-    # (the order lift.py has always installed them in: two modules may add C at one site, in this order)
-    patch_modules=("oot_wide", "oot_fov", "oot_jitter", "oot_occlusion"),
-    code_patch_module="oot_patches",
-    gfx=Gfx(
-        frame_limiter=0xfc,         # int: the rate f_8042cd20 sleeps to
-        nominal_fps=0x2c8,          # int: the nominal rate the engine steps game time by (60 / it)
-        vrr_mode=0x231,             # byte: logged beside the gate; 1 in every run seen
-        vrr_gate=0x232,             # byte: f_804fc0f0 stores a rate into +0xfc only while this is set
-        controller=0x270,           # the adaptive controller's object; the words below are offsets inside it
-        controller_words=(0x58, 0x28, 0x2c, 0x30),       # what HOS_FPS_LOG prints: all four read 60 at 60 fps
-        controller_rate_words=(0x58, 0x28, 0x2c),        # what HOS_FPS_FORCE raises (not +0x30, not nominal_fps)
-    ),
-    upscale=Upscale(
-        taau=("fd029a317a9a4b94",),
-        gameplay=(0xfd029a317a9a4b94, 0x9dc98871eb7fc101),
-        # (9dc98871 resolves the dynamic-resolution scene to 2048x1152; left out, the 3D picture is black under the HUD)
-        network_keep=("fd029a317a9a4b94", "9dc98871eb7fc101"),
-    ),
-    hooks=Hooks(
-        gfx_clock=0x8348c770,       # main+0x346c770: after the bl of the graphics module's frame-end GetSystemTick
-        present_poll=0x80590520,    # the SleepThread in 0x80590500's `while (nvnEventGetValue(e) != 1)` loop
-        present_events=(0x805904a0, 0x80590530),
-    ),
-    npad_players=1,                 # Ocarina reads Npad No.1 alone, with every device merged into it
-    account_users=1,                # one user, "Player": the one there always was
-    notes="The game this engine was retargeted to; every value here was measured on its dump.",
-)
+def from_pack(pack):
+    """A profile from a game pack's manifest (packs/<key>/pack.json, loaded and checked by nx2/packs.py): its identity
+    and its one build, and its profile and lift data, hex strings as numbers where the C view wants numbers. The
+    program key prefixes (upscale taau, network_keep) stay strings, as the renderer takes them."""
+    b, prof, lift, h = pack["builds"][0], pack["profile"], pack["lift"], packs.hex_int
+    gfx, up, hooks = prof["gfx"], prof["upscale"], prof["hooks"]
+    return Profile(
+        key=pack["key"],
+        game=pack["name"],
+        program_id=pack["program_id"],
+        version=b["version"],
+        build_id=b["build_id"],
+        main_base=h(b["main_base"]),
+        patch_modules=lift["patch_modules"],
+        code_patch_module=lift["code_patch_module"],
+        gfx=Gfx(frame_limiter=h(gfx["frame_limiter"]), nominal_fps=h(gfx["nominal_fps"]), vrr_mode=h(gfx["vrr_mode"]),
+                vrr_gate=h(gfx["vrr_gate"]), controller=h(gfx["controller"]),
+                controller_words=tuple(h(v) for v in gfx["controller_words"]),
+                controller_rate_words=tuple(h(v) for v in gfx["controller_rate_words"])),
+        upscale=Upscale(taau=tuple(up["taau"]), gameplay=tuple(h(v) for v in up["gameplay"]),
+                        network_keep=tuple(up["network_keep"])),
+        hooks=Hooks(gfx_clock=h(hooks["gfx_clock"]), present_poll=h(hooks["present_poll"]),
+                    present_events=tuple(h(v) for v in hooks["present_events"])),
+        npad_players=prof["npad_players"],
+        account_users=prof["account_users"],
+        video_catchup=prof["video_catchup"],
+        vk_parallel=prof["vk_parallel"],
+        released=pack["released"],
+        graphics_scale=prof["graphics_scale"],
+        version_name=b["version_name"],
+        notes=prof["notes"],
+        romfs_needed=tuple((tuple(names), kind) for names, kind in prof["romfs_needed"]),
+    )
 
-DKB = Profile(
-    key="dkb",
-    game="Donkey Kong Bananza",
-    # Measured on the dump (Donkey Kong Bananza.nup: base v0, update v458752 = 3.2.0, add-on content 040074a01bf13001):
-    # nx2/dump.py reported the program id and main's build id (sdk 18265dae..., SDK and NVN 20.5.19, no subsdk modules),
-    # nx2/nup.py the update's version, and nx2/lift.py's image line put main at 0x80020000. Its ExeFS is byte-identical
-    # to dkb-pc-recomp's dkb458752 target, whose 3.2.0 addresses therefore apply to this lift unchanged.
-    program_id="040074A01BF12000",
-    version=458752,
-    version_name="3.2.0",
-    build_id="e25c90c1c136638885659fd55bf8a03b3403489d",
-    main_base=0x80020000,
-    # Empty on purpose until measured, as a number that looks right is worse than none: patch modules (none needed to
-    # play the tunnel), gfx (the frame limiter: HOS_FPS_LOG once its module is known), upscale (program keys, from
-    # RX_VK_SHADER_CENSUS), hooks (gfx_clock: HOS_TICK_LOG lists GetSystemTick's callers).
-    npad_players=1,
-    account_users=1,
-    # The guide movies' player counts every picture it submitted: one the catch-up skips is never handed back, and the
-    # player aborts at its loop's flush (main+0xe1ada0 from 0x8189b900; with skips, after 1-2 loops).
-    video_catchup=False,
-    # In the release: its own tile in RecompLauncher (recomplauncher.json games[]), its own copy asked for (inputs[]),
-    # which the builder checks against this profile's build id (make_game.py --game-<key>)
-    released=True,
-    # Bananza sizes its render targets by GetCurrentGraphicsScale's enum (main 0x8033e9b4 / 0x80569324 keep it as a mode
-    # byte, 0x803ad180 / 0x805695d0 index a float table {3, 12, 16} with it): with the host's 1 it drew at 80% of its
-    # 2880x1620 (2304x1296; scenes 1536x864 / 1676x943), with 0 at the full size (2880x1620; 1920x1080 / 2095x1179)
-    graphics_scale=0,
-    notes="Identity measured on the dump; movie catch-up off (the guide player counts every picture).",
-)
 
-MKW = Profile(
-    key="mkw",
-    game="Mario Kart World",
-    # Measured on the dump (Mario Kart World [0400C3F00006E000][v0].nup, base v0 = 1.0.0, no update): nx2/make_game.py
-    # --check reported the program id and main's build id, and nx2/lift.py's image line put main at 0x80020000. The same
-    # build id and RomFS count (205,660 files) are mkw-recomp's 1.0.0 row (adriadam10/mkw-recomp@5ff4fbb,
-    # recomp/versions.py, MIT, Copyright (c) 2026 Adria). 1.8.0 (main d00e4f39...) is another executable, with other
-    # addresses: not this profile's. See docs/mario-kart-world.md.
-    program_id="0400C3F00006E000",
-    version=0,
-    version_name="1.0.0",
-    build_id="9e244438c3d8ef1c703a6a85ef99c4f000000000",
-    main_base=0x80020000,
-    # Empty on purpose until measured: patch modules (a widescreen, lens or jitter patch is a new module), gfx (the
-    # frame limiter), hooks (gfx_clock, the present poll), upscale (program keys, from RX_VK_SHADER_CENSUS), and
-    # graphics_scale (what the game makes of oe::GetCurrentGraphicsScale is not read yet).
-    npad_players=1,
-    account_users=1,
-    # The parallel replay on 4 threads: this game records most of a race frame in one command buffer. Measured on one
-    # RTX 5060 Ti (Linux, NVIDIA 615.71.09, i5-13600K) in a Mushroom Cup race, on/off/off/on twice: the median 1.5-5 fps
-    # up, the minimum up to 6, the replay ~2 ms shorter and its thread half as busy (#55). Not measured elsewhere;
-    # Ocarina loses a fifth with it (docs/performance.md). RX_VK_PARALLEL=0 turns it off.
-    vk_parallel=4,
-    # In the release: its own tile in RecompLauncher (recomplauncher.json games[]), its own copy asked for (inputs[]),
-    # which the builder checks against this profile's build id (make_game.py --game-<key>)
-    released=True,
-    notes="Identity measured on the dump; the parallel replay on 4 threads (measured in a race).",
-)
+# Each game's profile is its pack's (packs/<key>/pack.json): the values, and the comments that say where each was
+# measured, are there. Every value was measured on that game's dump; Ocarina's were checked by running it.
+PACKS = packs.tree()
+_PACK_PROFILES = [from_pack(m) for m in PACKS.values()]
 
 # The profile for a dump whose build no profile knows: nothing patched, nothing hooked, one player.
 NONE = Profile(key="none", game="an unknown game",
                notes="No profile knows this build: lifted without patches, and the runtime recognises nothing in it.")
 
-GAMES = collections.OrderedDict((p.key, p) for p in (OOT, DKB, MKW, NONE))
+GAMES = collections.OrderedDict((p.key, p) for p in _PACK_PROFILES + [NONE])
+# (by name, for the checks that look at one game's values)
+OOT, DKB, MKW = GAMES.get("oot"), GAMES.get("dkb"), GAMES.get("mkw")
 
 # Ocarina stays the default where there is no dump to go by (the committed header, the game-free checks), because it
-# is the only game whose values have been measured and checked by running it.
-DEFAULT = "oot"
+# is the only game whose values have been measured and checked by running it. It is nx2/packs.py's (the lock's, b1).
+DEFAULT = packs.DEFAULT
 
 
 def for_build(build_id):
@@ -306,13 +254,16 @@ def _init(fmt, values):
 
 
 def saves_dir(profile):
-    """The saves' folder name under $XDG_DATA_HOME on Linux: Ocarina's "hookshot", where its players' saves have always
-    been; any other game's "hookshot-<key>". The save folder holds save/<user id>/ with the game's own files in it and
+    """The saves' folder name under $XDG_DATA_HOME on Linux: the pack's saves_dir where it has one (Ocarina's "hookshot",
+    where its players' saves have always been); any other game's "hookshot-<key>". The save folder holds save/<user id>/ with the game's own files in it and
     nothing that says which game wrote them, so two games sharing one would read, and overwrite, each other's
     (DK Bananza fork, 4f417fd7)."""
-    return "hookshot" if profile.key == "oot" else "hookshot-" + profile.key
+    pack = PACKS.get(profile.key) or {}
+    return pack.get("saves_dir") or "hookshot-" + profile.key   # (a pack's saves_dir: Ocarina's legacy folder)
 
 
+# (the header's first lines still say to edit this file: a game's values are its pack.json now, but changing the
+# wording would change every header's bytes, and so every runtime, for nothing. docs/game-packs.md a1 keeps them)
 def emit_header(profile=None):
     p = GAMES[DEFAULT] if profile is None else profile
     out = []
