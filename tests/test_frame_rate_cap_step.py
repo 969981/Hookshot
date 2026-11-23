@@ -1,7 +1,7 @@
 """A Frame rate cap above 60 steps the game by the frames' own time, so the game is not sped up.
 
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
-rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
+rate raised, every frame above 60 fps still stepped 1/60 s. packs/oot/lift/oot_patches.py puts the host's measured frame time
 (hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
 60 or is 30 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
 1 ms, so the game keeps real time past 240 fps. The row applies in play (HOS_OPT_FPS_CAP): a cap brought down gives the game
@@ -24,6 +24,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)

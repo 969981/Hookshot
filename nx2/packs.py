@@ -1,9 +1,16 @@
 """Game packs: each game's identity and profile data as a manifest, packs/<key>/pack.json, that the engine reads without
 running any of the game's code (docs/game-packs.md).
 
-This is step a1 of that design: the packs are the tree's own (packs/*/pack.json), and this module only loads and checks
-them. nx2/game_profile.py builds its profiles (GAMES) from what it returns, so a pack's data is the one copy of a game's
-profile. Fetching, pinning and the cache (packs.lock.json, sync, path, verify) are step b1.
+The packs are the tree's own (packs/<key>/), and this module only loads and checks them (steps a1 and a2 of that design).
+nx2/game_profile.py builds its profiles (GAMES) from what it returns, so a pack's data is the one copy of a game's profile.
+Beside its pack.json a pack holds, as section 2.1 lays it out:
+
+    lift/      the Python the lifter imports: the lift patch modules and the code patch module its "lift" names
+               (game_profile.load_module looks there)
+    tools/     what its build_steps run: "prompts" runs tools/prompt_assets.py
+    assets/    data the build ships: "pipeline_states" merges assets/pipeline_states/ into the folder's shipped list
+
+Fetching, pinning and the cache (packs.lock.json, sync, path, verify) are step b1.
 
 A manifest is refused, with the file and the field named, when it is not what format 1 says (FIELDS below): a field
 missing, one this format does not know (a typo is an error, not a field quietly ignored), a value of the wrong kind, or
@@ -26,7 +33,7 @@ FORMAT = 1
 # The engine/pack interface (docs/game-packs.md section 4): a pack's "api" says the major it was written for and the
 # least minor it needs. During the migration the major is 0, where any minor may break, so a 0.x pack needs this minor
 # exactly; from 1.0 a pack works with any engine of its major whose minor is at least its own.
-NX2PC_PACK_API = (0, 1)
+NX2PC_PACK_API = (0, 2)   # (0.2: lift/, tools/ and assets/ are read from the pack, build_steps run)
 
 # Until packs.lock.json (b1) holds them: the profile order (make_game.py's known builds, --library, the launcher's
 # tiles) and the default game, whose folder takes no suffix (game_profile.DEFAULT, builder/setup/setup.c
@@ -55,9 +62,17 @@ SEMVER = re.compile(r"\d+\.\d+\.\d+")
 RANGE = re.compile(r">=\d+\.\d+\.\d+")
 MODULE = re.compile(r"[a-z_][a-z0-9_]*")            # a Python module name the lifter imports
 ENV_PREFIX = re.compile(r"[A-Z][A-Z0-9]*_")
-NAME = re.compile(r"[a-z][a-z0-9_]*")               # a feature or a build step
+NAME = re.compile(r"[a-z][a-z0-9_]*")               # a feature
 SAVES = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 LICENSES = ("GPL-3.0-or-later",)
+# The optional steps of nx2/make_game.py a pack takes part in (pack.json build_steps): the button prompts of other
+# controllers, drawn by the pack's tools/prompt_assets.py, and the pipeline state list made from its assets/pipeline_states/
+BUILD_STEPS = ("prompts", "pipeline_states")
+# A pack's folders the engine reads (section 2.1)
+LIFT_DIR, TOOLS_DIR, ASSETS_DIR = "lift", "tools", "assets"
+# The fields of a manifest that the lift does not read: the lift's cache key takes the rest (lift_view), so an edit to these
+# (a comment, a menu feature, a build step) does not translate the game again
+NOT_LIFTED = ("comments", "features", "host", "build_steps", "short_name", "license", "nx2pc")
 
 BUILD = (("build_id", ("re", BUILD_ID), True), ("version", ("int", 0, None), True), ("version_name", "str", True),
          ("main_base", ("re", HEX), True))
@@ -80,7 +95,7 @@ FIELDS = (("format", ("int", 1, 1), True), ("key", ("re", KEY), True), ("name", 
           ("nx2pc", ("re", RANGE), False), ("released", "bool", True), ("program_id", ("re", PROGRAM_ID), True),
           ("builds", ("builds",), True), ("profile", ("object", PROFILE), True), ("lift", ("object", LIFT), True),
           ("host", ("list", "str"), False), ("features", ("list", ("re", NAME)), False),
-          ("build_steps", ("list", ("re", NAME)), False), ("saves_dir", ("re", SAVES), False),
+          ("build_steps", ("list", ("one", BUILD_STEPS)), False), ("saves_dir", ("re", SAVES), False),
           ("license", ("one", LICENSES), True), ("comments", ("comments",), False))
 
 
@@ -102,7 +117,11 @@ def _kind_name(kind):
         return "a whole number %s%s" % (span, " or null" if tag == "int?" else "")
     if tag == "list":
         item = kind[1]
-        return "a list of " + ("non-empty strings" if item == "str" else "strings like %s" % item[1].pattern)
+        if item == "str":
+            return "a list of non-empty strings"
+        if item[0] == "one":
+            return "a list of %s" % ", ".join(item[1])
+        return "a list of strings like %s" % item[1].pattern
     if tag == "one":
         return "one of %s" % ", ".join(kind[1])
     if tag == "object":
@@ -280,6 +299,17 @@ def tree(root=PACKS_DIR, order=TREE_ORDER):
             if other != k:
                 raise PackError("packs/%s and packs/%s both name build %s" % (other, k, b["build_id"]))
     return packs
+
+
+def folder(key, name, root=PACKS_DIR):
+    """A pack's folder (LIFT_DIR, TOOLS_DIR or ASSETS_DIR): packs/<key>/<name>, there or not"""
+    return os.path.join(root, key, name)
+
+
+def lift_view(manifest):
+    """What of a manifest the lift reads, as the bytes its cache key hashes: every field but NOT_LIFTED, as sorted JSON"""
+    view = {k: v for k, v in manifest.items() if k not in NOT_LIFTED}
+    return json.dumps(view, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def hex_int(s):

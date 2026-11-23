@@ -3,7 +3,7 @@
 Hookshot and the emulators and ports that run the Switch 2 Ocarina of Time on a PC all keep the game's saves as the
 **same files**. You can carry on in Hookshot from a save made in Lichii (or Eglantine, Orchid, NX2navi, ...), or take
 your Hookshot save to one of them, at the same spot: nothing is converted, the files are copied across.
-`scripts/oot_saves.py` finds the folders and does the copy safely.
+`packs/oot/tools/oot_saves.py` finds the folders and does the copy safely.
 
 You need your own copy of the game. Nothing here
 comes with game files.
@@ -59,15 +59,15 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 
 ## Copy with the script
 
-`scripts/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after
+`packs/oot/tools/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after
 backing up the side it overwrites. From the Hookshot folder (or a clone):
 
 ```sh
-python -I scripts/oot_saves.py list              # every save it finds, its slots and when each was saved
-python -I scripts/oot_saves.py import lichii     # Lichii -> Hookshot
-python -I scripts/oot_saves.py export lichii     # Hookshot -> Lichii
-python -I scripts/oot_saves.py import --from ~/Downloads/my-save   # any folder holding a save -> Hookshot
-python -I scripts/oot_saves.py export --to ~/Lichii/user           # Hookshot -> a portable emulator
+python -I packs/oot/tools/oot_saves.py list              # every save it finds, its slots and when each was saved
+python -I packs/oot/tools/oot_saves.py import lichii     # Lichii -> Hookshot
+python -I packs/oot/tools/oot_saves.py export lichii     # Hookshot -> Lichii
+python -I packs/oot/tools/oot_saves.py import --from ~/Downloads/my-save   # any folder holding a save -> Hookshot
+python -I packs/oot/tools/oot_saves.py export --to ~/Lichii/user           # Hookshot -> a portable emulator
 ```
 
 The names are `lichii`, `frizti` (or `fritchii`), `orchid`, `pokedinner`, `eden`, `eglantine` and `nx2navi`.
@@ -76,8 +76,8 @@ The names are `lichii`, `frizti` (or `fritchii`), `orchid`, `pokedinner`, `eden`
 On Windows Hookshot's folder is your game folder, which the script cannot guess, so name it:
 
 ```powershell
-python -I scripts\oot_saves.py import lichii --hookshot "C:\Games\Hookshot"
-python -I scripts\oot_saves.py export nx2navi --hookshot "C:\Games\Hookshot"
+python -I packs\oot\tools\oot_saves.py import lichii --hookshot "C:\Games\Hookshot"
+python -I packs\oot\tools\oot_saves.py export nx2navi --hookshot "C:\Games\Hookshot"
 ```
 
 | Option | What it does |

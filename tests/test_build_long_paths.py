@@ -48,6 +48,8 @@ TREE = {
 DEEP_OBJ = "vk_eden_shader_recompiler_backend_spirv_emit_spirv_bitwise_conversion.o"
 # the scripts the build runs (nx2/make_game.py and the steps it starts), each to install nx2/long_paths.py as it loads
 ENTRY_SCRIPTS = ("make_game", "build", "lift", "nup", "unpack", "split_hot", "shader_census", "prompt_assets")
+# (in nx2/, or a game pack's tools/: Ocarina's prompts step runs packs/oot/tools/prompt_assets.py)
+SCRIPT_DIRS = (ROOT / "nx2", ROOT / "packs" / "oot" / "tools")
 
 
 def ext(p):
@@ -197,7 +199,7 @@ class EntryScripts(unittest.TestCase):
         make(os.path.dirname(deep), {os.path.basename(deep): "deep\n"})
         for name in ENTRY_SCRIPTS:
             with self.subTest(name):
-                script = str(ROOT / "nx2" / (name + ".py"))
+                script = str(next(d / (name + ".py") for d in SCRIPT_DIRS if (d / (name + ".py")).is_file()))
                 code = ("import importlib.util, os, sys\n"
                         "s = importlib.util.spec_from_file_location('entry', %r)\n"
                         "m = importlib.util.module_from_spec(s)\n"
@@ -208,8 +210,8 @@ class EntryScripts(unittest.TestCase):
                 r = subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True, text=True, timeout=120,
                                    cwd=str(ROOT))
                 lines = r.stdout.strip().splitlines()
-                self.assertEqual(lines[-1:], ["READ"], "nx2/%s.py, loaded, can't read a %d-character path: %s %s" % (
-                    name, len(deep), r.stdout[-300:], r.stderr[-600:]))
+                self.assertEqual(lines[-1:], ["READ"], "%s, loaded, can't read a %d-character path: %s %s" % (
+                    os.path.relpath(script, ROOT), len(deep), r.stdout[-300:], r.stderr[-600:]))
 
 
 if __name__ == "__main__":

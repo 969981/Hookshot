@@ -1,6 +1,6 @@
 """With HDR set to Native and the PsychoV35 tone mapper the game's scene buffer is RGBA16F, not R11G11B10F; otherwise the game picks it as shipped.
 
-nx2/oot_patches.py makes f_80672260's R11G11B10F choice (26) RGBA16F (44) while hos_scene_rgba16f is set, which host/nn_vi.c
+packs/oot/lift/oot_patches.py makes f_80672260's R11G11B10F choice (26) RGBA16F (44) while hos_scene_rgba16f is set, which host/nn_vi.c
 sets from the tone mapper row (HOS_OPT_HDR_TONEMAP: Native HDR with PsychoV35) at each present. The function is found by name alone, so only the supported build's
 lift is patched, and a lift patched again is patched once. The lifted text here is made up in the lift's shape, not the game's.
 
@@ -18,6 +18,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402

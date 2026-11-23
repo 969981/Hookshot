@@ -1,4 +1,4 @@
-"""The pipeline state list a release ships (merged from the sources in assets/pipeline_states/): the repository's sources read, and
+"""The pipeline state list a release ships (merged from the sources in packs/oot/assets/pipeline_states/): the repository's sources read, and
 every release path carries them. v2.0.8 to v2.0.14 shipped none (their app parts' tools/work and the Linux tools part's work/ held only the play
 profile), and a new install's first field load was drawn white for seconds while its pipelines compiled in play.
 
@@ -57,7 +57,7 @@ class ShippedList(unittest.TestCase):
         self.tool.write_note(str(c / "someone.md"), "someone", {k: "x" for k in self.tool.FIELDS}, [b""] * n)
 
     def test_committed_sources_read(self):
-        self.assertTrue(self.src.is_dir(), "assets/pipeline_states/ is not in the repository")
+        self.assertTrue(self.src.is_dir(), "packs/oot/assets/pipeline_states/ is not in the repository")
         paths = self.tool.sources(str(self.src))
         self.assertTrue(paths)
         for p in paths:
@@ -68,24 +68,24 @@ class ShippedList(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "the AppImage is made on Linux")
     def test_appimage_carries_it(self):
         script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
-        self.assertRegex(script, r"\ncp -a [^\n]*\bassets\b[^\n]*\"\$T/\"\n", "the AppImage no longer carries assets/")
-        start = script.index("# (the pipeline state list's sources, assets/pipeline_states/")
-        end = script.index("\n", script.index("holds no pipeline state list", start)) + 1
+        self.assertRegex(script, r"\ncp -a [^\n]*\bpacks\b[^\n]*\"\$T/\"\n", "the AppImage no longer carries packs/")
+        start = script.index("# (the pipeline state list's sources, a game pack's assets/pipeline_states/")
+        end = script.index("\n", script.index("hold no pipeline state list", start)) + 1
         block = script[start:end]
 
         def run(with_list):
             out = self.tmp / ("tree-%d" % with_list)
-            (out / "assets").mkdir(parents=True)
+            (out / "packs").mkdir(parents=True)
             if with_list:
-                shutil.copytree(self.src, out.joinpath("assets", "pipeline_states"))
+                shutil.copytree(self.src, out.joinpath(*self.tool.SOURCES))
             return subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", block], cwd=self.tmp, env=dict(os.environ, T=str(out)),
                                   capture_output=True, text=True)
 
         r = run(True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = run(False)
-        self.assertNotEqual(r.returncode, 0, "appimage.sh went on without assets/pipeline_states/")
-        self.assertIn("holds no pipeline state list", r.stdout + r.stderr)
+        self.assertNotEqual(r.returncode, 0, "appimage.sh went on without packs/oot/assets/pipeline_states/")
+        self.assertIn("hold no pipeline state list", r.stdout + r.stderr)
 
     def release_parts(self, data):
         """release_parts.py with its ROOT a small checkout: nx2/pipeline_states.py and, when data, a source of the shipped list"""
@@ -93,6 +93,10 @@ class ShippedList(unittest.TestCase):
         (root / "nx2").mkdir(parents=True)
         (root / "assets").mkdir()
         shutil.copy(ROOT / "nx2" / "pipeline_states.py", root / "nx2")
+        shutil.copy(ROOT / "nx2" / "packs.py", root / "nx2")   # (which packs ship a list: their pack.json build_steps)
+        for manifest in sorted((ROOT / "packs").glob("*/pack.json")):
+            (root / "packs" / manifest.parent.name).mkdir(parents=True)
+            shutil.copy(manifest, root / "packs" / manifest.parent.name)
         (root / "LICENSE").write_text("license")
         if data is not None:
             self.fake_sources(root.joinpath(*self.tool.SOURCES), data)
@@ -124,8 +128,28 @@ class ShippedList(unittest.TestCase):
         make_game.ROOT = str(out / "tools")
         game = self.tmp / "game"
         game.mkdir()
-        make_game.ship_state_list(str(game))
+        make_game.ship_state_list(str(game), make_game.game_profile.GAMES["oot"])
         self.assertEqual(len(self.tool.read(str(game / "hookshot_pipeline_states_shipped.bin"))), 3)
+
+    def test_only_the_games_whose_pack_ships_one_get_it(self):
+        """Ocarina's pack names the pipeline_states build step, so its folder gets the list it always got; Mario Kart World's and
+        Donkey Kong Bananza's do not, so theirs get none, and the one an earlier build put there (Ocarina's pipelines, copied into
+        every game's folder before the packs) is removed"""
+        make_game = load("make_game_steps", ROOT / "nx2" / "make_game.py")
+        games = make_game.game_profile.GAMES
+        self.assertEqual([k for k in games if self.tool.STEP in make_game.game_profile.build_steps(games[k])], ["oot"])
+        want = self.tool.pack(self.tool.merged(str(self.src), strict=False))
+        for key in ("oot", "mkw", "dkb"):
+            with self.subTest(key):
+                folder = self.tmp / ("game-" + key)
+                folder.mkdir()
+                stale = folder / "hookshot_pipeline_states_shipped.bin"
+                stale.write_bytes(b"an earlier build's list")
+                make_game.ship_state_list(str(folder), games[key])
+                if key == "oot":
+                    self.assertEqual(stale.read_bytes(), want, "Ocarina's folder does not get the list merged from its pack")
+                else:
+                    self.assertFalse(stale.exists(), "%s's folder keeps Ocarina's pipeline state list" % key)
 
     def test_windows_package_stops_without_it(self):
         damaged = self.fake_list(3)

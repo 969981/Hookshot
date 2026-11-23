@@ -1,4 +1,4 @@
-"""nx2/oot_patches.py makes the game's note-wait action (ExecuteWaitOcarinaInputCommon: start f_828a9190, tick
+"""packs/oot/lift/oot_patches.py makes the game's note-wait action (ExecuteWaitOcarinaInputCommon: start f_828a9190, tick
 f_828a9280) report itself to the host (hos_oc_wait / hos_oc_last_kind in host/nn_hid.c, for the ocarina's five note
 controls). The start decides from the input kind, every running tick re-arms (the input resets between note windows
 keep the action running), and the not-running branch, the input-reset branch and the done store clear it. The tick's
@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 # (the shape of the two lifted functions, build e0f3ccfa: entry with the mode load, tick with its running gate, its

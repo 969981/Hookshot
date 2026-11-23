@@ -73,7 +73,7 @@ includes `vk_work.h` and puts `rec::boundary(B_DIRECT)` right before the call an
 
 | | Where | What it is |
 |---|---|---|
-| `resolution` | `gpu/vk/vk_menu.h`, `nx2/oot_patches.py` | The 3D scale: Auto (the game's dynamic resolution), or 100/75/67/50% of full |
+| `resolution` | `gpu/vk/vk_menu.h`, `packs/oot/lift/oot_patches.py` | The 3D scale: Auto (the game's dynamic resolution), or 100/75/67/50% of full |
 | `upscale` | `gpu/vk/vk_menu.h`, `framegen_scale` | A spatial filter on the finished window image: off, Catmull-Rom, Lanczos |
 | Frame generation | `gpu/vk/vk_framegen.cpp` | Image-space interpolation: quarter-size luma, 16x16 block matching within +-32 px, a 3x3 median, then a forward/backward blend per made frame |
 | The game's own upscaler | `taau_stand_in`, `gpu/vk/vk_draw.cpp` | OoT evaluates a neural TAAU network (program `fd029a317a9a4b94`). Where the device has no hardware f16 matrix multiply (or with `RX_VK_NO_F16`), a compute stand-in replaces it, because the translated network loses the blue channel and casts the scene yellow; elsewhere the network itself runs. `RX_VK_TAAU_KEYS` overrides either way |
@@ -170,7 +170,7 @@ ordered replay, never from live guest memory.
 
 FSR's `device_to_view_depth` and `tan_half_fov` want the near plane and the vertical field of view,
 and camera-derived motion wants the view-projection. Both are available: sead's perspective
-projection object carries them, and its matrix update is already a patch site (`nx2/oot_wide.py`,
+projection object carries them, and its matrix update is already a patch site (`packs/oot/lift/oot_wide.py`,
 main+`0x3485cc0`, which is the whole function `f_834a5cc0`).
 
 Reading that function's lifted C gives the layout, each offset from what the code does with it
@@ -466,7 +466,7 @@ looking at:
 
 ## The jitter, and why the renderer supplies it
 
-> **Superseded.** The viewport jitter below is gone. #841's jitter (`nx2/oot_jitter.py`) offsets the projection where the
+> **Superseded.** The viewport jitter below is gone. #841's jitter (`packs/oot/lift/oot_jitter.py`) offsets the projection where the
 > game writes it, for every view of the picture's ratio, and costs nothing per draw; DLSS and both FSRs use it.
 
 Neither upscaler had one, and there is none to extract. `capture_view_projection` refuses any

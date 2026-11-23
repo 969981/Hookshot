@@ -1,6 +1,6 @@
 """The Insert menu's Text size scales the text of dialogue, Navi and signs, and only when the player asks for it.
 
-nx2/oot_patches.py calls hos_oot_text_pane (host/oot_text_size.c) from f_80b1e140, a LetterAnimControl's step, with the
+packs/oot/lift/oot_patches.py calls hos_oot_text_pane (host/oot_text_size.c) from f_80b1e140, a LetterAnimControl's step, with the
 control in x19. The host scales the 2D scale of the control's pane wrapper (+0x28 x, +0x38 y) by the menu's choice, from the
 game's own value: never twice, again from the game's value whenever the game writes it, and back to it at Original.
 
@@ -17,6 +17,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 # (the host file with a guest memory of its own: a flat buffer from BASE, and the menu's choice in a variable)

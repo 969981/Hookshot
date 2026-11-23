@@ -1,5 +1,5 @@
 """Game counters that add the frame step, or the step times a whole number, cut to whole frames keep counting above 60 fps
-(host/frame_whole.h, nx2/oot_patches.py patch_whole_frames).
+(host/frame_whole.h, packs/oot/lift/oot_patches.py patch_whole_frames).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
 when they meet; the time of day (f_803edf70) adds (int)(2 * step) game seconds a frame. Under a Frame rate cap above 60 the step is
@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 FIXTURE = r"""

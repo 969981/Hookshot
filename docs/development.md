@@ -140,7 +140,7 @@ its submission is done, as before. Elsewhere the pool is read, as before: an iGP
 the copies' GPU time would cost frames, and other drivers' pool reads were not measured. `RX_VK_OCC_COPY=1` copies on
 any GPU, `RX_VK_OCC_COPY=0` reads from the pool; a device without coherent host memory and the parallel replay
 (`RX_VK_PARALLEL`) read from the pool.
-`HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
+`HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`packs/oot/lift/oot_occlusion.py`).
 
 A CPU read of GPU results waits for the write-back of the submission that writes them (`invalidate`, `vk_replay.cpp`).
 `RX_VK_READBACK_LATE=<rule>[,<rule>...]` names the ranges read without that wait, which then hold the frame before's
@@ -629,13 +629,13 @@ For numbers, compare the runtime with one made by `rt` from no pack: same base, 
 
 ## The pipeline state list
 
-Every release ships a list of pipelines, merged from the sources in `assets/pipeline_states/`:
+Every release ships a list of pipelines, merged from the sources in `packs/oot/assets/pipeline_states/`:
 
 - `tour.bin.xz`, which only the pipeline tour (`scripts/pipeline_tour.py`) writes, replaced whole each time;
 - `contrib/<name>.bin.xz`, one per contributed list, which people add.
 
 Each has a note beside it (`<name>.md`) that says who recorded it, on what GPU, driver, build and settings, and the
-route. [`assets/pipeline_states/README.md`](../assets/pipeline_states/README.md) has how to record and add a list. Each
+route. [`packs/oot/assets/pipeline_states/README.md`](../assets/pipeline_states/README.md) has how to record and add a list. Each
 record is a pipeline the game asked for: its shaders' hashes, the program variant's hash, and the target formats,
 vertex formats and draw state it was made with (`nx2/pipeline_states.py` has the layout). It holds no game code: a
 player's build turns the hashes back into shaders from their own `hookshot_shaders.bin`.
@@ -654,7 +654,9 @@ start as well; `learned` leaves the shipped list's out, to compare; `all` keeps 
 keeps none. The game keeps every compute program a shipped list names and never drops one: the bound is
 `pipeline_states.py check`, which stops on a merged list that names more than `COMPUTE_MOST`, for someone to decide.
 
-`nx2/make_game.py` merges the sources at every build into the game folder's `hookshot_pipeline_states_shipped.bin`. It
+`nx2/make_game.py` merges the sources at every build into the game folder's `hookshot_pipeline_states_shipped.bin`, for a
+game whose pack's `build_steps` name `pipeline_states` (Ocarina's: the list is its pipelines, and another game's folder
+no longer gets it; one built before keeps none). It
 takes the tour's list first, then the contributed ones by name, and keeps each pipeline once. The same sources always
 give the same bytes, and the first start's shader preparation builds those pipelines before the title. Without them a
 new install builds them in play, and draws left out while they compile wash the first field load white for seconds
@@ -663,10 +665,10 @@ history stays small. The current ones hold 11527 pipelines in about 175 KB.
 
 Every release carries them:
 
-- the AppImage with `assets/`: `scripts/linux/appimage.sh` stops without them, and `scripts/linux/check_player_build.sh`
+- the AppImage with `packs/`: `scripts/linux/appimage.sh` stops without them, and `scripts/linux/check_player_build.sh`
   checks them with the image's Python;
-- the Windows builder's `tools/assets/pipeline_states`: `scripts/release_parts.py package` stops when there are none or
-  one does not read.
+- the Windows builder's `tools/packs/oot/assets/pipeline_states`: `scripts/release_parts.py package` stops when there are
+  none or one does not read.
 
 xz rather than zstd: the AppImage's Python is 3.12, whose standard library has `lzma` but not `compression.zstd`.
 
@@ -745,12 +747,12 @@ through (inputs timed in frames, screenshots, waits for the game's state, the In
 |---|---|
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run. Every script the build runs calls `long_paths.install()` as it loads, so its file calls take paths past Windows' 260 characters (a Builder, work folder or game folder deep in the file system, #1115); a new one does too, and joins `ENTRY_SCRIPTS` in `tests/test_build_long_paths.py` |
-| `packs/` | the game packs in the tree: each game's `pack.json` (below) |
+| `packs/` | the game packs in the tree: each game's `pack.json`, and Ocarina's patch modules, tools and pipeline lists (below) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
 | `builder/` | Hookshot Builder: the Windows app (.NET 8 WPF), its setup and MSI, and the Linux builder and launcher scripts |
-| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
+| `scripts/` | test runs, the profile and log readers, release tooling, `scripts/linux` (dependencies, AppImage) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (Hookshot's few changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
 
@@ -767,6 +769,19 @@ unknown or mistyped field is refused with the file and the field named; `python 
 `nx2/game_profile.py` builds `GAMES` from them, so a profile change is an edit to the pack.json, followed by
 `python -I nx2/game_profile.py --emit-header` when it is the default game's. `nx2/packs.py` also holds the profile order
 and the default game (Ocarina), which `builder/HookshotBuilder/Games.cs` and `builder/setup/setup.c` copy;
-`tests/test_game_packs.py` holds those copies, and every profile's values and headers, to the packs. Every pack.json is
-in the lift's cache key, as `game_profile.py` was. This is the first step of moving each game into its own repository:
-the format, the steps after this one and what a pack may carry are in [game packs](game-packs.md).
+`tests/test_game_packs.py` holds those copies, and every profile's values and headers, to the packs.
+
+A pack's code and data sit beside its manifest. Ocarina's:
+
+| Folder | What | Used by |
+|---|---|---|
+| `packs/oot/lift/` | the lift patch modules (`oot_wide`, `oot_fov`, `oot_jitter`, `oot_occlusion`) and the code patch module (`oot_patches`) its `lift` names | `game_profile.load_module`, which looks in the profile's pack |
+| `packs/oot/tools/` | the button prompts (`prompt_assets.py` and its faces) and the save copier (`oot_saves.py`) | the `prompts` build step; a person |
+| `packs/oot/assets/pipeline_states/` | the pipeline state list's sources | the `pipeline_states` build step |
+
+`build_steps` in pack.json say which of `make_game.py`'s optional steps a game takes part in: a game whose pack names
+none (Bananza, MKW) gets no prompts and no shipped pipeline list. The lift's cache key hashes every pack.json's lift
+fields (`packs.lift_view`: not its comments, features, host or build steps) and each pack's `lift/` file under the
+`nx2/` name it had before the packs, so moving a module into a pack does not translate anyone's game again; a pack's
+`lift.env_prefixes` (`OOT_`) join the engine's `A64_` and `RX_` in the key. Moving each game into its own repository
+goes on from here: the format, the steps after this one and what a pack may carry are in [game packs](game-packs.md).

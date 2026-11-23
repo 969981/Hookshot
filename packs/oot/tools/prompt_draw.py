@@ -1,13 +1,13 @@
 """(hookshot) Each face's controller for the pause menu's controls page, drawn like the game's Pro Controller (Controller_Pro: flat
-greys, a black outline), at the build from the user's RomFS: nx2/prompt_assets.py calls picture(). Its look is the drawing in each
-face's entry of nx2/prompt_faces.py; a hand-made picture in nx2/prompt_faces/<face>/Controller_Pro.png takes its place.
+greys, a black outline), at the build from the user's RomFS: packs/oot/tools/prompt_assets.py calls picture(). Its look is the drawing in each
+face's entry of packs/oot/tools/prompt_faces.py; a hand-made picture in packs/oot/tools/prompt_faces/<face>/Controller_Pro.png takes its place.
 
 The body is the Kenney font's controller glyph (third_party/kenney_input; the Steam Deck: deck() below, Kenney's is a shorter one),
 filled, outlined and with its bumpers raised (they stop short of a touchpad); the sticks and the d-pad are the Pro Controller's own,
 scaled; the face and small buttons blank discs with the face's labels (the Home button's the game's own icon). All of it drawn SS
 times as large and scaled down: smooth edges.
 
-    python -I nx2/prompt_draw.py --romfs <dir> --out <dir>   (each face's picture as <face>.png, to look at)
+    python -I packs/oot/tools/prompt_draw.py --romfs <dir> --out <dir>   (each face's picture as <face>.png, to look at)
 """
 import os
 import sys
@@ -141,7 +141,7 @@ def picture(face, pro, game_icons):
 
 
 
-# ---- the keyboard face's keys (nx2/prompt_keys.py: which key shows which icon), into the game's font: Kenney's Keyboard & Mouse
+# ---- the keyboard face's keys (packs/oot/tools/prompt_keys.py: which key shows which icon), into the game's font: Kenney's Keyboard & Mouse
 # keys (third_party/kenney_input_keyboard), and the keys drawn here: the keys whose names are words as wider keys with the word
 # cut out, in the game's own bold font; the mouse's three buttons as a key with a mouse cut out of it and that button left white.
 # Every contour is apart from the others or inside one (none cross), so the icons fill the same by either winding rule.
@@ -265,7 +265,7 @@ def keyboard_glyphs(add, gset, cmap, chars, hmtx, label_otf, kset, draw):
     """the keyboard face's glyphs into the game's font (add(name, charstring, width): faces_font's; kset: Kenney's font's glyphs;
     draw(target, Kenney name, scale): that glyph in the box of the game's glyph target, its charstring and width; label_otf: the
     game's bold font, for the keys whose names are words): {code point: glyph name} for every key at KEY_BASE + its code and
-    the sticks at STICK_KEYS.. (nx2/prompt_keys.py), and each key's advance by its code (256 of them: 0 none)"""
+    the sticks at STICK_KEYS.. (packs/oot/tools/prompt_keys.py), and each key's advance by its code (256 of them: 0 none)"""
     import io
     from fontTools.pens.boundsPen import BoundsPen
     from fontTools.pens.recordingPen import RecordingPen

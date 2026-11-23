@@ -1,5 +1,6 @@
-"""The game packs in the tree (packs/<key>/pack.json, nx2/packs.py; docs/game-packs.md step a1) are each game's profile,
-and building the profiles from them changed nothing.
+"""The game packs in the tree (packs/<key>/, nx2/packs.py; docs/game-packs.md steps a1 and a2) are each game's profile, and
+Ocarina's hold its Python and its pipeline lists; building the profiles from them, and moving the code into them, changed
+nothing the lift writes.
 
 What this guards, and why each check is here rather than left to review:
 
@@ -18,6 +19,14 @@ What this guards, and why each check is here rather than left to review:
 5. **The Builders' copies:** builder/HookshotBuilder/Games.cs's table and DefaultKey, the Qt Builder's PROFILES and
    DEFAULT_KEY (builder/py/hookshot_builder/core.py) and builder/setup/setup.c's HOOKSHOT_DEFAULT_GAME are the packs'
    (also held by tests/test_builder_games.py and tests/test_launcher_games.py, which run their code).
+6. **Ocarina's modules moved without changing the lift's key for them (a2).** LIFT_A1 is each of its five lift modules'
+   name and sha1 as the key hashed them at main 9919310d (a1, in nx2/): the key now hashes packs/oot/lift/'s under those
+   names and bytes, in the same order (the names sorted). A pack.json is hashed by its lift fields only (packs.lift_view),
+   so a comment, a feature or a build step does not lift again, and a profile field does; the packs' env prefixes (OOT_)
+   join the key's.
+7. **The pack's folders are where the engine looks:** load_module finds a profile's modules in its pack's lift/, every
+   module name is one pack's alone and shadows none of nx2/ or a64-kit's; build_steps are the packs' (Ocarina's prompts
+   and pipeline list, none for Bananza and MKW), and an unknown step is refused.
 
     python -I -B tests/test_game_packs.py
 """
@@ -256,6 +265,7 @@ BAD = [
     (lambda: mutated("lift.env_prefixes", ["zz_"]), "lift.env_prefixes is"),
     (lambda: mutated("saves_dir", "../saves"), "saves_dir is"),
     (lambda: mutated("license", "MIT"), "license is \"MIT\""),
+    (lambda: mutated("build_steps", ["shaders"]), "build_steps is [\"shaders\"], not a list of prompts, pipeline_states"),
     (lambda: mutated("api", {"major": packs.NX2PC_PACK_API[0] + 1, "minor": 0}), "needs pack API"),
     (lambda: mutated("api.minor", packs.NX2PC_PACK_API[1] + 1), "needs pack API"),
     (lambda: mutated("api.minor", "1"), "api.minor is"),
@@ -373,6 +383,85 @@ def check_travels():
     check(str(ROOT / "nx2" / "packs.py") in sources, "the lift's key does not hash nx2/packs.py")
 
 
+# ---- Ocarina's code in its pack (a2) ----
+
+# Each of Ocarina's lift modules as the lift's key hashed it at a1 (main 9919310d, nx2/<name>): its name and its bytes' sha1
+LIFT_A1 = {
+    "nx2/oot_fov.py": "5a0e7d2798d058a06e0d33e111ec24b6a29dc9ea",
+    "nx2/oot_jitter.py": "50522fc8f94a43762d362c98626944486243b56c",
+    "nx2/oot_occlusion.py": "c3b9d80a430901dc724a201a4f31d2cf5e8a9b33",
+    "nx2/oot_patches.py": "de0255d394b59de7f1aba4773f71cad9fa9c8918",
+    "nx2/oot_wide.py": "79ba7a9d67e0985c7c005b1b4677e2a20a451ce4",
+}
+
+
+def check_lift_key():
+    import make_game
+    sources = make_game.lift_sources()
+    names = [make_game.lift_source_name(f) for f in sources]
+    check(names == sorted(names) and len(set(names)) == len(names),
+          "the lift's key does not hash its files in their names' order, each name once")
+    lift = ROOT / "packs" / "oot" / "lift"
+    for name, sha in LIFT_A1.items():
+        path = lift / name.split("/")[-1]
+        check(str(path) in sources, "the lift's key does not hash %s" % path.relative_to(ROOT))
+        check(make_game.lift_source_name(str(path)) == name, "%s is not hashed as %s" % (path.relative_to(ROOT), name))
+        check(make_game.lift_source_digest(str(path)).hex() == sha,
+              "%s is not hashed as the bytes %s had at a1: Ocarina's lift key would change" % (path.relative_to(ROOT), name))
+    check(not any(n.startswith("packs/oot/lift/") for n in names), "a pack's lift/ file is hashed under its new name")
+    check(not (ROOT / "nx2" / "oot_patches.py").exists(), "nx2/oot_patches.py is still there beside the pack's")
+    # (a pack.json: its lift fields only)
+    manifest = json.loads((ROOT / "packs" / "oot" / "pack.json").read_text(encoding="utf-8"))
+    view = packs.lift_view(manifest)
+    for field, value in (("comments", {}), ("build_steps", []), ("features", ["fov"]), ("host", ["host/*.c"])):
+        other = dict(manifest, **{field: value})
+        check(packs.lift_view(other) == view, "a change to pack.json's %s changes the lift's key" % field)
+    other = copy.deepcopy(manifest)
+    other["profile"]["gfx"]["frame_limiter"] = "0xfd"
+    check(packs.lift_view(other) != view, "a change to a profile field leaves the lift's key")
+    other = copy.deepcopy(manifest)
+    other["lift"]["patch_modules"] = other["lift"]["patch_modules"][:-1]
+    check(packs.lift_view(other) != view, "a change to the lift's modules leaves the lift's key")
+    check(make_game.lift_source_digest(str(ROOT / "packs" / "oot" / "pack.json")) ==
+          hashlib.sha1(view, usedforsecurity=False).digest(), "the key does not hash pack.json's lift view")
+    check(game_profile.env_prefixes() == ("OOT_",), "the packs' env prefixes are not Ocarina's OOT_: %r" % (game_profile.env_prefixes(),))
+    src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+    body = src[src.index("def lift_key("):src.index("def gen_print(")]
+    check('"OOT_"' not in body and "game_profile.env_prefixes()" in body, "lift_key names Ocarina's OOT_ itself")
+
+
+def check_pack_folders():
+    oot = game_profile.GAMES["oot"]
+    lift = ROOT / "packs" / "oot" / "lift"
+    for name in oot.patch_modules + (oot.code_patch_module,):
+        check(game_profile.module_dir(name, oot) == str(lift), "%s is not found in Ocarina's pack's lift/" % name)
+        check(game_profile.module_dir(name) == str(lift), "%s is not found in its pack without a profile" % name)
+        check(Path(game_profile.load_module(name, oot).__file__).resolve() == (lift / (name + ".py")).resolve(),
+              "load_module(%s) is not the pack's file" % name)
+    check(game_profile.module_dir("no_such_module") is None, "a module no pack holds has a folder")
+    check(game_profile.lift_dirs() == [str(lift)], "the packs' lift/ folders are not Ocarina's alone: %r" % game_profile.lift_dirs())
+    # (module names: one pack's each, and none of the engine's, which the lift's path also holds)
+    engine = {p.stem for d in (ROOT / "nx2", ROOT / "third_party" / "a64-kit" / "lift", ROOT / "third_party" / "a64-kit" / "tools",
+                               ROOT / "third_party" / "a64-kit" / "rt", ROOT / "third_party" / "a64-kit" / "hos") for p in d.glob("*.py")}
+    seen = {}
+    for d in game_profile.lift_dirs() + [str(p) for p in sorted((ROOT / "packs").glob("*/" + packs.TOOLS_DIR))]:
+        for p in Path(d).glob("*.py"):
+            check(p.stem not in engine, "%s has the name of an engine module" % p.relative_to(ROOT))
+            check(p.stem not in seen, "%s and %s share a module name" % (p.relative_to(ROOT), seen.get(p.stem)))
+            seen[p.stem] = p.relative_to(ROOT)
+    steps = {k: game_profile.build_steps(p) for k, p in game_profile.GAMES.items()}
+    check(steps == {"oot": ("prompts", "pipeline_states"), "dkb": (), "mkw": (), "none": ()},
+          "the build steps are not Ocarina's prompts and pipeline list alone: %r" % steps)
+    check(game_profile.pack_folder(oot, packs.TOOLS_DIR) == str(ROOT / "packs" / "oot" / "tools")
+          and (ROOT / "packs" / "oot" / "tools" / "prompt_assets.py").is_file(), "the prompts step's tool is not in Ocarina's pack")
+    check(game_profile.pack_folder(game_profile.GAMES["none"], packs.TOOLS_DIR) is None, "the empty profile has a pack folder")
+    import pipeline_states
+    check(pipeline_states.shipping_packs() == ["oot"] and Path(pipeline_states.sources_dir()) ==
+          ROOT / "packs" / "oot" / "assets" / "pipeline_states" and pipeline_states.sources(pipeline_states.sources_dir()),
+          "the pipeline lists are not Ocarina's pack's alone")
+    check(not (ROOT / "assets" / "pipeline_states").exists(), "assets/pipeline_states/ is still there beside the pack's")
+
+
 # ---- the Builders' copies ----
 
 def check_builders():
@@ -399,12 +488,15 @@ def main():
     check_schema()
     check_tree()
     check_travels()
+    check_lift_key()
+    check_pack_folders()
     check_builders()
     for f in FAILURES:
         print("FAIL: " + f)
     if FAILURES:
         sys.exit(1)
-    print("PASS: game packs: format 1 checked, the profiles and headers as before, packs/ shipped and in the lift key")
+    print("PASS: game packs: format 1 checked, the profiles and headers as before, packs/ shipped and in the lift key, Ocarina's "
+          "modules hashed as at a1, the packs' folders and build steps")
 
 
 if __name__ == "__main__":

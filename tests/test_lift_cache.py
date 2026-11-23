@@ -67,12 +67,12 @@ def main():
                 return f
             with mock.patch("builtins.open", edited):
                 check("a change to the translator changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
-            for name in ("nx2/whole_write.py", "nx2/oot_patches.py",
+            for name in ("nx2/whole_write.py", "packs/oot/lift/oot_patches.py",
                          "third_party/a64-kit/lift/a64_lift.py", "third_party/a64-kit/lift/a64emit.cpp"):
                 changed = str(ROOT / name)   # (imported by an import, in a function, or compiled when the lift starts)
                 with mock.patch("builtins.open", edited):
                     check("a change to %s changes the key" % name, make_game.lift_key(str(exefs), str(work), env) != key)
-            for name in ("nx2/build.py", "nx2/make_game.py", "nx2/pipeline_states.py", "nx2/prompt_assets.py", "nx2/shader_census.py"):
+            for name in ("nx2/build.py", "nx2/make_game.py", "nx2/pipeline_states.py", "packs/oot/tools/prompt_assets.py", "nx2/shader_census.py"):
                 changed = str(ROOT / name)   # (the builder's other steps: not the lift's)
                 with mock.patch("builtins.open", edited):
                     check("a change to %s leaves the key" % name, make_game.lift_key(str(exefs), str(work), env) == key)
@@ -175,13 +175,13 @@ def check_lift_sources():
     run = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "nx2")], capture_output=True, text=True)
     check("the lift's scripts import (%s)" % run.stderr.strip()[-2000:], run.returncode == 0)
     out = run.stdout
-    tops = (str(ROOT / "nx2") + os.sep, str(ROOT / "third_party" / "a64-kit") + os.sep)
+    tops = (str(ROOT / "nx2") + os.sep, str(ROOT / "third_party" / "a64-kit") + os.sep, str(ROOT / "packs") + os.sep)
     loaded = {f for f in out.splitlines() if f.startswith(tops)}   # (lines: a path may hold a space)
     check("the lift loads its modules (%d)" % len(loaded), len(loaded) > 12 and str(ROOT / "nx2" / "chunks.py") in loaded)
     sources = {os.path.abspath(f) for f in make_game.lift_sources()}
     missing = sorted(loaded - sources)
     check("every module the lift loads is in its key (missing: %s)" % missing, not missing)
-    check("the lift's later imports too", {str(ROOT / "nx2" / f) for f in ("oot_patches.py", "oot_wide.py")}
+    check("the lift's later imports too", {str(ROOT / "packs" / "oot" / "lift" / f) for f in ("oot_patches.py", "oot_wide.py")}
           <= sources)
     check("the builder's other modules are not", str(ROOT / "nx2" / "build.py") not in sources)
     import re
@@ -193,7 +193,7 @@ def check_lift_sources():
           dynamic == [str(ROOT / "nx2" / "game_profile.py")])
     sys.path.insert(0, str(ROOT / "nx2"))
     import game_profile
-    named = {str(ROOT / "nx2" / (m + ".py")) for p in game_profile.GAMES.values()
+    named = {os.path.abspath(game_profile.module_path(m, p)) for p in game_profile.GAMES.values()
              for m in p.patch_modules + ((p.code_patch_module,) if p.code_patch_module else ())}
     check("every game profile's patch modules are in the lift's key (missing: %s)" % sorted(named - sources),
           named and named <= sources)

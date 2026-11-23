@@ -1,4 +1,4 @@
-"""The Debug tab's Movement speed (1x to 3x): nx2/oot_patches.py's patch_cct_speed hooks the places a character controller's
+"""The Debug tab's Movement speed (1x to 3x): packs/oot/lift/oot_patches.py's patch_cct_speed hooks the places a character controller's
 forward speed is set (SPEED_PLACES: Link's move f_809552f0 at its two setter calls, the setter f_80559df0 and f_80964bf0), each
 once, after its anchor, with s0's unit; a file patched before is given back as it is, and a file without them is left alone.
 apply makes them only in the supported build's lift (protect_hearts). host/hos_main.c's hos_oot_cct_speed scales the speed for
@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 BODY = "    c->x[9]=recomp_load32(c,c->x[8] + 32);\nreturn;\n}\n"

@@ -3,7 +3,7 @@ a pane getting the focus (f_802ed660: hos_oot_menu_focus) and a menu screen's up
 button prompts (host/prompts.c) hook a text box's draw (f_8152b670: hos_prompts_text_draw), its layout (f_8152aec0:
 hos_prompts_text_layout) and FreeType's glyph render (f_81680c60: hos_prompts_glyph) the same way.
 
-nx2/oot_patches.py's patch_menu_focus, patch_menu_tick, patch_text_draw, patch_text_layout and patch_glyph put each call first
+packs/oot/lift/oot_patches.py's patch_menu_focus, patch_menu_tick, patch_text_draw, patch_text_layout and patch_glyph put each call first
 in its function, once, and
 declare it; a file without the function is left alone, and a file patched before is given back as it is (a lift patched
 again). apply makes them only in the supported build's lift (protect_hearts): those addresses are its functions.
@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 FOCUS = "    hos_oot_menu_focus(c, c->x[0], c->x[1], c->x[30]);"

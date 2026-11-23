@@ -4,7 +4,7 @@
   "name": "Mario Kart World",
   "short_name": "Mario Kart World",
   "version": "1.0.0",
-  "api": {"major": 0, "minor": 1},
+  "api": {"major": 0, "minor": 2},
   "released": true,
   "program_id": "0400C3F00006E000",
   "builds": [

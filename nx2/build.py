@@ -403,7 +403,7 @@ NGX_SDK = ngx_sdk(os.environ.get("HOOKSHOT_NGX_SDK", ""), LINUX)
 NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
 # HOOKSHOT_FSR=1: the Vulkan back end with AMD FSR 4 (gpu/vk/vk_fsr4.cpp), from AMD's FSR API headers (third_party/fidelityfx,
 # MIT). AMD's signed DLLs are not part of the build: the user's, loaded at run time. Off without it (make_game.py --fsr sets
-# it; the camera jitter it needs is in every build: nx2/oot_jitter.py)
+# it; the camera jitter it needs is in every build: packs/oot/lift/oot_jitter.py)
 FSR = os.environ.get("HOOKSHOT_FSR", "") == "1"
 
 

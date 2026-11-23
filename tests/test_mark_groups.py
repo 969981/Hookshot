@@ -1,6 +1,6 @@
 """a64_lift.mark_groups: the page marks of a straight-line run of stores through one base register shared by one A64_MARK
 after the group's last store, every case where a store must keep its own marks, and its place in the lift: after
-nx2/oot_patches.py, whose exact-text edits a group would break (the supported build's lift fails when one is missing).
+packs/oot/lift/oot_patches.py, whose exact-text edits a group would break (the supported build's lift fails when one is missing).
 
 python -I -B tests/test_mark_groups.py      (the compile-and-run case needs emsdk's clang: EMSDK, else it is skipped)
 """
@@ -21,7 +21,8 @@ from collections import Counter
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path[:0] = [os.path.join(ROOT, "third_party", "a64-kit", d) for d in ("lift", "tools")] + [os.path.join(ROOT, "nx2")]
+sys.path[:0] = [os.path.join(ROOT, "third_party", "a64-kit", d) for d in ("lift", "tools")] + [os.path.join(ROOT, "nx2"),
+                                                                                         os.path.join(ROOT, "packs", "oot", "lift")]
 import a64_lift  # noqa: E402
 import oot_patches  # noqa: E402
 import chunks  # noqa: E402
@@ -275,7 +276,7 @@ class MarkGroupsTests(unittest.TestCase):
         self.assertLess(call, src.find("L.report()"))
 
 
-# The output-size edits' places (nx2/oot_patches.py OUT_EDITS) in small functions, no game code: [0] and [3] each followed by
+# The output-size edits' places (packs/oot/lift/oot_patches.py OUT_EDITS) in small functions, no game code: [0] and [3] each followed by
 # another store through the same base, so that a group taken before the patches would change the text they match.
 GEN_000 = ('#include "a64.h"\n'
            "void f_81222ce0(Ctx *__restrict A64_NOESC c) {\n"

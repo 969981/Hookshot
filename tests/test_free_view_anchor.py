@@ -1,7 +1,7 @@
 """The free camera's hook goes at the head of the view's loop in f_804e48c0, whichever way the lift wrote that head.
 
 nx2/poll.py puts the interrupt poll before each backward goto, so the loop's head is a bare label; C lifted before that had
-the poll after the label. nx2/oot_patches.py's patch_view finds either, once, and a function without the label is left alone.
+the poll after the label. packs/oot/lift/oot_patches.py's patch_view finds either, once, and a function without the label is left alone.
 
 python -I -B tests/test_free_view_anchor.py
 """
@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 HOOK = "    hos_oot_free_view(c, c->x[20]);\n"

@@ -1,5 +1,5 @@
 """Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (ISSUE_URL), so that the pipelines their play
-built go into the list the next release builds before the game (nx2/pipeline_states.py, assets/pipeline_states/README.md).
+built go into the list the next release builds before the game (nx2/pipeline_states.py, packs/oot/assets/pipeline_states/README.md).
 
 The zip holds two files and nothing else: the game folder's hookshot_pipeline_states.bin (checked first as
 nx2/pipeline_states.py --check checks a list: whole, of a format this build reads, holding pipelines) and

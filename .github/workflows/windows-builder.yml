@@ -177,7 +177,7 @@ jobs:
           git -C _amd cat-file blob HEAD:Kits/FidelityFX/docs/license.md > "$RUNNER_TEMP/amd-fsr/LICENSE-AMD-FSR-SDK.md"
           python -I -c "import importlib.util as u, sys; s = u.spec_from_file_location('f', 'scripts/ffx_sdk.py'); f = u.module_from_spec(s); s.loader.exec_module(f); sys.exit(0 if f.complete(sys.argv[1]) else 'tools/amd-fsr is not the runtime scripts/ffx_sdk.py pins')" "$RUNNER_TEMP/amd-fsr"
           ls -l "$RUNNER_TEMP/amd-fsr"
-      # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
+      # (it stops when packs/<key>/assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       # (dav1d for the AV1 movies, from the dav1d job: added to the CPM part when the latest release's lacks it)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

@@ -4,7 +4,7 @@
   "name": "The Legend of Zelda: Ocarina of Time",
   "short_name": "Ocarina of Time",
   "version": "1.0.0",
-  "api": {"major": 0, "minor": 1},
+  "api": {"major": 0, "minor": 2},
   "released": true,
   "program_id": "0400486024DEC000",
   "builds": [
@@ -28,13 +28,17 @@
                        "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"], "file"]],
     "notes": "The game this engine was retargeted to; every value here was measured on its dump."
   },
-  "lift": {"patch_modules": ["oot_wide", "oot_fov", "oot_jitter", "oot_occlusion"], "code_patch_module": "oot_patches"},
+  "lift": {"patch_modules": ["oot_wide", "oot_fov", "oot_jitter", "oot_occlusion"], "code_patch_module": "oot_patches",
+           "env_prefixes": ["OOT_"]},
+  "build_steps": ["prompts", "pipeline_states"],
   "saves_dir": "hookshot",
   "license": "GPL-3.0-or-later",
   "comments": {
     "builds.0.version": "the update; base v65536",
     "builds.0.main_base": "after rtld's 0x20000 bytes in Eden's layout (nx2/image.py)",
     "lift.patch_modules": "the order lift.py has always installed them in: two modules may add C at one site, in this order",
+    "lift.env_prefixes": "the switches the patch modules read (OOT_*): taken into the lift's cache key, as A64_* and RX_* are",
+    "build_steps": "prompts: tools/prompt_assets.py draws the button prompts of other controllers from the game's icon font; pipeline_states: assets/pipeline_states/ (the pipeline tour's list and the contributed ones) is merged into the folder's shipped list",
     "profile.gfx.frame_limiter": "int: the rate f_8042cd20 sleeps to",
     "profile.gfx.nominal_fps": "int: the nominal rate the engine steps game time by (60 / it)",
     "profile.gfx.vrr_mode": "byte: logged beside the gate; 1 in every run seen",

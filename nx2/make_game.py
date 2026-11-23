@@ -1671,16 +1671,22 @@ def seed_pipelines(out):
     print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
 
 
-def ship_state_list(out):
-    """The pipeline state list made from play of the game (assets/pipeline_states/: the pipeline tour's list and the contributed
-    ones, merged by nx2/pipeline_states.py, each pipeline once; hashes, formats and draw state only, no game code), written as the
-    folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the
-    title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for
-    any build, and optional: a list that does not read is left out with a line saying so, and the others are shipped (the
-    release checks stop on it: nx2/pipeline_states.py check)"""
+def ship_state_list(out, game):
+    """The pipeline state list made from play of the game (its pack's assets/pipeline_states/: the pipeline tour's list and the
+    contributed ones, merged by nx2/pipeline_states.py, each pipeline once; hashes, formats and draw state only, no game code),
+    written as the folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines
+    before the title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn.
+    Only for a game whose pack takes part in the "pipeline_states" build step: the list's pipelines are that game's, and another
+    game's folder got Ocarina's before the packs (its file is removed now). Optional: a list that does not read is left out
+    with a line saying so, and the others are shipped (the release checks stop on it: nx2/pipeline_states.py check)"""
     import pipeline_states
-    src = pipeline_states.sources_dir(ROOT)
     dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
+    if pipeline_states.STEP not in game_profile.build_steps(game):
+        if os.path.exists(dst):
+            os.remove(dst)
+            print("the shipped pipeline state list was another game's: removed (this game's pack ships none)", flush=True)
+        return
+    src = pipeline_states.sources_dir(ROOT, game.key)
     if not os.path.isdir(src):
         return
     try:
@@ -2131,14 +2137,15 @@ def lift_sources():
     there no longer translates the game again, minutes on every build"""
     import ast
     kit_dir = os.path.join(ROOT, "third_party", "a64-kit")
-    path = [os.path.join(kit_dir, d) for d in ("rt", "hos", "tools", "lift")] + [HERE]
+    # (the packs' lift/ folders, where the game's patch modules are: a pack's modules import each other by name)
+    path = [os.path.join(kit_dir, d) for d in ("rt", "hos", "tools", "lift")] + [HERE] + game_profile.lift_dirs()
     todo = [os.path.join(HERE, f) for f in LIFT_SCRIPTS]
     # (the game profiles' patch modules: nx2/game_profile.py imports them by the names its profiles hold, which this walk
     # cannot see, so every profile's are roots of it. All profiles', not the active one's: the key then does not depend
     # on HOOKSHOT_GAME, and a change to any game's patches translates again, which is the safe direction. Lakitu fafd5cde)
     for prof in game_profile.GAMES.values():
         for name in prof.patch_modules + ((prof.code_patch_module,) if prof.code_patch_module else ()):
-            todo.append(os.path.join(HERE, name + ".py"))
+            todo.append(game_profile.module_path(name, prof))
     # (and the packs' manifests, packs/<key>/pack.json, which the profiles are built from: what game_profile.py's own text
     # was to the key before the packs, every game's, for the same reason. docs/game-packs.md 3.3 narrows it to the active
     # game's pack later)
@@ -2163,11 +2170,34 @@ def lift_sources():
                     if os.path.isfile(mod):
                         todo.append(mod)
                         break
-    for top in (HERE, kit_dir):
+    for top in [HERE, kit_dir] + game_profile.lift_dirs():
         for d, dirs, fs in os.walk(top):
             dirs[:] = sorted(x for x in dirs if x != "__pycache__")
             seen.update(os.path.join(d, f) for f in fs if f.endswith(LIFT_DATA))
-    return sorted(seen)
+    return sorted(seen, key=lift_source_name)
+
+
+def lift_source_name(path):
+    """The name a translator file is hashed under in the lift's key: its path from the repository's root, but a pack's lift/
+    file's is the nx2/ one it had before the packs (packs/oot/lift/oot_patches.py is packs/oot/lift/oot_patches.py), so moving the game's
+    modules into its pack does not translate anyone's game again for the move itself (docs/game-packs.md 3.3). The key hashes
+    the files in this name's order, which is the order they had in nx2/"""
+    rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+    parts = rel.split("/")
+    if len(parts) >= 4 and parts[0] == "packs" and parts[2] == game_profile.packs.LIFT_DIR:
+        return "/".join(["nx2"] + parts[3:])
+    return rel
+
+
+def lift_source_digest(path):
+    """What the lift's key takes of a translator file: its bytes' sha1, but of a pack's pack.json only the fields the lift
+    reads (packs.lift_view: a comment, a menu feature or a build step does not translate the game again)"""
+    with open(path, "rb") as src:
+        data = src.read()
+    rel = os.path.relpath(path, ROOT).replace(os.sep, "/").split("/")
+    if len(rel) == 3 and rel[0] == "packs" and rel[2] == game_profile.packs.MANIFEST:
+        data = game_profile.packs.lift_view(json.loads(data.decode("utf-8")))
+    return hashlib.sha1(data, usedforsecurity=False).digest()
 
 
 def lift_key(exefs, work, env, planning=True):
@@ -2183,7 +2213,7 @@ def lift_key(exefs, work, env, planning=True):
     h.update(" ".join(sorted(standalone.implemented())).encode())
     # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
     files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
-    files += [(ROOT, f) for f in lift_sources()]
+    files += [(None, f) for f in lift_sources()]   # (named and read as lift_source_name and lift_source_digest say)
     # (hot_pieces.txt: split_hot's pieces of the last lift, which the next split keeps. The pieces' C follows it, so two work folders
     # with other histories may lift the same game into other pieces: their keys differ too)
     files += [(work, os.path.join(work, "hot_funcs.txt"))]
@@ -2191,10 +2221,16 @@ def lift_key(exefs, work, env, planning=True):
         files += [(work, os.path.join(work, "image", "chunks.txt")), (work, os.path.join(work, "image", "hot_pieces.txt"))]
     for base, f in files:
         if os.path.isfile(f):
+            if base is None:
+                h.update(lift_source_name(f).encode() + bytes(1))
+                h.update(lift_source_digest(f))
+                continue
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
             with open(f, "rb") as src:
                 h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
-    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
+    # (the engine's switches, A64_ and RX_, and the ones the packs' lifts read: Ocarina's OOT_, packs/oot/pack.json)
+    prefixes = ("A64_", "RX_") + game_profile.env_prefixes()
+    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(prefixes)})
     lift_env = {k: v for k, v in lift_env.items() if k not in COMPILE_ONLY_ENV}
     h.update(repr(sorted(lift_env.items())).encode())
     return h.hexdigest()
@@ -2964,6 +3000,8 @@ def main(a=None):
         with contextlib.suppress(FileNotFoundError):   # (the copies are this dump's now, not the .nup's that stamp names)
             os.remove(os.path.join(out, ".hookshot_romfs"))
     check_supported_build(exefs)
+    # (the game this folder is built for: its pack's build steps, the prompts and the shipped pipeline list, below)
+    game = supported_build(build_id(os.path.join(exefs, "main")))
 
     # (made once on the development PC: lists of addresses and counts, no game code)
     # (hookshot_vk.profdata: the renderer's own profile, counts over Hookshot's own code)
@@ -3199,27 +3237,27 @@ def main(a=None):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     else:
         note_shader_list(work, romfs, os.path.join(out, "hookshot_shaders.bin"))
-    # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
+    # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools,
+    # by the pack's tools/prompt_assets.py, for a game whose pack takes part in the "prompts" build step (packs/<key>/pack.json).
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
-    if importlib.util.find_spec("fontTools") is None:
+    if "prompts" not in game_profile.build_steps(game):
+        # (a game whose pack draws none: Mario Kart World's and Donkey Kong Bananza's have no icon font of Ocarina's kind, and
+        # prompt_assets.py stopped on a traceback there. A folder's earlier prompts go too)
+        shutil.rmtree(prompts, ignore_errors=True)
+        print("this game's pack makes no button prompts of other controllers: the game shows its own", flush=True)
+    elif importlib.util.find_spec("fontTools") is None:
         shutil.rmtree(prompts, ignore_errors=True)
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
-    elif not os.path.isfile(os.path.join(romfs, "Pack", "ZsDic.pack.zs")):
-        # (hookshot) the prompts are drawn from Ocarina's icon font, read with Ocarina's zstd dictionaries: a game without
-        # them (Mario Kart World, Donkey Kong Bananza) has neither, and prompt_assets.py stopped on a traceback there
-        shutil.rmtree(prompts, ignore_errors=True)
-        print("the button prompts of other controllers are made from Ocarina's icon font: this game has none, and shows its own",
-              flush=True)
-    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts] +
-             ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
+    elif run(PY + [os.path.join(game_profile.pack_folder(game, game_profile.packs.TOOLS_DIR), "prompt_assets.py"), "--romfs", romfs,
+                   "--out", prompts] + ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
     seed_pipelines(out)
-    ship_state_list(out)
+    ship_state_list(out, game)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)

@@ -145,10 +145,10 @@ def check_tool(tool, draw):
         game = os.path.join(d, "game")
         os.makedirs(game)
         make_game.ROOT = d
-        os.makedirs(os.path.join(d, tool.SOURCES[0]))
+        os.makedirs(os.path.dirname(os.path.join(d, *tool.SOURCES)))
         os.replace(src, os.path.join(d, *tool.SOURCES))
         with contextlib.redirect_stdout(io.StringIO()):
-            make_game.ship_state_list(game)
+            make_game.ship_state_list(game, make_game.game_profile.GAMES["oot"])
         shipped = os.path.join(game, "hookshot_pipeline_states_shipped.bin")
         if tool.compute_keys(tool.read(shipped, strict=True)) != [K1, K2] or open(shipped, "rb").read(8) != tool.MAGIC2:
             raise SystemExit("make_game did not ship the sources' compute programs beside the game")

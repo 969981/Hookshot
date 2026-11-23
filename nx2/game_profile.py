@@ -216,22 +216,66 @@ def known_builds():
 
 # ---- the lift ----
 
-def load_module(name):
-    """A game's patch module by the name its profile holds. This is the one place the lift imports a module by a name made
-    at run time; nx2/make_game.py lift_sources takes every profile's modules into the lift's cache key, because its walk
-    of import statements cannot see these (tests/test_lift_cache.py)."""
+def lift_dirs():
+    """Every pack's lift/ folder that is there, in the profile order: where the game's patch modules are"""
+    return [d for d in (packs.folder(k, packs.LIFT_DIR) for k in PACKS) if os.path.isdir(d)]
+
+
+def module_dir(name, profile=None):
+    """The pack lift/ folder that holds the module name: the profile's own pack's first, then every pack's in the profile
+    order; None when no pack's holds it. Module names are unique across packs and nx2/ (tests/test_game_packs.py)"""
+    keys = ([profile.key] if profile is not None and profile.key in PACKS else []) + list(PACKS)
+    for key in keys:
+        d = packs.folder(key, packs.LIFT_DIR)
+        if os.path.isfile(os.path.join(d, name + ".py")):
+            return d
+    return None
+
+
+def module_path(name, profile=None):
+    """The file of a patch module the profile names: in its pack's lift/ (module_dir), else in nx2/"""
+    return os.path.join(module_dir(name, profile) or HERE, name + ".py")
+
+
+def load_module(name, profile=None):
+    """A game's patch module by the name its profile holds, from the profile's pack's lift/ (module_dir: the pack that holds
+    it, when the caller names no profile, as the lift's edit of the C does). This is the one place the lift imports a module
+    by a name made at run time; nx2/make_game.py lift_sources takes every profile's modules into the lift's cache key,
+    because its walk of import statements cannot see these (tests/test_lift_cache.py)."""
+    d = module_dir(name, profile)
+    if d and d not in sys.path:
+        sys.path.insert(0, d)   # (a pack's modules import each other by name: oot_jitter imports oot_wide)
     return importlib.import_module(name)
+
+
+def build_steps(profile):
+    """The optional build steps the profile's pack takes part in (packs.BUILD_STEPS): none for a profile with no pack"""
+    return tuple((PACKS.get(profile.key) or {}).get("build_steps", ()))
+
+
+def pack_folder(profile, name):
+    """The profile's pack's folder (packs.LIFT_DIR, TOOLS_DIR or ASSETS_DIR), or None for a profile with no pack"""
+    return packs.folder(profile.key, name) if profile.key in PACKS else None
+
+
+def env_prefixes():
+    """The environment prefixes every pack's lift reads (lift.env_prefixes): the lift's cache key takes them, beside the
+    engine's own A64_ and RX_. Every pack's, not the active one's, so the key does not depend on HOOKSHOT_GAME"""
+    out = []
+    for m in PACKS.values():
+        out += [p for p in m["lift"].get("env_prefixes", ()) if p not in out]
+    return tuple(out)
 
 
 def install_patches(lifter, img, profile, build_id="", log=print):
     """The profile's lift patch modules, in its order; lift.py names no game's module itself. A module's install
-    takes (lifter, img), or (lifter, img, build_id) when it gates on the build as nx2/oot_fov.py does."""
+    takes (lifter, img), or (lifter, img, build_id) when it gates on the build as Ocarina's oot_fov does."""
     if not profile.patch_modules:
         log("patches: the %s profile has no lift patch modules" % profile.key)
         return 0
     total = 0
     for name in profile.patch_modules:
-        install = load_module(name).install
+        install = load_module(name, profile).install
         n = len(inspect.signature(install).parameters)
         total += (install(lifter, img, build_id) if n >= 3 else install(lifter, img)) or 0
     return total

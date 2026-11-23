@@ -1,4 +1,4 @@
-"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (host/oot_heap_retry.c, nx2/oot_patches.py).
+"""The OptimizeChangeBank thread's allocations are tried again when their heap is full (host/oot_heap_retry.c, packs/oot/lift/oot_patches.py).
 
 Issue 1697 (thread OptimizeChangeBanc writes guest 0x8 a few frames after loading a save) and TomShafford/Hookshot's crash at
 backflip + attack: a model's CPU buffer (a heap's tryAlloc) or GPU memory (f_80522050) came back null from a full heap and the
@@ -11,7 +11,7 @@ size, parent, a vtable with tryAlloc and getFreeSize) and a stand-in for the gam
 - the CPU buffer is tried in each parent with room, returned in x0, the other registers and the flags as they were;
 - HOS_GPU_ALLOC_RETRY=0: the game's call alone, as shipped; HOS_GPU_ALLOC_TEST_FAIL=<n>: the first n refused by the named
   heap without calling it (nothing leaks), and the retry makes them;
-- nx2/oot_patches.py makes both edits on lifted text shaped as the lift writes it, once, and a second run changes nothing.
+- packs/oot/lift/oot_patches.py makes both edits on lifted text shaped as the lift writes it, once, and a second run changes nothing.
 
 python -I -B tests/test_oot_heap_retry.py [--cc gcc]
 """
@@ -27,6 +27,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 HOS_H = r'''#pragma once
@@ -272,7 +273,7 @@ def main():
     import inspect
     assert "patch_heap_retry(out) if protect_hearts else" in inspect.getsource(oot_patches.patch_file), \
         "the edits are made on builds other than the supported one"
-    print("PASS: nx2/oot_patches.py: the four places edited once (f_80522050's other callers left), a second run changes "
+    print("PASS: packs/oot/lift/oot_patches.py: the four places edited once (f_80522050's other callers left), a second run changes "
           "nothing, other text is left alone, the supported build only")
 
     cc = shutil.which(a.cc) or shutil.which("gcc") or shutil.which("clang")

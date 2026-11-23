@@ -65,7 +65,7 @@ jobs:
         with:
           python-version: '3.12'
       # (the packages tests import: nx2/test_nup_codec.py's zstandard; tests/test_prompt_guide_lines.py's Pillow and numpy,
-      # nx2/prompt_assets.py's; tests/test_insn_fixed_convert.py's unicorn, which runs the lifted instructions against the
+      # packs/oot/tools/prompt_assets.py's; tests/test_insn_fixed_convert.py's unicorn, which runs the lifted instructions against the
       # emulator, and the lift's capstone and lz4 (third_party/a64-kit/tools/nso.py), which tests/test_build_long_paths.py's lift case loads nx2/lift.py with: pinned as
       # nx2/prompt_requirements.txt and requirements.txt have them. The runner itself needs none)
       - name: Python packages for the tests

@@ -4,7 +4,7 @@
   "name": "Donkey Kong Bananza",
   "short_name": "Donkey Kong Bananza",
   "version": "1.0.0",
-  "api": {"major": 0, "minor": 1},
+  "api": {"major": 0, "minor": 2},
   "released": true,
   "program_id": "040074A01BF12000",
   "builds": [

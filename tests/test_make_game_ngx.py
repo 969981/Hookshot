@@ -67,7 +67,7 @@ class NgxRuntimeTests(unittest.TestCase):
             return make_game.ngx_built()
 
     def test_built_with_this_platforms_library(self):
-        # (the camera jitter is no longer tied to this: nx2/oot_jitter.py is in every standalone lift, for FSR 3.1 as well)
+        # (the camera jitter is no longer tied to this: packs/oot/lift/oot_jitter.py is in every standalone lift, for FSR 3.1 as well)
         self.assertFalse(self.built("linux", sdk=""))
         self.assertFalse(self.built("linux"))   # (no library yet)
         self.sdk_files("linux", runtime=False)
