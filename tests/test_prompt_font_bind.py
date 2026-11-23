@@ -1,16 +1,16 @@
 """Game-free: the button prompts' font patch at run time (host/prompts.c cmap4_glyph, cmap4_bind) on a cmap made the way the
-build makes it (nx2/prompt_assets.py cmap4, every face's icons): a bound Switch button's code point gets the face's icon of its
+build makes it (packs/oot/tools/prompt_assets.py cmap4, every face's icons): a bound Switch button's code point gets the face's icon of its
 pad input, an unbound one the face's icon of its default's, the d-pad icons the face's, and the faces' icons stay. And a
 text's codes after a change while the game runs (host/prompts.c text_code): a Switch button's, by the game or rewritten
-before, the code of the face's icon of its pad input now (nx2/prompt_assets.py BIND_BASE), the d-pad's the face's. The
-keyboard face (nx2/prompt_keys.py): a Switch button gets its first key's icon (the second's when the first slot is clear), one on
+before, the code of the face's icon of its pad input now (packs/oot/tools/prompt_assets.py BIND_BASE), the d-pad's the face's. The
+keyboard face (packs/oot/tools/prompt_keys.py): a Switch button gets its first key's icon (the second's when the first slot is clear), one on
 a key without an icon or on none the face's icon of its pad input; the sticks the keyboard's icons (the other faces the game's
 own); in a text, a button on a key a code of its own (key_slot), the sticks' codes the face's. The left stick's icons follow the
 movement keys (MOVES): one way shows its key's icon, in a text through a code of its own (unbound or a key without an icon:
 the game's stick icon), several ways the W A S D picture only while those are the keys, and current_binds notices a movement
 key changed without the buttons' part changing. Also the faces' order: host/prompts.c faces[], gpu/vk/vk_api.h HOS_PROMPT_*
-and nx2/prompt_faces.py FACES (after the Switch, then the keyboard), and the defaults: host/prompts.c switch_pad, static_code,
-stick_code, stick_ways and move_default, nx2/prompt_assets.py DEFAULT and STATIC, nx2/prompt_keys.py STICKS, MOVE and the code
+and packs/oot/tools/prompt_faces.py FACES (after the Switch, then the keyboard), and the defaults: host/prompts.c switch_pad, static_code,
+stick_code, stick_ways and move_default, packs/oot/tools/prompt_assets.py DEFAULT and STATIC, packs/oot/tools/prompt_keys.py STICKS, MOVE and the code
 points.
 
 python -I -B tests/test_prompt_font_bind.py [--cc gcc]
@@ -27,6 +27,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "tools"))   # (Ocarina's pack: the button prompts)
 import prompt_assets  # noqa: E402
 import prompt_faces  # noqa: E402
 import prompt_keys  # noqa: E402
@@ -101,21 +102,21 @@ def main():
     pads = re.search(r"switch_pad\[HOS_SW_N\] = \{([^}]*)\}", src)
     check(pads is not None, "host/prompts.c has no switch_pad[HOS_SW_N]")
     check([e.strip() for e in pads.group(1).split(",")] == ["HOS_PAD_" + p.upper() for p in prompt_assets.DEFAULT],
-          "host/prompts.c switch_pad is not nx2/prompt_assets.py DEFAULT")
+          "host/prompts.c switch_pad is not packs/oot/tools/prompt_assets.py DEFAULT")
     statics = re.search(r"static_code\[3\] = \{([^}]*)\}", src)
     check(statics is not None and [int(c, 16) for c in statics.group(1).split(",")] == list(prompt_assets.STATIC),
-          "host/prompts.c static_code is not nx2/prompt_assets.py STATIC")
+          "host/prompts.c static_code is not packs/oot/tools/prompt_assets.py STATIC")
     check(len(prompt_assets.PADS) <= prompt_assets.STATIC_AT and prompt_assets.STATIC_AT + len(prompt_assets.STATIC) <=
           prompt_assets.FACE_CODES, "a face's pad icons and d-pad icons overlap or pass its code points")
     sticks = re.search(r"stick_code\[15\] = \{([^}]*)\}", src)
     check(sticks is not None and [int(c, 16) for c in sticks.group(1).split(",")] == [c for c, _, _ in prompt_keys.STICKS],
-          "host/prompts.c stick_code is not nx2/prompt_keys.py STICKS")
+          "host/prompts.c stick_code is not packs/oot/tools/prompt_keys.py STICKS")
     for name, value in (("SLOT_BASE", prompt_keys.SLOT_BASE), ("SLOTS", prompt_keys.SLOTS), ("STICK_KEYS", prompt_keys.STICK_KEYS),
                         ("STICK_GAME", prompt_keys.STICK_GAME)):
         d = re.search(r"#define %s (0x[0-9A-Fa-f]+|\d+)" % name, src)
-        check(d is not None and int(d.group(1), 0) == value, "host/prompts.c %s is not nx2/prompt_keys.py's" % name)
+        check(d is not None and int(d.group(1), 0) == value, "host/prompts.c %s is not packs/oot/tools/prompt_keys.py's" % name)
     check(prompt_keys.KEY_BASE == prompt_assets.PAD_BASE + prompt_assets.FACE_CODES * len(names),
-          "nx2/prompt_keys.py KEY_BASE is not past every face's code points (host/prompts.c KEY_BASE)")
+          "packs/oot/tools/prompt_keys.py KEY_BASE is not past every face's code points (host/prompts.c KEY_BASE)")
     check(prompt_keys.KEY_BASE + 256 <= prompt_keys.STICK_KEYS and prompt_keys.STICK_KEYS + 16 <= prompt_keys.STICK_GAME and
           prompt_keys.SLOT_BASE + prompt_keys.SLOTS <= prompt_assets.BIND_BASE, "the keyboard face's code points overlap")
 
@@ -146,7 +147,7 @@ def main():
         "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>", '#include "gpu/vk/vk_api.h"',
         "#define PAD_BASE 0xF700", "#define FACE_CODES %d" % prompt_assets.FACE_CODES,
         "#define STATIC_AT %d" % prompt_assets.STATIC_AT, *defines(src),
-        "_Static_assert(HOS_PAD_ART_N == %d, \"vk_api.h HOS_PAD_ART_N is not nx2/prompt_assets.py PADS\");" % len(prompt_assets.PADS),
+        "_Static_assert(HOS_PAD_ART_N == %d, \"vk_api.h HOS_PAD_ART_N is not packs/oot/tools/prompt_assets.py PADS\");" % len(prompt_assets.PADS),
         "static int move_key[4][2];",
         "static int hos_binding(int set, int button, int slot) {",
         "    if (set == HOS_BIND_KEY) {",
@@ -251,12 +252,12 @@ def main():
     ways = re.search(r"stick_ways\[7\] = \{([^}]*)\}", src)
     moves = [(c, w) for c, stick, w in prompt_keys.STICKS if stick == "move"]
     check([stick for _, stick, _ in prompt_keys.STICKS[:len(moves)]] == ["move"] * len(moves) and len(moves) == 7,
-          "nx2/prompt_keys.py STICKS: the left stick's icons are not the first seven (host/prompts.c stick_shows)")
+          "packs/oot/tools/prompt_keys.py STICKS: the left stick's icons are not the first seven (host/prompts.c stick_shows)")
     check(ways is not None and [int(x) for x in ways.group(1).split(",")] == [sum(1 << WAYS.index(w) for w in ws) for _, ws in moves],
-          "host/prompts.c stick_ways is not the ways of nx2/prompt_keys.py STICKS")
+          "host/prompts.c stick_ways is not the ways of packs/oot/tools/prompt_keys.py STICKS")
     defaults = re.search(r"move_default\[4\] = \{([^}]*)\}", src)
     check(defaults is not None and [int(x, 16) for x in defaults.group(1).split(",")] == [prompt_keys.MOVE[w] for w in WAYS],
-          "host/prompts.c move_default is not nx2/prompt_keys.py MOVE")
+          "host/prompts.c move_default is not packs/oot/tools/prompt_keys.py MOVE")
     texts = check_text_code(a.cc, src, nfaces)
     print("ok: on each of %d faces, %d of %d Switch buttons pointed at the face's pad icons (a paddle at its default's), the "
           "rest at their defaults', the d-pad at its own; the faces' icons kept; the keyboard's left stick icons on %d sets of "
@@ -282,7 +283,7 @@ def check_text_code(cc, src, nfaces):
     """text_code on every code it rewrites (the game's, each face's bound and d-pad codes) and some it leaves, for each face"""
     base = re.search(r"#define BIND_BASE (0x[0-9A-Fa-f]+)", src)
     check(base is not None and int(base.group(1), 16) == prompt_assets.BIND_BASE,
-          "host/prompts.c BIND_BASE is not nx2/prompt_assets.py BIND_BASE")
+          "host/prompts.c BIND_BASE is not packs/oot/tools/prompt_assets.py BIND_BASE")
     harness = "\n".join([
         "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>", '#include "gpu/vk/vk_api.h"',
         "#define PAD_BASE 0x%X" % prompt_assets.PAD_BASE, "#define FACE_CODES %d" % prompt_assets.FACE_CODES,

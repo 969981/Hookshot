@@ -1,11 +1,11 @@
 """Copy Ocarina of Time saves between Hookshot and the emulators and ports that run the game: they all keep the same
 files, so a copy is all it takes.
 
-    python -I scripts/oot_saves.py list
-    python -I scripts/oot_saves.py import <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
-    python -I scripts/oot_saves.py export <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
-    python -I scripts/oot_saves.py import --from DIR   (a save from any folder into Hookshot)
-    python -I scripts/oot_saves.py export --to DIR     (Hookshot's save into any folder)
+    python -I packs/oot/tools/oot_saves.py list
+    python -I packs/oot/tools/oot_saves.py import <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
+    python -I packs/oot/tools/oot_saves.py export <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
+    python -I packs/oot/tools/oot_saves.py import --from DIR   (a save from any folder into Hookshot)
+    python -I packs/oot/tools/oot_saves.py export --to DIR     (Hookshot's save into any folder)
 
 import copies into Hookshot, export copies out of it. <name> is one of EMULATORS below: lichii, frizti, orchid,
 pokedinner, eden, eglantine or nx2navi (to-lichii and to-hookshot still work: they are export lichii and import

@@ -1,6 +1,6 @@
 """The Insert menu's Text speed scales the letters' clock of a text pane, and only when the player asks for it.
 
-nx2/oot_patches.py puts hos_text_scale at the head of the letters' block of f_80b1e140 (a LetterAnimControl's step): its time
+packs/oot/lift/oot_patches.py puts hos_text_scale at the head of the letters' block of f_80b1e140 (a LetterAnimControl's step): its time
 argument in s0, multiplied. At Normal the lifted code runs as shipped; a game version whose code differs keeps its own code
 and the build goes on with a warning.
 
@@ -18,6 +18,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
@@ -86,7 +87,7 @@ def main():
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 typedef struct { uint64_t x[32]; uint64_t vreg[32][2]; } Ctx;
-static uint64_t pane_seen;   /* (the text size hook: host/oot_text_size.c, given the LetterAnimControl) */
+static uint64_t pane_seen;   /* (the text size hook: packs/oot/host/oot_text_size.c, given the LetterAnimControl) */
 static void hos_oot_text_pane(Ctx *c, uint64_t anim) { (void)c; pane_seen = anim; }
 static inline void a64_vset64(uint64_t *d, uint64_t v) { d[0] = v; d[1] = 0; }
 volatile float hos_text_scale = 1.0f;

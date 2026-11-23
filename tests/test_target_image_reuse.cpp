@@ -12,6 +12,7 @@
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
+#include "target_pool.h"   // (vk_texture.cpp pool_cap reads target_pool::default_mb, #637)
 #include <vector>
 
 // ---- the fixture's stubs: the GPU, the allocator, and the clock ----
@@ -50,6 +51,13 @@ struct Texture {
 /* DEAD */
 std::deque<Dead> dead;
 
+// (pool_cap, #637: the pool's default by what the driver allows; 8 GB here, and no log)
+bool vram_usage(uint64_t* used, uint64_t* allowed, uint64_t* block_free = nullptr) {
+    *used = 0, *allowed = 8ull << 30;
+    if (block_free) *block_free = 0;
+    return true;
+}
+static void logf(const char*, ...) {}
 /* ACTUAL */
 
 static int fails = 0;

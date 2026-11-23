@@ -1,20 +1,20 @@
 """(hookshot) The keyboard face of the button prompts: which icon each key and the sticks show, and the code points they take
-(nx2/prompt_draw.py draws them, from Kenney's Input Prompts Keyboard & Mouse font, CC0, third_party/kenney_input_keyboard: the
+(packs/oot/tools/prompt_draw.py draws them, from Kenney's Input Prompts Keyboard & Mouse font, CC0, third_party/kenney_input_keyboard: the
 keys whose names are words and the mouse's buttons drawn there).
 
-The font (nx2/prompt_assets.py faces_font) has, beside the faces' icons, the icon of each key at KEY_BASE + its key code (past
+The font (packs/oot/tools/prompt_assets.py faces_font) has, beside the faces' icons, the icon of each key at KEY_BASE + its key code (past
 every face's code points: PAD_BASE + FACE_CODES x HOS_PROMPT_N). On the keyboard face host/prompts.c points each Switch button's
 code point at the icon of the first key bound to it (hookshot_options.ini key_<button>, the Controls page), as the pad faces point
 them at their pad input's. A text rewritten after a change while the game runs (host/prompts.c text_code) gets a code of its own
 for each Switch button and key it shows, given out as they come from SLOT_BASE: SLOTS codes no font of the game has (the CJK fonts
 use most of the private use area), each pointed at its key's icon when given out.
 
-Data alone: the standard library imports it (the prompt packages are for nx2/prompt_assets.py and nx2/prompt_draw.py, CONTRIBUTING).
+Data alone: the standard library imports it (the prompt packages are for packs/oot/tools/prompt_assets.py and packs/oot/tools/prompt_draw.py, CONTRIBUTING).
 """
 
 KEY_BASE = 0xF7C0   # (host/prompts.c: PAD_BASE + FACE_CODES x HOS_PROMPT_N)
 SLOT_BASE, SLOTS = 0xEEC0, 320   # (host/prompts.c; U+EEC0..U+EFFF: in none of the game's fonts, the External font's BIND_BASE after)
-FONT = "kenney_input_keyboard_&_mouse.otf"   # (in third_party/kenney_input_keyboard: nx2/prompt_assets.py KENNEY_KEYBOARD)
+FONT = "kenney_input_keyboard_&_mouse.otf"   # (in third_party/kenney_input_keyboard: packs/oot/tools/prompt_assets.py KENNEY_KEYBOARD)
 
 # Windows virtual-key codes (learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) -> Kenney's glyph name after "keyboard_"
 # ("/name": the whole name). The keys whose names are long words have Kenney's symbol for them, which reads at the icons' size.
@@ -45,7 +45,7 @@ def kenney_name(code):
 DEFAULT = [0x45, 0x10, 0x20, 0x01, 0x11, 0x43, 0x51, 0x52, 0x5A, 0x58, 0x09, 0x4D, 0x31, 0x32, 0x33, 0x34]
 
 
-# ---- the keys nx2/prompt_draw.py draws, not Kenney's: the keys whose names are words (Kenney's words are too small to read at the
+# ---- the keys packs/oot/tools/prompt_draw.py draws, not Kenney's: the keys whose names are words (Kenney's words are too small to read at the
 # icons' size) as wider keys with the word cut out, in the game's own bold font; the mouse's three buttons as a key with a mouse
 # cut out of it and that button left white
 LABELS = {0x05: "M4", 0x06: "M5", 0x11: "Ctrl", 0x12: "Alt", 0x13: "Pause", 0x1B: "Esc", 0x21: "PgUp", 0x22: "PgDn",

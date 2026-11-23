@@ -99,8 +99,15 @@ sealed class Runner
         this.ffxSdk = ffxSdk;
     }
 
+    /// make_game.py with these arguments, in the build's environment. (Its six parameters are what tests/builder_workers
+    /// reflects on: another script goes through ScriptInfo)
     static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null, string? ngxSdk = null,
-                                 int? memoryGb = null, string? ffxSdk = null)
+                                 int? memoryGb = null, string? ffxSdk = null) =>
+        ScriptInfo(tools, "make_game.py", args, workers, ngxSdk, memoryGb, ffxSdk);
+
+    /// One of the tools' scripts (nx2/<script>) with these arguments, in the build's environment
+    static ProcessStartInfo ScriptInfo(Tools tools, string script, IEnumerable<string> args, int? workers = null,
+                                       string? ngxSdk = null, int? memoryGb = null, string? ffxSdk = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -109,6 +116,9 @@ sealed class Runner
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // (the tools write UTF-8 (PYTHONIOENCODING): a folder's letters outside the console's code page read as written)
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
         si.Environment["PYTHONIOENCODING"] = "utf-8";
         BuildWorkers.Apply(si, workers);
@@ -131,7 +141,7 @@ sealed class Runner
         }
         foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
         si.ArgumentList.Add("-I");
-        si.ArgumentList.Add(Path.Combine(tools.Root, "nx2", "make_game.py"));
+        si.ArgumentList.Add(Path.Combine(tools.Root, "nx2", script));
         foreach (var a in args) si.ArgumentList.Add(a);
         return si;
     }
@@ -166,6 +176,36 @@ sealed class Runner
     {
         cancelled = true;
         try { process?.Kill(entireProcessTree: true); } catch (Exception) { }
+    }
+
+    /// One of the tools' scripts (nx2/<script>) run to its end: its exit code, its lines on stdout, and its last line on stderr
+    /// (what it said when it stopped). Code -1 when it could not start
+    public static (int Code, List<string> Lines, string? Error) Output(Tools tools, string script, IEnumerable<string> args)
+    {
+        try
+        {
+            using var p = Process.Start(ScriptInfo(tools, script, args))!;
+            var stderr = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
+            var lines = new List<string>();
+            while (p.StandardOutput.ReadLine() is { } line) lines.Add(line);
+            p.WaitForExit();
+            var last = stderr.Result.Trim().Split('\n').LastOrDefault()?.Trim();
+            return (p.ExitCode, lines, string.IsNullOrEmpty(last) ? null : last);
+        }
+        catch (Exception e)
+        {
+            return (-1, new List<string>(), tools.OwnPythonMissing ? Tools.OwnPythonMissingText : e.Message);
+        }
+    }
+
+    /// The game library under a base: nx2/game_folders.py --library <base> --json, the one core the three Builders read (every
+    /// game, installed or not, its version and whether an update is due). Null when the tools could not say
+    public static List<Games.LibraryGame>? Library(Tools tools, string baseFolder)
+    {
+        var (code, lines, _) = Output(tools, "game_folders.py", new[] { "--library", baseFolder, "--json" });
+        if (code != 0) return null;
+        try { return Games.ParseLibrary(string.Join("\n", lines)); }
+        catch (Exception) { return null; }
     }
 
     /// Is this the supported game and version? The answer in plain words.

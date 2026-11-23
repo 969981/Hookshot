@@ -1,9 +1,9 @@
-"""The sources of the shipped pipeline state list (assets/pipeline_states/: the tour's list, replaced whole, and the contributed ones,
+"""The sources of the shipped pipeline state list (packs/oot/assets/pipeline_states/: the tour's list, replaced whole, and the contributed ones,
 one file each) and nx2/pipeline_states.py's add, tour, merge and check.
 
   - the committed sources pass check: each list whole, xz, of this build's format, holding pipelines once, with its note;
   - the merge is reproducible (the same bytes twice, from the command line too) and holds every source's pipelines;
-  - the three lists the single assets/pipeline_states.bin.xz was split into still hold exactly its 11,527 pipelines;
+  - the three lists the single packs/oot/assets/pipeline_states.bin.xz was split into still hold exactly its 11,527 pipelines;
   - add keeps only what no other contributed list holds (not the tour's), adds to its own list, and needs a note;
   - lists of both versions merge into version 2 (the version 1 ones converted), version 1 alone stays version 1;
   - tour replaces its own list and nothing else; check stops on a list without a note, a wrong count, a stray file, an
@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "nx2" / "pipeline_states.py"
-# (assets/pipeline_states.bin.xz before the split: its pipelines, sorted and joined, hashed. Each of the three is the part a
+# (packs/oot/assets/pipeline_states.bin.xz before the split: its pipelines, sorted and joined, hashed. Each of the three is the part a
 # merge added: #1918's list, then #1935's and #2029's new pipelines)
 MIGRATED = {"hckrman101-first-play": 1261, "joey-magnus-linux-dlss-hd-pack": 3015, "jarynclouatre-most-of-the-game": 7251}
 MIGRATED_SHA256 = "15dcca8182bac64d1113c174154ced0561573f078d45cb284bdc1fa582742cac"
@@ -99,7 +99,7 @@ class Committed(unittest.TestCase):
             old += recs[:n]
         self.assertEqual(len(set(old)), sum(MIGRATED.values()), "the split lists overlap")
         self.assertEqual(hashlib.sha256(b"".join(sorted(old))).hexdigest(), MIGRATED_SHA256,
-                         "the split lists no longer hold assets/pipeline_states.bin.xz's pipelines")
+                         "the split lists no longer hold packs/oot/assets/pipeline_states.bin.xz's pipelines")
         merged = tool.merged(tool.sources_dir())
         self.assertTrue(set(as_merged(old, merged)) <= set(merged))
 

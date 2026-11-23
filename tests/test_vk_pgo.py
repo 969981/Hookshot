@@ -139,7 +139,7 @@ def check_release():
           'case "$(printf %s "${RX_VK_PGO:-}" | tr' in appimage and "1|on|yes|true)" in appimage and
           appimage.index("1|on|yes|true)") < appimage.index('xz -dc assets/profiles/hookshot_vk.profdata.xz'))
     check("the AppImage carries assets/ (the committed profile, for a player's own renderer with DLSS or FSR 4)",
-          "cp -a nx2 host game scripts LICENSE readme.md assets " in appimage)   # (this tree's copy line)
+          "cp -a nx2 host game packs scripts LICENSE readme.md assets " in appimage)   # (this tree's copy line)
     check("and a developer's own profile when the checkout has one",
           "for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof hookshot_vk.profdata; do" in appimage)
     docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
-narration lines started over each other. nx2/oot_patches.py makes the count's step hos_movie_frames(player), and host/nn_vi.c
+narration lines started over each other. packs/oot/lift/oot_patches.py makes the count's step hos_movie_frames(player), and host/nn_vi.c
 answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
 player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps
 its own code and the build goes on with a warning.
@@ -23,6 +23,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 # (the shape of the lifted update: the count loaded, one added, stored; the same lines in another function stay as they are)

@@ -59,14 +59,19 @@ T=$APPDIR/usr/share/hookshot
 L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
-# (game/: the game profile's C view, nx2/game_profile.py, which the runtime and the back end compile with)
-cp -a nx2 host game scripts LICENSE readme.md assets "$T/"
+# (game/: the game profile's C view, nx2/game_profile.py, which the runtime and the back end compile with; packs/: the
+# game packs the profiles are built from)
+cp -a nx2 host game packs scripts LICENSE readme.md assets "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 # (hookshot) the repository releases come from, for the update checks (nx2/version.py repository, builder/linux/linux_update.py)
 printf '%s\n' "${GITHUB_REPOSITORY:-notquiteog/Hookshot}" > "$T/repository.txt"
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
+# (the Builders' string table, from Strings.cs: the Linux Builder's game library says what the Windows Builders say, in the same
+# languages. builder/linux/hookshot_builder.py _string_table)
+mkdir -p "$T/builder/py/hookshot_builder"
+cp builder/py/hookshot_builder/strings.py "$T/builder/py/hookshot_builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
@@ -91,10 +96,10 @@ if [ -d work ]; then
     for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof hookshot_vk.profdata; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
-# (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
-# them beside the game, and without them a new install's first field load is drawn white for seconds while its pipelines
-# compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads them back from the image)
-[ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
+# (the pipeline state list's sources, a game pack's assets/pipeline_states/ (Ocarina's), came with packs/ above, and are required:
+# nx2/make_game.py merges them beside that game, and without them a new install's first field load is drawn white for seconds
+# while its pipelines compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads them back from the image)
+[ -n "$(find "$T/packs" -path "*/assets/pipeline_states/*" -name "*.bin.xz" 2>/dev/null)" ] || { echo "packs/*/assets/pipeline_states/ hold no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- what it builds with ----

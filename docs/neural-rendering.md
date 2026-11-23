@@ -168,8 +168,16 @@ not answer is reported as such) and logs them. Where NGX does not answer for the
 ## What a player needs
 
 Windows x64 only. Streamline's interposer and plugins are DLLs; on Linux, run the Windows build under
-Proton, which is where this was measured for Elysium. These go beside the game, or in a `streamline`
-folder beside it, or wherever `RX_VK_STREAMLINE_DIR` points:
+Proton, which is where this was measured for Elysium. These go in the game folder's `ngx` folder (beside DLSS's runtimes), its `streamline`
+folder, or the game folder itself, or wherever `RX_VK_STREAMLINE_DIR` points (`vk_streamline.cpp` `search_dirs`: first
+`bin\streamline` and `bin\`, beside the real `hookshot.exe` of a game the Builder installed). NGX direct looks in that `streamline` folder
+too (`vk_dlss.cpp` `runtime_dirs`), so one `nvngx_dlssnr.dll` serves both back ends.
+
+**Where they come from:** not from NVIDIA's public releases. Streamline v2.14.16's SDK zip (checked 2026-11-14) has
+`sl.interposer`, `sl.common`, `sl.pcl`, `sl.dlss`, `sl.dlss_g` and `sl.dlss_d` but no `sl.dlss_nr.dll`, no
+`nvngx_dlssnr.dll` and no `sl_dlss_nr.h`, and github.com/NVIDIA/DLSS has no NR runtime either; NVIDIA says the DLSS 5
+SDK is with partner developers only. So the Builder's DLSS tick cannot fetch them, as it fetches DLSS's and DLSS Frame
+Generation's runtimes, until NVIDIA publishes them.
 
 ```
 sl.interposer.dll     the loader; its signature is checked before it is loaded

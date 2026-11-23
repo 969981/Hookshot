@@ -1,6 +1,6 @@
 """Decompression of files a dump or a download supplies stops at a ceiling, instead of holding whatever a frame unpacks to:
 
-  - nx2/nup.py copy_to (a .nup member) and nx2/bounded.py zstd (the prompts' game files, nx2/prompt_assets.py) feed the
+  - nx2/nup.py copy_to (a .nup member) and nx2/bounded.py zstd (the prompts' game files, packs/oot/tools/prompt_assets.py) feed the
     decompressor nx2/bounded.STEP bytes at a time, so a crafted frame (here 8 GB in 256 kB of RLE blocks) is stopped at the
     size the package declares, in a process allowed 2 GB of address space; one call unpacked all it was given before;
   - nx2/nup.py extracts only from a package that passes its strict checks (the TOC's SHA-256, its bounds, no cycle);

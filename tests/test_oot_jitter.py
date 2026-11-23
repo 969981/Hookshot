@@ -1,4 +1,4 @@
-"""nx2/oot_jitter.py, NVIDIA DLSS's camera jitter: its sites are the loads of a view's projection where the game fills the
+"""packs/oot/lift/oot_jitter.py, NVIDIA DLSS's camera jitter: its sites are the loads of a view's projection where the game fills the
 views' uniform buffers, and the C after each adds the jitter to the loaded registers only (the third lane: P[0][2], P[1][2]),
 never to the game's memory, where the shadow cascades' fit and culling would see it too (#841: shadows flickered). The
 snippets are built with gcc against a stand-in context and run. No game or GPU needed.
@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_jitter  # noqa: E402
 import oot_wide  # noqa: E402
 

@@ -1,13 +1,14 @@
 """The pipeline state lists (gpu/vk/vk_draw.cpp: hookshot_pipeline_states.bin, written as the game is played): show them, keep the
 repository's sources of the list a release ships, and merge those into it.
 
-The repository keeps the list a release ships as separate sources in assets/pipeline_states/ (README.md there):
+The repository keeps the list a release ships as separate sources in a game pack's assets/pipeline_states/ (Ocarina's:
+packs/oot/assets/pipeline_states/, README.md there), for a pack whose build_steps name "pipeline_states":
 
     tour.bin.xz                 written only by the pipeline tour (scripts/pipeline_tour.py), replaced whole each time
     contrib/<name>.bin.xz       one per contributed list, added to and never edited by anyone else
     <source>.md                 beside each: where it comes from (who, GPU and driver, build, settings, route)
 
-nx2/make_game.py merges them (the tour's first, then the contributed ones by name; each pipeline once) into the game folder's
+nx2/make_game.py merges them (the tour's first, then the contributed ones by name; each pipeline once) into that game's folder's
 hookshot_pipeline_states_shipped.bin, whose pipelines the first start's shader preparation builds before the title. The same
 sources always merge into the same bytes.
 
@@ -26,7 +27,7 @@ sources always merge into the same bytes.
     python -I nx2/pipeline_states.py --check <list>...                    each list exactly a list, as add takes one (a list
                                                                           someone sent: read_sent), and what it holds
 
-add, tour, merge and check take --dir <sources folder> (default: the repository's assets/pipeline_states).
+add, tour, merge and check take --dir <sources folder> (default: SOURCES, the first such pack's assets/pipeline_states).
 
 A list may be xz-compressed (read by its magic; written so when its name ends in .xz, with fixed settings, so the same records
 always give the same bytes): the repository's are, so that its history stays small. xz, not zstd: the AppImage's Python (3.12)
@@ -79,6 +80,9 @@ import re
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import packs  # noqa: E402  (which game packs ship a list: their build_steps)
+
 MAGIC = b"HKSTATE1"
 SIZE = 528
 MAGIC2 = b"HKSTATE2"
@@ -121,7 +125,19 @@ SENT_COMPUTE_MOST = 8192
 SENT_MOST = 256 << 20
 
 
-SOURCES = ("assets", "pipeline_states")   # (under the repository's root: the sources of the list a release ships)
+# A game pack's sources of the list its game's folder gets: packs/<key>/assets/pipeline_states/, for a pack whose build_steps
+# name STEP (docs/game-packs.md 2.2). SOURCES is the first such pack's, under the repository's (or the tools') root: the one
+# the checks and this tool's --dir read by default
+STEP = "pipeline_states"
+PACK_SOURCES = (packs.ASSETS_DIR, "pipeline_states")
+
+
+def shipping_packs(tree=None):
+    """The packs whose build steps ship a pipeline state list, in the profile order"""
+    return [k for k, m in (packs.tree() if tree is None else tree).items() if STEP in m.get("build_steps", ())]
+
+
+SOURCES = ("packs", (shipping_packs() or [packs.DEFAULT])[0]) + PACK_SOURCES
 TOUR = "tour.bin.xz"
 CONTRIB = "contrib"
 EXT = ".bin.xz"
@@ -365,8 +381,9 @@ def describe(recs):
 
 # ---- the repository's sources ----
 
-def sources_dir(root=None):
-    return os.path.join(root or ROOT, *SOURCES)
+def sources_dir(root=None, key=None):
+    """packs/<key>/assets/pipeline_states under root (the repository's, or the tools'); key None: SOURCES' pack"""
+    return os.path.join(root or ROOT, *(SOURCES if key is None else ("packs", key) + PACK_SOURCES))
 
 
 def note_path(source):
@@ -422,7 +439,7 @@ def read_note(path):
 
 
 def write_note(path, title, fields, recs):
-    lines = ["# %s" % title, "", "Hashes, formats and draw state only: no game code or data (assets/pipeline_states/README.md).", ""]
+    lines = ["# %s" % title, "", "Hashes, formats and draw state only: no game code or data (its pack's assets/pipeline_states/README.md).", ""]
     lines += ["- %s: %s" % (k, fields[k]) for k in FIELDS]
     lines += ["- Pipelines: %d" % len(recs), ""]
     with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:

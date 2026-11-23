@@ -335,13 +335,14 @@ const char* hn_upscaler(int v, int variant) {
     snprintf(b[d][f], sizeof b[d][f], "%s%s%s%s%s", t[0], dn ? " " : "", dn ? dn : "", fn ? " " : "", fn ? fn : "");
     return b[d][f];
 }
-/// The DLSS model row (opts.dlss_model): NVIDIA's network by its preset, or RX_VK_DLSS_PRESET's for this run
+/// The DLSS model row (opts.dlss_model): NVIDIA's network by its preset (the K row's E on a card with less than 7 GB of video
+/// memory: upscaler_rows.h cnn_for_vram, as DLSS is made), or RX_VK_DLSS_PRESET's for this run
 const char* dlss_preset_env() {
     static const char* const e = getenv("RX_VK_DLSS_PRESET");
     return ur::preset_env(e) ? e : nullptr;
 }
 const char* tx_dlss_model(int v) {
-    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default"};
+    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default", "CNN (E)", "CNN (F)"};
     if (const char* e = dlss_preset_env()) {
         static char b[48];
         const unsigned p = ur::dlss_preset(v, e);
@@ -349,22 +350,28 @@ const char* tx_dlss_model(int v) {
         else snprintf(b, sizeof b, "NVIDIA default (RX_VK_DLSS_PRESET)");
         return b;
     }
+    if (ur::cnn_for_vram(v, device_vram_bytes())) return "CNN (E)";
     return t[std::clamp(v, 0, ur::kModels - 1)];
 }
-/// The DLSS model: the value chosen; variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
-/// this run by RX_VK_DLSS_PRESET
+/// The DLSS model: the value chosen (the K row's on a card under 7 GB: why it is E); variant 1: the game's own upscales (the
+/// row waits for DLSS or DLAA); variant 2: set for this run by RX_VK_DLSS_PRESET
 const char* hn_dlss_model(int v, int variant) {
     static const char* const t[] = {
         "NVIDIA's transformer model: the one tested most here.",
         "NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.",
         "The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.",
         "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+        "NVIDIA's lightweight CNN model: uses ~59 MB VRAM and runs faster on constrained RTX GPUs.",
+        "NVIDIA's lightweight CNN model tuned for DLAA and Ultra Performance (~59 MB VRAM).",
     };
     static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
+    static const char* const cnn = "NVIDIA's CNN model, chosen for graphics cards with less than 7 GB of memory: less video "
+                                   "memory and GPU time than the transformer.";
     if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME || upscaler() == ur::OFF ? 1 : 0;
     if (variant == 1) return unused;
     if (variant == 2) return env;
+    if (variant == 0 && ur::cnn_for_vram(v, device_vram_bytes())) return cnn;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
 /// Neural rendering: the value, or why it is not available here (vk_streamline.cpp explain_refusal; the log has more)
@@ -1322,7 +1329,6 @@ Row rows[] = {
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
      "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.", hn_wide_menus, false, true},
-    {TAB_GRAPHICS, "HDR", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
      "the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.",
@@ -1364,13 +1370,9 @@ Row rows[] = {
     {TAB_AUDIO, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
 
-    // Gameplay
-    {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, fps_stats::kLevels - 1, 1, tx_fps_level,
-     "Frames per second in the top right corner, and as much more as you choose.", hn_fps, false, true},
-    {TAB_GAMEPLAY, "FPS counter position", &opts.fps_corner, 0, 3, 1, tx_fps_corner,
-     "The corner the FPS counter shows in. While this menu is open it shows at the top right.", nullptr, false, true},
-    {TAB_GAMEPLAY, "Menu size", &opts.menu_size, 1, 3, 1, tx_menu_size,
-     "How large this menu, the FPS counter and the start-up screen are drawn.", hn_menu_size, false, true},
+    // Gameplay, in sections: the game's own (its speed, view, texts and voice), then this menu and what it draws over the
+    // game; Bug report, Restart and Quit, under System, are the table's last rows (kQuitRow)
+    {TAB_GAMEPLAY, "Game", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
      hn_speed},
     {TAB_GAMEPLAY, "Field of view", &opts.fov, 50, 150, 5, tx_fov,
@@ -1380,49 +1382,74 @@ Row rows[] = {
      "How fast the letters of dialogue and other messages appear.", hn_text_speed, false, true},
     {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
      "How large the text of dialogue, Navi and signs is drawn.", hn_text_size, false, true},
-    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
-     "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
-     true},
-    {TAB_GAMEPLAY, "Game language", &opts.game_lang, 0, i18n::game_lang_count() - 1, 1, tx_game_lang,
-     "The game's own language, its text. Applies after a restart.", nullptr, true, true},
-    {TAB_GAMEPLAY, "Menu language", &opts.menu_lang, 0, i18n::lang_count(), 1, tx_menu_lang, "The language of this menu.",
-     hn_menu_lang, false, true},
-    {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
-     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
-     true},
     {TAB_GAMEPLAY, "Skip opening", &opts.skip_opening, 0, 1, 1, tx_onoff,
      "Skips the new-game opening (the story movie and Navi waking Link) and leaves later cutscenes, the Deku Tree "
      "meeting, and the title screen alone.", nullptr, false, true},
 
-    // Controls (13 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    {TAB_GAMEPLAY, "Game language", &opts.game_lang, 0, i18n::game_lang_count() - 1, 1, tx_game_lang,
+     "The game's own language, its text. Applies after a restart.", nullptr, true, true},
+    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
+     "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
+     true},
+    {TAB_GAMEPLAY, "Interface", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GAMEPLAY, "Menu size", &opts.menu_size, 1, 3, 1, tx_menu_size,
+     "How large this menu, the FPS counter and the start-up screen are drawn.", hn_menu_size, false, true},
+    {TAB_GAMEPLAY, "Menu language", &opts.menu_lang, 0, i18n::lang_count(), 1, tx_menu_lang, "The language of this menu.",
+     hn_menu_lang, false, true},
+    {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, fps_stats::kLevels - 1, 1, tx_fps_level,
+     "Frames per second in the top right corner, and as much more as you choose.", hn_fps, false, true},
+    {TAB_GAMEPLAY, "FPS counter position", &opts.fps_corner, 0, 3, 1, tx_fps_corner,
+     "The corner the FPS counter shows in. While this menu is open it shows at the top right.", nullptr, false, true},
+    {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
+     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
+     true},
+    // Controls, in sections (15 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows): the
+    // controller (its two pages first), the camera, the mouse, then this menu's keys
+    {TAB_CONTROLS, "Controller", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
+     "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
+     "buttons."},
+    {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
+     "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
-    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 2, 1, tx_mousecam, "How the captured mouse turns the camera.",
-     hn_mousecam, false, true},
+    {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
+     "How far a stick moves from center in any direction before the game sees it. "
+     "Lower for a precise stick, higher for one that drifts. "
+     "The game's own dead zone still follows.", nullptr, false, true},
+    {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
+     "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
+    {TAB_CONTROLS, "Auto run", &opts.auto_run, 0, 1, 1, tx_auto_run,
+     "Sprint without holding A (or its key). Hold it until Link sprints, then let go: he keeps going. Let go of the "
+     "stick or the movement keys, or tap A again, to stop.", nullptr, false, true},
+    {TAB_CONTROLS, "Camera", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_CONTROLS, "Camera speed", &opts.camera_speed, 50, 400, 25, tx_percent,
+     "How fast the right stick turns the camera, in percent of the game's own speed; the camera keys too, and the mouse "
+     "with Mouse camera As the stick. The game's own camera speed setting still applies.", nullptr, false, true},
+    {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
+     "Inverts horizontal look (left/right) on the right analog stick.", nullptr, false, true},
+    {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
+     "Inverts vertical look (up/down) on the right analog stick.", nullptr, false, true},
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
      "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
      "game's standard behavior. Manual camera controls and recentering still work.", nullptr, false, true},
+    {TAB_CONTROLS, "Mouse", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 2, 1, tx_mousecam, "How the captured mouse turns the camera.",
+     hn_mousecam, false, true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
      "count. The - and = keys change it in game too.", nullptr, false, true},
     {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff, "Swaps up and down for the mouse.",
      hn_mouse_invert, false, true},
-    {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
-     "Inverts horizontal look (left/right) on the right analog stick.", nullptr, false, true},
-    {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
-     "Inverts vertical look (up/down) on the right analog stick.", nullptr, false, true},
-    {TAB_CONTROLS, "Camera speed", &opts.camera_speed, 50, 400, 25, tx_percent,
-     "How fast the right stick turns the camera, in percent of the game's own speed; the camera keys too, and the mouse "
-     "with Mouse camera As the stick. The game's own camera speed setting still applies.", nullptr, false, true},
-    {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
-     "How far a stick moves from center in any direction before the game sees it. "
-     "Lower for a precise stick, higher for one that drifts. "
-     "The game's own dead zone still follows.", nullptr, false, true},
-    {TAB_CONTROLS, "Auto run", &opts.auto_run, 0, 1, 1, tx_auto_run,
-     "Sprint without holding A (or its key). Hold it until Link sprints, then let go: he keeps going. Let go of the "
-     "stick or the movement keys, or tap A again, to stop.", nullptr, false, true},
-    {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
-     "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
+    {TAB_CONTROLS, "Menu", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_CONTROLS, "Menu shortcut", &opts.menu_shortcut, 0, 2, 1, tx_menu_shortcut,
+     "Which keys open and close this menu. F1 always does; F1 only leaves Insert free for an overlay. With Esc, Esc opens it "
+     "too, as a PC game's pause menu (open, Esc still goes back a page or closes it).",
+     nullptr, false, true},
+    {TAB_CONTROLS, "Compact menu key", &opts.compact_menu_key, 0, 1, 1, tx_compact_menu_key,
+     "Which key switches between the full menu and the compact bar (or opens directly to the compact bar when held "
+     "with the menu shortcut).",
+     nullptr, false, true},
     {TAB_MOTION, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
      "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
      "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one.", hn_gyro,
@@ -1437,28 +1464,15 @@ Row rows[] = {
      nullptr, false, true},
     {TAB_MOTION, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff, "Turns the motion aim's up and down around.",
      nullptr, false, true},
-    {TAB_MOTION, "Motion deadzone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
+    {TAB_MOTION, "Motion dead zone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
      "How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters "
      "when held still; Low keeps the smallest movements.", nullptr, false, true},
-    {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
-     "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     // (hookshot) the Controls page's own rows, above its grid (TAB_PAGE: no tab shows them)
     {TAB_PAGE, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout, false, true},
     {TAB_PAGE, "Button prompts", &opts.prompts, 0, HOS_PROMPT_N, 1, tx_prompts,
      "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
      "put each action on.", hn_prompts, true, true},
-    {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
-     "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
-     "buttons."},
-    {TAB_CONTROLS, "Menu shortcut", &opts.menu_shortcut, 0, 2, 1, tx_menu_shortcut,
-     "Which keys open and close this menu. F1 always does; F1 only leaves Insert free for an overlay. With Esc, Esc opens it "
-     "too, as a PC game's pause menu (open, Esc still goes back a page or closes it).",
-     nullptr, false, true},
-    {TAB_CONTROLS, "Compact menu key", &opts.compact_menu_key, 0, 1, 1, tx_compact_menu_key,
-     "Which key switches between the full menu and the compact bar (or opens directly to the compact bar when held "
-     "with the menu shortcut).",
-     nullptr, false, true},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
@@ -1563,6 +1577,7 @@ Row rows[] = {
     {TAB_DEBUG, "Intel shader compiles", &opts.intel_compiles, 0, 1, 1, tx_intel_compiles,
      "Intel graphics: how many shaders Intel's compiler is given at once. Applies after a restart.", hn_intel_compiles, true, true},
     // (hookshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
+    {TAB_GAMEPLAY, "System", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
      "version, where you are, your graphics card and driver, CPU, RAM and system, the options and switches you changed), the logs "
@@ -1937,6 +1952,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.nr_scale) return "nr_scale";
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
+    if (r.value == &opts.gyro_deadzone) return "motion_deadzone";   // (the Motion dead zone row: "Motion deadzone" until 2.3)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -4231,9 +4247,11 @@ static void probe_upscalers_soon() {
             const auto t0 = std::chrono::steady_clock::now();
             dlss_probe();
             fsr4_probe();
+            ffx::probe();   // (AMD FSR 4's frame generation: its DLLs' signatures checked here, not where the device is made)
             (void)fsr3::supported();
             logf("menu: the upscalers asked in the background while the start-up screen shows (%.0f ms)",
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            dlss_status_log();   // (one block: DLSS, its frame generation and DLSS 5, on or off and why)
         }).detach();
     });
 }
@@ -4921,6 +4939,9 @@ void menu_tick() {
     fullscreen_tick();
     game_lang_tick();
     outputs_follow_screen();
+    // (and when no start-up screen showed, as with RX_VK_PRECOMPILE=0: the upscalers' questions and the DLSS block are
+    // asked here, at the game's first frame; once in all, so a start with the screen has them already)
+    if (dev.device) probe_upscalers_soon();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)

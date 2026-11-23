@@ -10,8 +10,9 @@
 // the newest one it finds in them. Windows' paths are wide all the way (GetModuleFileNameW, _wgetenv), so any folder name
 // works. On Linux NGX takes only ASCII paths: a folder named otherwise goes to it as /proc/self/fd/<n> (wide()), and the
 // runtime itself has to be in a folder whose real path is ASCII (the log and the menu say so when it is not). The Insert
-// menu's DLSS model row (opts.dlss_model, upscaler_rows.h) chooses DLSS's preset: K by default, M, L, or NVIDIA's default
-// (0). RX_VK_DLSS_PRESET=<letter> (or 0) over it. RX_VK_DLSS_LOG=1: NGX's own log in ours.
+// menu's DLSS model row (opts.dlss_model, upscaler_rows.h) chooses DLSS's preset: K by default (the CNN's E on a card with
+// less than 7 GB of video memory), M, L, or NVIDIA's default (0). RX_VK_DLSS_PRESET=<letter> (or 0) over it.
+// RX_VK_DLSS_LOG=1: NGX's own log in ours.
 //
 // NVIDIA's NGX SDK is not part of Hookshot (NVIDIA's license): a local build fetches it (scripts/ngx_sdk.py) and builds with
 // HOOKSHOT_NGX_SDK, which compiles this file with HOOKSHOT_NGX. Without it only the stubs at the end are here.
@@ -34,10 +35,14 @@
 
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
+#include "vk_internal.h"
 #include "vk_menu.h"
 #include "vk_framegen.h"   // (hookshot fork: framegen_by_auto, the Frame generation by row in effect)
 #include "vk_paths.h"
+#include "vk_dlssnr_ngx.h"   // (the start-up block: DLSS 5 through NGX direct)
 #include "vk_reactive.h"
+#include "vk_signed.h"   // (Linux: NGX's runtime folders, only those no other account may write)
+#include "vk_streamline.h"   // (the start-up block: DLSS 5 through Streamline)
 #include "vk_temporal.h"
 #include "vk_texture.h"
 
@@ -65,6 +70,9 @@ int env_switch(const char* name) {   // (-1: unset)
 
 // (what is known of DLSS on this device: -1 not yet, else a DlssWhy. Set once the device is made and when NGX answers)
 std::atomic<int> g_why{-1};
+// (hookshot: whether the device has NVIDIA's NVX extensions, which NGX needs: set as it is made. g_why cannot say, being
+// super resolution's: NGX may run with it not DLSS_OK, for DLSS 5 or frame generation when DLSS's own runtime is missing)
+std::atomic<bool> g_ngx_device{false};
 
 DlssWhy dlss_why() {
     if (!dlss_built()) return DLSS_NOT_BUILT;
@@ -121,6 +129,17 @@ void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_
 }
 
 namespace fs = std::filesystem;
+
+/// A folder's entries, without a throw: range-for over a directory_iterator calls its throwing operator++, and a read error
+/// part way through (a folder removed or remounted while it is read) would end the game, here from the start-up block's
+/// detached thread too (dlss_status_log). A folder that is missing or cannot be read has no entries; one that fails part way,
+/// those read before it did
+std::vector<fs::path> entries(const fs::path& d) {
+    std::vector<fs::path> out;
+    std::error_code ec;
+    for (fs::directory_iterator it(d, ec), end; !ec && it != end; it.increment(ec)) out.push_back(it->path());
+    return out;
+}
 #ifdef _WIN32
 /// The game folder (game_module_path's rule: bin\hookshot.exe beside image.bin is the folder above bin), from
 /// GetModuleFileNameW: a folder with characters outside the ANSI code page is still the right one
@@ -212,11 +231,28 @@ std::vector<fs::path> runtime_dirs(const fs::path& game) {
     if (fs::path e = env_path(L"RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
     dirs.push_back(game / L"ngx");
     if (fs::path l = env_path(L"LOCALAPPDATA"); !l.empty()) dirs.push_back(l / L"Hookshot" / L"ngx");
+    // (and the game folder's streamline folder, where DLSS 5's Streamline files go with its model: NGX direct finds
+    // nvngx_dlssnr.dll there too, one folder for both back ends. NGX takes the newest of each file it finds)
+    dirs.push_back(game / L"streamline");
 #else
     if (fs::path e = env_path("RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
     dirs.push_back(game / "ngx");
     if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
     else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
+    // (NGX on Linux loads what it finds in these folders without a signature to check: a folder that exists is kept only
+    // when no other account may write it (vk_signed.h); one not made yet holds nothing to load. A folder left out is said)
+    std::vector<fs::path> safe;
+    std::error_code ec;
+    for (const fs::path& d : dirs) {
+        if (!fs::exists(d, ec)) {
+            safe.push_back(d);
+            continue;
+        }
+        static std::atomic<int> told{0};
+        if (signed_dll::folder_owned_safely(d.native(), "NVIDIA DLSS's runtime folder")) safe.push_back(d);
+        else if (told++ < 4) logf("vk: NVIDIA DLSS: %s left out of NGX's runtime folders (above)", d.c_str());
+    }
+    dirs.swap(safe);
 #endif
     return dirs;
 }
@@ -286,16 +322,15 @@ bool ngx_init() {
         // (Linux: NGX loads the runtime by its real path, ASCII only (wide()): one only in folders named otherwise is not
         // loaded, FeatureInitResult 0xbad00004, though the GPU runs DLSS)
         bool runtime = false, loadable = false;
-        std::error_code ec;
         for (const auto& d : dirs)
-            for (const auto& f : fs::directory_iterator(d, ec))
-                if (f.path().filename().native().rfind(kRuntimeName, 0) == 0) {
+            for (const fs::path& f : entries(d))
+                if (f.filename().native().rfind(kRuntimeName, 0) == 0) {
                     runtime = true;
 #ifdef _WIN32
                     loadable = true;
 #else
                     std::error_code real;
-                    loadable |= dlss_checks::ascii(fs::canonical(f.path(), real).native()) && !real;
+                    loadable |= dlss_checks::ascii(fs::canonical(f, real).native()) && !real;
 #endif
                 }
         if (needs_driver) logf("vk: NVIDIA DLSS: needs NVIDIA's driver %u.%u or newer", major, minor);
@@ -315,10 +350,11 @@ bool ngx_init() {
     return true;
 }
 
-/// DLSS's preset: the DLSS model row's, RX_VK_DLSS_PRESET over it (upscaler_rows.h dlss_preset)
+/// DLSS's preset: the DLSS model row's (its K preset E on a card with less than 7 GB of video memory), RX_VK_DLSS_PRESET
+/// over it (upscaler_rows.h dlss_preset, cnn_for_vram: the row's text says the same)
 unsigned wanted_preset() {
     static const char* const env = getenv("RX_VK_DLSS_PRESET");
-    return upscaler_rows::dlss_preset(opts.dlss_model, env && *env ? env : nullptr);
+    return upscaler_rows::dlss_preset(opts.dlss_model, env, device_vram_bytes());
 }
 
 /// DLSS's feature for this output size and preset, made when either changes (cmd: its creation's work): the engine's
@@ -364,14 +400,17 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     const bool aa = rw == ow && rh == oh;
     NVSDK_NGX_PerfQuality_Value mode = NVSDK_NGX_PerfQuality_Value_DLAA;
     unsigned max_w = ow, max_h = oh, min_w = ow, min_h = oh;   // (DLAA: the render size is the output's, one size)
+    unsigned create_w = ow, create_h = oh;
     if (!aa) {
         dlss_checks::ModeRange ranges[5];
         NVSDK_NGX_PerfQuality_Value which[5];
+        unsigned optimal[5][2]{};
         int n = 0;
         for (const NVSDK_NGX_PerfQuality_Value m : scaled) {
             unsigned w = 0, h = 0, xw = 0, xh = 0, nw = 0, nh = 0;
             float sharp = 0;
             if (NVSDK_NGX_FAILED(NGX_DLSS_GET_OPTIMAL_SETTINGS(s.caps, ow, oh, m, &w, &h, &xw, &xh, &nw, &nh, &sharp)) || !w) continue;
+            optimal[n][0] = w, optimal[n][1] = h;
             ranges[n] = {nw, nh, xw, xh}, which[n++] = m;
         }
         dlss_checks::ModeRange took;
@@ -390,6 +429,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
             return *fail = refused[at], 0;
         }
         mode = which[k], max_w = took.max_w, max_h = took.max_h, min_w = took.min_w, min_h = took.min_h;
+        create_w = optimal[k][0], create_h = optimal[k][1];
         if (took.max_w != ranges[k].max_w || took.max_h != ranges[k].max_h || took.min_w != ranges[k].min_w ||
             took.min_h != ranges[k].min_h)
             logf("vk: NVIDIA DLSS: the render size %ux%u is a little outside quality mode %d's range (%ux%u to %ux%u): taken by "
@@ -404,16 +444,19 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
         temporal_later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
         s.feature = nullptr;
     }
-    // (the DLSS model row's preset for every mode, K by default: NVIDIA's transformer model. 0: NVIDIA's own per mode)
+    // (the DLSS model row's preset for every mode, K by default: NVIDIA's transformer model, or its CNN's E under 7 GB of
+    // video memory. 0: NVIDIA's own per mode)
     static_assert(NVSDK_NGX_DLSS_Hint_Render_Preset_K == 11 && NVSDK_NGX_DLSS_Hint_Render_Preset_L == 12 &&
-                  NVSDK_NGX_DLSS_Hint_Render_Preset_M == 13 && NVSDK_NGX_DLSS_Hint_Render_Preset_Default == 0);
+                  NVSDK_NGX_DLSS_Hint_Render_Preset_M == 13 && NVSDK_NGX_DLSS_Hint_Render_Preset_Default == 0 &&
+                  NVSDK_NGX_DLSS_Hint_Render_Preset_E == upscaler_rows::kPresetE);
     for (const char* k : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
         NVSDK_NGX_Parameter_SetUI(s.params, k, preset);
     NVSDK_NGX_DLSS_Create_Params cp{};
-    cp.Feature.InWidth = max_w, cp.Feature.InHeight = max_h, cp.Feature.InTargetWidth = ow, cp.Feature.InTargetHeight = oh;
+    // Feature creation takes the mode's recommended size; the input images still cover its dynamic range.
+    cp.Feature.InWidth = create_w, cp.Feature.InHeight = create_h, cp.Feature.InTargetWidth = ow, cp.Feature.InTargetHeight = oh;
     cp.Feature.InPerfQualityValue = mode;
     // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed. With the
     // game's native HDR the colour goes past 1: an HDR feature, given linear light, with DLSS's own exposure)
@@ -438,6 +481,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     s.refused = 0;
     s.feature_aa = mode == NVSDK_NGX_PerfQuality_Value_DLAA;
     s.features_made++;
+    logf("vk: NVIDIA DLSS: feature create size %ux%u (recommended), input resources %ux%u", create_w, create_h, max_w, max_h);
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
          "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
          min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),
@@ -543,10 +587,13 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     // (NVIDIA's own extensions: without them this is not an NVIDIA GPU, or not one NGX runs on. With them, NGX says, in
     // dlss_probe or at the first upscale: a GTX has them too)
     if (!both) g_why = DLSS_NEEDS_RTX;
+    g_ngx_device = both;
 }
 
 bool dlss_ngx_session() {
-    if (!dlss_built() || dlss_why() == DLSS_ENV_OFF || !dev.device) return false;
+    // (not on a device without NVIDIA's extensions: an AMD or Intel GPU, or a laptop's Intel GPU with NVIDIA's driver
+    // installed. ngx_init would hand NGX that device, and make an empty ngx folder in the game folder at every start)
+    if (!dlss_built() || dlss_why() == DLSS_ENV_OFF || !dev.device || !g_ngx_device) return false;
     ngx_init();   // (it takes the lock itself, and does nothing the second time)
     State& s = st();
     std::lock_guard lk(s.mu);
@@ -557,7 +604,6 @@ bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) 
     if (where) where->clear();
     if (found) found->clear();
     bool have = false;
-    std::error_code ec;
     // (and the game folder itself, after them: NGX looks there too, which its own log shows with RX_VK_DLSS_LOG=1, and
     // it is where the DLSS SDK's runtimes are usually put)
     const fs::path game = game_dir();
@@ -567,11 +613,11 @@ bool dlss_ngx_runtime(const char* name, std::string* where, std::string* found) 
     for (const fs::path& d : dirs) {
         if (where) *where += (where->empty() ? "" : ", ") + shown(d);
         if (have) continue;
-        for (const auto& f : fs::directory_iterator(d, ec)) {
-            const std::string file = shown(f.path().filename());
+        for (const fs::path& f : entries(d)) {
+            const std::string file = shown(f.filename());
             if (file.rfind(name, 0) != 0) continue;
             have = true;
-            if (found) *found = shown(f.path());
+            if (found) *found = shown(f);
             break;
         }
     }
@@ -755,17 +801,16 @@ bool fg_start(Fg& g) {
     // (Linux: NGX loads it by its real path, ASCII only, as DLSS's runtime: one only in folders named otherwise is not used)
     std::string where;
     bool here = false, loadable = false;
-    std::error_code ec;
     for (const auto& d : runtime_dirs(game_dir())) {
         where += (where.empty() ? "" : ", ") + shown(d);
-        for (const auto& f : fs::directory_iterator(d, ec))
-            if (f.path().filename().native().rfind(kFgRuntimeName, 0) == 0) {
+        for (const fs::path& f : entries(d))
+            if (f.filename().native().rfind(kFgRuntimeName, 0) == 0) {
                 here = true;
 #ifdef _WIN32
                 loadable = true;
 #else
                 std::error_code real;
-                loadable |= dlss_checks::ascii(fs::canonical(f.path(), real).native()) && !real;
+                loadable |= dlss_checks::ascii(fs::canonical(f, real).native()) && !real;
 #endif
             }
     }
@@ -867,6 +912,113 @@ int skip(int why) {
 int dlss_fg_skip(unsigned* most) {
     if (most) *most = fg_skip_most.load(std::memory_order_relaxed);
     return fg_skip.load(std::memory_order_relaxed);
+}
+
+namespace {
+/// (hookshot) A runtime's version for the start-up block: Windows from its version resource (the file mapped as data,
+/// nothing of it run), Linux from its name (libnvidia-ngx-dlss.so.310.9.16). "" when it has none
+std::string runtime_version(const fs::path& p) {
+#ifdef _WIN32
+    std::string v;
+    HMODULE m = LoadLibraryExW(p.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (!m) return v;
+    if (HRSRC r = FindResourceW(m, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16))) {   // (VS_VERSION_INFO, RT_VERSION)
+        const DWORD n = SizeofResource(m, r);
+        const HGLOBAL g = LoadResource(m, r);
+        const auto* b = g ? static_cast<const unsigned char*>(LockResource(g)) : nullptr;
+        for (DWORD i = 0; b && i + 16 <= n; i += 4) {   // (VS_FIXEDFILEINFO: its signature, then the file version)
+            uint32_t sig, ms, ls;
+            std::memcpy(&sig, b + i, 4);
+            if (sig != 0xFEEF04BDu) continue;
+            std::memcpy(&ms, b + i + 8, 4), std::memcpy(&ls, b + i + 12, 4);
+            char t[48];
+            snprintf(t, sizeof t, "%u.%u.%u.%u", ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff);
+            v = t;
+            break;
+        }
+    }
+    FreeLibrary(m);
+    return v;
+#else
+    const std::string name = p.filename().native();
+    const size_t at = name.find(".so.");
+    return at == std::string::npos ? std::string() : name.substr(at + 4);
+#endif
+}
+
+/// (hookshot) Every copy of a runtime NGX can load, with its version, in the folders it is told to look in and the game
+/// folder (NGX takes the newest): "nvngx_dlss.dll 310.9.16.0 in C:\Games\OoT\ngx", or "none in <the folders>"
+std::string runtime_copies(const fs::path::value_type* name) {
+    std::string out, where;
+    const fs::path game = game_dir();
+    if (game.empty()) return "the game's folder is not known";
+    std::vector<fs::path> dirs = runtime_dirs(game);
+    dirs.push_back(game);
+    for (const fs::path& d : dirs) {
+        where += (where.empty() ? "" : ", ") + shown(d);
+        for (const fs::path& f : entries(d)) {
+            if (f.filename().native().rfind(name, 0) != 0) continue;
+            const std::string v = runtime_version(f);
+            out += (out.empty() ? "" : "; ") + shown(f.filename()) + (v.empty() ? "" : " " + v) + " in " + shown(d);
+        }
+    }
+    return out.empty() ? "none in " + where : out;
+}
+}  // namespace
+
+void dlss_status_sr_fg(std::string& sr, std::string& fg) {
+    const DlssWhy why = dlss_why();
+    State& s = st();
+    bool started = false;
+    {
+        std::lock_guard lk(s.mu);
+        started = s.ngx_started;
+    }
+    static const char* const off[DLSS_WHY_COUNT] = {
+        nullptr,
+        "not in this renderer (built without NVIDIA's DLSS SDK)",
+        "turned off for this run (RX_VK_DLSS=0)",
+        "NGX does not run DLSS on this GPU: it needs an NVIDIA RTX GPU",
+        "it needs a newer NVIDIA driver (the log above names the version)",
+        "no nvngx_dlss.dll where NGX looks (the Builder's or RecompLauncher's NVIDIA DLSS tick puts it in the game folder's ngx folder)",
+        "NVIDIA's NGX on Linux loads DLSS's runtime only from a folder named in ASCII",
+    };
+    const std::string copies = runtime_copies(kRuntimeName);
+    if (why != DLSS_OK) sr = std::string("off: ") + off[why] + "; " + copies;
+    else if (!started) sr = "off: NGX did not start (the lines above say why); " + copies;
+    else sr = "on: " + copies;
+    const std::string fg_copies = runtime_copies(kFgRuntimeName);
+    if (env_switch("RX_VK_DLSS_FG") == 0) {
+        fg = "off: turned off for this run (RX_VK_DLSS_FG=0); " + fg_copies;
+        return;
+    }
+    if (why != DLSS_OK || !started) {
+        fg = "off: it runs on DLSS's NGX session, and DLSS is off (above); " + fg_copies;
+        return;
+    }
+    int available = 0, needs_driver = 0, init = 0;
+    unsigned major = 0, minor = 0, most = 0;
+    {
+        std::lock_guard lk(s.mu);
+        if (s.caps) {
+            NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_FrameGeneration_Available, &available);
+            NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_FrameGeneration_NeedsUpdatedDriver, &needs_driver);
+            NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult, &init);
+            NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMajor, &major);
+            NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMinor, &minor);
+            NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &most);
+        }
+    }
+    char b[256];
+    if (available)
+        snprintf(b, sizeof b, "on, up to %u made frames between two of the game's (Frame generation 2x and up, Frame "
+                 "generation by Auto); ", most ? most : 1u);
+    else if (needs_driver)
+        snprintf(b, sizeof b, "off: it needs NVIDIA's driver %u.%u or newer; ", major, minor);
+    else
+        snprintf(b, sizeof b, "off: NGX does not offer it here (%#x): it needs an RTX 40 or newer, and nvngx_dlssg.dll where "
+                 "NGX looks (the NVIDIA DLSS tick) or the driver's own; ", (unsigned)init);
+    fg = b + fg_copies;
 }
 
 bool dlss_fg_wanted() { return fg_asked(); }
@@ -1209,6 +1361,10 @@ int dlss_fg_skip(unsigned* most) {
     if (most) *most = 0;
     return FG_SKIP_NOT_BUILT;
 }
+void dlss_status_sr_fg(std::string& sr, std::string& fg) {
+    sr = "off: not in this renderer (built without NVIDIA's DLSS SDK: on Windows the release's renderer has it)";
+    fg = "off: not in this renderer (it runs through NGX, as DLSS does)";
+}
 bool dlss_fg_runs(int) { return false; }
 void dlss_fg_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_fg_inputs(VkCommandBuffer, const TemporalFrame&, const float*, const float*, const float*, bool) {}
@@ -1220,5 +1376,61 @@ void dlss_fg_idle() {}
 void dlss_fg_close() {}
 
 #endif
+
+// (hookshot) The start-up block: what NVIDIA DLSS does on this PC and why, in one place for a player's log. Asked once the
+// start-up screen's background probes are done (vk_menu.cpp probe_upscalers_soon: NGX started or refused, Streamline
+// attached or not), so each line says on or off, the files found and their versions, and the reason when off.
+void dlss_status_log() {
+#ifdef _WIN32
+    const char* os = "Windows";
+#else
+    const char* os = "Linux";
+#endif
+    char driver[48] = "?";
+    const uint32_t v = dev.props.driverVersion;
+    if (dev.props.vendorID == 0x10DE)   // (NVIDIA's own packing: 10 bits major, 8 minor, 8 sub, 6 build)
+        snprintf(driver, sizeof driver, "%u.%u.%u", v >> 22, (v >> 14) & 0xff, (v >> 6) & 0xff);
+    else
+        snprintf(driver, sizeof driver, "%#x", v);
+    logf("vk: DLSS at start: %s, %s (driver %s, vendor %#x); this renderer: NGX %s, Streamline %s", os, dev.props.deviceName,
+         driver, dev.props.vendorID, dlss_built() ? "in" : "not in", streamline::built_with_sdk() ? "in" : "not in");
+    std::string sr, fg;
+    dlss_status_sr_fg(sr, fg);
+    logf("vk: DLSS   super resolution (DLSS, DLAA): %s", sr.c_str());
+    logf("vk: DLSS   frame generation: %s", fg.c_str());
+    // (DLSS 5 neural rendering: Streamline's session (attached with the device), else NGX direct; OpenDLSS-NR is its own row)
+    std::string nr;
+    if (env_switch("RX_VK_DLSS_NR") == 0) nr = "off: turned off for this run (RX_VK_DLSS_NR=0)";
+    else if (streamline::nr_available()) nr = "on through Streamline";
+    else {
+        // (as running_backend chooses: NGX direct needs NGX's session and its own runtime, not super resolution's)
+        const bool ngx_ok = dlssnr_ngx::built_with_sdk() && dlssnr_ngx::capable();
+        if (ngx_ok) nr = "on through NGX direct";
+        else {
+            // (each reason as one sentence: theirs end in a full stop, and one is added only where it has none)
+            auto sentence = [](std::string s) {
+                while (!s.empty() && (s.back() == '.' || s.back() == ' ')) s.pop_back();
+                return s + ".";
+            };
+            const char* sw = streamline::nr_why();
+            const char* nw = dlssnr_ngx::why();
+            nr = "off: Streamline: " +
+                 sentence(!streamline::built_with_sdk() ? "not in this renderer"
+                          : *sw                         ? sw
+                                                        : "no sl.interposer.dll found (the line above names the folders)") +
+                 " NGX direct: " +
+                 sentence(!dlssnr_ngx::built_with_sdk() ? "not in this renderer" : *nw ? nw : "NGX does not offer it");
+#ifdef _WIN32
+            // (the files by name, readme.md's DLSS 5 table: NVIDIA's to ship, and not in its public releases)
+            nr += " Its files are not in NVIDIA's public releases, so none is fetched: Streamline needs sl.interposer.dll, "
+                  "sl.common.dll, sl.pcl.dll and sl.dlss_nr.dll, and both need nvngx_dlssnr.dll beside them, in the game "
+                  "folder's ngx or streamline folder (readme: DLSS 5 neural rendering).";
+#else
+            nr += " No file put beside the game turns it on here.";
+#endif
+        }
+    }
+    logf("vk: DLSS   neural rendering (DLSS 5): %s", nr.c_str());
+}
 
 } // namespace mkwvk

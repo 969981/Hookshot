@@ -105,14 +105,20 @@
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <StackPanel>
-            <TextBlock x:Name="FilesTitle" Style="{StaticResource Heading}" Text="Build your game"/>
-            <TextBlock x:Name="FilesSub" Style="{StaticResource Sub}" Text="Pick your game files and where the game goes. Hookshot does the rest, once."/>
+            <TextBlock x:Name="FilesTitle" Style="{StaticResource Heading}" Text="Your games"/>
+            <TextBlock x:Name="FilesSub" Style="{StaticResource Sub}" Text="Install a game from your own copy, or update the ones you have."/>
           </StackPanel>
 
-          <!-- "Your games" (Games.cs): each game built beside the game folder below, its name and folder, Open folder and Play.
-               Hidden while there is none -->
+          <!-- the game library (nx2/game_folders.py library, through Runner.Library): every game under the game folder's base,
+               installed or not, its state and its actions (Install, Update, Play, Open folder), and Update all. Hidden
+               without the tools -->
           <StackPanel Grid.Row="1" x:Name="GamesBox" Visibility="Collapsed" Margin="0,0,0,4">
-            <TextBlock x:Name="GamesLabel" Style="{StaticResource Label}" Text="YOUR GAMES"/>
+            <Grid>
+              <TextBlock x:Name="GamesLabel" Style="{StaticResource Label}" Text="YOUR GAMES"/>
+              <!-- (a button, not a link: enabled when a game has an update due, else disabled with why in its tooltip) -->
+              <Button x:Name="UpdateAllButton" Style="{StaticResource Quiet}" Content="Update all" Height="32" Padding="16,0"
+                      HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,0,8" Visibility="Collapsed" Click="UpdateAllClick"/>
+            </Grid>
             <Border Style="{StaticResource Card}">
               <StackPanel x:Name="GameList"/>
             </Border>
@@ -325,8 +331,9 @@
 
         <!-- ===== the launcher (Hookshot Launcher.exe in the game folder, started with launch and its folder) ===== -->
         <StackPanel x:Name="LaunchPage" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
-          <TextBlock Style="{StaticResource Label}" Text="THE LEGEND OF ZELDA" HorizontalAlignment="Center"/>
-          <TextBlock Style="{StaticResource Heading}" Text="Ocarina of Time" HorizontalAlignment="Center" FontSize="34" Margin="0,4,0,0"/>
+          <!-- (the game the folder holds, Games.FolderKey: its series and title, set by ShowLauncher) -->
+          <TextBlock x:Name="LaunchSeries" Style="{StaticResource Label}" Text="THE LEGEND OF ZELDA" HorizontalAlignment="Center"/>
+          <TextBlock x:Name="LaunchTitle" Style="{StaticResource Heading}" Text="Ocarina of Time" HorizontalAlignment="Center" FontSize="34" Margin="0,4,0,0"/>
           <TextBlock x:Name="LaunchVersion" Style="{StaticResource Sub}" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,8,0,0"/>
           <TextBlock x:Name="LaunchStatus" FontSize="13" Foreground="{StaticResource InkSoft}" Text="Checking for updates…"
                      HorizontalAlignment="Center" Margin="0,16,0,0"/>

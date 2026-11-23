@@ -20,6 +20,7 @@
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
 #include "game_profile.h"   /* (the present poll's return addresses) */
+#include "nx2_pack.h"   /* (the game's pack: its present interval hook) */
 #include "../gpu/render/rx_nvn.h"
 #include <math.h>
 #include <stdio.h>
@@ -2641,8 +2642,7 @@ NV(nvnWindowSetPresentInterval) {
         static int told;
         if (o->interval != I(1) && told++ < 6) hos_log("nvn: the game sets present interval %d -> %d", o->interval, I(1)), hos_backtrace();
     }
-    extern volatile uint64_t hos_mkw_pacer;   /* (nn_vi.c: its frame pacer, which calls this from 0x806bce24) */
-    if (hos_game_is_mkw() && c->x[30] == 0x806bce28) hos_mkw_pacer = c->x[19];
+    hos_game_present_interval_set(c);   /* (the game's pack: Mario Kart World 1.8.0's pacer, packs/mkw/host) */
     int hos_vi_native_interval(Ctx *c, int requested);
     o->interval = hos_vi_native_interval(c, I(1));
 }

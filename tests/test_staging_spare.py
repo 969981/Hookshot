@@ -33,6 +33,9 @@ def main():
     on = block(tex, "bool spare_on() {")
     check("RX_VK_STAGING_SPARE" in on, "no RX_VK_STAGING_SPARE switch")
     check("staging_keep() > kArena" in on, "the spare is not limited to cards that keep more than one arena")
+    keep = block(tex, "uint64_t staging_keep() {")
+    check("(vram_under_8gb() ? 128ull : 64ull)" in keep,
+          "#637's 128 MB keep (and so the spare) reaches cards other than discrete ones under 8 GB: the Steam Deck keeps 64 MB")
 
     stage = block(tex, "Staging staging(uint64_t n, uint64_t align = 256) {")
     take = stage.index("spare_take(a)")

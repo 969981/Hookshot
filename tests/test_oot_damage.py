@@ -8,6 +8,7 @@ import tempfile
 RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches as patches
 
 
@@ -38,7 +39,7 @@ def main():
     # Compile the guard from each injected site, not a reimplementation of it.
     body = made.split(patches.LIFE_HEAD)[1].rsplit('\n}', 1)[0]
     guards = body.split(patches.LIFE_CAS)[:2]
-    host = (ROOT / 'host/oot_damage.c').read_text(encoding='utf-8')
+    host = (ROOT / 'packs/oot/host/oot_damage.c').read_text(encoding='utf-8')
     host = '\n'.join(line for line in host.splitlines() if not line.startswith('#include'))
     head = r'''
 #include <stdint.h>

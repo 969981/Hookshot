@@ -41,6 +41,31 @@ public partial class App : Application
         base.OnStartup(e);
     }
 
+    /// (NVIDIA DLSS: RecompLauncher's tick, recomplauncher.json's prepare option) --dlss --accept-nvidia-license: the build
+    /// fetches NVIDIA's DLSS SDK into the builder's ngx-sdk folder and puts NVIDIA's runtimes in each game folder's ngx folder,
+    /// keeping the release's renderer, as the window's DLSS tick does (make_game.py --fetch-ngx-sdk). Without --dlss the
+    /// folder's runtimes are kept; --no-dlss takes out the ones the builder placed. Returns the SDK folder for the build
+    /// (HOOKSHOT_NGX_SDK), or null; error: why --dlss cannot be done. (Longshot 543846eb, #465, made its --cli fetch the SDK)
+    internal static string? CliDlss(List<string> args, out string? error)
+    {
+        error = null;
+        if (!args.Contains("--dlss")) return null;
+        args.RemoveAll(a => a == "--dlss");
+        if (args.Contains("--no-dlss"))
+        {
+            error = "--dlss and --no-dlss were both given: NVIDIA DLSS is either fetched or taken out.";
+            return null;
+        }
+        if (!args.Contains("--accept-nvidia-license"))
+        {
+            error = "NVIDIA DLSS (--dlss) downloads NVIDIA's files under NVIDIA's license: it needs --accept-nvidia-license, " +
+                    "given once the license was shown and accepted.";
+            return null;
+        }
+        if (!args.Contains("--fetch-ngx-sdk")) args.Add("--fetch-ngx-sdk");
+        return Storage.NgxSdk;
+    }
+
     static int Cli(List<string> args)
     {
         using var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
@@ -52,9 +77,16 @@ public partial class App : Application
             Console.Error.WriteLine(missing);
             return 1;
         }
+        var ngxSdk = CliDlss(args, out var dlssError);
+        if (dlssError != null)
+        {
+            stdout.WriteLine("error " + dlssError);
+            Console.Error.WriteLine("error " + dlssError);
+            return 1;
+        }
         var done = new ManualResetEventSlim();
         string? failure = null, said = null;   // (said: make_game's own "error" line in --prepare mode, already passed on to stdout)
-        var runner = new Runner(tools, args);
+        var runner = new Runner(tools, args, ngxSdk: ngxSdk);
         runner.Line += line =>
         {
             if (line.StartsWith("error ")) said = line[6..];

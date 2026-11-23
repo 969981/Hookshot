@@ -118,6 +118,36 @@ int main() {
     CHECK(!hold_met(5600 * MB, 100 * MB, 400 * MB, 5000 * MB));   // (100 MB still to go)
     CHECK(hold_met(5600 * MB, 200 * MB, 400 * MB, 5000 * MB));
     CHECK(hold_met(300 * MB, 200 * MB, 200 * MB, 0));             // (more chosen than the textures hold, their sum having drifted)
+    // (#637) its rules on a card of less than 8 GB alone: one whose heap is under 7.5 GB. An 8 GB card's heap reads just under
+    // 8 GB (8061 MB on one) and its allowance less still, so neither of those under 8 GB tells it from a 6 GB card
+    CHECK(under_8gb(6144 * MB) && under_8gb(4096 * MB) && under_8gb(7679 * MB));
+    CHECK(!under_8gb(7680 * MB) && !under_8gb(8061 * MB) && !under_8gb(8192 * MB) && !under_8gb(16384 * MB) && !under_8gb(0));
+    CHECK(!under_8gb(1024 * MB, true) && !under_8gb(4096 * MB, true));   // (an integrated GPU, the Steam Deck's: never)
+    // a run's start: a sixteenth of the allowance under 8 GB (64 to 512 MB); 512 MB from 8 GB, whatever the allowance
+    CHECK(default_min_free(5233 * MB, true) == 5233 * MB / 16 && default_min_free(512 * MB, true) == 64 * MB);
+    CHECK(default_min_free(7000 * MB, false) == 512 * MB && default_min_free(14800 * MB, false) == 512 * MB);
+    CHECK(default_min_free(0, true) == 512 * MB);
+    // the textures' floor: 1800 MB under 8 GB, none from 8 GB (a 16 GB card's rules cut the textures as far as before)
+    CHECK(texture_min_floor(5233 * MB, true) == 1800 * MB && texture_min_floor(14800 * MB, false) == 0 && texture_min_floor(0, true) == 0);
+    CHECK(update_dynamic_floor(0, 3000 * MB, 13000 * MB, 13000 * MB, 14800 * MB, false) == 0);
+    CHECK(update_dynamic_floor(4000 * MB, 3000 * MB, 7000 * MB, 7000 * MB, 7000 * MB, false) == 0);   // (an 8 GB card's allowance)
+    {   // (under 8 GB: up 32 MB a look while the count is low, toward what the textures hold; down while high; the floor past 97%)
+        const uint64_t a = 5233 * MB;
+        uint64_t f = update_dynamic_floor(0, 2500 * MB, 4000 * MB, 4000 * MB, a, true);
+        CHECK(f == 1832 * MB);
+        f = update_dynamic_floor(f, 2500 * MB, 4000 * MB, 4000 * MB, a, true);
+        CHECK(f == 1864 * MB);
+        CHECK(update_dynamic_floor(f, 2500 * MB, 4900 * MB, 4900 * MB, a, true) == 1832 * MB);   // (over 92%: down)
+        CHECK(update_dynamic_floor(f, 2500 * MB, 5100 * MB, 4000 * MB, a, true) == 1800 * MB);   // (over 97% used: the floor)
+        CHECK(update_dynamic_floor(2600 * MB, 4000 * MB, 4000 * MB, 4000 * MB, a, true) == a / 2);   // (at most half the allowance)
+        // the hold's excess damped to a quarter, and never under the floor
+        const uint64_t over = 5000 * MB - a / 100 * 85;
+        CHECK(cut_by(400 * MB, true) == 100 * MB && cut_by(400 * MB, false) == 400 * MB);
+        CHECK(held_budget(4096 * MB, 3000 * MB, 5000 * MB, 0, a, 85, 1800 * MB, true) == 3000 * MB - over / 4);
+        CHECK(held_budget(4096 * MB, 3000 * MB, 5000 * MB, 0, a, 85) == 3000 * MB - over);   // (as on a card of 8 GB or more)
+        CHECK(held_budget(4096 * MB, 1900 * MB, 5000 * MB, 0, a, 85, 1800 * MB, true) == 1800 * MB);
+        CHECK(held_budget(1024 * MB, 1900 * MB, 5000 * MB, 0, a, 85, 1800 * MB, true) == 1800 * MB);   // (the floor over the budget)
+    }
     std::printf("PASS: the compaction's rules\n");
     return 0;
 }

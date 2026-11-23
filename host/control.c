@@ -2273,6 +2273,7 @@ int hos_control_serve(const char *path, const HosControlGame *game) {
 }
 
 #ifndef HOS_CONTROL_NO_GAME
+#include "nx2_pack.h"   /* (the game's pack: its verbs) */
 /* ---- the game's side ---- */
 void hos_log(const char *fmt, ...);
 void hos_log_flush(void);
@@ -2315,25 +2316,18 @@ static void game_quit(void) {   /* (as the window's close: the pipelines made si
     ExitProcess(0);
 }
 static const char *game_renderer(void) { return rx_describe(); }
-int hos_oot_current_map(char *out, size_t cap);                              /* (hos_main.c) */
-int hos_oot_destination(int index, const char **child, const char **adult);
-int hos_oot_teleport_ask(int index);
-int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
-void hos_oot_teleport_cancel(int ticket);
-int hos_oot_age_ask(int adult);
-int hos_oot_state(int *event, int *loading, int *child);
+/* (the game's own verbs, map, teleport and age, are its pack's: hos_game_control below, host/nx2_pack.h) */
 static HosControlGame game = {
     .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot, .setting = rx_control_setting,
     .setting_set = rx_control_setting_set, .mem_region = game_mem_region, .mem_read = game_mem_read,
     .mem_write = game_mem_write, .save_root = game_save_root, .log = game_log, .quit = game_quit,
-    .renderer = game_renderer, .map = hos_oot_current_map, .destination = hos_oot_destination,
-    .teleport = hos_oot_teleport_ask, .teleport_result = hos_oot_teleport_result,
-    .teleport_cancel = hos_oot_teleport_cancel, .age = hos_oot_age_ask, .oot_state = hos_oot_state};
+    .renderer = game_renderer};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");
     if (!path || !*path) return;
     game.version = version;
+    hos_game_control(&game);   /* (the game's pack fills in its verbs) */
     if (hos_control_serve(path, &game))
         hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/control.md)", path,
                 G.mem_level == 2 ? "read and write" : G.mem_level == 1 ? "read only" : "off");

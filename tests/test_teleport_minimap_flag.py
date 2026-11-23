@@ -187,11 +187,11 @@ def block_end(text, start):
 
 
 def build(cc, tmp, source_path=None):
-    source = (source_path or ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    source = (source_path or ROOT / "packs" / "oot" / "host" / "oot_teleport.c").read_text(encoding="utf-8")
     places = source.index("typedef struct {\n    const char *child_banc")   # (OotDestination and the table of them)
     places = source[places:source.index("};", source.index("static const OotDestination oot_destinations[] = {")) + 2]
     start = source.index("#define OOT_GAMEDATA_SLOT")
-    end = block_end(source, source.index("static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {"))
+    end = block_end(source, source.index("int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {"))
     src, exe = tmp / "teleport.c", tmp / "teleport"
     src.write_text(STAND_IN + places + "\n" + source[start:end] + RUN, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-O1", "-w", str(src), "-o", str(exe)], check=True)
@@ -201,7 +201,7 @@ def build(cc, tmp, source_path=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
-    p.add_argument("--source", type=Path, help="host/hos_main.c from another revision (the regression negative)")
+    p.add_argument("--source", type=Path, help="packs/oot/host/oot_teleport.c (host/hos_main.c before a3) from another revision (the regression negative)")
     a = p.parse_args()
     if os.name == "nt" or sys.platform == "darwin":
         print("SKIP: the stand-in game maps the guest's addresses as Linux does")

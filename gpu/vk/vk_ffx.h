@@ -47,9 +47,10 @@ struct FrameInputs {
 
 /// Whether this build has the backend at all: Windows only (AMD's runtime is Windows DLLs).
 [[nodiscard]] bool built();
-/// Asks AMD's runtime, once, what it offers on this device: called from vk_main.cpp right after the device is made, on the
-/// render thread, with each call into the runtime logged first and guarded. frames_supported() only reads the answer
-/// (false before it), so the Insert menu never waits on AMD's DLLs.
+/// Asks AMD's runtime, once, what it offers on this device: called on the start-up probes' thread once the device is made
+/// (vk_menu.cpp probe_upscalers_soon), with each call into the runtime logged first and guarded; a second caller waits for
+/// the first's answer. frames_supported() only reads the answer (false before it), so neither the device's making nor the
+/// Insert menu waits on AMD's DLLs or their signature check.
 void probe();
 /// Whether FSR 4 frame generation can run here: a Windows build, amd_fidelityfx_loader_vk.dll found and loaded, and AMD's
 /// runtime naming a frame generation provider for this device. RX_VK_FFX=0 keeps the DLL from being loaded at all,

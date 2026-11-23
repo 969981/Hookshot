@@ -1,7 +1,7 @@
 """(hookshot) The button prompts of other controllers: the game's button-icon font redrawn per controller face, from the user's RomFS
 and Kenney's Input Prompts (CC0, third_party/kenney_input).
 
-    python -I nx2/prompt_assets.py --romfs <dir> --out <game folder>/prompts
+    python -I packs/oot/tools/prompt_assets.py --romfs <dir> --out <game folder>/prompts
 
 Writes <out>/External.bfotf, one font with every face's icons (switch, xbox, ps4, ps5, steamdeck). Every text in the game draws
 its button icons from Font2/Scalable/External.*.bfotf (dialogue, the control hints, menus): A B X Y at U+E040..E043, L R ZL ZR at
@@ -18,9 +18,9 @@ Pillow, astc_encoder and texture2ddecoder: <out>/Common.bntx is the game's UI/La
 controls when it serves the file. The Talk ring's buttons and the ocarina hint's icons (the layouts of UI/Layout2Archive/Common,
 <out>/Common.blarc) the same way: <out>/ring.bin and <face>/hint.bin say what to write over them for the controls.
 
-Each face's images (the notes, the letters, the controller picture drawn by nx2/prompt_draw.py, the leader lines) are made as
-layers first: --dump <dir> writes them as PNG, and a PNG of the same name in nx2/prompt_faces/<face>/ takes a layer's place, to
-rework one by hand (nx2/prompt_faces/README.md).
+Each face's images (the notes, the letters, the controller picture drawn by packs/oot/tools/prompt_draw.py, the leader lines) are made as
+layers first: --dump <dir> writes them as PNG, and a PNG of the same name in packs/oot/tools/prompt_faces/<face>/ takes a layer's place, to
+rework one by hand (packs/oot/tools/prompt_faces/README.md).
 
 The font is larger than the game's, and the game drops a file larger than its entry in the resource size table: <out>/
 rsizetable.zs is the game's table with the font's entry raised to fit it, served in its place (host/prompts.c merges it into a
@@ -46,15 +46,18 @@ import sys
 import tempfile
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))   # (Ocarina's pack's tools/: packs/oot/tools)
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+NX2 = os.path.join(ROOT, "nx2")   # (the engine's modules this imports: long_paths, bounded)
+sys.path.insert(0, NX2)
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
 import long_paths  # noqa: E402
 long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
 import bounded   # noqa: E402 (decompression with a ceiling)
-KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
-KENNEY_KEYBOARD = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input_keyboard")   # (the keyboard face's)
+KENNEY = os.path.join(ROOT, "third_party", "kenney_input")
+KENNEY_KEYBOARD = os.path.join(ROOT, "third_party", "kenney_input_keyboard")   # (the keyboard face's)
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
 PAD_BASE = 0xF700
@@ -64,7 +67,7 @@ STATIC_AT = 24
 # code): BIND_BASE + (face x 16 + Switch button) x 17 + pad input, the face's icon of that pad input. A code of its own for each,
 # where the game keeps a code's glyph drawn: a new icon is drawn anew, never an old one shown
 BIND_BASE = 0xF000
-ALL_FACES = ["switch"] + list(FACES) + ["keyboard"]   # (HOS_PROMPT_*: the keyboard last, nx2/prompt_keys.py)
+ALL_FACES = ["switch"] + list(FACES) + ["keyboard"]   # (HOS_PROMPT_*: the keyboard last, packs/oot/tools/prompt_keys.py)
 WIDE = 1.6   # (how much wider than the game's icon a wide Kenney icon may be)
 # the HOS_PAD_* inputs (gpu/vk/vk_api.h), in order
 PADS = ["south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick", "lshoulder", "rshoulder", "up", "down", "left",
@@ -184,7 +187,7 @@ def faces_font(otf, faces, label_otf=None):
     advances ({face: [advance per pad input]}; the keyboard's: per key code): a pad icon per input at PAD_BASE + FACE_CODES x face +
     its number and the face's d-pad icons at PAD_BASE + FACE_CODES x face + STATIC_AT.. (the Switch's, and an input a face has no
     glyph for: the game's own glyph), each Switch button's on each pad input at BIND_BASE.., the game's code points kept. The
-    keyboard face (nx2/prompt_keys.py; label_otf: the game's bold font, for its word keys): the Switch's pad icons, and its keys'
+    keyboard face (packs/oot/tools/prompt_keys.py; label_otf: the game's bold font, for its word keys): the Switch's pad icons, and its keys'
     and sticks' icons"""
     from fontTools.pens.boundsPen import BoundsPen
     from fontTools.pens.t2CharStringPen import T2CharStringPen
@@ -292,7 +295,7 @@ def faces_font(otf, faces, label_otf=None):
 #     "HPTX", u32 count, then count times: u8 Switch button (HOS_SW_*), u8 pad input (HOS_PAD_*), u16 0, u32 runs,
 #     runs times: u32 offset in the file, u32 length, the bytes
 # Each face's images are made first, as layers (face_layers), then encoded: --dump writes the layers as PNG, and a PNG of the same
-# name in nx2/prompt_faces/<face>/ takes a layer's place (prompt_faces.override). A layer's name: the texture's, then for a Switch
+# name in packs/oot/tools/prompt_faces/<face>/ takes a layer's place (prompt_faces.override). A layer's name: the texture's, then for a Switch
 # button's image on a pad input ".<pad input>" (the notes, the letters; the leader lines ".<Switch button>.<pad input>": only the
 # line, drawn over the texture's lines that stay), ".png".
 TEXTURES = "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.bntx.zs"
@@ -302,14 +305,14 @@ NOTES = {"OcarinaButtonA_00": "a", "OcarinaButtonB_00": "b", "OcarinaButtonX_00"
          "OcarinaButtonL_00": "l", "OcarinaButtonR_00": "r"}
 LETTERS = {"KeyTexFontA_00": "a", "KeyTexFontB_00": "b", "KeyTexFontX_00": "x", "KeyTexFontY_00": "y"}
 # the Pro Controller in the pause menu's controls page (System): the picture, the page's copy of it (tinted: PICTURE_TINT) and its
-# shadow (PICTURE_SHADOW); a face's own picture (nx2/prompt_faces.py) takes their place, else the face buttons' discs (centre,
+# shadow (PICTURE_SHADOW); a face's own picture (packs/oot/tools/prompt_faces.py) takes their place, else the face buttons' discs (centre,
 # radius in pixels) by the pad input there get the face's labels (a picture of the controller: its own labels, whatever the controls)
 PICTURES = ("Controller_Pro", "Controller_Pro1")
 PICTURE_TINT, PICTURE_SHADOW = "Controller_Pro1", "ControllerSh_Pro1"
 PICTURE_BUTTONS = {"east": (869, 227, 31), "south": (800, 286, 31), "north": (800, 168, 31), "west": (732, 227, 31)}
 # the page's leader lines (BC4, white on black, drawn over the picture: GUIDE_SCALE and GUIDE_AT take its pixels to theirs), from
 # the labels' bars (BARS: the left ones' right edge, the right ones' left edge, kept from the game's) to the picture's parts
-# (nx2/prompt_faces.py): each line's texture, bar (0 left, 1 right), row (its top; 6 pixels thick) and end: a Switch button (the
+# (packs/oot/tools/prompt_faces.py): each line's texture, bar (0 left, 1 right), row (its top; 6 pixels thick) and end: a Switch button (the
 # part of the pad input bound to it: one line per pad input, chosen by the controls; a face button or the d-pad: a frame round the
 # group, as the game's round its face buttons, the label's icon telling which) or a pad input (fixed: the sticks)
 GUIDES = ("ControllerGuide_Pro_00", "ControllerGuide_Pro_01")
@@ -462,7 +465,7 @@ class Layer:
 
 
 def face_layers(b, tex, face, otf):
-    """this face's images, as layers (in textures.bin's order), each a hand-made one if nx2/prompt_faces/<face>/ has it"""
+    """this face's images, as layers (in textures.bin's order), each a hand-made one if packs/oot/tools/prompt_faces/<face>/ has it"""
     from PIL import Image, ImageDraw
     import prompt_draw
     icons = Icons(face, otf)
@@ -1039,7 +1042,7 @@ def prompt_packages():
 
 def prompt_key(a):
     """Everything generate() reads; keep this list with its file opens/imports and tests/test_prompt_skip.py."""
-    source = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_assets.py", "prompt_draw.py", "bounded.py")}
+    source = {n: prompt_file(os.path.join(NX2 if n == "bounded.py" else HERE, n)) for n in ("prompt_assets.py", "prompt_draw.py", "bounded.py")}
     tables = {n: prompt_file(os.path.join(HERE, n)) for n in ("prompt_faces.py", "prompt_keys.py")}
     fonts = {FONT: prompt_file(os.path.join(a.romfs, FONT))}
     try:
@@ -1336,7 +1339,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--faces", default=",".join(ALL_FACES))
     ap.add_argument("--no-textures", action="store_true")
-    ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
+    ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names packs/oot/tools/prompt_faces/<face>/ "
                     "takes in their place), and the game's textures they go into into <dir>/game/")
     ap.add_argument("--incremental", action="store_true", help="keep complete, unchanged output (source-checkout builds)")
     a = ap.parse_args()

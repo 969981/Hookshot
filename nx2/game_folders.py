@@ -28,6 +28,41 @@ The places that apply it:
     python -I nx2/game_folders.py --folder ~/Games/Hookshot --key mkw   # ~/Games/Hookshot-mkw
     python -I nx2/game_folders.py --launcher-games                     # the games[] the released profiles give
     python -I nx2/game_folders.py --write-launcher recomplauncher.json  # the entry with every released game in it
+    python -I nx2/game_folders.py --library ~/Games/Hookshot [--json]   # every game: installed, its version, an update due
+
+The library (library below) is what one program that manages every game reads: each buildable() game in profile order,
+where under the base it is installed, the version it was built with and whether this engine would update it. A game is
+found in any of the base's folders (<base> and every <base>-<key>), its own folder first: a Builder used to build into the
+folder the player chose (--out), so a game can sit in another's folder, and it is still that game, played and updated
+there. A folder is the game its kept copy is (.hookshot_exefs/main's build id), or, keeping none (built before updates came
+in), the game whose folder it is by the rule. It is what `nx2/make_game.py --update-all` loops over, and `--json` is the
+form the Builders read. --json prints a list, one object per game, with these fields (stable: a field is added, never
+renamed or retyped):
+
+    key               the profile key (oot, mkw, dkb)
+    name              the game (the profile's name, "The Legend of Zelda: Ocarina of Time")
+    folder            where the game is installed: its own folder when it is there or not installed at all, else the
+                      base's folder that holds it. Play starts this folder
+    base              the base the folders are named from (base_of: a game folder of another game gives its base)
+    state             "built" (installed in folder) or "missing" (in none of the base's folders)
+    built             true when state is "built" (image.bin and the game's executable in folder)
+    holds             the key of the game whose copy folder keeps, or null: no copy kept, a build no profile knows, or
+                      not installed (another game in own_folder is own_folder_holds)
+    other_folders     the base's other folders that hold this game too, built (a list, mostly empty): --update-all
+                      updates each of them as well
+    own_folder        the game's own folder by the rule (<base>, or <base>-<key>): where an install of it goes
+    own_folder_holds  the key of another game whose copy sits in own_folder, or null. When set, installing this game
+                      under this base is refused until that folder is freed (or the game goes under another base)
+    version           the Hookshot version folder was built with (hookshot_version.txt version=), or null; only when built
+    builder           the Builder that built it (hookshot_version.txt builder=, the Builder's executable), or null
+    kept              true when folder keeps the game files an update builds from (.hookshot_exefs and romfs); false
+                      when not installed. A built folder without them (built before updates came in) can't be updated:
+                      the game's files are to be chosen once to build it again (--update-all says "rebuild")
+    update            true when this engine is to update the game (its version is older: version.py update_due, the
+                      Linux updater's rule, which never takes a game back to an older version; the Windows Builder's
+                      Updater.cs rebuilds a differing version, a newer one too), false when it is current (or newer),
+                      null when it can't be told (no version in the folder, or this engine names none). Always false when
+                      not built, or not kept
 """
 import argparse
 import json
@@ -112,6 +147,162 @@ def built_games(out, game_exe):
     return games
 
 
+def game_exe(folder):
+    """The game's executable in a folder, either platform's (a Linux build for Windows has hookshot.exe): bin/ under the
+    launcher, else the folder itself (a folder built before the launcher). None when there is none. The Builders pass
+    their own check to built_games and library; this is the default"""
+    for rel in (("bin", "hookshot"), ("bin", "hookshot.exe"), ("hookshot",), ("hookshot.exe",)):
+        path = os.path.join(folder, *rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def version_file(game_folder):
+    """hookshot_version.txt's version= and builder= (the build writes them: nx2/make_game.py), each None when absent"""
+    found = {}
+    try:
+        with open(os.path.join(game_folder, "hookshot_version.txt"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k in ("version", "builder") and k not in found:
+                    found[k] = v.strip() or None
+    except OSError:
+        pass
+    return found.get("version"), found.get("builder")
+
+
+def folder_identity(f, rule_key, game_exe=game_exe):
+    """The game a folder of the base is, when it holds a built one: its kept copy's profile key, or rule_key (the game whose
+    folder it is by the rule) when it keeps no copy, or no profile knows the copy. None when nothing is built there"""
+    if not (os.path.isfile(os.path.join(f, "image.bin")) and game_exe(f)):
+        return None
+    held = folder_game(f)
+    return held.key if held else rule_key
+
+
+def kept_copy(f):
+    """The folder keeps the game files an update builds from (.hookshot_exefs and romfs: make_game.py --update)"""
+    return os.path.isdir(os.path.join(f, ".hookshot_exefs")) and os.path.isdir(os.path.join(f, "romfs"))
+
+
+def library(base, game_exe=game_exe, engine=None):
+    """Every game that builds (buildable(), in profile order), installed or not, under base: a dict for each with the fields
+    the module's docstring lists (key, name, folder, base, state, built, holds, other_folders, own_folder,
+    own_folder_holds, version, builder, kept, update). base is the default game's folder, or another game's folder of it
+    (base_of). engine is the version the update flags compare against: default this engine's (version.py release()).
+    Nothing for an empty base"""
+    if not base:
+        return []
+    import version   # (nx2/version.py; release() may ask git, so only when no engine is given)
+    if engine is None:
+        engine = version.release()
+    base = base_of(base)
+    found = [(folder(base, p.key), folder_identity(folder(base, p.key), p.key, game_exe)) for p in buildable()]
+    games = []
+    for p in buildable():
+        own = folder(base, p.key)
+        there = [f for f, is_ in found if is_ == p.key]
+        there.sort(key=lambda f: f != own)   # (its own folder first, the others in profile order: sort keeps their order)
+        f = there[0] if there else own
+        built = bool(there)
+        held = folder_game(f) if built else None   # (not installed: what sits in its own folder is own_folder_holds)
+        own_held = folder_game(own)
+        have, builder = version_file(f) if built else (None, None)
+        kept = built and kept_copy(f)
+        games.append({"key": p.key, "name": p.game, "folder": f, "base": base, "state": "built" if built else "missing",
+                      "built": built, "holds": held.key if held else None, "other_folders": there[1:], "own_folder": own,
+                      "own_folder_holds": own_held.key if own_held and own_held.key != p.key else None,
+                      "version": have, "builder": builder, "kept": kept,
+                      "update": version.update_due(have, engine) if kept else False})
+    return games
+
+
+def folder_key(game_folder):
+    """The profile key of the game a folder is: its kept copy's (folder_game), else the game whose folder it is by the rule
+    (<base>-<key> is that key's, any other folder the default game's). The Builders name a folder's launcher page and its
+    shortcuts by it; Games.cs FolderKey keeps the same"""
+    held = folder_game(game_folder)
+    if held:
+        return held.key
+    f = game_folder.rstrip("/\\") or game_folder
+    b = base_of(f)
+    for p in buildable():
+        if folder(b, p.key) == f:
+            return p.key
+    return game_profile.DEFAULT
+
+
+def shortcut_name(key):
+    """A game's shortcut (the Windows Builders' .lnk) and menu entry name: "Hookshot" for the default game, the name its
+    shortcut always had (a player's Hookshot.lnk is the one made again, not a second one), "<game> (Hookshot)" for another,
+    without the letters a Windows file name cannot hold. Games.cs ShortcutName keeps the same"""
+    if key == game_profile.DEFAULT:
+        return "Hookshot"
+    return re.sub(r'[\\/:*?"<>|]', "", game_profile.GAMES[key].game).strip() + " (Hookshot)"
+
+
+def title_parts(name):
+    """The launcher page's two lines for a game: the series above, in capitals, and the title, split at the name's first ": "
+    ("THE LEGEND OF ZELDA", "Ocarina of Time"); ("", name) for a name without one ("Mario Kart World")"""
+    head, sep, rest = name.partition(": ")
+    return (head.upper(), rest) if sep and head and rest else ("", name)
+
+
+GAME_LINE = re.compile(r"^@@game (start|end) ([a-z0-9]{1,16})(?: (.*))?$")
+
+
+def update_line(line):
+    """One of make_game.py --update-all's framing lines, read: ("start", key, folder), ("end", key, result, text or None), or
+    None for any other line. The Builders follow an Update all by them; Games.cs GameLine keeps the same"""
+    m = GAME_LINE.match((line or "").rstrip("\r\n"))
+    if not m:
+        return None
+    kind, key, rest = m.group(1), m.group(2), m.group(3) or ""
+    if kind == "start":
+        return ("start", key, rest)
+    result, _, text = rest.partition(" ")
+    return ("end", key, result, text or None)
+
+
+def copy_key(check_text):
+    """The profile key of a copy make_game.py --check found supported, from its sentence ("... (build e0f3ccfa)."), or None.
+    The Builders send a copy of another game than the folder's to its own folder by it (--base); Games.cs CopyKey keeps the
+    same"""
+    m = re.search(r"\(build ([0-9a-f]{8,64})\)", check_text or "")
+    if not m:
+        return None
+    return next((p.key for p in buildable() if p.build_id.startswith(m.group(1))), None)
+
+
+def update_all_outcome(results, folders, stopped):
+    """How an Update all ended, for the Builders' summary: (done, unfinished). results are its outcomes so far, (key, folder,
+    result, text) for each @@game end line; folders the installed folders it was to go through; stopped that it ended badly
+    (a failure, a non-zero exit, a cancel). done only when it was not stopped, every folder has an outcome and none failed;
+    unfinished the folders it did not reach (the one it was in when it stopped among them). Games.cs Outcome keeps the same"""
+    reached = {os.path.normcase(r[1]) for r in results}
+    unfinished = [f for f in folders if os.path.normcase(f) not in reached]
+    done = not stopped and bool(results) and not unfinished and not any(r[2] == "failed" for r in results)
+    return done, unfinished
+
+
+def shortcut_folder(game_folder):
+    """The folder a game's shortcuts start: its own folder by the rule when that holds the game (built, its kept copy that
+    game's), so a game installed in two folders has its shortcut on its own one, never the other; else the folder given.
+    Games.cs ShortcutFolder keeps the same"""
+    key = folder_key(game_folder)
+    own = folder(base_of(game_folder), key)
+    if os.path.normcase(os.path.abspath(own)) != os.path.normcase(os.path.abspath(game_folder)) and \
+            folder_identity(own, key) == key and folder_game(own) is not None and folder_game(own).key == key:
+        return own
+    return game_folder
+
+
+def installed_folders(games):
+    """The built folders a library (library()) names: each built game's folder and its other_folders, in its order"""
+    return [f for g in games if g["built"] for f in [g["folder"]] + list(g["other_folders"])]
+
+
 def copy_label(p):
     """What the launcher says when it asks for this game's copy: the game, its exact version and main's build"""
     return ("Your copy of %s for Nintendo Switch 2, %s (build %s): the .nup file, or the folder that holds its romfs and "
@@ -165,6 +356,22 @@ def launcher_games(profiles=None, home="{home}/Games/Hookshot", local="{local}",
 LAUNCHER_MIN = "0.90.0-beta.36"
 
 
+def dlss_option():
+    """prepare.options' NVIDIA DLSS tick on Windows: ticked, HookshotBuilder.exe --cli --dlss --accept-nvidia-license
+    fetches NVIDIA's pinned DLSS runtimes into each game folder's ngx\\ and keeps the release's renderer (NGX, Streamline
+    and FSR 4 compiled in). Unticked passes nothing, and a prepare without either flag keeps the folder's runtimes. Off
+    until ticked (it carries NVIDIA's license, the one scripts/ngx_sdk.py downloads under); shown with an RTX card. Not on
+    Linux: the AppImage's renderer has no DLSS"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ngx_sdk", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "ngx_sdk.py"))
+    ngx = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ngx)
+    return {"id": "dlss", "label": "NVIDIA DLSS: download NVIDIA's DLSS files and accept their license",
+            "note": "NVIDIA's, not Hookshot's: the build downloads them from NVIDIA and puts DLSS in each game folder.",
+            "args": ["--dlss", "--accept-nvidia-license"], "os": ["windows"], "gpu": "nvidia",
+            "license": {"name": "NVIDIA RTX SDKs license (NVIDIA DLSS)", "url": ngx.LICENSE_URL}}
+
+
 def launcher_entry(entry, profiles=None):
     """recomplauncher.json with every released game in it: its copy as a named input (no legacy `game`: the launcher
     would then ask every game's tile for that one copy too), its tile in games[], and its copy in prepare.args in one
@@ -183,7 +390,8 @@ def launcher_entry(entry, profiles=None):
     out.setdefault("min", LAUNCHER_MIN)
     out["inputs"] = launcher_inputs(profiles) + [i for i in entry.get("inputs", []) if i["id"] not in {p.key for p in profiles}]
     args = [a for a in out["prepare"]["args"] if a not in ("--game", "{game}") and not a.startswith("--game-")]
-    out["prepare"] = dict(out["prepare"], args=args + prepare_args(profiles))
+    options = [o for o in out["prepare"].get("options", []) if o.get("id") != "dlss"] + [dlss_option()]
+    out["prepare"] = dict(out["prepare"], args=args + prepare_args(profiles), options=options)
     games = launcher_games(profiles)
     if games:
         out["games"] = games
@@ -198,7 +406,32 @@ def main(argv=None):
     ap.add_argument("--key", help="a game profile key")
     ap.add_argument("--launcher-games", action="store_true", help="print the games[] the released profiles give")
     ap.add_argument("--write-launcher", metavar="JSON", help="rewrite this recomplauncher.json with the released games in it")
+    ap.add_argument("--library", metavar="BASE", help="every game under this base: installed or not, its version, an update due")
+    ap.add_argument("--json", action="store_true", help="with --library: as JSON (the fields in this file's docstring)")
     a = ap.parse_args(argv)
+    if a.library is not None:
+        games = library(os.path.abspath(os.path.expanduser(a.library)))
+        if a.json:   # (ASCII, a folder's other letters as \u escapes: the same bytes whatever the console's code page)
+            print(json.dumps(games, indent=2))
+            return 0
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # (-I ignores PYTHONIOENCODING: a folder's letters)
+        except (AttributeError, ValueError):
+            pass
+        for g in games:
+            state = "not installed"
+            if g["built"] and not g["kept"]:
+                state = "installed (%s), its files to choose again to update" % (g["version"] or "no version")
+            elif g["built"]:
+                state = "installed (%s%s)" % (g["version"] or "no version",
+                                              {True: ", update due", False: "", None: ", can't tell"}[g["update"]])
+            print("%-4s %-40s %-34s %s" % (g["key"], g["name"], state, g["folder"]))
+            for f in g["other_folders"]:
+                print("%-4s %-40s %-34s %s" % ("", "", "installed here too", f))
+            if g["own_folder_holds"]:
+                print("%-4s %-40s %-34s %s" % ("", "", "its own folder holds " + game_profile.GAMES[g["own_folder_holds"]].game,
+                                               g["own_folder"]))
+        return 0
     if a.write_launcher:
         with open(a.write_launcher, encoding="utf-8") as f:
             entry = json.load(f)
@@ -209,7 +442,7 @@ def main(argv=None):
         print(json.dumps(launcher_games(), indent=2))
         return 0
     if a.folder is None or not a.key:
-        ap.error("--folder and --key, or --launcher-games")
+        ap.error("--folder and --key, --launcher-games or --library")
     print(folder(os.path.expanduser(a.folder), a.key))
     return 0
 

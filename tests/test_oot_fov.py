@@ -15,6 +15,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_fov
 
 
@@ -179,7 +180,7 @@ def main():
     result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(InstallTests))
     if not result.wasSuccessful():
         raise SystemExit(1)
-    host = (ROOT / "host/oot_fov.c").read_text(encoding="utf-8")
+    host = (ROOT / "packs/oot/host/oot_fov.c").read_text(encoding="utf-8")
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     with tempfile.TemporaryDirectory(prefix="oot-fov-") as temporary:
         source = Path(temporary) / "fixture.c"

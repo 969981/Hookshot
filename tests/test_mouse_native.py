@@ -2,7 +2,7 @@
 
 The file is compiled on its own against a fake guest memory that holds a player camera: its pitch limits at +0x178, its
 pitch at +0x18c, its yaw at +0x1a4 and its state at +0x204. hos_mouse_camera is what the camera's update (f_80644c80,
-nx2/oot_patches.py) calls each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives
+packs/oot/lift/oot_patches.py) calls each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives
 -1); then it turns yaw and pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the limits and yaw wrapped at
 180, up and down swapped with the menu's Invert mouse vertical (option 8), and the controller reads leave the motion to
 the camera. The game eases the angles back toward Link's by itself inside a frame (its follow camera): the mouse's angles

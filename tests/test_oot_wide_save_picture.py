@@ -1,4 +1,4 @@
-"""Compile nx2/oot_wide.py's save-picture patch (issue 952) around authored registers.
+"""Compile packs/oot/lift/oot_wide.py's save-picture patch (issue 952) around authored registers.
 
 The pause menu draws the whole picture into the save's 543 x 306 JPEG through the game's viewport helper. Past 16:9 the
 patch widens that one SetViewport, centred, so the middle 16:9 of the picture fills the texture; narrower than 16:9 (4:3,
@@ -17,6 +17,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_wide  # noqa: E402
 
 FIXTURE = r"""

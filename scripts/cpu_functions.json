@@ -782,7 +782,7 @@
   "source": "read"
  },
  "mkwvk::jitter_sample": {
-  "does": "(hookshot) The host's camera jitter (nx2/oot_jitter.py, host/rx_backend.c): the scene's size while a temporal upscaler draws, NVIDIA DLSS or AMD FSR 4 (vk_temporal.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the Upscaler row); 0, no jitter, otherwise.",
+  "does": "(hookshot) The host's camera jitter (packs/oot/lift/oot_jitter.py, host/rx_backend.c): the scene's size while a temporal upscaler draws, NVIDIA DLSS or AMD FSR 4 (vk_temporal.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the Upscaler row); 0, no jitter, otherwise.",
   "source": "read"
  },
  "mkwvk::log_big_copy": {

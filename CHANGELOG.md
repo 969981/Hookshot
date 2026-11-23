@@ -1,5 +1,88 @@
 # Changelog
 
+## [2.3.0-rc.45](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.44...v2.3.0-rc.45) (2026-11-23)
+
+
+### Code Refactoring
+
+* **packs:** Ocarina's runtime C in its pack, compiled into its runtime only; MKW 1.8.0's pacer to its pack (game packs a3) ([#144](https://github.com/notquiteog/Hookshot/issues/144)) ([c6a4c00](https://github.com/notquiteog/Hookshot/commit/c6a4c00bb749e4d5ec42f3d5958dd10f46c0497f))
+
+
+### Documentation
+
+* **tested:** B2 ([#123](https://github.com/notquiteog/Hookshot/issues/123), 8cf07dd8) in Bananza and MKW on a quiet PC ([#145](https://github.com/notquiteog/Hookshot/issues/145)) ([0fc3cc7](https://github.com/notquiteog/Hookshot/commit/0fc3cc764f3da666ef0c1cc8c3c95983bc2e9a88))
+
+## [2.3.0-rc.44](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.43...v2.3.0-rc.44) (2026-11-23)
+
+
+### Bug Fixes
+
+* **builder:** name a game module copied in text mode, not a translator error ([#142](https://github.com/notquiteog/Hookshot/issues/142)) ([ccbbb7d](https://github.com/notquiteog/Hookshot/commit/ccbbb7d02388c5ed2108a782b008441a41b3465f))
+* **release:** the latest release candidate carries the Windows setup too ([#140](https://github.com/notquiteog/Hookshot/issues/140)) ([5170700](https://github.com/notquiteog/Hookshot/commit/5170700fac5e7c4137bda6064fe11d60e18f5df1))
+
+
+### Performance Improvements
+
+* **vk:** Longshot's renderer performance picks from 514591a3..9dd41326 (B2) ([#123](https://github.com/notquiteog/Hookshot/issues/123)) ([d2a1341](https://github.com/notquiteog/Hookshot/commit/d2a1341eb5fd287e523cfb62fc19d1a1f08a700d))
+
+
+### Code Refactoring
+
+* **packs:** Ocarina's Python and pipeline lists in its pack; build steps from the packs (game packs a2) ([#138](https://github.com/notquiteog/Hookshot/issues/138)) ([90bb29c](https://github.com/notquiteog/Hookshot/commit/90bb29c582694ca3bb21b6ad5995414660c1dcf3))
+
+## [2.3.0-rc.43](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.42...v2.3.0-rc.43) (2026-11-23)
+
+
+### Features
+
+* **builder:** every game in one library, with Install, Update and Update all ([#133](https://github.com/notquiteog/Hookshot/issues/133)) ([e204e5e](https://github.com/notquiteog/Hookshot/commit/e204e5e4ae3115af054971791b22108b0b87cbf7))
+
+## [2.3.0-rc.42](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.41...v2.3.0-rc.42) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dev_packs:** a busy marker whose job is gone is taken over, not left blocking the base ([#136](https://github.com/notquiteog/Hookshot/issues/136)) ([84c659a](https://github.com/notquiteog/Hookshot/commit/84c659a5d5826fe2da582c4a66d574deef89deb9))
+
+
+### Code Refactoring
+
+* **packs:** each game's profile is its pack's manifest, packs/&lt;key&gt;/pack.json (game packs a1) ([#137](https://github.com/notquiteog/Hookshot/issues/137)) ([9919310](https://github.com/notquiteog/Hookshot/commit/9919310d895b6ba4ffa20e90bdbdab860f1cf4a6))
+
+
+### Documentation
+
+* game packs, NX2PC in its own repository and each game in its own ([#132](https://github.com/notquiteog/Hookshot/issues/132)) ([ac0311f](https://github.com/notquiteog/Hookshot/commit/ac0311f91f7093574d2e7de9985193aa77055c4d))
+* **game-packs:** the bridge from the RecompLauncher and AppImage updaters' source ([#135](https://github.com/notquiteog/Hookshot/issues/135)) ([9c06c14](https://github.com/notquiteog/Hookshot/commit/9c06c143c5b0af0a447da4b7669a88e18a902cd1))
+
+## [2.3.0-rc.41](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.40...v2.3.0-rc.41) (2026-11-22)
+
+
+### Features
+
+* **games:** one library of every game, Update all, and no game built over another ([#130](https://github.com/notquiteog/Hookshot/issues/130)) ([0826b39](https://github.com/notquiteog/Hookshot/commit/0826b3960b362f168f1d98a2f996b84ccc031b0d))
+
+## [2.3.0-rc.40](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.39...v2.3.0-rc.40) (2026-11-22)
+
+
+### Bug Fixes
+
+* **vk:** MK World's road is drawn again: a copy into a BC3-kept texture of any size is made, by whole blocks ([#128](https://github.com/notquiteog/Hookshot/issues/128)) ([82bf212](https://github.com/notquiteog/Hookshot/commit/82bf212db53b3477b4acd9f1e11ea7136e8b6c01))
+
+## [2.3.0-rc.39](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.38...v2.3.0-rc.39) (2026-11-22)
+
+
+### Features
+
+* **dlss:** RecompLauncher and the Builder give the same DLSS on Windows, Streamline finds DLSS 5's files, and a start-up block says what runs ([#107](https://github.com/notquiteog/Hookshot/issues/107)) ([49f1d60](https://github.com/notquiteog/Hookshot/commit/49f1d60ce95fafef63bf4f834f77f02765172682))
+
+
+### Bug Fixes
+
+* **menu:** the settings in sections on every tab, and the launcher's names the menu's ([#127](https://github.com/notquiteog/Hookshot/issues/127)) ([58ae8be](https://github.com/notquiteog/Hookshot/commit/58ae8befc0549b36668f4f795105a64836e00bb4))
+* **vk:** AMD's FSR 4 libraries load only when they are AMD's, and NGX gets only folders no other account may write ([#108](https://github.com/notquiteog/Hookshot/issues/108)) ([037f840](https://github.com/notquiteog/Hookshot/commit/037f840413d424459ec6129527be4d25bacaad36))
+* **vk:** the program cache, draw state and Open NR check what the game folder holds before using it ([#117](https://github.com/notquiteog/Hookshot/issues/117)) ([d34161f](https://github.com/notquiteog/Hookshot/commit/d34161f913f75f80995c798e2dced1b071f8be2c))
+
 ## [2.3.0-rc.38](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.37...v2.3.0-rc.38) (2026-11-22)
 
 

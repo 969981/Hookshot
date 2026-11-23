@@ -3,7 +3,7 @@
    (nx2/oot_patches.py); host/oot_high_fps.h has why and the logic.
    HOS_FPS_LOG (on, by the switches' rule: =0 is off): what they do, every 600 calls. HOS_FPS_FLOOR=0: the game's floor-carry
    gate at every frame rate (for comparisons). */
-#include "hos.h"
+#include "nx2_pack.h"   /* (hos_frame_seconds_bits) */
 #include "oot_high_fps.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -11,7 +11,6 @@
 
 #include "../gpu/vk/compat/hookshot_env.h" /* (env_on: the switches' one rule) */
 
-extern volatile uint32_t hos_frame_seconds_bits;   /* (host/nn_vi.c: the frame's seconds, 0 at a cap of 60) */
 
 static int timed(void) { return __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0; }
 static int fps_log(void) {

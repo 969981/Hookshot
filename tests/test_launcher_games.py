@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import game_folders  # noqa: E402
 import game_profile  # noqa: E402
+import packs  # noqa: E402
 
 CC = "gcc"
 DEFAULT = game_profile.DEFAULT
@@ -285,7 +286,9 @@ class WindowsPlay(unittest.TestCase):
         source = (ROOT / "builder" / "setup" / "setup.c").read_text(encoding="utf-8")
         default = re.search(r'#define HOOKSHOT_DEFAULT_GAME "([a-z0-9]+)"', source)
         self.assertTrue(default, "builder/setup/setup.c names no HOOKSHOT_DEFAULT_GAME")
-        self.assertEqual(default.group(1), DEFAULT, "setup.c's default game is not nx2/game_profile.py's DEFAULT")
+        self.assertEqual(default.group(1), packs.DEFAULT, "setup.c's default game is not the packs' (nx2/packs.py DEFAULT)")
+        self.assertEqual(packs.DEFAULT, DEFAULT, "nx2/game_profile.py's DEFAULT is not the packs'")
+        self.assertIn(packs.DEFAULT, packs.tree(), "the default game has no pack in packs/")
         start = source.index("static int play_target(")
         body = source[start:start + re.search(r"^}", source[start:], re.M).end()]
         defines = source[source.index("#ifndef HOOKSHOT_DEFAULT_GAME"):source.index("#define HOOKSHOT_DEFAULT_GAME_W")]

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstdlib>
 
+#include "vk_signed.h"   // (AMD's library: only AMD's signed file, or on Linux a safely owned one)
 #include "vk_internal.h"
 #include "vk_temporal.h"
 
@@ -917,19 +918,28 @@ bool load() {
         return false;
     };
     std::string where;
+    bool refused = false;   // (one was there and was not loaded: the line at the end says so, not "no such file")
     for (const std::string& dir : library_dirs()) {
         where += (where.empty() ? "" : ", ") + dir;
 #ifdef _WIN32
         const std::string path = dir + "\\" + kLoader;
         if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-        // (the upscaler DLL the loader picks lies beside it: the loader's folder first in the search)
-        l.lib = LoadLibraryExA(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        // (there but not loaded: a DLL it needs missing, a bad signature, or a relative RX_VK_FSR_DIR, which the search
-        // flags refuse)
-        if (!l.lib) logf("vk: AMD FSR 4: %s not loaded (Windows error %lu)", path.c_str(), (unsigned long)GetLastError());
+        refused = true;
+        // (the upscaler DLL the loader picks lies beside it: the loader's folder first in the search. Only AMD's own files,
+        // each held from its signature check to its load, the providers beside it first: vk_signed.h)
+        constexpr DWORD search = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+        if (!signed_dll::preload_amd_providers(dir, search)) continue;
+        l.lib = signed_dll::load(signed_dll::wide(path), signed_dll::kAmd, kLoader, search);
+        // (there but not loaded: not AMD's signed file (said above), a DLL it needs missing, or a relative RX_VK_FSR_DIR,
+        // which the search flags refuse)
+        if (!l.lib && GetLastError() != ERROR_INVALID_IMAGE_HASH)
+            logf("vk: AMD FSR 4: %s not loaded (Windows error %lu)", path.c_str(), (unsigned long)GetLastError());
 #else
         const std::string path = dir + "/" + kLoader;
         if (access(path.c_str(), R_OK) != 0) continue;
+        refused = true;
+        // (not signed on Linux: a library in a file and folder no other account may write: vk_signed.h)
+        if (!signed_dll::owned_safely(path, kLoader)) continue;
         l.lib = (HMODULE)dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
         if (!l.lib) logf("vk: AMD FSR 4: %s not loaded: %s", path.c_str(), dlerror());
 #endif
@@ -939,7 +949,10 @@ bool load() {
         }
     }
     if (!l.lib) {
-        logf("vk: AMD FSR 4: no %s in %s (the readme says where AMD's files come from)", kLoader, where.c_str());
+        if (refused)
+            logf("vk: AMD FSR 4: %s refused or not loaded in %s (the lines above say why)", kLoader, where.c_str());
+        else
+            logf("vk: AMD FSR 4: no %s in %s (the readme says where AMD's files come from)", kLoader, where.c_str());
         return no(FSR_NO_LIBRARY);
     }
     l.create = (PfnFfxCreateContext)symbol("ffxCreateContext");

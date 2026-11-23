@@ -1,10 +1,10 @@
-"""(hookshot) The button-prompt faces: everything that differs between controllers, in one place (nx2/prompt_assets.py builds them).
+"""(hookshot) The button-prompt faces: everything that differs between controllers, in one place (packs/oot/tools/prompt_assets.py builds them).
 
 To add a face: an entry in FACES below, its HOS_PROMPT_* in gpu/vk/vk_api.h (in this order, after the Switch), its name in
 host/prompts.c's faces[], and the Insert menu's names for it (gpu/vk/vk_menu.cpp tx_prompts, pad_name;
-tests/test_prompt_font_bind.py checks the order). To change one: its entry. To rework a texture by hand: nx2/prompt_assets.py --dump <dir> writes
-every image the build makes, as PNG, under the names it looks for in nx2/prompt_faces/<face>/: a PNG put there takes that image's
-place (nx2/prompt_faces/README.md).
+tests/test_prompt_font_bind.py checks the order). To change one: its entry. To rework a texture by hand: packs/oot/tools/prompt_assets.py --dump <dir> writes
+every image the build makes, as PNG, under the names it looks for in packs/oot/tools/prompt_faces/<face>/: a PNG put there takes that image's
+place (packs/oot/tools/prompt_faces/README.md).
 
 Each face:
   font     Kenney's Input Prompts font its icons come from (third_party/kenney_input)
@@ -12,7 +12,7 @@ Each face:
   icons    each pad input's glyph name after the prefix ("/name": the whole name); an input left out keeps the game's icon. No
            Guide: the makers' logos are their trademarks, every face keeps the game's Home icon.
   drawing  the controller in the pause menu's controls page (System), drawn at the build like the game's Pro Controller
-           (nx2/prompt_draw.py): (Kenney font, its controller glyph: the body; None, None: the Steam Deck's own shape) and each
+           (packs/oot/tools/prompt_draw.py): (Kenney font, its controller glyph: the body; None, None: the Steam Deck's own shape) and each
            control (kind, centre x, y in the body's box 0..1, size: a fraction of the body's width, or (w, h) for a "pad" or
            "screen", the pad input whose label it shows, None: none): "stick", "dpad" (the Pro's own, scaled), "face", "small" (a
            disc with the label; none: a blank button), "pad" (a touchpad), "screen". The build makes the page's tinted copy and

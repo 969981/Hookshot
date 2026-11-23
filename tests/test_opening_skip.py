@@ -1,4 +1,4 @@
-"""Skip opening: only the new-game story movie and Navi waking Link (host/hos_main.c).
+"""Skip opening: only the new-game story movie and Navi waking Link (packs/oot/host/oot_opening.c).
 
 The host function is cut out of the source and compiled with stubs, so the check needs no game dump. It checks that
 Opening_Introduction and Opening_LoadingKokiriForest are the only events skipped, that their timelines
@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 
 
@@ -158,7 +159,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="")
     args = parser.parse_args()
-    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    source = "\n".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "packs" / "oot" / "host").glob("*.c")))   # (Ocarina's pack's C)
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")

@@ -77,7 +77,26 @@
       "--game-mkw={input:mkw}"
     ],
     "label": "Building the game from your copy (10 to 45 minutes)",
-    "timeout": 7200
+    "timeout": 7200,
+    "options": [
+      {
+        "id": "dlss",
+        "label": "NVIDIA DLSS: download NVIDIA's DLSS files and accept their license",
+        "note": "NVIDIA's, not Hookshot's: the build downloads them from NVIDIA and puts DLSS in each game folder.",
+        "args": [
+          "--dlss",
+          "--accept-nvidia-license"
+        ],
+        "os": [
+          "windows"
+        ],
+        "gpu": "nvidia",
+        "license": {
+          "name": "NVIDIA RTX SDKs license (NVIDIA DLSS)",
+          "url": "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt"
+        }
+      }
+    ]
   },
   "config": [
     {
@@ -158,25 +177,149 @@
       }
     },
     {
-      "id": "fullscreen",
-      "label": "Fullscreen",
-      "help": "Fills the screen with the game, without the window's border.",
+      "id": "ultrawide",
+      "label": "Aspect ratio",
+      "help": "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. Applies after a restart.",
       "choices": [
         {
-          "label": "Off",
+          "label": "16:9",
           "set": {
-            "fullscreen": "0"
+            "ultrawide": "0"
           }
         },
         {
-          "label": "On",
+          "label": "Monitor's shape",
           "set": {
-            "fullscreen": "1"
+            "ultrawide": "1"
           }
         }
       ],
       "defaults": {
-        "fullscreen": "0"
+        "ultrawide": "1"
+      }
+    },
+    {
+      "id": "output",
+      "label": "Output resolution",
+      "help": "The size of the game's whole frame before it is scaled to your window. Applies after a restart.",
+      "choices": [
+        {
+          "label": "2048x1152",
+          "set": {
+            "output_res": "2048x1152"
+          }
+        },
+        {
+          "label": "2560x1440",
+          "set": {
+            "output_res": "2560x1440"
+          }
+        },
+        {
+          "label": "3840x2160",
+          "set": {
+            "output_res": "3840x2160"
+          }
+        }
+      ],
+      "defaults": {
+        "output_res": "2048x1152"
+      }
+    },
+    {
+      "id": "handheld",
+      "label": "Profile",
+      "help": "Runs the game as the console docked or handheld. Handheld is a lower resolution, lighter on the graphics card. Applies after a restart.",
+      "choices": [
+        {
+          "label": "Docked",
+          "set": {
+            "handheld_profile": "0"
+          }
+        },
+        {
+          "label": "Handheld",
+          "set": {
+            "handheld_profile": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "handheld_profile": "0"
+      }
+    },
+    {
+      "id": "resolution",
+      "label": "Render resolution",
+      "help": "How sharp the 3D is drawn. Auto lets the game lower it when the graphics card is busy.",
+      "choices": [
+        {
+          "label": "Auto",
+          "set": {
+            "resolution": "0"
+          }
+        },
+        {
+          "label": "100%",
+          "set": {
+            "resolution": "1"
+          }
+        },
+        {
+          "label": "75%",
+          "set": {
+            "resolution": "2"
+          }
+        },
+        {
+          "label": "67%",
+          "set": {
+            "resolution": "3"
+          }
+        },
+        {
+          "label": "50%",
+          "set": {
+            "resolution": "4"
+          }
+        }
+      ],
+      "defaults": {
+        "resolution": "0"
+      }
+    },
+    {
+      "id": "sharpness",
+      "label": "Sharpness",
+      "help": "Sharpens the picture on its way to the window. Too much shows halos around edges.",
+      "choices": [
+        {
+          "label": "0%",
+          "set": {
+            "sharpness": "0"
+          }
+        },
+        {
+          "label": "30%",
+          "set": {
+            "sharpness": "30"
+          }
+        },
+        {
+          "label": "60%",
+          "set": {
+            "sharpness": "60"
+          }
+        },
+        {
+          "label": "100%",
+          "set": {
+            "sharpness": "100"
+          }
+        }
+      ],
+      "defaults": {
+        "sharpness": "0"
       }
     },
     {
@@ -248,76 +391,30 @@
       }
     },
     {
-      "id": "resolution",
-      "label": "Resolution",
-      "help": "How sharp the 3D is drawn. Auto lets the game lower it when the graphics card is busy.",
+      "id": "fullscreen",
+      "label": "Fullscreen",
+      "help": "Fills the screen with the game, without the window's border.",
       "choices": [
         {
-          "label": "Auto",
+          "label": "Off",
           "set": {
-            "resolution": "0"
+            "fullscreen": "0"
           }
         },
         {
-          "label": "100%",
+          "label": "On",
           "set": {
-            "resolution": "1"
-          }
-        },
-        {
-          "label": "75%",
-          "set": {
-            "resolution": "2"
-          }
-        },
-        {
-          "label": "67%",
-          "set": {
-            "resolution": "3"
-          }
-        },
-        {
-          "label": "50%",
-          "set": {
-            "resolution": "4"
+            "fullscreen": "1"
           }
         }
       ],
       "defaults": {
-        "resolution": "0"
-      }
-    },
-    {
-      "id": "output",
-      "label": "Output resolution",
-      "help": "The size of the game's whole frame before it is scaled to your window. Applies after a restart.",
-      "choices": [
-        {
-          "label": "2048x1152",
-          "set": {
-            "output_res": "2048x1152"
-          }
-        },
-        {
-          "label": "2560x1440",
-          "set": {
-            "output_res": "2560x1440"
-          }
-        },
-        {
-          "label": "3840x2160",
-          "set": {
-            "output_res": "3840x2160"
-          }
-        }
-      ],
-      "defaults": {
-        "output_res": "2048x1152"
+        "fullscreen": "0"
       }
     },
     {
       "id": "upscaling",
-      "label": "Upscaling",
+      "label": "Window scaling filter",
       "help": "The filter that scales the picture to your window. Lanczos is the sharpest.",
       "choices": [
         {
@@ -341,106 +438,6 @@
       ],
       "defaults": {
         "upscaling": "0"
-      }
-    },
-    {
-      "id": "sharpness",
-      "label": "Sharpness",
-      "help": "Sharpens the picture on its way to the window. Too much shows halos around edges.",
-      "choices": [
-        {
-          "label": "0%",
-          "set": {
-            "sharpness": "0"
-          }
-        },
-        {
-          "label": "30%",
-          "set": {
-            "sharpness": "30"
-          }
-        },
-        {
-          "label": "60%",
-          "set": {
-            "sharpness": "60"
-          }
-        },
-        {
-          "label": "100%",
-          "set": {
-            "sharpness": "100"
-          }
-        }
-      ],
-      "defaults": {
-        "sharpness": "0"
-      }
-    },
-    {
-      "id": "handheld",
-      "label": "Handheld profile",
-      "help": "Runs the game as if the console were undocked: lower resolution, lighter on the graphics card. Applies after a restart.",
-      "choices": [
-        {
-          "label": "Off",
-          "set": {
-            "handheld_profile": "0"
-          }
-        },
-        {
-          "label": "On",
-          "set": {
-            "handheld_profile": "1"
-          }
-        }
-      ],
-      "defaults": {
-        "handheld_profile": "0"
-      }
-    },
-    {
-      "id": "ultrawide",
-      "label": "Aspect ratio",
-      "help": "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. Applies after a restart.",
-      "choices": [
-        {
-          "label": "16:9",
-          "set": {
-            "ultrawide": "0"
-          }
-        },
-        {
-          "label": "Monitor's shape",
-          "set": {
-            "ultrawide": "1"
-          }
-        }
-      ],
-      "defaults": {
-        "ultrawide": "1"
-      }
-    },
-    {
-      "id": "fps",
-      "label": "FPS counter",
-      "help": "Shows frames per second in the top right corner.",
-      "choices": [
-        {
-          "label": "Off",
-          "set": {
-            "fps_counter": "0"
-          }
-        },
-        {
-          "label": "On",
-          "set": {
-            "fps_counter": "1"
-          }
-        }
-      ],
-      "defaults": {
-        "fps_counter": "0"
       }
     },
     {
@@ -497,6 +494,28 @@
       ],
       "defaults": {
         "text_speed": "0"
+      }
+    },
+    {
+      "id": "fps",
+      "label": "FPS counter",
+      "help": "Shows frames per second in the top right corner.",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "fps_counter": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "fps_counter": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "fps_counter": "0"
       }
     },
     {

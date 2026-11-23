@@ -67,7 +67,7 @@ class NgxRuntimeTests(unittest.TestCase):
             return make_game.ngx_built()
 
     def test_built_with_this_platforms_library(self):
-        # (the camera jitter is no longer tied to this: nx2/oot_jitter.py is in every standalone lift, for FSR 3.1 as well)
+        # (the camera jitter is no longer tied to this: packs/oot/lift/oot_jitter.py is in every standalone lift, for FSR 3.1 as well)
         self.assertFalse(self.built("linux", sdk=""))
         self.assertFalse(self.built("linux"))   # (no library yet)
         self.sdk_files("linux", runtime=False)
@@ -144,9 +144,30 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertIn('place_ngx_runtime(out, drop=getattr(a, "no_dlss", False))', call)
         # (the builders' windows pass it with the tick off; the Windows Builder's --cli, RecompLauncher's prepare, does not)
         win = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
-        self.assertIn('if (!dlss && !args.Contains("--no-dlss")) args.Add("--no-dlss");', win)
+        # (but not to Update all: make_game.py --update-all keeps each folder's own, folder_upscalers)
+        self.assertIn('if (!dlss && !all && !args.Contains("--no-dlss")) args.Add("--no-dlss");', win)
         cli = (ROOT / "builder" / "HookshotBuilder" / "App.xaml.cs").read_text(encoding="utf-8")
-        self.assertNotIn("--no-dlss", cli)
+        self.assertNotIn('Add("--no-dlss")', cli)
+
+    def test_the_builders_cli_takes_the_launchers_dlss_tick(self):
+        """RecompLauncher's tick (recomplauncher.json's prepare option) passes --dlss --accept-nvidia-license to
+        HookshotBuilder.exe --cli: the window's tick, without the window (App.xaml.cs CliDlss)"""
+        cli = (ROOT / "builder" / "HookshotBuilder" / "App.xaml.cs").read_text(encoding="utf-8")
+        body = cli[cli.index("internal static string? CliDlss("):cli.index("static int Cli(")]
+        for piece in ('if (!args.Contains("--dlss")) return null;',   # (unticked: nothing fetched, the folder's runtimes kept)
+                      'args.RemoveAll(a => a == "--dlss");',           # (make_game.py has no --dlss)
+                      'if (args.Contains("--no-dlss"))',
+                      'if (!args.Contains("--accept-nvidia-license"))',
+                      'if (!args.Contains("--fetch-ngx-sdk")) args.Add("--fetch-ngx-sdk");',
+                      "return Storage.NgxSdk;"):
+            self.assertIn(piece, body)
+        self.assertIn("var ngxSdk = CliDlss(args, out var dlssError);", cli)
+        self.assertIn("new Runner(tools, args, ngxSdk: ngxSdk)", cli)
+        # (the launcher's tick passes exactly what CliDlss takes)
+        import json
+        entry = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        tick = [o for o in entry["prepare"].get("options", []) if o.get("id") == "dlss"]
+        self.assertEqual([o["args"] for o in tick], [["--dlss", "--accept-nvidia-license"]])
         py = (ROOT / "builder" / "py" / "hookshot_builder" / "window.py").read_text(encoding="utf-8")
         self.assertIn('args += ["--no-dlss"]', py)
 

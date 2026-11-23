@@ -175,6 +175,26 @@ int main() {
                                                 !ur::preset_env("05") && ur::dlss_preset(ur::MODEL_M, "7") == 13 &&
                                                 ur::dlss_preset(ur::MODEL_L, "") == 12);
     CHECK("preset letters", ur::preset_letter(11) == 'K' && ur::preset_letter(13) == 'M' && ur::preset_letter(0) == '0');
+    // (the K row on a card with less than 7 GB of video memory: NVIDIA's CNN, preset E; the row's text and DLSS both ask
+    // cnn_for_vram. 0: the card's memory not known, K)
+    {
+        const uint64_t gb6 = 6ull << 30, gb7 = 7ull << 30, gb8 = 8ull << 30;
+        CHECK("preset E is 5", ur::kPresetE == 5 && ur::preset_letter(ur::kPresetE) == 'E');
+        CHECK("6 GB: the K row draws E", ur::dlss_preset(ur::MODEL_K, nullptr, gb6) == 5 && ur::model_preset(ur::MODEL_K, gb6) == 5 &&
+                                             ur::cnn_for_vram(ur::MODEL_K, gb6) && ur::cnn_for_vram(ur::MODEL_K, gb7 - 1));
+        CHECK("7 GB and more, or not known: K", ur::dlss_preset(ur::MODEL_K, nullptr, gb8) == 11 &&
+                                                    ur::dlss_preset(ur::MODEL_K, nullptr, gb7) == 11 &&
+                                                    ur::dlss_preset(ur::MODEL_K, nullptr, 0) == 11 && !ur::cnn_for_vram(ur::MODEL_K, 0));
+        CHECK("6 GB: M, L and NVIDIA's default as chosen", ur::dlss_preset(ur::MODEL_M, nullptr, gb6) == 13 &&
+                                                               ur::dlss_preset(ur::MODEL_L, nullptr, gb6) == 12 &&
+                                                               ur::dlss_preset(ur::MODEL_DEFAULT, nullptr, gb6) == 0 &&
+                                                               !ur::cnn_for_vram(ur::MODEL_M, gb6) && !ur::cnn_for_vram(ur::MODEL_DEFAULT, gb6));
+        CHECK("6 GB: RX_VK_DLSS_PRESET wins", ur::dlss_preset(ur::MODEL_K, "K", gb6) == 11 && ur::dlss_preset(ur::MODEL_K, "m", gb6) == 13 &&
+                                                  ur::dlss_preset(ur::MODEL_K, "0", gb6) == 0);
+        CHECK("6 GB: a switch that is no preset leaves E", ur::dlss_preset(ur::MODEL_K, "1", gb6) == 5 &&
+                                                               ur::dlss_preset(ur::MODEL_K, "", gb6) == 5 &&
+                                                               ur::dlss_preset(ur::MODEL_K, "05", gb6) == 5);
+    }
     CHECK("model row shown only where DLSS runs", ur::model_shown(true) && !ur::model_shown(false));
     CHECK("model row fixed with the game's own or the switch", ur::model_fixed(GAME, false) && !ur::model_fixed(DLSS, false) &&
                                                                !ur::model_fixed(DLAA, false) && ur::model_fixed(DLSS, true));

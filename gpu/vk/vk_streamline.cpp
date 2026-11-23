@@ -13,10 +13,10 @@
 #include <string>
 #include <vector>
 
-#include <softpub.h>
-#include <wincrypt.h>
+#include <softpub.h>   // (trusted_signature: a DLSS 5 model's signature, whoever's it is)
 #include <wintrust.h>
 
+#include "vk_signed.h"
 #include "vk_streamline_api.h"
 
 namespace mkwvk::streamline {
@@ -64,21 +64,53 @@ void log_from_streamline(sl::LogType type, const char* message) {
     else if (log_level() > 0) logf("vk: streamline: %s", text.c_str());
 }
 
+/// A folder as UTF-8, for the log (never through the ANSI code page: tests/test_utf8_paths.py)
+std::string narrow(const std::wstring& w) {
+    std::string out;
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    if (n > 0) {
+        out.resize((size_t)n);
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), out.data(), n, nullptr, nullptr);
+    }
+    return out;
+}
+
 /// Where sl.interposer.dll may be: RX_VK_STREAMLINE_DIR, then a `streamline` folder beside the
-/// executable, then the executable's own folder. A player who drops NVIDIA's DLLs next to the game
-/// should not also have to set an environment variable.
+/// executable, then the executable's own folder; and, for a game the Builder installed (the real
+/// hookshot.exe in bin\\ beside image.bin, with a small launcher of the same name in the game folder),
+/// the game folder's `streamline` folder, its `ngx` folder and the game folder itself: where the readme says to put them.
+/// A player who drops NVIDIA's DLLs next to the game should not also have to set an environment variable.
 std::vector<std::wstring> search_dirs() {
     std::vector<std::wstring> dirs;
     wchar_t env[1024];
-    if (const DWORD n = GetEnvironmentVariableW(L"RX_VK_STREAMLINE_DIR", env, 1024); n && n < 1024)
-        dirs.emplace_back(env);
-    wchar_t exe[MAX_PATH];
-    if (const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH); n && n < MAX_PATH) {
+    if (const DWORD n = GetEnvironmentVariableW(L"RX_VK_STREAMLINE_DIR", env, 1024); n && n < 1024) {
+        // (made whole against the current folder: load's LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR takes only a full path, and a
+        // relative one was found and then not loaded)
+        wchar_t full[1024];
+        const DWORD m = GetFullPathNameW(env, 1024, full, nullptr);
+        dirs.emplace_back(m && m < 1024 ? full : env);
+    }
+    std::wstring exe(32768, L'\0');   // (GetModuleFileNameW's long form: a game folder deep in a path still resolves)
+    if (const DWORD n = GetModuleFileNameW(nullptr, exe.data(), (DWORD)exe.size()); n && n < exe.size()) {
+        exe.resize(n);
         std::wstring dir{exe};
         if (const size_t cut = dir.find_last_of(L"\\/"); cut != std::wstring::npos) {
             dir.resize(cut);
             dirs.push_back(dir + L"\\streamline");
             dirs.push_back(dir);
+            // (bin\\hookshot.exe beside ..\\image.bin: vk_dlss.cpp's game_dir rule, the folder above bin)
+            const size_t up = dir.find_last_of(L"\\/");
+            if (up != std::wstring::npos && !_wcsicmp(dir.c_str() + up + 1, L"bin")) {
+                const std::wstring game = dir.substr(0, up);
+                if (GetFileAttributesW((game + L"\\image.bin").c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    dirs.push_back(game + L"\\streamline");
+                    // (and ngx, where the DLSS tick puts NVIDIA's runtimes and where players put the rest of NVIDIA's files:
+                    // a player's Windows log with all of them there read "no sl.interposer.dll", while NGX direct ran the
+                    // same nvngx_dlssnr.dll from it)
+                    dirs.push_back(game + L"\\ngx");
+                    dirs.push_back(game);
+                }
+            }
         }
     }
     return dirs;
@@ -91,75 +123,16 @@ bool resolve(HMODULE m, const char* name, T*& fn) {
     return fn != nullptr;
 }
 
-/// Whether the file carries a signature Windows trusts, and whether that signature is NVIDIA's.
-///
-/// Written out here rather than taken from Streamline's own sl_security.h on purpose: that header's
-/// verifyEmbeddedSignature uses WINTRUST_SIGNATURE_SETTINGS, which the Windows SDK has and
-/// llvm-mingw's headers do not, and Hookshot builds for Windows with either (third_party/a64-kit).
-/// This uses only what both have. Trust alone is not enough -- it would accept anything signed by
-/// anyone Windows trusts -- so the subject name is read too.
-bool signed_by_nvidia(const std::wstring& path) {
-    WINTRUST_FILE_INFO file{};
-    file.cbStruct = sizeof file;
-    file.pcwszFilePath = path.c_str();
-    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    WINTRUST_DATA data{};
-    data.cbStruct = sizeof data;
-    data.dwUIChoice = WTD_UI_NONE;
-    data.fdwRevocationChecks = WTD_REVOKE_NONE;   // (a player may well be offline)
-    data.dwUnionChoice = WTD_CHOICE_FILE;
-    data.pFile = &file;
-    data.dwStateAction = WTD_STATEACTION_VERIFY;
-    const LONG status = WinVerifyTrust(nullptr, &action, &data);
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(nullptr, &action, &data);
-    if (status != ERROR_SUCCESS) {
-        logf("vk: sl.interposer.dll has no signature Windows trusts (status %#lx)",
-             (unsigned long)status);
-        return false;
-    }
-    // Whose signature it is. A trusted signature by somebody else is not a reason to load it.
-    HCERTSTORE store{};
-    HCRYPTMSG msg{};
-    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(),
-                          CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
-                          CERT_QUERY_FORMAT_FLAG_BINARY, 0, nullptr, nullptr, nullptr, &store,
-                          &msg, nullptr)) {
-        logf("vk: sl.interposer.dll's signature could not be read (error %lu)", GetLastError());
-        return false;
-    }
-    DWORD info_size = 0;
-    bool nvidia = false;
-    if (CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &info_size) && info_size) {
-        std::vector<unsigned char> buffer(info_size);
-        if (CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, buffer.data(), &info_size)) {
-            const auto* signer = reinterpret_cast<CMSG_SIGNER_INFO*>(buffer.data());
-            CERT_INFO want{};
-            want.Issuer = signer->Issuer;
-            want.SerialNumber = signer->SerialNumber;
-            if (PCCERT_CONTEXT cert = CertFindCertificateInStore(
-                    store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_CERT, &want, nullptr)) {
-                wchar_t name[256] = {};
-                CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
-                nvidia = wcsstr(name, L"NVIDIA") != nullptr;
-                if (!nvidia)
-                    logf("vk: sl.interposer.dll is signed, but not by NVIDIA: not loading it");
-                CertFreeCertificateContext(cert);
-            }
-        }
-    }
-    CryptMsgClose(msg);
-    CertCloseStore(store, 0);
-    return nvidia;
-}
-
 bool load(State& s, const std::wstring& path) {
     // We are about to load code from a path a player can write to, so a file that is not NVIDIA's
-    // signed interposer is not loaded at all.
-    if (!signed_by_nvidia(path)) return false;
-    s.module = LoadLibraryW(path.c_str());
+    // signed interposer is not loaded at all, and the file loaded is the file checked: held open,
+    // sharing reads only, from the check to the load (vk_signed.h). Its own imports are looked for
+    // only beside it and in System32, not in the current folder or along PATH.
+    s.module = signed_dll::load(path, signed_dll::kNvidia, "sl.interposer.dll",
+                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!s.module) {
-        logf("vk: could not load sl.interposer.dll (error %lu)", GetLastError());
+        if (GetLastError() != ERROR_INVALID_IMAGE_HASH)   // (not NVIDIA's: open_checked said why)
+            logf("vk: could not load sl.interposer.dll (error %lu)", GetLastError());
         return false;
     }
     HMODULE m = s.module;
@@ -291,8 +264,10 @@ bool start() {
             }
         }
         if (found.empty()) {
-            logf("vk: no sl.interposer.dll beside the game or in RX_VK_STREAMLINE_DIR: DLSS 5 "
-                 "neural rendering is unavailable (readme.md says which files to put there)");
+            std::string looked;
+            for (const std::wstring& d : search_dirs()) looked += (looked.empty() ? "" : ", ") + narrow(d);
+            logf("vk: no sl.interposer.dll in %s: DLSS 5 neural rendering through Streamline is unavailable (readme.md says "
+                 "which files to put there)", looked.c_str());
             return false;
         }
         if (!load(s, found)) return false;

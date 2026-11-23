@@ -7,7 +7,7 @@ rate. The recording counter resets between events; its fraction belongs to the
 counter, not one update or function. The separate x12 recording cut stays unchanged.
 No game data, save, audio or GPU is needed.
 
-python -I -B tests/test_scarecrow_timing.py [--cc gcc] [--source nx2/oot_patches.py]
+python -I -B tests/test_scarecrow_timing.py [--cc gcc] [--source packs/oot/lift/oot_patches.py]
 """
 import argparse
 import importlib.util
@@ -142,7 +142,7 @@ int main(void) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
-    parser.add_argument("--source", type=Path, default=ROOT / "nx2" / "oot_patches.py")
+    parser.add_argument("--source", type=Path, default=ROOT / "packs" / "oot" / "lift" / "oot_patches.py")
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT / "nx2"))
     spec = importlib.util.spec_from_file_location("scarecrow_patches", args.source)

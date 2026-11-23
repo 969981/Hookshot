@@ -48,7 +48,10 @@ def main():
     # check_player_build.sh finds the image appimage.sh made, by that name, in a checkout of its own
     with tempfile.TemporaryDirectory(prefix="product-name-") as tmp:
         tree = Path(tmp)
-        for rel in ("scripts/product_name.sh", "scripts/linux/check_player_build.sh", "nx2/game_profile.py"):
+        # (nx2/game_profile.py builds its profiles from the game packs: nx2/packs.py and packs/*/pack.json come with it)
+        packs = [p.relative_to(ROOT).as_posix() for p in sorted((ROOT / "packs").glob("*/pack.json"))]
+        for rel in ["scripts/product_name.sh", "scripts/linux/check_player_build.sh", "nx2/game_profile.py",
+                    "nx2/packs.py"] + packs:
             (tree / rel).parent.mkdir(parents=True, exist_ok=True)
             (tree / rel).write_bytes((ROOT / rel).read_bytes())
             (tree / rel).chmod(0o755)

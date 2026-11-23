@@ -7,13 +7,16 @@ and the play profile (addresses and counts made on the development PC).
         being made); prints that release's tag. Exits 1 when no repository has one.
     python -I scripts/release_parts.py profile <setup list> <work folder>
         the play profile (tools/work of the list's app part) into <work folder>
+    python -I scripts/release_parts.py part <setup list> <name> <folder>
+        the list's part <name> (cpm, python, third_party, ...: its tools/<name>) unpacked into <folder>, its size and SHA-256
+        checked; prints the folder. The Windows runtime check takes FFmpeg's headers so, as a player's build does
     python -I scripts/release_parts.py llvm-mingw <folder> [--name]
         llvm-mingw as scripts/make_setup_parts.py names it (its official release, SHA-256 checked) unpacked into <folder>;
         prints its folder. --name: only prints its name (a cache key)
     python -I scripts/release_parts.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
                                        [--list <setup list>] [--python-packages <requirements>] [--cpm-add <CPM folder>]
-        the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2
-        and scripts under tools/, the pipeline state list's sources (assets/pipeline_states/, which must be there and read),
+        the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2,
+        packs and scripts under tools/, the pipeline state list's sources (packs/<key>/assets/pipeline_states/, which must be there and read),
         tools/work (the profile) and tools/third_party: the tracked files and, from the list's
         third_party part, the prebuilt files the repository does not carry (a64emit.dll, lld-link.exe, SDL2.dll, SDL3.dll,
         zbic.dll; rebuilt on the player's PC when their sources' stamps differ). Python, emsdk, CPM and wgpu-native are not
@@ -209,7 +212,7 @@ def package(a):
     # make_setup_parts.py includes non-builder root files in the dotnet part.
     copy(os.path.join(ROOT, "recomplauncher.json"), os.path.join(out, "recomplauncher.json"))
     tools = os.path.join(out, "tools")
-    for f in tracked("game", "gpu", "host", "nx2", "scripts", "third_party"):   # (game/: the game profile header)
+    for f in tracked("game", "gpu", "host", "nx2", "packs", "scripts", "third_party"):   # (game/: the profile header; packs/: its packs)
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:
@@ -257,23 +260,29 @@ def package(a):
 
 
 def state_list(tools):
-    """The sources of the pipeline state list a release ships (assets/pipeline_states/: the tour's list, the contributed ones and
-    their notes), into tools/ at the same path: nx2/make_game.py merges them beside the game. Required: without them a new
-    install's first field load is drawn white for seconds while its pipelines compile (v2.0.8 to v2.0.14 shipped none). 1, with
-    the reason, when there are none or one does not read (nx2/pipeline_states.py check)"""
+    """The sources of the pipeline state lists a release ships (each game pack's assets/pipeline_states/ whose build_steps name
+    pipeline_states, Ocarina's: the tour's list, the contributed ones and their notes), into tools/ at the same path:
+    nx2/make_game.py merges them beside that game. Required: without them a new install's first field load is drawn white for
+    seconds while its pipelines compile (v2.0.8 to v2.0.14 shipped none). 1, with the reason, when no pack ships one, or there
+    are none or one does not read (nx2/pipeline_states.py check)"""
     spec = importlib.util.spec_from_file_location("pipeline_states", os.path.join(ROOT, "nx2", "pipeline_states.py"))
     states = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(states)
-    src = states.sources_dir(ROOT)
-    try:
-        recs = states.check_sources(src)
-    except SystemExit as e:
-        print("error: %s" % e, file=sys.stderr)
+    keys = states.shipping_packs()
+    if not keys:
+        print("error: no game pack ships a pipeline state list (pack.json build_steps: pipeline_states)", file=sys.stderr)
         return 1
-    dst = states.sources_dir(tools)
-    shutil.rmtree(dst, ignore_errors=True)
-    shutil.copytree(src, dst)
-    print("the pipeline state list: %s" % states.describe(recs))
+    for key in keys:
+        src = states.sources_dir(ROOT, key)
+        try:
+            recs = states.check_sources(src)
+        except SystemExit as e:
+            print("error: %s" % e, file=sys.stderr)
+            return 1
+        dst = states.sources_dir(tools, key)
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst)
+        print("the pipeline state list of the %s pack: %s" % (key, states.describe(recs)))
     return 0
 
 
@@ -342,6 +351,20 @@ def cpm_add(list_path, add, tools):
     return 0
 
 
+def part(a):
+    """One part of a setup list, its tools/<name>, unpacked into a folder"""
+    path = named_part(a.list, a.name)
+    if not path:
+        print("error: %s names no %s part" % (a.list, a.name), file=sys.stderr)
+        return 1
+    n = extract(path, "HookshotBuilder/tools/%s/" % a.name, a.folder)
+    if not n:
+        print("error: %s holds no tools/%s" % (os.path.basename(path), a.name), file=sys.stderr)
+        return 1
+    print(os.path.abspath(a.folder))
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -352,6 +375,10 @@ def main():
     s = sub.add_parser("profile")
     s.add_argument("list")
     s.add_argument("work")
+    s = sub.add_parser("part")
+    s.add_argument("list")
+    s.add_argument("name")
+    s.add_argument("folder")
     s = sub.add_parser("llvm-mingw")
     s.add_argument("folder", nargs="?", default="")
     s.add_argument("--name", action="store_true")
@@ -366,7 +393,7 @@ def main():
     s.add_argument("--repository", help="(hookshot) owner/name the release is from, into tools/repository.txt")
     s.add_argument("--cpm-add")
     a = p.parse_args()
-    return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
+    return {"previous": previous, "profile": profile, "part": part, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
 
 if __name__ == "__main__":

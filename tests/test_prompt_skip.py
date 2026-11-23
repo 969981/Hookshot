@@ -1,7 +1,7 @@
 """Game-free prompt-cache proofs, using authored files and only replacing the expensive drawing.
 
 python -I -B tests/test_prompt_skip.py
-HOOKSHOT_PROMPT_TEST_SOURCE=/path/to/main/nx2 python -I -B tests/test_prompt_skip.py
+HOOKSHOT_PROMPT_TEST_SOURCE=/path/to/main/nx2 HOOKSHOT_PROMPT_TEST_TOOLS=/path/to/main/packs/oot/tools python -I -B tests/test_prompt_skip.py
 The unchanged-build case also runs against old make_game.py: it fails because the drawing runs twice.
 """
 import ast
@@ -19,8 +19,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("HOOKSHOT_PROMPT_TEST_SOURCE", ROOT / "nx2"))
+TOOLS = Path(os.environ.get("HOOKSHOT_PROMPT_TEST_TOOLS", ROOT / "packs" / "oot" / "tools"))   # (Ocarina's pack's prompts)
 sys.path.insert(0, str(SOURCE))
-spec = importlib.util.spec_from_file_location("prompt_assets", SOURCE / "prompt_assets.py")
+sys.path.insert(0, str(TOOLS))
+spec = importlib.util.spec_from_file_location("prompt_assets", TOOLS / "prompt_assets.py")
 P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
 spec = importlib.util.spec_from_file_location("prompt_make_game", SOURCE / "make_game.py")
@@ -65,7 +67,8 @@ class PromptSkipTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(mock.patch.dict(os.environ, {}, clear=True))
         self.stack.enter_context(contextlib.redirect_stdout(self.log))
-        self.stack.enter_context(mock.patch.multiple(P, HERE=str(self.here), KENNEY=str(self.kenney), KENNEY_KEYBOARD=str(self.keyboard)))
+        self.stack.enter_context(mock.patch.multiple(P, HERE=str(self.here), KENNEY=str(self.kenney), KENNEY_KEYBOARD=str(self.keyboard),
+                                                     **({"NX2": str(self.here)} if hasattr(P, "NX2") else {})))
         self.stack.enter_context(mock.patch.object(M.importlib.util, "find_spec", return_value=object()))
         if hasattr(P, "make_prompts"):
             self.stack.enter_context(mock.patch.object(P, "generate", side_effect=self.draw))
@@ -99,8 +102,9 @@ class PromptSkipTests(unittest.TestCase):
             return 1   # a failed child, not an interruption of the builder itself
         return 0
 
-    def build(self, packaged=False):
-        env = dict(vars(M), romfs=str(self.romfs), out=str(self.out.parent), launcher="packaged launcher" if packaged else None)
+    def build(self, packaged=False, key="oot"):
+        env = dict(vars(M), romfs=str(self.romfs), out=str(self.out.parent), launcher="packaged launcher" if packaged else None,
+                   game=M.game_profile.GAMES[key])
         exec(FINISH, env)
 
     def stamp(self):
@@ -112,14 +116,27 @@ class PromptSkipTests(unittest.TestCase):
         self.assertEqual(self.calls, 1, "unchanged finish must not draw the prompts twice")
         self.assertIn("prompts: unchanged, kept", self.log.getvalue())
 
-    def test_a_game_without_ocarinas_dictionary_skips_the_prompts(self):
-        # (Mario Kart World, Donkey Kong Bananza: no Pack/ZsDic.pack.zs. prompt_assets.py stopped there on a traceback)
-        (self.romfs / "Pack" / "ZsDic.pack.zs").unlink()
-        (self.out / "stale").mkdir(parents=True)
-        self.build()
-        self.assertEqual(self.calls, 0, "the prompts were drawn for a game without Ocarina's icon font")
-        self.assertFalse(self.out.exists(), "an earlier build's prompts were kept for a game that has none")
-        self.assertIn("made from Ocarina's icon font: this game has none", self.log.getvalue())
+    def test_a_game_whose_pack_has_no_prompts_step_skips_them(self):
+        # (Mario Kart World, Donkey Kong Bananza: their packs name no "prompts" build step. prompt_assets.py stopped on a
+        # traceback there, without Ocarina's Pack/ZsDic.pack.zs)
+        for key in ("mkw", "dkb"):
+            (self.out / "stale").mkdir(parents=True)
+            self.build(key=key)
+            self.assertEqual(self.calls, 0, "the prompts were drawn for %s, whose pack has no prompts step" % key)
+            self.assertFalse(self.out.exists(), "an earlier build's prompts were kept for %s, which has none" % key)
+            self.assertIn("this game's pack makes no button prompts", self.log.getvalue())
+
+    def test_the_step_runs_the_packs_own_tool(self):
+        # (Ocarina's pack names the step, and its tools/prompt_assets.py is the one run)
+        commands = []
+        child = self.child
+        def record(command, **kwargs):
+            commands.append(command)
+            return child(command, **kwargs)
+        with mock.patch.object(M, "run", side_effect=record):
+            self.build()
+        self.assertEqual(self.calls, 1)
+        self.assertEqual(Path(commands[0][len(M.PY)]), ROOT / "packs" / "oot" / "tools" / "prompt_assets.py")
 
     def test_missing_stamp_is_a_normal_first_build(self):
         self.assertFalse(self.out.exists())
@@ -647,13 +664,14 @@ class PromptDependencyTests(unittest.TestCase):
 
     def test_local_imports_and_environment_are_accounted_for(self):
         sources = {"prompt_assets", "prompt_draw", "prompt_faces", "prompt_keys", "bounded"}
+        local = lambda module: next((d / (module + ".py") for d in (TOOLS, SOURCE) if (d / (module + ".py")).is_file()), None)
         for name in sources:
-            tree = ast.parse((SOURCE / (name + ".py")).read_text(encoding="utf-8"))
+            tree = ast.parse(local(name).read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 modules = [a.name for a in node.names] if isinstance(node, ast.Import) else \
                     [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
                 for module in modules:
-                    if (SOURCE / (module.split(".")[0] + ".py")).is_file():
+                    if local(module.split(".")[0]):
                         # (kit puts the modules on the path; long_paths, #1115, lets a path past 260 characters be opened:
                         # neither changes what is drawn, so neither is in the prompt key)
                         self.assertIn(module, sources | {"kit", "long_paths"}, "new prompt dependency needs fingerprint coverage")

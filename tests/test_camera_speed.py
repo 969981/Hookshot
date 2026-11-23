@@ -1,6 +1,6 @@
 """The Insert menu's Camera speed scales the right stick's camera turn speeds, and only when the player asks for it.
 
-nx2/oot_patches.py makes each return of the turn-speed functions (f_80643f10, f_80643b60 and their level-2 pair f_82ea21f0,
+packs/oot/lift/oot_patches.py makes each return of the turn-speed functions (f_80643f10, f_80643b60 and their level-2 pair f_82ea21f0,
 f_82ea2220) multiply s0 by hos_camera_scale, which host/nn_vi.c sets from the row (HOS_OPT_CAMERA_SPEED) at each present.
 At 100% the lifted code runs as shipped. The functions are found by name alone, so only the supported build's lift is
 patched, and a lift patched again keeps one scale. The lifted text here is made up in the lift's shape, not the game's.
@@ -20,6 +20,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "lift"))   # (Ocarina's pack: its patch modules)
 import oot_patches  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402

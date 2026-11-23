@@ -46,3 +46,8 @@ ngx-sdk/
 
 # ---- nx2/dev.py compdb: the last build's compile commands, for clangd and clang-tidy ----
 /compile_commands.json
+
+# ---- Visual Studio IDE files ----
+.vs/
+.vscode/
+CppProperties.json

@@ -17,8 +17,8 @@ import re
 import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCES = ("host", "gpu", "nx2", "game")
-SOURCE_EXT = (".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp", ".vert", ".frag", ".spv")
+SOURCES = ("host", "gpu", "nx2", "game", "packs")   # (packs/: the game packs, whose pack.json the profiles are built from)
+SOURCE_EXT = (".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp", ".vert", ".frag", ".spv", ".json")
 
 
 def release(root=ROOT):
@@ -40,6 +40,37 @@ def release(root=ROOT):
         except (OSError, subprocess.SubprocessError):
             pass
     return name or "unknown"
+
+
+def release_key(tag):
+    """A version to compare, by the Linux updater's order (builder/linux/linux_update.py release_key, which
+    tests/test_game_library.py holds this one to): a release tag (v2.0.5, v2.1.0-rc.1) or git
+    describe's v2.0.5-3-g1a2b3c4[-dirty], after v2.0.5 and before any later release. None for a version that names no
+    release (a bare commit, dev, unknown). Prereleases in semver order: v2.1.0-rc.1 < v2.1.0-rc.2 < v2.1.0."""
+    m = re.match(r"^(?=v|\d+\.)v?(\d+(?:\.\d+)*)(?:-(?!\d+-g|dirty$)([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?(-\d+-g[0-9a-f]+)?(-dirty)?$",
+                 (tag or "").strip())
+    if not m:
+        return None
+    pre = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in (m.group(2) or "").split(".") if p)
+    return tuple(int(n) for n in m.group(1).split(".")), m.group(2) is None, pre, bool(m.group(3) or m.group(4))
+
+
+def update_due(installed, engine=None):
+    """Whether a game built with version installed is to be built again by this engine (engine, default release()): the
+    Linux updater's rule for a game (linux_update.choose_mode's "update-game"): another version, unless that one is known
+    to be newer than the engine, so a game is never taken back to an older release. A nightly whose build differs is
+    updated too. (The Windows Builder's Updater.cs is not the same: it rebuilds a game whose version differs from its
+    own, a newer one too. This one, for --update-all and the library, keeps the Linux rule and never downgrades.) None
+    when it can't be told: no installed version (a folder built from a checkout, which writes none), or an engine that
+    names no version."""
+    engine = release() if engine is None else engine
+    installed, engine = (installed or "").strip(), (engine or "").strip()
+    if not installed or not engine or engine == "unknown":
+        return None
+    if installed == engine:
+        return False
+    have, new = release_key(installed), release_key(engine)
+    return not (have and new and new < have)
 
 
 def long_path(p):

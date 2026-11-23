@@ -1,4 +1,4 @@
-"""Game-free: the System page's leader lines (nx2/prompt_assets.py). A line moved off its Switch button takes the game's own
+"""Game-free: the System page's leader lines (packs/oot/tools/prompt_assets.py). A line moved off its Switch button takes the game's own
 line out whole: game_line finds the shape the game drew from that label, not the router's idea of it (that left pieces of
 the game's ZL, Minus and Plus lines beside the moved ones). And a line ends on its part's edge, as the game's own do (2
 pixels into it; on the point of a part with no size, the shoulders), on every face: 13 pixels short of it, the lines
@@ -14,6 +14,7 @@ RUN_ALL_MODULES = ["PIL", "numpy"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "packs" / "oot" / "tools"))   # (Ocarina's pack: the button prompts)
 import prompt_assets as P  # noqa: E402
 import prompt_faces  # noqa: E402
 

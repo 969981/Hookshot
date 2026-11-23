@@ -2,7 +2,7 @@
 compiled on Linux as well as Windows. They were inside `#ifdef _WIN32`, although everything they call exists on Linux
 too (host/posix provides the Windows calls they use), so a Linux build had the Insert menu's cheats without their code.
 
-The check follows host/hos_main.c's preprocessor conditions to each tool's definition and evaluates them twice: with
+The check follows packs/oot/host/oot_cheats.c's preprocessor conditions to each tool's definition and evaluates them twice: with
 _WIN32 defined, and with __linux__ defined instead. Conditions on other macros count as true.
 
 python -I -B tests/test_debug_tools_linux.py
@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "host/hos_main.c"
+SOURCE = ROOT / "packs/oot/host/oot_cheats.c"   # (host/hos_main.c before a3)
 
 # The debug tools' definitions, and the line that reads the hearts switch.
 TOOLS = [
@@ -84,12 +84,12 @@ def main():
     for pattern in TOOLS:
         hits = [i for i, line in enumerate(lines) if re.search(pattern, line)]
         if not hits:
-            problems.append("not found in host/hos_main.c: " + pattern)
+            problems.append("not found in packs/oot/host/oot_cheats.c: " + pattern)
             continue
         for i in hits + [first_statement(lines, i) for i in hits if lines[i].rstrip().endswith("{")]:
             for system, defined in (("Windows", {"_WIN32"}), ("Linux", {"__linux__"})):
                 if not compiled(lines, i, defined):
-                    problems.append("host/hos_main.c:%d (%s) is not compiled on %s" % (i + 1, lines[i].strip(), system))
+                    problems.append("packs/oot/host/oot_cheats.c:%d (%s) is not compiled on %s" % (i + 1, lines[i].strip(), system))
     if problems:
         raise SystemExit("\n".join(problems))
     print("ok: the %d debug tools are compiled on Windows and Linux" % len(TOOLS))

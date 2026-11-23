@@ -269,7 +269,7 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 - Python runs with `-I`. Tests stay on the standard library so CI needs no install step; the pipeline's existing
   dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. So are the
   button prompts' (fontTools, Pillow, astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), accepted for
-  `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
+  `packs/oot/tools/prompt_assets.py` and `packs/oot/tools/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
   that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
 - New code has to be GPL-compatible. See below.
 

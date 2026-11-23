@@ -1,11 +1,11 @@
-"""The mouse in the game's own menus (host/oot_menu.c): where it points, what it asks of the game.
+"""The mouse in the game's own menus (packs/oot/host/oot_menu.c): where it points, what it asks of the game.
 
 The file is compiled on its own against a fake guest memory holding menu screens as the game lays them out: a screen's
 list of entries (+136 the head, +144 the first node, +156 the entry's offset from its node; entry+24 the button), a
 button's focus at +56 and its hit box at *(button+0x58) (its matrix at +0x28: the scale at +0x28 and +0x38, the
 translation at +0x4c and +0x50; its rectangle at +0x84, about the origin; a second box's scale at +0xd8 and centre at
 +0xfc). hos_oot_menu_tick is what a menu screen's update calls each frame (f_802f1380), hos_oot_menu_focus what the pause
-menu's focus handler calls (f_802ed660; nx2/oot_patches.py). The game's focus setter (f_8088ffc0) is a fake that records
+menu's focus handler calls (f_802ed660; packs/oot/lift/oot_patches.py). The game's focus setter (f_8088ffc0) is a fake that records
 its button; the pad's presses (hos_hid_tap) are recorded as their script.
 
 In the pause menu the mouse moved onto a button gives it the focus through the setter, a click on the focused button is
@@ -338,7 +338,7 @@ int main(void) {
 class OotMenuMouseTests(unittest.TestCase):
     def test_points_and_clicks_the_menus(self):
         if sys.platform != "win32":
-            self.skipTest("the game's menus' mouse is Windows' (host/oot_menu.c: _WIN32)")
+            self.skipTest("the game's menus' mouse is Windows' (packs/oot/host/oot_menu.c: _WIN32)")
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
@@ -352,7 +352,7 @@ class OotMenuMouseTests(unittest.TestCase):
             # (and the real "../gpu/vk/compat/hookshot_env.h": env_on, the switches' rule)
             (tmp / "gpu" / "vk" / "compat").mkdir()
             shutil.copy(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h", tmp / "gpu" / "vk" / "compat" / "hookshot_env.h")
-            shutil.copy(ROOT / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
+            shutil.copy(ROOT / "packs" / "oot" / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
             (tmp / "host" / "keys.h").write_text(KEYS_H, encoding="utf-8")
             (tmp / "host" / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"

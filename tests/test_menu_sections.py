@@ -2,7 +2,9 @@
 
 A heading row (Row::heading) is a section's title: draw_options draws it (a gold title and a rule, nothing to click) and
 menu_tick's keys step over it. The Graphics tab is grouped as Resolution and upscaling, Frame generation and latency,
-Screen, HDR, Detail, and GPU and memory, after the Quality preset that sets rows in all of them. Each section must keep a
+Screen (HDR's rows with it: a section titled HDR over a row named HDR said it twice), Detail, and GPU and memory, after the
+Quality preset that sets rows in all of them. The Gameplay tab is Game, Interface and System; the Controls tab is
+Controller, Camera, Mouse and Menu, with no row before the first title. Each section must keep a
 row on every PC: a row row_shown can hide (Reflex, Anti-Lag 2, the Upscaler, the DLSS model, HDR's levels) cannot be a
 section's only row, or a GPU without it would show a title over nothing. The rows table is read from the source; nothing
 runs.
@@ -18,10 +20,21 @@ GRAPHICS = [
     ("Resolution and upscaling", ["Aspect ratio", "Output resolution", "Profile", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
     ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
-    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Ultrawide menus"]),
-    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
+    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Ultrawide menus", "HDR", "HDR paper white",
+                "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
     ("Detail", ["Texture detail", "Anisotropic filtering"]),
     ("GPU and memory", ["GPU device"]),
+]
+GAMEPLAY = [
+    ("Game", ["Game speed", "Field of view", "Text speed", "Text size", "Skip opening", "Game language", "Microphone"]),
+    ("Interface", ["Menu size", "Menu language", "FPS counter", "FPS counter position", "Discord status"]),
+    ("System", ["Bug report", "Restart", "Quit"]),
+]
+CONTROLS = [
+    ("Controller", ["Controls", "Motion", "Controller in background", "Stick dead zone", "Rumble strength", "Auto run"]),
+    ("Camera", ["Camera speed", "Invert camera X", "Invert camera Y", "Disable camera centering"]),
+    ("Mouse", ["Mouse camera", "Mouse sensitivity", "Invert mouse vertical"]),
+    ("Menu", ["Menu shortcut", "Compact menu key"]),
 ]
 
 
@@ -80,20 +93,20 @@ def main():
     graphics = tabs.get("TAB_GRAPHICS", [])
     if not graphics or graphics[0][0] != "Quality preset" or graphics[0][2]:
         raise SystemExit("FAIL: the Graphics tab does not start with the Quality preset")
-    titles = [name for name, _, heading in graphics if heading]
-    want = [title for title, _ in GRAPHICS]
-    if titles != want:
-        raise SystemExit("FAIL: the Graphics tab's sections are %r, not %r" % (titles, want))
-    section_of, current = {}, None
-    for name, value, heading in graphics:
-        if heading:
-            current = name
-        elif current:
-            section_of[name] = current
-    for title, members in GRAPHICS:
-        for name in members:
-            if section_of.get(name) != title:
-                raise SystemExit("FAIL: Graphics: %r is under %r, not %r" % (name, section_of.get(name), title))
+    for tab, label, sections, first in (("TAB_GRAPHICS", "Graphics", GRAPHICS, 1), ("TAB_GAMEPLAY", "Gameplay", GAMEPLAY, 0),
+                                        ("TAB_CONTROLS", "Controls", CONTROLS, 0)):
+        entries = tabs.get(tab, [])
+        if len(entries) <= first or not entries[first][2]:
+            raise SystemExit("FAIL: %s: a row comes before the first section's title" % label)
+        titles = [name for name, _, heading in entries if heading]
+        want = [title for title, _ in sections]
+        if titles != want:
+            raise SystemExit("FAIL: the %s tab's sections are %r, not %r" % (label, titles, want))
+        # (each section's rows, in the table's order: a tab shows its rows so)
+        heads = [i for i, entry in enumerate(entries) if entry[2]] + [len(entries)]
+        got = [(entries[a][0], [name for name, _, _ in entries[a + 1:b]]) for a, b in zip(heads, heads[1:])]
+        if got != sections:
+            raise SystemExit("FAIL: the %s tab's sections hold %r, not %r" % (label, got, sections))
 
     # the heading rows are drawn as titles and stepped over by the keys (no code of their own per tab)
     draw = function(menu, "void draw_options(ui::Ctx& c) {")
@@ -102,7 +115,8 @@ def main():
     tick = function(menu, "void menu_tick() {")
     if "while (heading_at(selected));" not in tick:
         raise SystemExit("FAIL: menu_tick's keys no longer step over heading rows")
-    print("menu sections: OK (%d headings; Graphics in %d sections)" % (sum(r[3] for r in rows), len(titles)))
+    print("menu sections: OK (%d headings; Graphics in %d sections, Gameplay in %d, Controls in %d)"
+          % (sum(r[3] for r in rows), len(GRAPHICS), len(GAMEPLAY), len(CONTROLS)))
 
 
 if __name__ == "__main__":

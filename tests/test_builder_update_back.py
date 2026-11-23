@@ -63,6 +63,9 @@ class Window:
         return lambda self: self.calls.append(name)
 
     refresh, find_files, fill_dumps = note("refresh"), note("find_files"), note("fill_dumps")
+
+    def fill_games(self, reload=False):   # (the library read again: not part of what is checked here)
+        pass
     show_main, check_all, refresh_mode = note("show_main"), note("check_all"), note("refresh_mode")
 
     def set_step(self, on):

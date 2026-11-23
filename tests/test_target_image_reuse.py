@@ -68,7 +68,7 @@ def main():
     tex = (a.source / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     check_source(tex)
     start = tex.index("struct Pooled {")
-    end = tex.index("bool pool_pressed;", start) + len("bool pool_pressed;")
+    end = tex.index("uint8_t pool_pressure = 0;", start) + len("uint8_t pool_pressure = 0;")   # (#637: three tiers)
     pool = tex[start:end]
     actual = "\n".join([
         block(tex, "uint64_t mix("),
@@ -82,13 +82,15 @@ def main():
         block(tex, "void destroy_later("),
     ])
     fixture = (ROOT / "tests/test_target_image_reuse.cpp").read_text(encoding="utf-8")
+    # (in mkwvk's anonymous namespace, as in vk_texture.cpp: its pool, a variable target_pool, beside target_pool.h's namespace)
+    actual = "namespace mkwvk {\nnamespace {\n" + actual + "\n}  // namespace\n}  // namespace mkwvk\nusing namespace mkwvk;\n"
     fixture = fixture.replace("/* DEAD */", block(tex, "struct Dead {") + ";").replace("/* ACTUAL */", actual)
     with tempfile.TemporaryDirectory(prefix="target-image-reuse-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror",
-                        "-Wno-missing-field-initializers", "-D_CRT_SECURE_NO_WARNINGS",
-                        "-pthread", "-I" + str(a.headers),
+                        "-Wno-missing-field-initializers", "-Wno-unused-variable", "-D_CRT_SECURE_NO_WARNINGS",   # (an anonymous namespace's unread counters)
+                        "-pthread", "-I" + str(a.headers), "-I" + str(ROOT / "gpu" / "vk"),
                         str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
     print("a released target's image is the pool's for the next frame: reused, not made")

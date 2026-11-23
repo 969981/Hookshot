@@ -37,6 +37,7 @@
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
 #include "auto_run.h"   /* (the Insert menu's Auto run) */
+#include "nx2_pack.h"   /* (the game's pack: its cheats, the player's state) */
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -367,8 +368,8 @@ static void live_input(void) {
                 if (!strncmp(line, "!rdoc", 5)) rx_request_rdoc_capture(atoi(line + 5));
                 void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
-                extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
-                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                /* "!cheat <action>", as the Cheats page sends: the game's pack's (host/nx2_pack.h cheat_action) */
+                if (!strncmp(line, "!cheat ", 7)) hos_game_cheat_action(atoi(line + 7));
                 void hos_bind(int set, int button, int slot, int code);   /* "!bind <HOS_SW_*> <HOS_PAD_*>", as the Controls page */
                 int bind_b = -1, bind_pad = -2;
                 if (!strncmp(line, "!bind ", 6) && sscanf(line + 6, "%d %d", &bind_b, &bind_pad) == 2 &&
@@ -869,12 +870,11 @@ uint64_t hos_free_camera_input(int *height) {
 }
 
 static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int free_camera) {
-    int hos_oot_flight_shortcut_ready(void);
     static int64_t first_press;
     static int held, consume_jump;
     const uint64_t jump = 1ULL << B_B;
     const int down = !!(*buttons & jump);
-    if (mode < 0 || menu_open || free_camera || !hos_oot_flight_shortcut_ready() || !game_in_front()) {
+    if (mode < 0 || menu_open || free_camera || !hos_game_flight_shortcut_ready() || !game_in_front()) {
         first_press = 0;
         held = 1;
         consume_jump = 0;
@@ -1129,12 +1129,11 @@ static void npad_states(Ctx *c) {
            free camera, which take the stick (none left: nothing kept). The ocarina's note wait (hos_oc_wait 1: A is a
            note there, oc_pad_word) ends it too, so a kept A is never heard as a held note */
         {
-            int hos_oot_player_free(void);
             static AutoRun auto_run;
             static int logged_lock;
             const int on = rx_option(HOS_OPT_AUTO_RUN, 0) != 0;
             buttons = hos_auto_run(&auto_run, buttons, stick[0], stick[1], on,
-                                   !menu_open && hos_oc_wait != 1 && hos_oot_player_free(), hos_now_ns());
+                                   !menu_open && hos_oc_wait != 1 && hos_game_player_free(), hos_now_ns());
             if (auto_run.locked && !logged_lock) logged_lock = 1, hos_log("hid: auto run: A kept held for the sprint");
         }
         __atomic_store_n(&flight_input, flight, __ATOMIC_RELAXED);

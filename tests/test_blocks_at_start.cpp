@@ -25,8 +25,8 @@ uint64_t held(uint64_t allowed, uint64_t other, uint64_t textures, uint64_t at_s
 int main() {
     using namespace vram_compact;
     // 15% of the card's memory in 128 MB blocks, 2 to 24: the same rule for every vendor (the stall it removes was measured on an
-    // AMD card; nothing here asks which card it is)
-    const struct { uint64_t gb, blocks; } cards[] = {{2, 2}, {4, 4}, {6, 7}, {8, 9}, {12, 14}, {16, 19}, {24, 24}, {32, 24}};
+    // AMD card; nothing here asks which card it is). #637: 8%, 2 to 12, on a card of less than 8 GB (vram_compact::under_8gb)
+    const struct { uint64_t gb, blocks; } cards[] = {{2, 2}, {4, 2}, {6, 3}, {8, 9}, {12, 14}, {16, 19}, {24, 24}, {32, 24}};
     for (const auto& c : cards) {
         CHECK(blocks_at_start(c.gb * GB, kBlock, true) == c.blocks);
         // and none in a pool the sampled textures are not made in: nothing would fill them
@@ -34,6 +34,9 @@ int main() {
     }
     CHECK(blocks_at_start(8 * GB, 32 * MB, true) == 24);    // (RX_VK_IMAGE_BLOCK_MB=32: #2690's first table)
     CHECK(blocks_at_start(8 * GB, 0, true) == 0);
+    CHECK(blocks_at_start(8061 * MB, kBlock, true) == 9);   // (an 8 GB card whose heap reads 8061 MB: the 15% rule)
+    CHECK(blocks_at_start(5900 * MB, kBlock, true) == 3);   // (a 6 GB card's: #637's 8%)
+    CHECK(blocks_at_start(5900 * MB, kBlock, true, true) == 6);   // (an integrated GPU's heap of that size: the 15% rule)
     // what a run can give back: not what the blocks made at the start hold free
     CHECK(returnable(1152 * MB, 900 * MB, 1152 * MB) == 0);              // (nine blocks, 252 MB of textures: all nine are kept)
     CHECK(returnable(2560 * MB, 700 * MB, 1152 * MB) == 700 * MB);       // (twenty blocks: eleven can go, 700 MB is free)

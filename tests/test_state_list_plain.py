@@ -1,6 +1,6 @@
 """A pipeline state list record with variant 0 and no answers or questions stands for the variant nothing bound makes.
 
-Lists converted from records that hold no texture answers (assets/pipeline_states/contrib/*-fritchii-recipe*) name a program
+Lists converted from records that hold no texture answers (packs/oot/assets/pipeline_states/contrib/*-fritchii-recipe*) name a program
 variant by nothing: variant 0, no answers, no questions. state_list_prepare (gpu/vk/vk_draw.cpp) prepares those with the
 variant the program's translation makes with nothing bound (seed_plain_of, gpu/vk/vk_shader.cpp), the one draws whose textures
 are what the instructions declare ask for. Not with seed_variant_of and empty answers: that variant would have no answers, and

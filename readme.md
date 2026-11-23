@@ -111,6 +111,13 @@ For a portable install on an external SSD, run the downloaded setup with `--port
 Next time, start the game from the Hookshot shortcut, or `hookshot.exe` in the game folder. That is the launcher: it
 has **Play**, and **Update** when a newer release is out.
 
+**Your games**, at the top of the builder's first page, lists every game Hookshot builds, installed or not: whether it
+is up to date or an update is available, and **Install**, **Update**, **Open folder** and **Play** for each. **Install**
+asks for that game's own copy (its `.nup`, or the folder with its romfs and exefs) and builds it in its own folder
+beside the others (`Games\Hookshot-mkw` for Mario Kart World), never over another game. **Update all** first lists which
+games it would update, then updates them one after another; one that fails does not stop the others. Each game gets
+its own shortcut, named after it; Ocarina's stays **Hookshot**.
+
 The build prepares the game's shaders at its end, which takes a while. Later starts are faster.
 
 **Compile shaders** (the Builder, the launcher's settings, `make_game.py --compile-shaders`) chooses what that
@@ -141,9 +148,12 @@ changed what the shaders are translated for) follows the same choice, kept as `c
 6. Press **Build**. It takes about 10 to 45 minutes, depending on your CPU and memory.
 7. When it says "Your game is ready", press **Play**.
 
-The game is also added to your applications menu as "Hookshot". That entry, and `hookshot` in the game folder, open the
-launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
-update.
+The game is also added to your applications menu as "Hookshot" (another game as "Mario Kart World (Hookshot)", and so
+on). That entry, and `hookshot` in the game folder, open the launcher: **Play**, and **Update** when a newer release is
+out. Keep the AppImage where it is: the launcher uses it to update.
+
+**Your games**, above **Game files**, is the same list as on Windows: every game, its state, **Install** (that game's
+copy, into its own folder beside the others), **Update**, **Open folder**, **Play**, and **Update all**.
 
 When the desktop gives the launcher its own systemd service, **Play** waits up to two seconds for the game's
 separate scope before closing the window. If that hand-off fails, it cancels that attempt before starting the
@@ -178,6 +188,11 @@ folder. The build files of the last build are gone by then (see [Where the files
 update takes about as long as the first build. Your saves and settings are kept. What changed is on the
 [Releases page](https://github.com/notquiteog/Hookshot/releases).
 
+With more than one game installed, an update that brings a new Hookshot Builder updates every installed game, one after
+another, and says at the end how each went. **Update all** in the builder's **Your games** does the same without a new
+builder. A game built before game folders kept their game files can't be updated: the list says to choose its files
+once (**Install**), and from then on it updates like the others.
+
 <details>
 <summary>What an update keeps and replaces, and updating from the command line</summary>
 
@@ -193,8 +208,9 @@ To be safe, copy your saves somewhere first: the `user` folder in the game folde
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
 
-From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`. The Linux AppImage does the same
-with `--update <game folder>`.
+From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`, or
+`python -I nx2/make_game.py --update-all <games folder>` for every game (`--dry-run` to see what it would do). The Linux
+AppImage does the same with `--update <game folder>`.
 
 </details>
 
@@ -340,8 +356,10 @@ A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-
 have them, the DLSS model where DLSS does not run. HDR paper white and
 HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR set to Native.
 
-The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation and latency, Screen,
-HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The table lists them in that order.
+The tabs group their rows under section titles. Graphics: Resolution and upscaling, Frame generation and latency, Screen
+(HDR with it), Detail, and GPU and memory (last: the rows to change when something is wrong). Gameplay: Game, Interface
+(this menu and what it shows over the game), and System. Controls: Controller (its Controls and Motion pages first),
+Camera, Mouse, and Menu (the keys that open this menu). The table lists the rows in that order.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
@@ -374,34 +392,34 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
-| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
-| | Menu size | Small, Medium, Large | Medium |
-| | Game speed | Per frame, Real time | Real time |
+| Gameplay | Game speed | Per frame, Real time | Real time |
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
-| | Microphone | Off, Default, or each microphone by name | Default |
-| | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
-| | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
-| | Discord status | Off, On ("Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC) | On |
 | | Skip opening | Off, On (skips the new-game opening: the story movie and Navi waking Link; later cutscenes and the title screen stay) | Off |
+| | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
+| | Microphone | Off, Default, or each microphone by name | Default |
+| | Menu size | Small, Medium, Large | Medium |
+| | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
+| | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
+| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
+| | Discord status | Off, On ("Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC) | On |
 | | Bug report | Saves a report into a new folder in `bug-reports` (below) | |
-| Controls | Controller in background | Off, On | Off |
-| | Mouse camera | As the stick, Native, Off | As the stick |
-| | Disable camera centering | Off, On | Off |
-| | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
-| | Invert mouse vertical | Off, On | Off |
-| | Invert camera X | Off, On | Off |
-| | Invert camera Y | Off, On | Off |
-| | Camera speed | 50% to 400%, in steps of 25 | 100% |
-| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
-| | Auto run | Off, On | Off |
-| | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| Controls | Controls | Opens the Controls page | |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
-| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
-| | Controls | Opens the Controls page | |
+| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion dead zone (Low, Standard, High; Standard) | |
+| | Controller in background | Off, On | Off |
+| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
+| | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| | Auto run | Off, On | Off |
+| | Camera speed | 50% to 400%, in steps of 25 | 100% |
+| | Invert camera X | Off, On | Off |
+| | Invert camera Y | Off, On | Off |
+| | Disable camera centering | Off, On | Off |
+| | Mouse camera | As the stick, Native, Off | As the stick |
+| | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
+| | Invert mouse vertical | Off, On | Off |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
@@ -773,9 +791,14 @@ When Streamline refuses the feature, the log's `vk: DLSS 5 neural rendering is n
 the `nvngx_dlssnr.dll` there is NVIDIA's or a patched one, and whether the override is set, and the line after it says
 what is missing.
 
-For Streamline, these files go beside the game, or in a `streamline` folder beside it, or wherever
-`RX_VK_STREAMLINE_DIR` points. They are NVIDIA's to ship; Hookshot builds against Streamline's
-MIT-licensed headers only and loads nothing it has not checked NVIDIA's signature on:
+For Streamline, these files go in the game folder's `ngx` folder (where the DLSS tick puts DLSS's runtimes), or a
+`streamline` folder in the game folder, or the game folder itself, or wherever `RX_VK_STREAMLINE_DIR` points (`bin\` and
+`bin\streamline\` are looked in too). The NGX path finds `nvngx_dlssnr.dll` in `ngx` and `streamline` as well, so one copy
+serves both. The log's
+`vk: no sl.interposer.dll in ...` line names every folder looked in. They are NVIDIA's to ship, and NVIDIA has not
+published them: its public Streamline release (v2.14.16, checked 2026-11-14) and its DLSS repository carry no
+`sl.dlss_nr.dll` and no `nvngx_dlssnr.dll`, so neither the Builder nor RecompLauncher can fetch them. Hookshot builds
+against Streamline's MIT-licensed headers only and checks NVIDIA's signature on `sl.interposer.dll` before loading it:
 
 | file | what it is |
 |---|---|
@@ -1034,8 +1057,14 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
   beside the game's exe (`bin\hookshot.exe`) or in the game folder. (`RX_VK_FSR_DIR` names another folder, for testing:
   set it in the environment or a `HOS_ENV_FILE` file; `hookshot_env.txt` takes no paths.) Without them the Upscaler row
-  says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
-  takes their place.
+  says so and offers the rest. Hookshot loads AMD's loader, and the upscaler and frame generation DLLs beside it, only when
+  Windows trusts their signatures and they are signed by Advanced Micro Devices (the log says why when one is not). On
+  Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's) takes their place. It is not loaded
+  when another account may write it or its folder (the log says which; `chmod go-w` them). On a drive that keeps no Unix
+  permissions (NTFS, exFAT, FAT, such as a Steam library on an NTFS drive mounted with `umask=000`), or one made under
+  another install, it is loaded and the log says the check could not be made. The same holds for NVIDIA DLSS's
+  runtime folders on Linux. `RX_VK_LIBRARY_CHECK=0` loads it anyway, and `=2` refuses those too
+  ([development guide](docs/development.md)).
 - **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime --accept-amd-license` downloads those two
   DLLs and AMD's license from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and
   puts them in the game folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `work/ffx-sdk`).
