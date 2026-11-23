@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.0-rc.42](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.41...v2.3.0-rc.42) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dev_packs:** a busy marker whose job is gone is taken over, not left blocking the base ([#136](https://github.com/notquiteog/Hookshot/issues/136)) ([84c659a](https://github.com/notquiteog/Hookshot/commit/84c659a5d5826fe2da582c4a66d574deef89deb9))
+
+
+### Code Refactoring
+
+* **packs:** each game's profile is its pack's manifest, packs/&lt;key&gt;/pack.json (game packs a1) ([#137](https://github.com/notquiteog/Hookshot/issues/137)) ([9919310](https://github.com/notquiteog/Hookshot/commit/9919310d895b6ba4ffa20e90bdbdab860f1cf4a6))
+
+
+### Documentation
+
+* game packs, NX2PC in its own repository and each game in its own ([#132](https://github.com/notquiteog/Hookshot/issues/132)) ([ac0311f](https://github.com/notquiteog/Hookshot/commit/ac0311f91f7093574d2e7de9985193aa77055c4d))
+* **game-packs:** the bridge from the RecompLauncher and AppImage updaters' source ([#135](https://github.com/notquiteog/Hookshot/issues/135)) ([9c06c14](https://github.com/notquiteog/Hookshot/commit/9c06c143c5b0af0a447da4b7669a88e18a902cd1))
+
 ## [2.3.0-rc.41](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.40...v2.3.0-rc.41) (2026-11-22)
 
 
