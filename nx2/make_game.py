@@ -66,6 +66,7 @@ import queue
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -490,15 +491,42 @@ def build_id(main):
     return head[0x40:0x60].hex()
 
 
+def nso_short(path):
+    """How many bytes an NSO lacks against the segments its own header lists: 0 when it is whole (or not an NSO).
+
+    A copy in text mode (an FTP client's ASCII transfer type, some file managers) drops the CR of every CR LF pair, so a
+    module comes out a little shorter than its header says, and the translator then fails on a segment "outside the file".
+    The same check as pokopia-native's nxs2.py nso_short (xFractals/pokopia-native @7c3655d, MIT), which Recompia
+    (Dittobyte/Recompia, GPL-3.0) carries in its launcher; written again here. Each segment ends at its file offset
+    (0x10 + 0x10 * i) plus its size in the file: the compressed size (0x60 + 4 * i) when flag bit i says it is compressed,
+    else its size (0x18 + 0x10 * i)."""
+    with open(path, "rb") as f:
+        h = f.read(0x70)
+    if len(h) < 0x70 or h[:4] != b"NSO0":
+        return 0
+    flags = struct.unpack_from("<I", h, 0xC)[0]
+    end = max(struct.unpack_from("<I", h, 0x10 + 0x10 * i)[0] +
+              struct.unpack_from("<I", h, 0x60 + 4 * i if flags & (1 << i) else 0x18 + 0x10 * i)[0] for i in range(3))
+    return max(0, end - os.path.getsize(path))
+
+
 def check_modules(exefs):
     """Every module of the exefs is one the tools can read: said here, not as a Python error from the translator"""
-    for name in os.listdir(exefs):
+    short = []
+    for name in sorted(os.listdir(exefs)):
         if name != "main.npdm" and not name.endswith(".part"):
             with open(os.path.join(exefs, name), "rb") as f:
                 head = f.read(16)
             if head[:4] != b"NSO0":
                 fail("The file %s in this dump is not a game module (it starts %s). Try another dump of the game, or send this message to the "
                      "Hookshot developers." % (name, head.hex()))
+            n = nso_short(os.path.join(exefs, name))
+            if n:
+                short.append("%s by %d bytes" % (name, n))
+    if short:
+        fail("This dump's game modules are shorter than they say they are (%s): they were copied in text mode, which drops a byte "
+             "from every CR LF pair. Copy the game's exefs from your console or dump again in binary mode (FileZilla: Transfer > "
+             "Transfer type > Binary), then make the .nup or the folder again." % ", ".join(short))
 
 
 def check_supported_build(exefs):
