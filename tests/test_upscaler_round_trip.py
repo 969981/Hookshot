@@ -135,6 +135,7 @@ void restart() {
     CHECK(has_options && !has_output && has_memory_budget);
 }
 void apply_pad_layout(int) {}
+void preset_output(int) {}   // (High and Ultra's 1440p output on the preset row, Longshot #292: not what this checks)
 int detect_pad_layout() { return opts.pad_layout; }
 namespace mr { constexpr int kMax = 8; struct State { void note(const int*) {} }; }
 mr::State restart_state;

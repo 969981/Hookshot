@@ -252,6 +252,15 @@ Fitted to this tree: #252's Intel compiler gate goes on this tree's `guarded_gra
 
 Adapted: #637 is taken for discrete cards of less than 8 GB alone (`vram_compact::under_8gb`, the device-local heap under 7.5 GB, since an 8 GB card's heap and allowance both read under 8 GB; never an integrated GPU such as the Steam Deck's): there it brings the start's 8% of blocks, the dynamic floor of 1800 MB and up, damped contraction, the runs' proportional start, the target pool halved over 90%, VMA's 32 and 16 MB blocks, `RX_VK_KEEP_FINALIZED_MB` 128, `RX_VK_ASTC_BC_MB` 1, `RX_VK_IMPORT_LOW` 70, and a 6 GB card's mirrors at a third (at most 1700 MB); its two DLSS CNN rows are for every card, and its staging keeps 128 MB where the driver allows 6.5 GB or less on a discrete card under 8 GB (an integrated GPU keeps main's 64 MB). Its changes for every card are left out: the Vulkan driver picked from DriverStore when `VK_ICD_FILENAMES` is unset, the write-back cap on by default (`RX_VK_WB_MAX_KB`), the textures' floor on cards of 8 GB and more, the hold's 80% line and its shorter times, a 4 GB card's mirrors past its 256 MB, the upload deferral's 12 ms and its terrain test, the 16 MB staging arenas and the two kept warm (on every card: on the Steam Deck #568 measured 9 to 41 ms for each arena made again), and an unused rule for hosts of version 14. Its host API stays this tree's (no host_storage field, the version checked exactly), its presenter queue stays off by default, and its device-local heap is the raw heap size. #1188's check asks once per driver (`gpu/vk/cold_check.h`). #1255's sweep goes through this tree's `target_overlap::DrawnOver`. #311's note is in `docs/temporal-history.md`. Moved to later slices: #977 (after #443, in A2), #952 (an A/B against this tree's uniform snapshot reuse), #416 with #1595 and 19beb1a6 (the pipeline cache file rule).
 
+### The output default (#292)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#292](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/292) | Amateurwizrd | fix(runtime): a new install draws the game's 2560x1440, not its reduced 2048x1152 |
+
+Adapted, not picked: here the Quality preset's Auto already chose the screen's own size where the tier has the memory for it, so 2560x1440 is the start only at High and Ultra, where the screen's own size is not chosen (`gpu/vk/auto_settings.h` `high_output`), and when High or Ultra is chosen on the preset row with the output still at 2048x1152. Every lower tier, and an options file that has an output, keep theirs.
+
+
 ### Lifter, build and script fixes (D2)
 
 | Longshot | Author | What |

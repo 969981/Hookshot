@@ -104,7 +104,24 @@ int main() {
     Hardware unknown;
     unknown.vram_mb = 24564;
     c = choose(unknown);
-    expect(c.tier == 5 && c.output_w == 0, "no screen known: the game's output");
+    expect(c.tier == 5 && c.output_w == 2560 && c.output_h == 1440, "no screen known at Ultra: 2560x1440 (High and up, Longshot #292)");
+    unknown.vram_mb = 8176;
+    c = choose(unknown);
+    expect(c.tier == 3 && c.output_w == 0, "no screen known at Balanced: the game's output");
+    {   // (Longshot #292, adapted: the output High and Ultra start at where the screen's own is not chosen)
+        Hardware five = h;   // (an RTX card of 12 GB: High)
+        five.screen_w = 5120, five.screen_h = 2880;
+        c = choose(five);
+        expect(c.tier == 4 && c.output_w == 2560 && c.output_h == 1440 && std::strstr(c.why, "needs tier 5"),
+               "a 5K screen at High (it needs Ultra): 2560x1440, not the game's");
+        Hardware game = h;
+        game.vram_mb = 16376, game.screen_w = 2048, game.screen_h = 1152;
+        c = choose(game);
+        expect(c.tier == 5 && c.output_w == 0, "a 2048x1152 screen at Ultra: the game's own, no larger than the screen");
+        expect(high_output(4, 0, 0) && high_output(5, 2560, 1440) && high_output(5, 3840, 2160), "High and up: 1440p");
+        expect(!high_output(3, 0, 0) && !high_output(2, 3840, 2160) && !high_output(1, 0, 0), "under High: never");
+        expect(!high_output(5, 1920, 1080) && !high_output(4, 2048, 1152), "a screen of fewer pixels than 1440p: never");
+    }
 
     expect(fingerprint(h, 0x10de, 0x2782) != fingerprint(h, 0x10de, 0x2783), "another GPU: another fingerprint");
     Hardware moved = h;

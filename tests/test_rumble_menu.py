@@ -61,6 +61,7 @@ Options opts;
 int saves = 0, presets = 0;
 void save() { saves++; }
 void apply_pad_layout(int) {}
+void preset_output(int) {}   // (High and Ultra's 1440p output on the preset row, Longshot #292: not what this checks)
 int detect_pad_layout() { return opts.pad_layout; }
 void apply_preset(int) { presets++; }
 void env_release(const int*) {}   // (the environment's hold on a row: none here)
