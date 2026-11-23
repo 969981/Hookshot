@@ -690,9 +690,17 @@ class ReleaseScripts(unittest.TestCase):
     def linux(self, tag):
         return [PRODUCT + "-%s-x86_64.AppImage" % tag, PRODUCT + "-%s-x86_64.AppImage.zsync" % tag]
 
+    def windows(self, tag):
+        return ["HookshotBuilder.exe", PRODUCT + "-%s-Windows-x64-full-setup.zip" % tag, PRODUCT + "-%s-Windows-x64.zip" % tag]
+
+    def held(self, tag):
+        """What rc holds of a release with every file: its Linux and Windows files and SHA256SUMS, not its setup lists"""
+        return sorted(self.linux(tag) + self.windows(tag) + ["SHA256SUMS"])
+
     def released(self, rid, tag, prerelease=None, files=None):
         prerelease = "-" in tag if prerelease is None else prerelease
-        names = self.linux(tag) + ["HookshotBuilder.exe", "SHA256SUMS"] if files is None else files
+        names = (self.linux(tag) + self.windows(tag) + ["SHA256SUMS", "hookshot-setup.txt", "hookshot-linux.txt"]
+                 if files is None else files)
         return rel(rid, tag, False, prerelease, tag + " notes", assets=names)
 
     def rc_release(self):
@@ -716,11 +724,13 @@ class ReleaseScripts(unittest.TestCase):
                          "v2.1.0": "b" * 40})
         self.sync()
         rc = self.rc_release()
-        # (a prerelease, never "latest", with only the AppImage and its .zsync, the same files as on the release)
+        # (a prerelease, never "latest", with the AppImage and its .zsync, the Windows files and SHA256SUMS, the same files as
+        # on the release; not its setup lists, which the setups read from their own release)
         self.assertEqual((rc["draft"], rc["prerelease"], rc["make_latest"]), (False, True, "false"))
         self.assertEqual(rc["name"], "Latest release candidate")
-        self.assertEqual(sorted(a["name"] for a in rc["assets"]), self.linux("v2.1.0-rc.3"))
-        self.assertEqual(sorted(a["content"] for a in rc["assets"]), self.linux("v2.1.0-rc.3"))
+        self.assertEqual(sorted(a["name"] for a in rc["assets"]), self.held("v2.1.0-rc.3"))
+        self.assertEqual(sorted(a["content"] for a in rc["assets"]), self.held("v2.1.0-rc.3"))
+        self.assertIn("HookshotBuilder.exe", rc["body"])
         self.assertEqual(self.state()["tags"]["rc"], "b" * 40)
         self.assertIn("[v2.1.0-rc.3](https://github.com/%s/releases/tag/v2.1.0-rc.3)" % REPO, rc["body"])
         self.assertLess(len(rc["body"]), 800)
@@ -733,15 +743,16 @@ class ReleaseScripts(unittest.TestCase):
         before = len(self.uploads())
         self.sync()
         self.assertEqual(len(self.uploads()), before)
-        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.linux("v2.1.0-rc.3"))
+        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.held("v2.1.0-rc.3"))
 
     def test_rc_moves_on_to_the_next_release_candidate_and_the_release(self):
         tags = {"v2.1.0-rc.3": "b" * 40, "v2.1.0-rc.4": "c" * 40, "v2.1.0": "c" * 40, "rc": "b" * 40}
-        rc = rel(50, "rc", False, True, "old", assets=self.linux("v2.1.0-rc.3"))
+        rc = rel(50, "rc", False, True, "old", assets=self.held("v2.1.0-rc.3"))   # (HookshotBuilder.exe and SHA256SUMS replaced)
         rc["make_latest"] = "false"
         self.given([rc, self.released(3, "v2.1.0-rc.3"), self.released(4, "v2.1.0-rc.4")], tags=dict(tags))
         self.sync()
-        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.linux("v2.1.0-rc.4"))
+        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.held("v2.1.0-rc.4"))
+        self.assertEqual(sorted(a["content"] for a in self.rc_release()["assets"]), self.held("v2.1.0-rc.4"))
         self.assertEqual(self.rc_release()["id"], 50)
         self.assertEqual(self.state()["tags"]["rc"], "c" * 40)
         # (promoted: v2.1.0 is newer than its release candidates)
@@ -750,7 +761,7 @@ class ReleaseScripts(unittest.TestCase):
         self.state_file.write_text(json.dumps(state), encoding="utf-8")
         self.sync()
         rc = self.rc_release()
-        self.assertEqual(sorted(a["name"] for a in rc["assets"]), self.linux("v2.1.0"))
+        self.assertEqual(sorted(a["name"] for a in rc["assets"]), self.held("v2.1.0"))
         self.assertIn("[v2.1.0]", rc["body"])
         self.assertEqual((rc["prerelease"], rc["make_latest"]), (True, "false"))
         self.assertEqual([x["tag_name"] for x in self.state()["releases"]].count("rc"), 1)
@@ -761,13 +772,18 @@ class ReleaseScripts(unittest.TestCase):
                     self.released(3, "v2.1.0-rc.9")],
                    tags={"v2.2.0-rc.1": "f" * 40, "v2.1.0": "c" * 40, "v2.1.0-rc.10": "c" * 40, "v2.1.0-rc.9": "b" * 40})
         self.sync()
-        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.linux("v2.2.0-rc.1"))
+        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.held("v2.2.0-rc.1"))
 
     def test_rc_passes_over_a_release_without_its_appimage(self):
         self.given([self.released(4, "v2.1.0-rc.4", files=["HookshotBuilder.exe"]), self.released(3, "v2.1.0-rc.3")],
                    tags={"v2.1.0-rc.4": "c" * 40, "v2.1.0-rc.3": "b" * 40})
         r = self.sync()
         self.assertIn("v2.1.0-rc.4 has no", r.stdout)
+        self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.held("v2.1.0-rc.3"))
+
+    def test_rc_takes_the_linux_files_alone_from_a_release_without_windows_files(self):
+        self.given([self.released(3, "v2.1.0-rc.3", files=self.linux("v2.1.0-rc.3"))], tags={"v2.1.0-rc.3": "b" * 40})
+        self.sync()
         self.assertEqual(sorted(a["name"] for a in self.rc_release()["assets"]), self.linux("v2.1.0-rc.3"))
 
     def test_rc_listing_that_fails_changes_nothing(self):

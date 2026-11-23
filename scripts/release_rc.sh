@@ -1,6 +1,8 @@
 #!/bin/bash
 # rc, the latest release candidate: a rolling prerelease, never "latest" and not a version, that holds the Linux AppImage
-# and its .zsync of the newest published release candidate or release (semver: v2.1.0-rc.2 < v2.1.0-rc.3 < v2.1.0, as
+# and its .zsync of the newest published release candidate or release, and that release's Windows files (the setup, the
+# full setup's zip, the RecompLauncher zip) and SHA256SUMS beside them, so that a player who opens "Latest release
+# candidate" finds a build for Windows too (it had only the Linux files, and a Windows player saw nothing to download) (semver: v2.1.0-rc.2 < v2.1.0-rc.3 < v2.1.0, as
 # the builder's Release candidate Update track has it, builder/linux/linux_update.py). A release candidate's AppImage
 # carries gh-releases-zsync|<owner>|<repo>|rc|... (the Linux AppImage workflow), so AppImageUpdate moves it on to the
 # next release candidate, and to its version's release once that ships. Its own tag would keep it where it is, and
@@ -44,13 +46,17 @@ candidates=$(jq -r '[.[] | select((.draft | not) and (.tag_name | test("^v[0-9]+
         | [(.a | tonumber), (.b | tonumber), (.c | tonumber), ((.r // "1000000000") | tonumber)])}]
     | sort_by(.key) | reverse | .[] | "\(.id) \(.tag_name)"' <<<"$all")
 
-# The newest of them with its AppImage and .zsync (a release whose Linux files are missing is passed over)
+# The newest of them with its AppImage and .zsync (a release whose Linux files are missing is passed over), and its Windows
+# files and SHA256SUMS where it has them. The Windows Builder never reads rc: its updates take version tags only
+# (builder/HookshotBuilder/Updater.cs ReleaseName, builder/setup/setup.c), and the setup names its own release's list
 src= tag= files=
 while read -r id t; do
     [[ -n $id ]] || continue
-    files=$(assets "$id" | jq -c --arg a "$PRODUCT-$t-x86_64.AppImage" \
-        '[.[] | select(.name == $a or .name == ($a + ".zsync")) | {id, name, digest}] | sort_by(.name)')
-    if [[ $(jq length <<<"$files") == 2 ]]; then src=$id tag=$t; break; fi
+    files=$(assets "$id" | jq -c --arg a "$PRODUCT-$t-x86_64.AppImage" --arg w "$PRODUCT-$t-Windows-x64" \
+        '[.[] | select(.name == $a or .name == ($a + ".zsync") or .name == "HookshotBuilder.exe" or .name == ($w + ".zip")
+            or .name == ($w + "-full-setup.zip") or .name == "SHA256SUMS") | {id, name, digest}] | sort_by(.name)')
+    if [[ $(jq --arg a "$PRODUCT-$t-x86_64.AppImage" '[.[] | select(.name == $a or .name == ($a + ".zsync"))] | length' \
+        <<<"$files") == 2 ]]; then src=$id tag=$t; break; fi
     echo "$t has no $PRODUCT-$t-x86_64.AppImage and .zsync: passed over"
 done <<<"$candidates"
 if [[ -z $src ]]; then
@@ -60,9 +66,7 @@ fi
 echo "the newest release candidate or release: $tag ($src)"
 sha=$(commit_of "$tag")
 url="https://github.com/$GH_REPO/releases/tag/$tag"
-notes="The Linux AppImage of the newest release candidate or release, [$tag]($url), and its \`.zsync\`: the same files, here for AppImageUpdate, so that a release candidate's AppImage moves on to the next release candidate and to its version's release. This is not a version.
-
-Download from [$tag]($url): its notes, the Windows setup and \`SHA256SUMS\` are there. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest)."
+notes="The files of the newest release candidate or release, [$tag]($url): on Windows, \`HookshotBuilder.exe\` (the setup; the \`full-setup\` zip has everything in one download); on Linux, the AppImage and its \`.zsync\` (AppImageUpdate moves a release candidate's AppImage on to the next release candidate and to its version's release). The same files as on [$tag]($url), whose notes say what changed. This is not a version: for playing, use the [latest release](https://github.com/$GH_REPO/releases/latest)."
 
 # The tag on that release's commit, and the release (a prerelease, never "latest"), found by listing as the others are
 if gh api "repos/$GH_REPO/git/ref/tags/$RC" >/dev/null 2>&1; then
