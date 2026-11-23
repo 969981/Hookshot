@@ -3,9 +3,8 @@
 #pragma once
 
 #include "nx2_pack.h"
+#include "../menu/oot_menu.h"   /* (the menu's option ids and the tools' actions: OOT_AGE_ACTION, OOT_TELEPORT_ACTION, ...) */
 
-#define OOT_AGE_ACTION 999         /* (the Cheats page's Age row) */
-#define OOT_TELEPORT_ACTION 1000   /* (pouch edits use 200 to 348) */
 #define OOT_BRIDGE_AGE 0x10000     /* (oot_bridge_tp.asked: the age switch to the child, | 1 to the adult; not a destination) */
 
 /* oot_teleport.c: the game's data and events, the teleport and the age switch, the map, the bridge's asks */
@@ -40,3 +39,6 @@ int hos_oot_opening(Ctx *c, int mode);
 
 /* oot_wide_cover.c: the ultrawide loading cover */
 float hos_wide_cover(void);
+
+/* ../menu/menu.c: the menu's content for the shared renderer (NX2PackHost.menu) */
+const NX2GameMenu *oot_menu(void);

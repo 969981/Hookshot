@@ -60,7 +60,8 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 # game/: the game profile's C view (game/game_profile.h, generated from nx2/game_profile.py; Ocarina's). A
 # standalone lift writes the dump's own profile to <work>/sa/game, which the runtime reads first: the runtime is compiled
-# for the game it runs. The renderer is built once for every game, with game/'s, and is handed the runtime's keys.
+# for the game it runs. The renderer is built once for every game, with no game's (the empty profile's header, empty_profile_dir:
+# docs/game-packs.md a4), and is handed the runtime's keys.
 GAME = os.path.join(kit.HERE, "..", "game")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
@@ -1330,6 +1331,26 @@ def all_pack_hosts():
     return out + [("none", [os.path.join(os.path.realpath(HOST), "game_none.c")])]
 
 
+def empty_profile_dir(gen_dir):
+    """The folder of the header the renderer is compiled with: the empty profile's game_profile.h (nx2/game_profile.py NONE),
+    written here, so the renderer, built once for every game, holds no game's program keys; the runtime hands it its own
+    (HOOKSHOT_PROFILE_*: host/hos_main.c game_profile_env). Written only when it changes, so its time keeps the objects"""
+    import game_profile
+    folder = os.path.join(gen_dir, "renderer_profile")
+    os.makedirs(folder, exist_ok=True)
+    text = game_profile.emit_header(game_profile.NONE)
+    path = os.path.join(folder, "game_profile.h")
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            same = f.read() == text
+    except OSError:
+        same = False
+    if not same:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    return folder
+
+
 def game_profile_bytes(folder):
     """a game profile header as a dependency: a profile change rebuilds what reads it, and nothing else"""
     with open(os.path.join(folder, "game_profile.h"), "rb") as f:
@@ -1575,6 +1596,7 @@ def main():
                  if (not LINUX and streamline_sdk_path())
                  else ("left out: Windows only" if LINUX else
                        "left out (no Streamline headers found; see readme.md)")))
+        vk_profile = empty_profile_dir(gen_dir)   # (the empty profile's header: the renderer is every game's)
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
@@ -1595,7 +1617,7 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
-            "-I" + vk, "-I" + gen_dir, "-I" + os.path.join(kit.ROOT, "game"),   # (game/game_profile.h, GAME)
+            "-I" + vk, "-I" + gen_dir, "-I" + vk_profile,   # (the empty profile's game_profile.h: empty_profile_dir)
             "-I" + os.path.join(kit.ROOT, "third_party", "zbic")]
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
@@ -1618,7 +1640,7 @@ def main():
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
                                    os.path.join(GPU, "compat"), os.path.join(spirv_headers, "include"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
-                             os.path.join(GPU, "third_party", "suyu", "video_core", "textures"), os.path.join(kit.ROOT, "game"),
+                             os.path.join(GPU, "third_party", "suyu", "video_core", "textures"), vk_profile,
                              os.path.join(spirv_headers, "include"), os.path.join(vk_headers, "include"),
                              os.path.join(vma_headers, "include"))
         opennr, opennr_ptx, opennr_count = opennr_jobs(cxx, vk, gen_dir, obj_dir, vflags, vdeps)

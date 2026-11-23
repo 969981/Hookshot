@@ -18,7 +18,7 @@ def main():
     table = table[:table.index("\n};")]
     restart = []
     for entry in re.split(r"\n    \{TAB_", table)[1:]:
-        name = re.match(r'\w+, "([^"]+)"', entry).group(1)
+        name = re.match(r'\w+, "([^"]*)"', entry).group(1)   # ("": a game's tool slot, named from its menu table)
         flags = re.findall(r"\b(true|false)\b", entry)
         if flags and flags[0] == "true":
             restart.append(name)

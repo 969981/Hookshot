@@ -51,6 +51,7 @@ def main():
                       vflags=["-std=c++17", "-O0"], imgui_flags=[], imgui_users=(), shader_stamp="", stamp_def="",
                       vk_lib_deps=b"", logo_text=b"", imgui_deps=b"", vk_sources=lambda: [str(src), str(other)],
                       vk_pgo_flags=[],   # (RX_VK_PGO: no profile, as by default)
+                      vk_profile=str(root / "renderer_profile"),   # (the empty profile's header folder, game packs a4)
                       # (the header packages, whose trees are in the renderer's keys: empty folders here)
                       spirv_headers=str(root / "spirv"), vk_headers=str(root / "vulkan"), vma_headers=str(root / "vma"))
             exec(code, ns)

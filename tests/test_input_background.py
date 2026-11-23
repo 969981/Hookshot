@@ -61,8 +61,8 @@ def main():
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
     constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls)
-    constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
     constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
+    constants += block(api, "enum { HOS_OPT_GAME_BASE") + ";\n"   # (the game's own option ids: its flight's and free camera's)
     constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"   # (Auto run: off here, rx_option answers 0)
     constants += (ROOT / "host/auto_run.h").read_text(encoding="utf-8") + "\n"
     for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED"):
@@ -79,6 +79,9 @@ static void hos_game_cheat_action(int action) { (void)action; }
 static int hos_game_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
 static int hos_game_player_free(void) { return 1; }
+/* (the game's debug flight and free camera: its pack's option ids, Ocarina's since game packs a4; rx_option answers them) */
+static int hos_game_flight_option(void) { return HOS_OPT_GAME_BASE + 1; }
+static int hos_game_free_camera_option(void) { return HOS_OPT_GAME_BASE + 3; }
 """
     # (the host's own presses and stick, for the game's menus' mouse (packs/oot/host/oot_menu.c): none here; the player's input
     # time it hides the mouse by: not looked at)

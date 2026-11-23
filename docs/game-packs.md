@@ -429,12 +429,33 @@ design and is checked by menu screenshots instead.
 | a1 | `nx2/packs.py` (load only: `packs/*/pack.json` in the tree), `packs/{oot,dkb,mkw}/pack.json`, `nx2/game_profile.py` builds `GAMES` from them; `emit_header` unchanged; `game/game_profile.h` unchanged; `Games.cs` and `setup.c` defaults tested against the packs | — |
 | a2 | OoT's Python into `packs/oot/lift/` and `packs/oot/tools/` (`oot_*.py`, `prompt_*`, `prompt_faces/`, `scripts/oot_saves.py`); `load_module` looks in the active pack's `lift/`; `lift_sources` hashes pack files under their old `nx2/` names; `OOT_` env prefix from `lift.env_prefixes`; the prompts step and `ship_state_list` run only as the pack's `build_steps`; `assets/pipeline_states/` → `packs/oot/assets/` (MKW and DKB stop getting OoT's list: a fix) | a1 |
 | a3 | OoT's runtime C into `packs/oot/host/`: the `host/oot_*` files, `hos_main.c` 666–1836 split into `oot_cheats.c`, `oot_teleport.c`, `oot_opening.c`, `oot_wide_cover.c`; the control bridge's OoT members registered by the pack; `host/nx2_pack.h`; `host/game_none.c`; `nx2/build.py` compiles a pack's `host` list into that game's runtime only. Also rule 3's MKW 1.8.0 literals (`hos_game_is_mkw`, `0x806bce28`, `0x825c6844`, `0x837de940`, `HOS_MKW_INTERVAL`): decided (2026-11-22), moved into `packs/mkw/host/` behind the mkw profile's build check, kept for a later 1.8.0 profile; shared code then holds none | a2 |
-| a4 | The renderer's menu reads `NX2GameMenu`: `oot_cheat_items.h`, the teleport list, the Debug tab's tools, the OoT texts and their translations into `packs/oot/menu/`; general rows hidden unless the game lists their feature; option ids into the pack range; `MKWVK_API_VERSION` +1; the renderer compiled with the empty profile's header. The 17 checks that cut `vk_menu.cpp` move to the pack's tests or follow the new functions in the same PR | a3 |
+| a4 | The renderer's menu reads `NX2GameMenu`: `oot_cheat_items.h`, the teleport list, the Debug tab's tools, the OoT texts and their translations into `packs/oot/menu/`; general rows hidden unless the game lists their feature; option ids into the pack range; `MKWVK_API_VERSION` +1; the renderer compiled with the empty profile's header. The 17 checks that cut `vk_menu.cpp` move to the pack's tests or follow the new functions in the same PR. Done: notes below the table | a3 |
 | a5 | Tests and docs follow: the pure-OoT tests into `packs/oot/tests/`, `run_all.py --pack`; `docs/mario-kart-world.md`, `donkey-kong-bananza.md` into their packs; readme, `control.md`, `saves.md` split; a Game column in `docs/tested-configurations.md` (existing rows filled from their text); the bug report names the game; `tests/fixtures/packs/example/` | a4 |
 
 After a4, Ocarina's menu must look and act the same (each tab and page captured with `RX_VK_MENU_SCRIPT` before and
 after, OoT in the game), and MKW's and DKB's must lose exactly the Debug tab and the rows their game does not
 implement (a run of each to the first menu; the GPU lock's schedule applies to every run).
+
+What a4 found, where it differs from 2.2 and 2.4 above:
+
+- **`features`**: a row is gated only where nothing but the game's own code acts on it. That is Field of view, Text
+  speed, Text size, Skip opening, Camera speed, Disable camera centering, Auto run, Damage taken and Debug tools
+  (`fov`, `text_speed`, `text_size`, `skip_opening`, `camera_speed`, `camera_centering`, `auto_run`, `damage_taken`,
+  `debug_tools`). Four rows of 2.2's list stay for every game, because shared code acts on them:
+  - Game speed: the present interval, `host/nn_vi.c`.
+  - Mouse camera: As the stick and Off are `host/nn_hid.c`'s and the window's; only Native is Ocarina's.
+  - Microphone: `host/nn_audio_in.c`, for any game that listens.
+  - Button prompts: it also names the Controls page's inputs.
+  The Aspect ratio and Ultrawide menus rows stay too (`host/hos_main.c`'s picture, the renderer's sides). The general
+  rows that named Ocarina (Game frame rate cap, Microphone, the Controls page's hint) say it in Ocarina's words only.
+- **Words for general rows** are keyed by the row's options-file key (`auto_run`), not its option id: every saved row
+  has one, and not every row has an id.
+- **The Debug tab** stays for every game: its Developer rows are the renderer's. A game without tools has no Debug tools
+  row there.
+- The two tool rows the Debug tab had stopped showing (Inventory item, Change quantity: the Inventory page replaced them)
+  were not carried over. Their action is still the game side's, for `!cheat`.
+- The pack interface is 0.4 (the menu table, the pack range's ids): `nx2/packs.py` and every `pack.json`'s `api`
+  changed, so the lift's key changed once, as at a3 (the lifted C did not).
 
 KAR joins here too: the Dragoon session adds `packs/kar/pack.json` (`released: false`) in a PR to Hookshot `main`,
 after a1, and its multi-pad layer as separate engine PRs.

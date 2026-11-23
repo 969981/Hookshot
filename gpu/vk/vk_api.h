@@ -15,8 +15,9 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 24   /* (23: out_of_memory, from Longshot #1291; 24: the registrations' copy entries, #102's fix) */
-enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
+#define MKWVK_API_VERSION 25   /* (23: out_of_memory, from Longshot #1291; 24: the registrations' copy entries, #102's fix; 25:
+                                  game_menu, docs/game-packs.md a4) */
+/* (32 to 36 were the debug tools', HOS_OPT_CHEAT_*: a game's own since, in its pack's range from HOS_OPT_GAME_BASE, below) */
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
@@ -60,6 +61,142 @@ enum { HOS_OPT_FPS_CAP = 53 };
 /* (HOS_OPT_DAMAGE_TAKEN, 56: Damage taken, 0 Half, 1 Normal (unchanged), 2 Double, 3 Quadruple; Longshot has it at 55, which
    the Auto run row has here) */
 enum { HOS_OPT_DAMAGE_TAKEN = 56 };
+
+/* (game packs a4, docs/game-packs.md 2.4) A game's own option ids are its pack's, HOS_OPT_GAME_BASE and up: its tools' values,
+   their actions and what the game reports to them (packs/<key>/menu/). Below it the engine's, every game's alike */
+enum { HOS_OPT_GAME_BASE = 0x10000 };
+
+/* ---- (version 25, game packs a4: docs/game-packs.md 2.4) the running game's menu content: NX2GameMenu ----
+   The shared renderer's Insert menu carries no game's content. The game's runtime hands it a table (MkwVkHost.game_menu: the
+   pack's packs/<key>/menu/ C, compiled into that game's runtime only, through host/nx2_pack.h NX2PackHost.menu): which of the
+   menu's general rows the game implements, its own words for some of them, its tools on the Debug tab and the list pages they
+   open, its own controls on the Controls page, and the translations of all of it. The renderer draws only what the table says
+   (gpu/vk/vk_menu.cpp); a game with no table (host/game_none.c) has no tools and none of the feature rows below. */
+/* NX2GameMenu.version; a table of another version is not read, nor one smaller than this one. Its size covers NX2GameMenu
+   alone: a change to any of the structs its arrays hold (NX2MenuText, NX2MenuTool, NX2MenuGroup, NX2MenuList, NX2MenuCard,
+   NX2MenuSection, NX2MenuControl, NX2MenuEntry, NX2MenuLang), a member added at their end too, changes the layout the renderer
+   steps through those arrays by, and bumps NX2_GAME_MENU_VERSION (and the pack interface, host/nx2_pack.h) */
+#define NX2_GAME_MENU_VERSION 1
+/* The general rows only some games implement (pack.json "features", by the names in quotes; tests/test_game_packs.py holds the
+   two the same): a row whose feature the running game does not list is hidden, its saved value kept */
+enum {
+    NX2_FEATURE_FOV = 1u << 0,               /* "fov": Gameplay's Field of view (HOS_OPT_FOV) */
+    NX2_FEATURE_TEXT_SPEED = 1u << 1,        /* "text_speed": Gameplay's Text speed (option 5, host/nn_vi.c hos_text_scale) */
+    NX2_FEATURE_TEXT_SIZE = 1u << 2,         /* "text_size": Gameplay's Text size (HOS_OPT_TEXT_SIZE) */
+    NX2_FEATURE_SKIP_OPENING = 1u << 3,      /* "skip_opening": Gameplay's Skip opening (HOS_OPT_SKIP_OPENING) */
+    NX2_FEATURE_CAMERA_SPEED = 1u << 4,      /* "camera_speed": Controls' Camera speed (HOS_OPT_CAMERA_SPEED, hos_camera_scale) */
+    NX2_FEATURE_CAMERA_CENTERING = 1u << 5,  /* "camera_centering": Controls' Disable camera centering (HOS_OPT_DISABLE_CAMERA_CENTERING) */
+    NX2_FEATURE_AUTO_RUN = 1u << 6,          /* "auto_run": Controls' Auto run (HOS_OPT_AUTO_RUN; it needs NX2PackHost.player_free) */
+    NX2_FEATURE_DAMAGE_TAKEN = 1u << 7,      /* "damage_taken": Debug's Damage taken (HOS_OPT_DAMAGE_TAKEN), among the tools */
+    NX2_FEATURE_DEBUG_TOOLS = 1u << 8        /* "debug_tools": Debug's Debug tools row, which shows the table's tools */
+};
+/* A general row's words for this game, by the row's key in hookshot_options.ini ("auto_run"): its help in place of the
+   renderer's. "controls_hint": the Controls page's line under its help */
+typedef struct NX2MenuText {
+    const char *key, *text;
+} NX2MenuText;
+/* A tool on the Debug tab (NX2GameMenu.tools), shown while the Debug tools row is on. Its kind: */
+enum {
+    NX2_TOOL_TOGGLE = 1,   /* Off | On: Left Off, Right On, confirm flips. The game reads its value at option */
+    NX2_TOOL_CHOICE,       /* one of names, Left and Right choose: the game reads values[it] at option, or confirm sends action + it */
+    NX2_TOOL_ACTION,       /* confirm sends action */
+    NX2_TOOL_LIST,         /* confirm opens the list page lists[list] */
+    NX2_TOOL_SWITCH,       /* names[0] | names[1], the half the game reports at option (0 or 1; -1 not known) lit: Left or Right
+                              on the other half, or confirm, sends action */
+    NX2_TOOL_ROW           /* not a tool: the general row whose options-file key is name, placed among the tools (Damage taken) */
+};
+typedef struct NX2MenuTool {
+    int kind;
+    const char *name, *help;
+    const char *confirm;      /* what confirm does, for its prompt ("Toggle", "Apply"); NULL: nothing */
+    const char *button;       /* ACTION, LIST, SWITCH: its value cell's label ("Mark"; a SWITCH's while the game has not said) */
+    int option;               /* TOGGLE, CHOICE: the option id the game reads it at; SWITCH: the one the game reports at; 0: none */
+    int off;                  /* TOGGLE: its value off, and what the game reads while the tools are off; CHOICE: what it reads then */
+    int on, on_max;           /* TOGGLE: its value turned on, and the most the game may report it up to while it is on (flight's
+                                 1: in the air) */
+    int start;                /* TOGGLE: before anyone sets it, read as it is even with the tools off (-1: the game's own); CHOICE:
+                                 its first choice */
+    const char *env;          /* TOGGLE: a switch that starts it on (=1) or off, read when tools_env turns the tools on */
+    const char *const *names; /* CHOICE: its choices, count of them; SWITCH: its two halves */
+    const int *values;        /* CHOICE: what each choice is to the game; NULL: its index */
+    int count;
+    int wrap;                 /* CHOICE: Left and Right go round; 0: they stop at the ends */
+    const char *widest;       /* CHOICE: the text its cell is measured by, so it keeps still; NULL: the value shown */
+    int action;               /* ACTION, SWITCH: what it sends (NX2GameMenu.action_option); CHOICE: confirm sends action + its
+                                 value, 0: confirm does nothing */
+    int list;                 /* LIST: the list page it opens */
+    int closes;               /* ACTION, SWITCH: the menu closes as it sends its action (the game moves on at once) */
+} NX2MenuTool;
+/* The tools' groups on the Debug tab, in the tools' order: a heading over count of them. The first group in the left column,
+   the rest in the right when two fit */
+typedef struct NX2MenuGroup {
+    const char *title;
+    int count;
+} NX2MenuGroup;
+/* A list page a tool opens (NX2GameMenu.lists): cards in sections. Its style: */
+enum {
+    NX2_LIST_PLACES = 1,   /* the sections one under another, their cards in rows: confirm on a card sends action + its index and
+                              closes the menu (Ocarina's Teleport) */
+    NX2_LIST_ITEMS         /* the sections as tabs over pages of cards, each card's count from the game: confirm on a card of
+                              kind 0 sends action + card * 256 + 200 (had or not), Left and Right on one of kind 1 action +
+                              card * 256 + 64 + 1 or - 1 (Ocarina's Inventory) */
+};
+typedef struct NX2MenuCard {
+    const char *name;
+    const char *note;   /* PLACES: a tag on the card ("adult only"), NULL none */
+    int kind;           /* ITEMS: 0 had or not, 1 an amount */
+} NX2MenuCard;
+typedef struct NX2MenuSection {
+    const char *name;
+    int first;          /* its first card */
+} NX2MenuSection;
+typedef struct NX2MenuList {
+    int style;
+    const char *title;  /* the page's banner */
+    const char *help;   /* PLACES: the help beside the cards; ITEMS: the page's note while the game reports no counts (no save) */
+    const NX2MenuCard *cards;
+    int count;
+    const NX2MenuSection *sections;
+    int section_count;
+    int action;
+    int counts;         /* ITEMS: the game reports card i's count at option id counts + i: -1 nothing to edit, 0 not had */
+} NX2MenuList;
+/* One of the game's own controls on the Controls page, after the engine's: a HOS_KEY_* past HOS_KEY_CAM_RIGHT (the ocarina's
+   notes), and its name */
+typedef struct NX2MenuControl {
+    int button;
+    const char *name;
+} NX2MenuControl;
+/* The table's texts in one menu language (code: gpu/vk/menu_i18n.h kLangs'), as menu_i18n.h holds the renderer's: looked up
+   before the renderer's own */
+typedef struct NX2MenuEntry {
+    const char *en, *text;
+} NX2MenuEntry;
+typedef struct NX2MenuLang {
+    const char *code;
+    const NX2MenuEntry *entries;
+    int count;
+} NX2MenuLang;
+typedef struct NX2GameMenu {
+    uint32_t version;                 /* NX2_GAME_MENU_VERSION */
+    uint32_t size;                    /* sizeof (NX2GameMenu) as the pack was built */
+    const char *name;                 /* the game's short name, in the renderer's messages ("Ocarina of Time") */
+    uint32_t features;                /* NX2_FEATURE_* */
+    const NX2MenuText *texts;
+    int text_count;
+    const char *tools_env;            /* a switch that turns the tools on (=1) whatever the Debug tools row says */
+    int action_option;                /* the option id the game takes the tools' actions at, each once (0 when none waits) */
+    const NX2MenuTool *tools;
+    int tool_count;
+    const NX2MenuGroup *groups;
+    int group_count;
+    const NX2MenuList *lists;
+    int list_count;
+    const NX2MenuControl *controls;
+    int control_count;
+    const NX2MenuLang *langs;
+    int lang_count;
+} NX2GameMenu;
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
@@ -212,6 +349,9 @@ typedef struct MkwVkHost {
        game stops, as for the host's own allocations (host/mkw_glue.c hos_alloc_gave_up). what names it in the log. Does not
        return */
     void (*out_of_memory)(const char *what);
+    /* (version 25, game packs a4: docs/game-packs.md 2.4) the running game's menu content (NX2GameMenu, above), or NULL: none. It
+       lives for the process */
+    const NX2GameMenu *(*game_menu)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

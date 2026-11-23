@@ -182,15 +182,26 @@ def main():
     need("44 is reserved for HOS_OPT_SKIP_TITLE" in api, "option id 44 is no longer reserved for Skip title")
     need(re.search(r"enum \{ HOS_OPT_SKIP_OPENING = 52 \};", api), "Skip opening is not option id 52")
     need("HOS_OPT_SKIP_OPENING = 44" not in api, "Skip opening took id 44")
-    need("skip_opening" not in api, "Skip opening added to MkwVkHost or MkwVkRenderer (it is an option id, not an interface change)")
+    # (the two tables' members: Skip opening is an option id; its name in vk_api.h is the game's feature, "skip_opening",
+    # NX2_FEATURE_SKIP_OPENING, which the menu table says it implements: game packs a4)
+    tables = api[api.index("typedef struct MkwVkHost {"):api.index("} MkwVkHost;")]
+    tables += api[api.index("typedef struct MkwVkRenderer {"):api.index("} MkwVkRenderer;")]
+    need("skip_opening" not in tables.lower(), "Skip opening added to MkwVkHost or MkwVkRenderer (it is an option id, not an interface change)")
+    need(re.search(r'NX2_FEATURE_SKIP_OPENING = 1u << \d+, +/\* "skip_opening"', api), "Skip opening is no game feature of the menu table")
 
     need(re.search(r"int skip_opening = 0;", menu_h), "Skip opening does not default off")
     row = re.search(r'\{TAB_GAMEPLAY, "Skip opening", &opts\.skip_opening, 0, 1, 1, tx_onoff,', menu)
     need(row, "the Gameplay row is missing")
-    help_at = menu.index("Skip opening")
-    help_text = menu[help_at:help_at + 400]
+    # (the row is general, shown for a game that lists skip_opening; its words in Ocarina are Ocarina's menu table's, by the
+    # row's options-file key: packs/oot/menu/menu.c, game packs a4)
+    table = (ROOT / "packs" / "oot" / "menu" / "menu.c").read_text(encoding="utf-8")
+    help_at = table.index('{"skip_opening",')
+    help_text = table[help_at:help_at + 400]
     need("story movie and Navi waking Link" in help_text and "Deku Tree" in help_text and "title screen" in help_text,
          "the row's help does not say what is skipped and what is left")
+    need("NX2_FEATURE_SKIP_OPENING" in table[table.index(".features = "):table.index(".texts = ")],
+         "Ocarina's table does not list Skip opening's feature")
+    need("if (v == &opts.skip_opening) return NX2_FEATURE_SKIP_OPENING;" in menu, "the row is not the skip_opening feature's")
     need("if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;" in replay, "the option callback does not answer it")
     option = replay.split("t.option =", 1)[1].split("};", 1)[0]
     need(not re.search(r"\bid\s*==\s*44\b", option), "the option callback handles id 44")

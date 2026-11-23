@@ -1,5 +1,6 @@
-/* (OoT debug cheats) the inventory editor's items, shared by the menu (gpu/vk/vk_menu.cpp) and the game side
-   (host/hos_main.c). OOT_SECTION starts a heading in the menu list; OOT_ITEM(label, pouch content name, kind):
+/* (OoT debug cheats) the inventory editor's items, shared by the menu table (packs/oot/menu/menu.c, which the shared renderer's
+   Inventory page draws) and the game side (packs/oot/host/oot_cheats.c). OOT_SECTION starts a heading in the menu list;
+   OOT_ITEM(label, pouch content name, kind):
    kind 0 an item Link has or not (Enter unlocks / relocks), 1 a quantity (Left / Right change it).
    Pouch names come from the game's own event flows and actor packs (work/oot-teleport-research.md, "Inventory").
    The names marked (guess) are the likeliest of two spellings; the log's "inventory probe" line shows both. */
@@ -104,6 +105,4 @@
     "Item_HeavyBoot", "Item_HoverBoot", "Item_Mask_Keaton", "Item_Gauntlet_Silver", "Armor_GlassTruth", "Armor_Child_GlassTruth", "Armor_Adult_GlassTruth", \
     "Armor_Child_Gauntlet_Goron", "Item_Wallet_Small"
 
-#define OOT_CHEAT_ITEM_BASE 4096   /* rx_option_set(OOT_CHEAT_ITEM_BASE + i, count) from the game side; -1 unknown */
-#define OOT_CHEAT_AGE_ID 4090      /* rx_option_set(OOT_CHEAT_AGE_ID, age) from the game side: 0 child, 1 adult, -1 unknown */
-#define OOT_CHEAT_ITEM_ACTION 3000 /* + item * 256 + op: op 0..127 adds op - 64; op 200 unlocks (1) or relocks (all) */
+/* (the counts' and the age's option ids and the edits' action: oot_menu.h, OOT_OPT_ITEMS, OOT_OPT_AGE, OOT_ITEM_ACTION) */

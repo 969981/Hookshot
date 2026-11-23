@@ -884,8 +884,8 @@ static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int 
         const int64_t now = hos_now_ns();
         if (first_press && now - first_press <= 300000000) {
             mode = !mode;
-            rx_option_set(HOS_OPT_CHEAT_FLIGHT, mode);
-            mode = rx_option(HOS_OPT_CHEAT_FLIGHT, -1);
+            rx_option_set(hos_game_flight_option(), mode);
+            mode = rx_option(hos_game_flight_option(), -1);
             first_press = 0;
             consume_jump = mode == 0;
         } else {
@@ -1109,8 +1109,10 @@ static void npad_states(Ctx *c) {
         uint64_t flight = 0;
         int height = 0;
         const int menu_open = rx_option(1, 0);
-        const int free_camera = rx_option(HOS_OPT_CHEAT_CAMERA, 0);
-        const int flying = flight_jump_shortcut(&buttons, rx_option(HOS_OPT_CHEAT_FLIGHT, -1), menu_open, free_camera);
+        /* (the game's debug free camera and flight, its pack's option ids: none, neither) */
+        const int free_camera = hos_game_free_camera_option() ? rx_option(hos_game_free_camera_option(), 0) : 0;
+        const int flying = flight_jump_shortcut(&buttons, hos_game_flight_option() ? rx_option(hos_game_flight_option(), -1) : -1,
+                                                menu_open, free_camera);
         if (free_camera && !menu_open) {
             for (int i = 0; i < 4; i++) axes |= (uint64_t)(uint16_t)stick[i] << (16 * i);
             height = (int)(buttons >> B_R & 1) - (int)(buttons >> B_L & 1);

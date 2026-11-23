@@ -790,12 +790,24 @@ A pack's code and data sit beside its manifest. Ocarina's:
 | `packs/oot/tools/` | the button prompts (`prompt_assets.py` and its faces) and the save copier (`oot_saves.py`) | the `prompts` build step; a person |
 | `packs/oot/assets/pipeline_states/` | the pipeline state list's sources | the `pipeline_states` build step |
 | `packs/oot/host/` | Ocarina's runtime C: the debug tools (`oot_cheats.c`), the teleport and age switch (`oot_teleport.c`), Skip opening (`oot_opening.c`), the ultrawide loading cover (`oot_wide_cover.c`), the hooks of `oot_*.c`, and `oot_pack.c`, its table of the runtime's hooks and its control bridge verbs | `nx2/build.py`, into Ocarina's runtime only |
+| `packs/oot/menu/` | Ocarina's Insert menu content (`menu.c`): the general rows it implements (`features`), its own words for some of them, its debug tools and their Teleport and Inventory pages, its ocarina note controls, and their translations (`menu_i18n.h`); the destinations and items lists its game side shares (`oot_destinations.h`, `oot_cheat_items.h`), and the option ids and actions between the two (`oot_menu.h`) | `nx2/build.py`, into Ocarina's runtime only; handed to the shared renderer as `MkwVkHost.game_menu` |
 
 A pack's `host` list (pack.json) is its runtime C, compiled into that game's runtime only (`nx2/build.py`
 `pack_host`); a game whose pack has none links `host/game_none.c` (Bananza). The shared runtime asks the game through
 `host/nx2_pack.h`'s `NX2PackHost` (start, the control bridge's verbs, the debug cheats' live action, Auto run's
-player state, the loading cover, a present's pacer hooks, a thread dump's idle loop), and a pack's C includes only that
-header and the ones it names. Mario Kart World's `packs/mkw/host/` keeps its 1.8.0 pacer behind that build's check.
+player state, the loading cover, a present's pacer hooks, a thread dump's idle loop, the menu table, the debug flight's and
+free camera's option ids), and a pack's C includes only that header and the ones it names. Mario Kart World's
+`packs/mkw/host/` keeps its 1.8.0 pacer behind that build's check.
+
+The shared renderer's Insert menu (`gpu/vk/vk_menu.cpp`) holds no game's content: the running game's table
+(`NX2GameMenu`, `gpu/vk/vk_api.h`) says which of its general rows the game implements (a row of a feature the game does
+not list is hidden: Field of view, Text speed, Text size, Skip opening, Camera speed, Disable camera centering, Auto run,
+Damage taken, Debug tools), gives its own words for a row by the row's key in `hookshot_options.ini`, its tools on the
+Debug tab (a slot each in the rows table) and the list pages they open, its own controls, and its translations, looked
+up before the renderer's. A game's option ids are its pack's, `HOS_OPT_GAME_BASE` (0x10000) and up. A game with no table
+(Mario Kart World, Bananza) has none of these rows and no tools; the Debug tab keeps its Developer rows. The renderer is
+compiled with the empty profile's `game_profile.h` (`nx2/build.py` `empty_profile_dir`), so it holds no game's program keys
+either: the runtime hands it its own (`HOOKSHOT_PROFILE_*`).
 
 `build_steps` in pack.json say which of `make_game.py`'s optional steps a game takes part in: a game whose pack names
 none (Bananza, MKW) gets no prompts and no shipped pipeline list. The lift's cache key hashes every pack.json's lift

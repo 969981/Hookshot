@@ -5989,11 +5989,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_event_signal = event_signal_queued;
     t.option = [](int id) -> int {   // (3: the fixed path's scale in 1/10000, vk_menu.cpp; DLAA: full scale, vk_dlss.cpp)
         if (id == 11) return opts.stick_dead_zone;
-        if (id == HOS_OPT_CHEAT_HEARTS) return menu_heart_protection();
-        if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
-        if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
-        if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
-        if (id == HOS_OPT_CHEAT_SPEED) return menu_link_speed();
+        if (int game; menu_game_option(id, &game)) return game;   // (the game's own ids: its tools', vk_menu.cpp)
         if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
         if (id == HOS_OPT_HDR_TONEMAP) return scene_tonemap_on();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);

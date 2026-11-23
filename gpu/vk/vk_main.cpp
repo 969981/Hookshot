@@ -1802,8 +1802,10 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         // (a GPU with no buffer device addresses has no fallback to run either)
         logf("vk: this GPU has no mesh shaders: the game's foliage, grass and many effects cannot be drawn");
 #ifdef _WIN32
-        std::thread([name = std::string(dev.props.deviceName)] {
-            const std::string text = "Your graphics card (" + name + ") or its driver has no mesh shader support, which Ocarina of Time "
+        // (the game by its name from its menu table, NX2GameMenu.name: "Ocarina of Time")
+        const NX2GameMenu* const game = menu_game();
+        std::thread([name = std::string(dev.props.deviceName), title = std::string(game && game->name ? game->name : "the game")] {
+            const std::string text = "Your graphics card (" + name + ") or its driver has no mesh shader support, which " + title + " "
                 "uses for foliage, grass and many effects, so parts of the picture will be missing or broken.\n\nHookshot needs a GPU "
                 "with mesh shaders: NVIDIA GeForce RTX 20 series or newer, AMD Radeon RX 6000 series or newer, or Intel Arc. If your "
                 "card is one of those, update its driver.";

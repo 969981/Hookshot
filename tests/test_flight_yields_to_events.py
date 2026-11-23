@@ -28,7 +28,7 @@ def main():
     need("oot_singleton(c, OOT_EVENTMGR_SLOT)" in playing and "events + 104" in playing,
          "oot_event_playing does not read the event manager's playing event")
     cheats = block(source, "static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {")
-    read = cheats.index("int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;")
+    read = cheats.index("int flying = rx_option(OOT_OPT_FLIGHT, 0) > 0;")
     yields = cheats.index("if (flying && oot_event_playing(c)) flying = 0;")
     forgets = cheats.index("if (!flying) flying_actor = 0;")
     moves = cheats.index("change_position(c);")

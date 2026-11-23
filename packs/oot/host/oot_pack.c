@@ -42,6 +42,9 @@ static const NX2PackHost oot = {
     .player_free = hos_oot_player_free,
     .flight_shortcut_ready = hos_oot_flight_shortcut_ready,
     .wide_cover = hos_wide_cover,
+    .menu = oot_menu,
+    .flight_option = OOT_OPT_FLIGHT,
+    .free_camera_option = OOT_OPT_CAMERA,
 };
 
 const NX2PackHost *nx2_pack_host(void) { return &oot; }

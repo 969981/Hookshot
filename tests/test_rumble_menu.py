@@ -204,9 +204,10 @@ def option_ids():
         raise SystemExit("vk_replay.cpp: an option id is read twice: %s" % sorted(ids))
     if not re.search(r"\bid == 9 \? opts\.rumble\b", table):
         raise SystemExit("vk_replay.cpp: option 9 is not the menu's Rumble strength")
-    base = int(re.search(r"#define OOT_CHEAT_ITEM_BASE (\d+)", read("gpu", "vk", "oot_cheat_items.h")).group(1))
+    # (a game's own ids, its tools' and its lists' (the Inventory's counts), are its pack's, HOS_OPT_GAME_BASE and up: game packs a4)
+    base = int(re.search(r"enum \{ HOS_OPT_GAME_BASE = (0x[0-9a-fA-F]+) \};", api).group(1), 16)
     if any(i >= base for i in ids):
-        raise SystemExit("vk_replay.cpp: an option id is among the cheat items'")
+        raise SystemExit("vk_replay.cpp: an option id is among a game's own (HOS_OPT_GAME_BASE and up)")
     users = []
     for folder in ("host", "gpu"):
         for path in (ROOT / folder).rglob("*.c*"):

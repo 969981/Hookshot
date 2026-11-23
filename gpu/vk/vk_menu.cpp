@@ -34,7 +34,6 @@
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "vk_texture.h"   // (the FPS counter's Dev level: texture_count, texture_bytes, texture_stats)
-#include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
@@ -95,7 +94,7 @@ enum MenuTab {
     // (hookshot fork) DLSS 5 neural rendering's own tab. Its rows are the model's own knobs, which belong together and
     // would have doubled the Graphics tab on their own.
     TAB_NEURAL = 4,
-    TAB_DEBUG = 5,   // (the OoT debug tools of #785, a tab of their own)
+    TAB_DEBUG = 5,   // (the game's debug tools, its menu table's (NX2GameMenu: Ocarina's of #785), and the Developer rows)
     TAB_COUNT = 6,
     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
@@ -116,7 +115,7 @@ struct Row {
     bool restart = false;   // (read once, at the start: a change applies after a restart)
     bool preset_exempt = false;   // (a change here leaves the Quality preset alone: every row apply_preset does not set,
                                   // tests/test_preset_exempt.py)
-    signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
+    signed char cheat = -1;   // (a debug tool's slot, on the Debug tab with the tools on: its index in the game's NX2GameMenu.tools, -1 none)
     bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
 };
 /// A row's hints from a table, the value lo first (nullptr: none for that value)
@@ -1328,7 +1327,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 7, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Changes at once. "
      "30 reduces rendering work and keeps real time even with Game speed set to Per frame. Past 60 is experimental: some "
-     "cutscenes and bosses can misbehave (Gohma, the intro's narration). 60 is the safe choice. "
+     "cutscenes and bosses can misbehave. 60 is the safe choice. "
      "Uncapped: as fast as the PC can, still at real time; with V-Sync on, the display's "
      "refresh rate is the limit.",
      nullptr, false, true},
@@ -1400,16 +1399,14 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed, false, true},
     {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
-     "How large the text of dialogue, Navi and signs is drawn.", hn_text_size, false, true},
+     "How large the text of dialogue and signs is drawn.", hn_text_size, false, true},
     {TAB_GAMEPLAY, "Skip opening", &opts.skip_opening, 0, 1, 1, tx_onoff,
-     "Skips the new-game opening (the story movie and Navi waking Link) and leaves later cutscenes, the Deku Tree "
-     "meeting, and the title screen alone.", nullptr, false, true},
+     "Skips the new-game opening and leaves later cutscenes and the title screen alone.", nullptr, false, true},
 
     {TAB_GAMEPLAY, "Game language", &opts.game_lang, 0, i18n::game_lang_count() - 1, 1, tx_game_lang,
      "The game's own language, its text. Applies after a restart.", nullptr, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
-     "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
-     true},
+     "What the game hears when it listens to the microphone.", hn_mic, false, true},
     {TAB_GAMEPLAY, "Interface", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GAMEPLAY, "Menu size", &opts.menu_size, 1, 3, 1, tx_menu_size,
      "How large this menu, the FPS counter and the start-up screen are drawn.", hn_menu_size, false, true},
@@ -1439,7 +1436,7 @@ Row rows[] = {
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
     {TAB_CONTROLS, "Auto run", &opts.auto_run, 0, 1, 1, tx_auto_run,
-     "Sprint without holding A (or its key). Hold it until Link sprints, then let go: he keeps going. Let go of the "
+     "Sprint without holding A (or its key). Hold it until the sprint starts, then let go: it keeps going. Let go of the "
      "stick or the movement keys, or tap A again, to stop.", nullptr, false, true},
     {TAB_CONTROLS, "Camera", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_CONTROLS, "Camera speed", &opts.camera_speed, 50, 400, 25, tx_percent,
@@ -1492,39 +1489,30 @@ Row rows[] = {
     {TAB_PAGE, "Button prompts", &opts.prompts, 0, HOS_PROMPT_N, 1, tx_prompts,
      "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
      "put each action on.", hn_prompts, true, true},
-    // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
-    // developer's rows
+    // Debug: the tools' switch, the game's tools themselves below it while they are on (its menu table's, NX2GameMenu.tools: a
+    // slot each, named from the table at the start, menu_game_init; menu_tick does what they do), Damage taken (a row of the
+    // game's that implements it) among them, then the developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
-     "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock, heart protection and "
-     "movement speed. Off puts flight, the free camera and heart protection away and Link back to his own speed.", nullptr, false, true},
-    {TAB_DEBUG, "Heart protection", nullptr, 0, 0, 0, nullptr,
-     "Protects Link's hearts. Hits can still knock him back.", nullptr, false, true, 0},
+     "The game's testing tools, below while this is on.", nullptr, false, true},
     {TAB_DEBUG, "Damage taken", &opts.damage_taken, 0, 3, 1, tx_damage_taken,
-     "How much health Link loses from a hit. Normal is unchanged. Half rounds up to the next quarter heart. "
-     "Changes apply at once; healing is unchanged. Heart protection takes priority. Debug tools Off makes it Normal "
-     "until they are on again.", nullptr, false, true},
-    {TAB_DEBUG, "No-clip flight", nullptr, 0, 0, 0, nullptr,
-     "Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.", nullptr, false, true, 1},
-    {TAB_DEBUG, "Mark position", nullptr, 0, 0, 0, nullptr,
-     "Remember Link's position for this loaded scene.", nullptr, false, true, 2},
-    {TAB_DEBUG, "Return to mark", nullptr, 0, 0, 0, nullptr,
-     "Teleport Link to the marked position in the current scene.", nullptr, false, true, 3},
-    {TAB_DEBUG, "Set time", nullptr, 0, 0, 0, nullptr,
-     "Choose an hour with Left or Right. Enter sets the world clock.", nullptr, false, true, 4},
-    {TAB_DEBUG, "Inventory item", nullptr, 0, 0, 0, nullptr,
-     "Choose a consumable with Left or Right.", nullptr, false, true, 5},
-    {TAB_DEBUG, "Change quantity", nullptr, 0, 0, 0, nullptr,
-     "Choose how many to add or remove. Enter applies the change.", nullptr, false, true, 6},
-    {TAB_DEBUG, "Free camera", nullptr, 0, 0, 0, nullptr,
-     "Move and look with your usual controls. Page Up / Page Down or R / L changes height.", nullptr, false, true, 7},
-    {TAB_DEBUG, "Teleport", nullptr, 0, 0, 0, nullptr,
-     "Opens the map list. Link travels through the game's own map change, in his current age.", nullptr, false, true, 8},
-    {TAB_DEBUG, "Switch age", nullptr, 0, 0, 0, nullptr,
-     "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).", nullptr, false, true, 9},
-    {TAB_DEBUG, "Inventory", nullptr, 0, 0, 0, nullptr,
-     "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts.", nullptr, false, true, 10},
-    {TAB_DEBUG, "Movement speed", nullptr, 0, 0, 0, nullptr,
-     "How fast Link walks, runs and swims, as a multiple of his own speed. Choose with Left or Right.", nullptr, false, true, 11},
+     "How much health a hit takes. Normal is unchanged. Changes apply at once; healing is unchanged. Debug tools Off makes it "
+     "Normal until they are on again.", nullptr, false, true},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 0},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 1},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 2},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 3},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 4},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 5},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 6},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 7},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 8},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 9},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 10},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 11},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 12},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 13},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 14},
+    {TAB_DEBUG, "", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, 15},
     {TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     // (hookshot, first under the heading: debug_rows lists only those) the zip for the "Submit your pipelines" issue: share_pipeline_list, pipeline_share.h
     {TAB_DEBUG, "Save my pipeline list", nullptr, 0, 0, 0, nullptr,
@@ -1613,65 +1601,112 @@ constexpr int kQuitRow = sizeof rows / sizeof rows[0] - 1;
 constexpr int kRestartRow = kQuitRow - 1;
 constexpr int kBugReportRow = kRestartRow - 1;
 const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
-bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
-/// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
-bool cheats_on() { return cheats_env || opts.debug_tools; }
-std::atomic<int> protect_hearts{-1};
-// -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
-std::atomic<int> player_flight{-1};
-std::atomic<int> free_camera{0};
-std::atomic<int> cheat_action{0};
-std::atomic<int> link_age{-1};
-// (Movement speed: the choice, an index of link_speeds; the game side reads it in percent, HOS_OPT_CHEAT_SPEED)
-constexpr int link_speeds[] = {100, 125, 150, 200, 300};
-constexpr const char* link_speed_names[] = {"1x", "1.25x", "1.5x", "2x", "3x"};
-constexpr int kLinkSpeeds = sizeof link_speeds / sizeof link_speeds[0];
-std::atomic<int> link_speed{0};   // (the game side's report, OOT_CHEAT_AGE_ID: 0 child, 1 adult, -1 no save loaded)
-int clock_hour = 12;
-int pouch_item = 0;
-int pouch_delta = 1;
-constexpr const char* pouch_items[] = {"Deku Seeds", "Deku Nuts", "Deku Sticks", "Bombs", "Arrows"};
-constexpr int kPouchItems = sizeof pouch_items / sizeof pouch_items[0];
-// (teleport list: generated by work/oot-teleport-tools/write_destinations.py)
-// (the order of oot_destinations in host/hos_main.c; Enter sends 1000 + the index)
-constexpr const char* teleport_names[] = {
-    "Kokiri Forest",
-    "Hyrule Field",
-    "Kakariko Village",
-    "Market",
-    "Hyrule Castle",
-    "Lost Woods",
-    "Sacred Forest Meadow",
-    "Lake Hylia",
-    "Graveyard",
-    "Death Mountain Trail",
-    "Death Mountain Crater",
-    "Goron City",
-    "Zora's River",
-    "Zora's Domain",
-    "Zora's Fountain",
-    "Gerudo Valley",
-    "Gerudo Fortress",
-    "Haunted Wasteland",
-    "Desert Colossus",
-    "Inside the Deku Tree",
-    "Dodongo's Cavern",
-    "Jabu-Jabu's Belly",
-    "Forest Temple",
-    "Fire Temple",
-    "Water Temple",
-    "Shadow Temple",
-    "Spirit Temple",
-    "Bottom of the Well",
-    "Ice Cavern",
-    "Gerudo Training Ground",
-    "Ganon's Castle"};
-constexpr const char* teleport_notes[] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "adult only", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-struct TeleportSection { const char* name; int first; };
-constexpr TeleportSection teleport_sections[] = {{"Overworld", 0}, {"Dungeons", 19}};
-constexpr int kTeleportSections = sizeof teleport_sections / sizeof teleport_sections[0];
-// (end of the generated teleport list)
-constexpr int kTeleports = sizeof teleport_names / sizeof teleport_names[0];
+// ---- (game packs a4, docs/game-packs.md 2.4) the running game's menu content: its NX2GameMenu (gpu/vk/vk_api.h) ----
+// The game's runtime hands it over (MkwVkHost.game_menu: its pack's packs/<key>/menu/ C); a table of another version, or none,
+// is no table: the game's rows hidden, no tools. Asked once, the first time anything here needs it once the host is there (never
+// from a static initializer's call before mkwvk_init: kTop's count of the Controls page's rows asked this before the host was
+// set, and the null kept for good hid Ocarina's tools); it lives for the process
+}  // namespace
+const NX2GameMenu* menu_game() {
+    if (!host) return nullptr;   // (not yet: asked again once mkwvk_init has the host)
+    static const NX2GameMenu* const table = [] {
+        const NX2GameMenu* m = host && host->version >= 25 && host->game_menu ? host->game_menu() : nullptr;
+        if (m && (m->version != NX2_GAME_MENU_VERSION || m->size < sizeof(NX2GameMenu))) {
+            logf("menu: the game's menu table is version %u (%u bytes), not this renderer's %u (%u): its rows and tools left out",
+                 m->version, m->size, (unsigned)NX2_GAME_MENU_VERSION, (unsigned)sizeof(NX2GameMenu));
+            m = nullptr;
+        }
+        return m;
+    }();
+    return table;
+}
+namespace {
+/// Whether the game implements a general row's feature (NX2_FEATURE_*); 0: a row every game has
+bool feature_on(uint32_t f) {
+    if (!f) return true;   // (a row every game has: the table not asked, as at static initialization (kTop))
+    const NX2GameMenu* m = menu_game();
+    return m && (m->features & f);
+}
+/// The feature a general row needs (the game's table lists it, else the row is hidden: row_shown), 0 none
+uint32_t row_feature(const int* v) {
+    if (v == &opts.fov) return NX2_FEATURE_FOV;
+    if (v == &opts.text_speed) return NX2_FEATURE_TEXT_SPEED;
+    if (v == &opts.text_size) return NX2_FEATURE_TEXT_SIZE;
+    if (v == &opts.skip_opening) return NX2_FEATURE_SKIP_OPENING;
+    if (v == &opts.camera_speed) return NX2_FEATURE_CAMERA_SPEED;
+    if (v == &opts.disable_camera_centering) return NX2_FEATURE_CAMERA_CENTERING;
+    if (v == &opts.auto_run) return NX2_FEATURE_AUTO_RUN;
+    if (v == &opts.damage_taken) return NX2_FEATURE_DAMAGE_TAKEN;
+    if (v == &opts.debug_tools) return NX2_FEATURE_DEBUG_TOOLS;
+    return 0;
+}
+constexpr int kMaxTools = 16;   // (the rows table's tool slots: Row::cheat 0 to 15)
+/// The game's tool in slot i (Row::cheat), or nullptr: none there (the slot hidden). A ROW is no tool of its own: its row is
+const NX2MenuTool* tool_of(int i) {
+    const NX2GameMenu* m = menu_game();
+    return m && m->tools && i >= 0 && i < std::min(m->tool_count, kMaxTools) && m->tools[i].kind != NX2_TOOL_ROW ? &m->tools[i]
+                                                                                                            : nullptr;
+}
+int tool_kind(int i) {
+    const NX2MenuTool* t = tool_of(i);
+    return t ? t->kind : 0;
+}
+bool cheats_env = false;   // (the game's tools_env, HOS_OOT_CHEATS=1 for Ocarina: on whatever the Debug tab says)
+/// The debug tools: the Debug tab's row, or the game's switch for them; never for a game that has none
+bool cheats_on() { return (cheats_env || opts.debug_tools) && feature_on(NX2_FEATURE_DEBUG_TOOLS); }
+// (a tool's value: TOGGLE its value; CHOICE the choice's index; SWITCH what the game reports (-1 not known); set at the start,
+// menu_game_init. The game reads them at their option ids (menu_game_option) and reports to them (menu_option_set))
+std::atomic<int> tool_value[kMaxTools];
+std::atomic<int> cheat_action{0};   // (the action a tool sent, which the game takes once at the table's action_option)
+/// A toggle is on: its value is neither its off nor the one it starts at before it is set (Heart protection's -1: the game's own)
+bool tool_on(const NX2MenuTool* t, int v) { return v != t->off && v != t->start; }
+/// A choice's value to the game: values[index], or the index
+int choice_value(const NX2MenuTool* t, int index) {
+    index = std::clamp(index, 0, std::max(t->count, 1) - 1);
+    return t->values ? t->values[index] : index;
+}
+const char* choice_name(const NX2MenuTool* t, int index) {
+    return t->names && t->count > 0 ? t->names[std::clamp(index, 0, t->count - 1)] : "";
+}
+// ---- the list pages a tool opens (NX2_TOOL_LIST: NX2GameMenu.lists): page 3 a places list's, page 4 an items list's ----
+constexpr int kMaxCards = 256, kMaxSections = 16;
+// (the list each page shows, NX2GameMenu.lists' index: [0] the places page's, [1] the items page's; -1 none opened yet. Each
+// page keeps its own: a visit to the Inventory leaves the Teleport page's choice where it was. A places list keeps its choice
+// across another places list's visits too, list_choice)
+constexpr int kMaxLists = 16;
+int list_shown[2] = {-1, -1};
+int list_choice[kMaxLists] = {};
+const NX2MenuList* list_of(int list) {
+    const NX2GameMenu* m = menu_game();
+    return m && m->lists && list >= 0 && list < m->list_count && m->lists[list].cards && m->lists[list].count > 0 ? &m->lists[list]
+                                                                                                               : nullptr;
+}
+/// The game's first list of a style: what pages 3 (places) and 4 (items) show when no tool has opened one yet
+int list_first(int style) {
+    const NX2GameMenu* m = menu_game();
+    for (int i = 0; m && i < m->list_count; i++)
+        if (list_of(i) && m->lists[i].style == style) return i;
+    return -1;
+}
+const NX2MenuList& list_now(int style) {
+    static const NX2MenuCard none_card = {"", nullptr, 0};   // (no such list: a page of one empty card, which no tool opens)
+    static const NX2MenuList none[2] = {{NX2_LIST_PLACES, "", nullptr, &none_card, 1, nullptr, 0, 0, 0},
+                                        {NX2_LIST_ITEMS, "", nullptr, &none_card, 1, nullptr, 0, 0, 0}};
+    const NX2MenuList* l = list_of(list_shown[style == NX2_LIST_ITEMS]);
+    if (!l || l->style != style) l = list_of(list_first(style));
+    return l ? *l : none[style == NX2_LIST_ITEMS];
+}
+int section_count(const NX2MenuList& l) { return l.sections ? std::clamp(l.section_count, 1, kMaxSections) : 1; }
+const char* section_name(const NX2MenuList& l, int k) { return l.sections ? l.sections[k].name : ""; }
+/// (a list's first section starts at its first card)
+int section_first(const NX2MenuList& l, int k) { return l.sections && k > 0 ? std::clamp(l.sections[k].first, 0, l.count) : 0; }
+int card_count(const NX2MenuList& l) { return std::min(l.count, kMaxCards); }
+// (the places list: the game's Teleport)
+const NX2MenuList& places() { return list_now(NX2_LIST_PLACES); }
+int teleport_sections_n() { return section_count(places()); }
+int teleport_count() { return card_count(places()); }
+const char* teleport_name(int i) { return places().cards[i].name; }
+const char* teleport_note(int i) { return places().cards[i].note; }
 int teleport_choice = 0;
 int teleport_columns = 1, teleport_page_rows = 1;   // (as last drawn: the cards in a row, the rows that fit: Page Up / Down)
 float teleport_scroll_px = 0, teleport_want_px = 0;   // (the cards' scroll, eased toward teleport_want_px)
@@ -1679,68 +1714,49 @@ bool teleport_follow = true;   // (the scroll follows the choice; the wheel lets
 int teleport_wheel = 0;        // (the wheel's notches since the last drawing: it scrolls by them)
 int teleport_section_of(int i) {
     int section = 0;
-    while (section + 1 < kTeleportSections && i >= teleport_sections[section + 1].first) ++section;
+    while (section + 1 < teleport_sections_n() && i >= section_first(places(), section + 1)) ++section;
     return section;
 }
 int teleport_section_end(int section) {
-    return section + 1 < kTeleportSections ? teleport_sections[section + 1].first : kTeleports;
+    return section + 1 < teleport_sections_n() ? section_first(places(), section + 1) : teleport_count();
 }
 /// The destination rows rows down (up when negative) from i, in the grid the Teleport page draws: each section's cards
 /// teleport_columns to a row, under the section's heading; the column kept where the next row has it
 int teleport_step_rows(int i, int rows) {
     const int cols = std::max(1, teleport_columns);
     for (; rows > 0; --rows) {
-        const int section = teleport_section_of(i), first = teleport_sections[section].first, end = teleport_section_end(section);
+        const int section = teleport_section_of(i), first = section_first(places(), section), end = teleport_section_end(section);
         const int p = i - first;
         if (p + cols < end - first) i += cols;
         else if (p / cols < (end - first - 1) / cols) i = end - 1;   // (the section's last row, a short one)
-        else if (section + 1 < kTeleportSections) i = std::min(end + p % cols, teleport_section_end(section + 1) - 1);
+        else if (section + 1 < teleport_sections_n()) i = std::min(end + p % cols, teleport_section_end(section + 1) - 1);
         else break;
     }
     for (; rows < 0; ++rows) {
-        const int section = teleport_section_of(i), first = teleport_sections[section].first, p = i - first;
+        const int section = teleport_section_of(i), first = section_first(places(), section), p = i - first;
         if (p >= cols) i -= cols;
         else if (section > 0) {
-            const int prev = teleport_sections[section - 1].first, n = first - prev;
+            const int prev = section_first(places(), section - 1), n = first - prev;
             i = std::min(prev + (n - 1) / cols * cols + p, first - 1);
         } else break;
     }
     return i;
 }
-// the Inventory page (gpu/vk/oot_cheat_items.h): items and their section headings, counts from the game side
-#define OOT_MENU_ITEM_LABEL(label, name, kind) label,
-#define OOT_MENU_ITEM_KIND(label, name, kind) kind,
-#define OOT_MENU_NO_SECTION(name)
-constexpr const char* item_names[] = {OOT_CHEAT_ITEMS(OOT_MENU_NO_SECTION, OOT_MENU_ITEM_LABEL)};
-constexpr unsigned char item_kinds[] = {OOT_CHEAT_ITEMS(OOT_MENU_NO_SECTION, OOT_MENU_ITEM_KIND)};
-constexpr int kItems = sizeof item_names / sizeof item_names[0];
-// (each section's first item: a counter that a section heading reads and an item bumps)
-constexpr int item_section_count() {
-    int n = 0;
-#define OOT_MENU_COUNT_SECTION(title) n++;
-#define OOT_MENU_SKIP_ITEM(label, name, kind)
-    OOT_CHEAT_ITEMS(OOT_MENU_COUNT_SECTION, OOT_MENU_SKIP_ITEM)
-    return n;
-}
-constexpr int kItemSections = item_section_count();
-struct ItemSections { TeleportSection s[kItemSections]; };
-constexpr ItemSections make_item_sections() {
-    ItemSections r{};
-    int section = 0, item = 0;
-#define OOT_MENU_ADD_SECTION(title) r.s[section].name = title, r.s[section].first = item, section++;
-#define OOT_MENU_ADD_ITEM(label, name, kind) item++;
-    OOT_CHEAT_ITEMS(OOT_MENU_ADD_SECTION, OOT_MENU_ADD_ITEM)
-    return r;
-}
-constexpr ItemSections item_sections = make_item_sections();
-std::atomic<int> item_counts[kItems];   // (-1 until the game side reports: OOT_CHEAT_ITEM_BASE + i)
+// (the items list: the game's Inventory, counts from the game side)
+const NX2MenuList& items() { return list_now(NX2_LIST_ITEMS); }
+int item_count() { return card_count(items()); }
+int item_sections_n() { return items().sections ? section_count(items()) : 0; }
+const char* item_name(int i) { return items().cards[i].name; }
+int item_kind(int i) { return items().cards[i].kind; }
+int item_section_first(int k) { return section_first(items(), k); }
+std::atomic<int> item_counts[kMaxCards];   // (-1 until the game side reports: NX2MenuList.counts + i)
 int item_choice = 0;
 int inventory_columns = 1, inventory_capacity = 1;   // (as last drawn: the cards in a row, on a page)
 int inventory_filter = 0;   // (All, then the item sections)
 int inventory_page = 0;     // (the page shown: the choice's, or another the wheel turned to)
 bool inventory_amount = false;   // (Left and Right change the chosen item's amount)
-int inventory_begin() { return inventory_filter ? item_sections.s[inventory_filter - 1].first : 0; }
-int inventory_end() { return inventory_filter && inventory_filter < kItemSections ? item_sections.s[inventory_filter].first : kItems; }
+int inventory_begin() { return inventory_filter ? item_section_first(inventory_filter - 1) : 0; }
+int inventory_end() { return inventory_filter && inventory_filter < item_sections_n() ? item_section_first(inventory_filter) : item_count(); }
 void inventory_reveal() { inventory_page = (item_choice - inventory_begin()) / std::max(1, inventory_capacity); }
 void choose_inventory_filter(int filter) {
     inventory_filter = filter;
@@ -1748,36 +1764,33 @@ void choose_inventory_filter(int filter) {
     inventory_amount = false;
     inventory_reveal();
 }
-constexpr int kCheatRows = 12;   // (the debug tools' rows: Row::cheat 0 to 11)
 /// A debug tool's value as its row shows it ("" an action: confirm does it)
 std::string cheat_value(int i) {
-    char t[16];
-    switch (i) {
-    case 0: return tx_onoff(protect_hearts.load() == 1);
-    case 1: return tx_onoff(player_flight.load() >= 0);
-    case 4: return snprintf(t, sizeof t, "%02d:00", clock_hour), t;
-    case 5: return pouch_items[pouch_item];
-    case 6: return snprintf(t, sizeof t, "%+d", pouch_delta), t;
-    case 7: return tx_onoff(free_camera.load());
-    case 11: return link_speed_names[std::clamp(link_speed.load(), 0, kLinkSpeeds - 1)];
-    default: return "";
-    }
+    const NX2MenuTool* t = tool_of(i);
+    if (!t) return "";
+    const int v = tool_value[i].load();
+    if (t->kind == NX2_TOOL_TOGGLE) return tx_onoff(tool_on(t, v));
+    if (t->kind == NX2_TOOL_CHOICE) return choice_name(t, v);
+    return "";
 }
-/// The tools that choose with Left and Right (arrows at their value's ends): Set time, Inventory item, Change quantity,
-/// Movement speed
-bool cheat_chooses(int i) { return i == 4 || i == 5 || i == 6 || i == 11; }
-/// Switch age as Kid | Adult, Link's age lit: once the game side has said it (a save loaded)
-bool age_shown(int i) { return i == 9 && link_age.load(std::memory_order_relaxed) >= 0; }
+/// The tools that choose with Left and Right (arrows at their value's ends): the choices (Set time, Movement speed)
+bool cheat_chooses(int i) { return tool_kind(i) == NX2_TOOL_CHOICE; }
+/// A switch as its two halves (Kid | Adult), the game's half lit: once the game side has said it (a save loaded)
+bool age_shown(int i) { return tool_kind(i) == NX2_TOOL_SWITCH && tool_value[i].load(std::memory_order_relaxed) >= 0; }
 /// What confirm does on a tool's row, for its prompt (nullptr: nothing)
 const char* cheat_confirm(int i) {
-    static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
-                                                 "Switch", "Open", nullptr};
-    return i >= 0 && i < kCheatRows ? says[i] : nullptr;
+    const NX2MenuTool* t = tool_of(i);
+    return t ? t->confirm : nullptr;
 }
 /// The button label on an action tool's row ("": not a button action)
 const char* cheat_button_text(int i) {
-    static const char* const buttons[kCheatRows] = {"", "", "Mark", "Return", "", "", "", "", "Choose map", "Switch", "Edit items", ""};
-    return i >= 0 && i < kCheatRows ? buttons[i] : "";
+    const NX2MenuTool* t = tool_of(i);
+    return t && t->button && (t->kind == NX2_TOOL_ACTION || t->kind == NX2_TOOL_LIST || t->kind == NX2_TOOL_SWITCH) ? t->button : "";
+}
+/// A switch's half (0 or 1) as its name
+const char* switch_half(int i, int half) {
+    const NX2MenuTool* t = tool_of(i);
+    return t && t->names ? t->names[half ? 1 : 0] : half ? "On" : "Off";
 }
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
@@ -1853,7 +1866,8 @@ std::string restart_list(const char* last) {
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
-/// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
+/// A row on its tab: the debug tools only with them on, and only the game's (its menu table's tools, a slot each); a general
+/// row the game does not implement (its feature, row_feature) not at all; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
 /// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
 /// runs); HDR's paper white, peak brightness and contrast only with HDR on. A row that comes or goes moves those after it: the
 /// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
@@ -1868,7 +1882,8 @@ bool intel_compiler_row() {
 }
 bool row_shown(int i) {
     const int* v = rows[i].value;
-    return ((rows[i].cheat < 0 && v != &opts.damage_taken) || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
+    return ((rows[i].cheat < 0 && v != &opts.damage_taken) || cheats_on()) && (rows[i].cheat < 0 || tool_of(rows[i].cheat)) &&
+           feature_on(row_feature(v)) && (v != &opts.reflex || reflex_available()) &&
            (v != &opts.antilag || antilag_available()) && (v != &opts.intel_compiles || intel_compiler_row()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
@@ -2620,7 +2635,9 @@ struct Control {
     int button;   // HOS_SW_*, or HOS_KEY_* (keys only)
     const char* name;
 };
-const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {HOS_SW_Y, "Y"}, {HOS_SW_L, "L"},
+// (the engine's; then the game's own (its menu table's controls: Ocarina's ocarina notes), added at the start: menu_game_init)
+constexpr int kMaxControls = HOS_KEY_N;
+Control controls[kMaxControls] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {HOS_SW_Y, "Y"}, {HOS_SW_L, "L"},
                             {HOS_SW_R, "R"}, {HOS_SW_ZL, "ZL"}, {HOS_SW_ZR, "ZR"}, {HOS_SW_PLUS, "Plus"},
                             {HOS_SW_MINUS, "Minus"}, {HOS_SW_LS, "Left stick press"}, {HOS_SW_RS, "Right stick press"},
                             {HOS_SW_UP, "D-pad up"}, {HOS_SW_DOWN, "D-pad down"}, {HOS_SW_LEFT, "D-pad left"},
@@ -2628,11 +2645,10 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_MOVE_DOWN, "Move back"}, {HOS_KEY_MOVE_LEFT, "Move left"},
                             {HOS_KEY_MOVE_RIGHT, "Move right"}, {HOS_KEY_CAM_UP, "Camera up"},
                             {HOS_KEY_CAM_DOWN, "Camera down"}, {HOS_KEY_CAM_LEFT, "Camera left"},
-                            {HOS_KEY_CAM_RIGHT, "Camera right"}, {HOS_KEY_OC_NOTE_L, "Ocarina note (L)"},
-                            {HOS_KEY_OC_NOTE_R, "Ocarina note (R)"}, {HOS_KEY_OC_NOTE_A, "Ocarina note (A)"},
-                            {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"}};
-constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
-// (the stick's and camera's directions: keys only; the ocarina's note rows take a gamepad input too, host/nn_hid.c)
+                            {HOS_KEY_CAM_RIGHT, "Camera right"}};
+constexpr int kEngineControls = HOS_KEY_CAM_RIGHT + 1;   // (every one above: the Switch's buttons, the stick's and camera's keys)
+int kControls = kEngineControls;   // (and the game's own: then "Reset to defaults")
+// (the stick's and camera's directions: keys only; a game's own rows (the ocarina's notes) take a gamepad input too, host/nn_hid.c)
 bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_KEY_MOVE_UP && controls[i].button <= HOS_KEY_CAM_RIGHT; }
 // a row takes the touchpad click as its Input 1 or Input 2: then the click is that row's, not the menu's
 bool touchpad_bound() {
@@ -2641,6 +2657,8 @@ bool touchpad_bound() {
             if (host->binding(HOS_BIND_PAD, controls[i].button, slot) == HOS_PAD_TOUCHPAD) return true;
     return false;
 }
+// (the Controls page's line under its help: the game's own words for it, its menu table's "controls_hint", menu_game_init)
+const char* controls_hint = "Gamepad: the D-pad moves, A binds, B goes back.";   // (the Controls page's line under its help)
 // a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
 // else by its place
 const char* pad_name(int p) {
@@ -3015,27 +3033,50 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
     return line;
 }
 
-/// (hookshot) The Debug tab's order: the tools' rows by their group (Row::cheat), Up and Down walking them so; Inventory item
-/// and Change quantity are not shown (the Inventory page edits every amount)
-struct DebugGroup { const char* title; int from, to; };   // (debug_tools_order[from, to))
-// (-1 is the saved Damage taken option, not a cheat action: beside Heart protection in Player)
-constexpr int debug_tools_order[] = {0, -1, 1, 11, 9, 10, 8, 2, 3, 7, 4};
-constexpr DebugGroup debug_groups[] = {{"Player", 0, 6}, {"Travel", 6, 9}, {"Camera & world", 9, 11}};
-constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
-constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
-/// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
-/// are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their count
-int debug_rows(int* out, int* dev, int* dev_head) {
+/// (hookshot) The Debug tab's order: the game's tools in its menu table's order (NX2GameMenu.tools: its groups one after
+/// another), Up and Down walking them so. A ROW there is the general row of that options-file key, placed among them (Ocarina's
+/// Damage taken, beside Heart protection in Player)
+int tool_total() {
+    const NX2GameMenu* m = menu_game();
+    return m && m->tools ? std::clamp(m->tool_count, 0, kMaxTools) : 0;
+}
+/// The rows table's row of the game's tool t: its slot (Row::cheat t), or a ROW's general row on the Debug tab; -1 none
+int tool_row(int t) {
+    const NX2GameMenu* m = menu_game();
+    if (!m || t < 0 || t >= tool_total()) return -1;
+    const NX2MenuTool& tool = m->tools[t];
+    for (int i = 0; i < kRows; i++) {
+        if (tool.kind != NX2_TOOL_ROW ? rows[i].cheat == t
+                                      : rows[i].value && rows[i].tab == TAB_DEBUG && tool.name && !strcmp(ini_key(rows[i]), tool.name))
+            return i;
+    }
+    return -1;
+}
+/// The group (NX2GameMenu.groups) tool t is in: the groups take the tools in order, count each; past them, the last
+int tool_group(int t) {
+    const NX2GameMenu* m = menu_game();
+    const int groups = m && m->groups ? m->group_count : 0;
+    for (int g = 0, at = 0; g < groups; at += std::max(0, m->groups[g].count), g++)
+        if (t < at + std::max(0, m->groups[g].count)) return g;
+    return std::max(0, groups - 1);
+}
+/// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the game's tools in its table's order
+/// while they are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their
+/// count. tool: each tool's index in the table, in out's places from 1 to *dev
+int debug_rows(int* out, int* dev, int* dev_head, int* tool = nullptr) {
     const int count = tab_row_count(TAB_DEBUG);
     int n = 0;
     *dev_head = -1;
     for (int k = 0; k < count; ++k)
         if (rows[tab_row_to_global(TAB_DEBUG, k)].value == &opts.debug_tools) out[n++] = k;
-    for (int t = 0; t < kDebugTools; ++t)
-        for (int k = 0; k < count; ++k) {
-            const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
-            if (debug_tools_order[t] < 0 ? r.value == &opts.damage_taken : r.cheat == debug_tools_order[t]) out[n++] = k;
-        }
+    for (int t = 0, tools = tool_total(); t < tools; ++t) {
+        const int row = tool_row(t);
+        for (int k = 0; row >= 0 && k < count; ++k)
+            if (tab_row_to_global(TAB_DEBUG, k) == row) {
+                if (tool) tool[n] = t;
+                out[n++] = k;
+            }
+    }
     *dev = n;
     for (int k = 0; k < count; ++k) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
@@ -3060,46 +3101,52 @@ int debug_step(int sel, int dir) {
 void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, int sel) {
     const float s = c.s, px = 18 * s, pitch = 48 * s, rh = 40 * s, gap = 24 * s;   // (the other tabs' rows: 40 high, 48 apart)
     const float left = cx0 + 44 * s, right = cx1 - 44 * s, mid = (left + right) * .5f;
-    int order[64], dev = 0, dev_head = -1;
-    const int n = debug_rows(order, &dev, &dev_head);
+    int order[64], tool[64] = {}, dev = 0, dev_head = -1;
+    const int n = debug_rows(order, &dev, &dev_head, tool);
+    const NX2GameMenu* const game = menu_game();
+    const int groups = game && game->groups ? game->group_count : 0;
     // (two columns only when each fits its longest name whole (name_cell's room, the selected's bold) and its value cells at
     // their narrowest; the cells then as wide as the room lets them, up to what they ask)
     const float halves_w = 2 * std::max(ui::size_of(c.f.strong, px, "Off").x, ui::size_of(c.f.strong, px, "On").x);
     auto need = [&](const Row& r, bool tight) {
         const float pad = (tight ? 36 : 64) * s;
-        if (r.cheat == 9 && age_shown(9))
-            return 2 * std::max(ui::size_of(c.f.strong, px, "Kid").x, ui::size_of(c.f.strong, px, "Adult").x) + pad;
+        if (age_shown(r.cheat))
+            return 2 * std::max(ui::size_of(c.f.strong, px, switch_half(r.cheat, 0)).x, ui::size_of(c.f.strong, px, switch_half(r.cheat, 1)).x) + pad;
         if (r.value && r.hi - r.lo != r.step) {   // (a row of more than two values: its widest, arrows)
             float w = 0;
             for (int v = r.lo; v <= r.hi; v += r.step) w = std::max(w, ui::size_of(c.f.strong, px, r.text(v)).x);
             return w + (tight ? 56 : 68) * s;
         }
-        if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
+        if (tool_kind(r.cheat) == NX2_TOOL_TOGGLE || r.value) return halves_w + pad;
         if (is_share_row(r)) return ui::size_of(c.f.strong, px, "Not saved").x + (tight ? 56 : 60) * s;   // (Save, Saved, Not saved)
-        const std::string v = r.cheat == 11 ? "1.25x" : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
+        const NX2MenuTool* const t = tool_of(r.cheat);
+        const std::string v = t && t->widest ? t->widest : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
         const char* const says = cheat_button_text(r.cheat);
         return ui::size_of(c.f.strong, px, v.empty() ? says : v.c_str()).x + (cheat_chooses(r.cheat) ? 68 : tight ? 56 : 60) * s;   // (choice_cell keeps 48 for arrows either way)
     };
     float name_need[2] = {0, 0}, cell_full[2] = {halves_w + 64 * s, halves_w + 64 * s}, cell_tight[2] = {halves_w + 36 * s, halves_w + 36 * s};
     for (int i = 1; i < dev; ++i) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, order[i])];
-        const int col = i - 1 >= debug_groups[0].to ? 1 : 0;   // (Player in the first, the rest in the second)
+        const int col = tool_group(tool[i]) > 0 ? 1 : 0;   // (the first group (Player) in the first, the rest in the second)
         name_need[col] = std::max(name_need[col], ui::size_of(c.f.strong, 18.5f * s, r.name).x + 40 * s);
         cell_full[col] = std::max(cell_full[col], need(r, false)), cell_tight[col] = std::max(cell_tight[col], need(r, true));
     }
     const float col_w = (right - left - gap) * .5f;
     const bool two = col_w >= name_need[0] + cell_tight[0] && col_w >= name_need[1] + cell_tight[1];
     // (where each goes: a row number of the layout and a column)
-    int vrow[64] = {}, vcol[64] = {}, head_row[kDebugGroups] = {}, head_col[kDebugGroups] = {};
+    int vrow[64] = {}, vcol[64] = {}, head_row[16] = {}, head_col[16] = {};
     int next_row[2] = {1, 1};
     const bool tools = dev > 1;
-    for (int g = 0; tools && g < kDebugGroups; ++g) {
+    for (int g = 0; tools && g < std::min(groups, 16); ++g) {
         const int col = two && g > 0 ? 1 : 0;
         if (next_row[col] > 1) next_row[col]++;   // (a gap over a heading that follows another group)
         head_row[g] = next_row[col]++, head_col[g] = col;
-        for (int t = debug_groups[g].from; t < debug_groups[g].to; ++t) vrow[1 + t] = next_row[col]++, vcol[1 + t] = col;
+        for (int i = 1; i < dev; ++i)
+            if (tool_group(tool[i]) == g) vrow[i] = next_row[col]++, vcol[i] = col;
     }
-    int foot = std::max(next_row[0], next_row[1]);
+    // (a game with no tools, no switch: the Developer rows from the top)
+    const bool has_switch = n > 0 && rows[tab_row_to_global(TAB_DEBUG, order[0])].value == &opts.debug_tools;
+    int foot = has_switch ? std::max(next_row[0], next_row[1]) : 0;
     if (tools) foot++;
     const int dev_row = foot;
     for (int i = dev; i < n; ++i) vrow[i] = dev_row + 1 + (i - dev);
@@ -3125,8 +3172,9 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         if (x0 + tw + 16 * s < x1) c.d->AddLine(ImVec2(x0 + tw + 16 * s, ty), ImVec2(x1, ty), ui::alpha(ui::kEdge, 0.9f), std::max(1.0f, s));
     };
     c.d->PushClipRect(ImVec2(cx0, top), ImVec2(cx1, std::max(top, bottom)), true);
-    for (int g = 0; tools && g < kDebugGroups; ++g)
-        heading(head_col[g] ? mid + gap * .5f : left, !two || head_col[g] ? right : mid - gap * .5f, head_row[g], debug_groups[g].title);
+    for (int g = 0; tools && g < std::min(groups, 16); ++g)
+        heading(head_col[g] ? mid + gap * .5f : left, !two || head_col[g] ? right : mid - gap * .5f, head_row[g],
+                game->groups[g].title ? game->groups[g].title : "");
     if (dev_head >= 0 && n > dev) heading(left, right, dev_row, rows[tab_row_to_global(TAB_DEBUG, dev_head)].name);
     for (int i = 0; i < n; ++i) {
         const int k = order[i];
@@ -3148,13 +3196,15 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
                         row_fixed(r.value));
         } else if (is_share_row(r)) {   // (Save my pipeline list: what the last press did)
             choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);
-        } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
+        } else if (tool_kind(r.cheat) == NX2_TOOL_TOGGLE) {
             halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
-        } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
-            halves_cell(c, va, vb, "Kid", "Adult", link_age.load(std::memory_order_relaxed) == 1, selected, false);
+        } else if (age_shown(r.cheat)) {   // (the game's half now, Link's age: the other half switches)
+            halves_cell(c, va, vb, switch_half(r.cheat, 0), switch_half(r.cheat, 1), tool_value[r.cheat].load(std::memory_order_relaxed) == 1,
+                        selected, false);
         } else {
             const std::string v = cheat_value(r.cheat);
-            choice_cell(c, va, vb, v.empty() ? cheat_button_text(r.cheat) : v, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat), r.cheat == 9);
+            choice_cell(c, va, vb, v.empty() ? cheat_button_text(r.cheat) : v, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat),
+                        tool_kind(r.cheat) == NX2_TOOL_SWITCH);
         }
         hits.add(x0, std::max(y, top), x1, std::min(y + rh, bottom), menu_hit::kRow, k, va.x, vb.x);
     }
@@ -3230,7 +3280,7 @@ const char* bug_report_hint() {
 
 const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Neural", "Debug"};
 inline const char* tab_title(int t) { return t >= 0 && t < TAB_COUNT ? tab_titles[t] : "Settings"; }
-inline bool cheat_is_toggle(int c) { return c == 0 || c == 1 || c == 7; }
+inline bool cheat_is_toggle(int c) { return tool_kind(c) == NX2_TOOL_TOGGLE; }
 
 /// Draws a row's value cell (slider, toggle, choice, or subpage arrow), shared between the full menu and tuning bar
 void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selected, float* t0, float* t1) {
@@ -3239,11 +3289,12 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
     if (r.cheat >= 0 && cheat_is_toggle(r.cheat)) {
         halves_cell(c, va, vb, "Off", "On", tool == "On", selected, false);
     } else if (r.cheat >= 0 && age_shown(r.cheat)) {
-        halves_cell(c, va, vb, "Kid", "Adult", link_age.load(std::memory_order_relaxed) == 1, selected, false);
+        halves_cell(c, va, vb, switch_half(r.cheat, 0), switch_half(r.cheat, 1), tool_value[r.cheat].load(std::memory_order_relaxed) == 1,
+                    selected, false);
     } else if (r.cheat >= 0 && !tool.empty()) {
         choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
     } else if (r.cheat >= 0 && *cheat_button_text(r.cheat)) {
-        choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, r.cheat == 9);
+        choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, tool_kind(r.cheat) == NX2_TOOL_SWITCH);
     } else if (!r.value) {
         if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
         else if (is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);   // (an action, not a page)
@@ -3332,7 +3383,7 @@ void draw_options(ui::Ctx& c) {
     ui::Prompt prompt_list[7] = {{ui::kUpDown, "Choose"}};
     int prompts_n = 1;
     const char* compact_key_name = opts.compact_menu_key == 1 ? "RCtrl" : "RShift";
-    if (selr.value || (selr.cheat >= 0 && (selr.cheat <= 1 || selr.cheat == 7 || cheat_chooses(selr.cheat) || age_shown(selr.cheat)))) {
+    if (selr.value || (selr.cheat >= 0 && (cheat_is_toggle(selr.cheat) || cheat_chooses(selr.cheat) || age_shown(selr.cheat)))) {
         prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
         if (selr.cheat >= 0) if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
         prompt_list[prompts_n++] = {ui::kCompact, "Compact", compact_key_name};
@@ -3482,8 +3533,7 @@ void draw_controls(ui::Ctx& c) {
                                     "selected input and Delete clears it. A button's only gamepad input stays with it: it does not move into "
                                     "another's empty Input 2. The game's button icons follow after a restart.";
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
-                                : "Gamepad: the D-pad moves, A binds, B goes back. Ocarina note keys are only notes while "
-                                  "the ocarina waits for one; away from it they do their other jobs.";
+                                : controls_hint;
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {
         bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
@@ -3585,14 +3635,15 @@ float card_tag(ui::Ctx& c, float x, float y, const char* tag, bool draw = true) 
 
 void draw_inventory(ui::Ctx& c) {
     const float s = c.s;
+    const NX2MenuList& list = items();   // (the game's items list: its cards, sections and words)
     const int begin = inventory_begin(), end = inventory_end();
     bool loaded = false;   // (a save's counts reported: -1 for all until the game side has a save to read)
-    for (int i = 0; i < kItems && !loaded; ++i) loaded = item_counts[i].load(std::memory_order_relaxed) >= 0;
+    for (int i = 0; i < item_count() && !loaded; ++i) loaded = item_counts[i].load(std::memory_order_relaxed) >= 0;
     char count_text[48];
     snprintf(count_text, sizeof count_text, "%d items", end - begin);
-    const float hh = title_banner(c, "Inventory", count_text);
+    const float hh = title_banner(c, list.title ? list.title : "", count_text);
     const int have = item_counts[item_choice].load(std::memory_order_relaxed);
-    const char* edit = item_kinds[item_choice] ? (inventory_amount ? "Done" : "Edit amount") : (have ? "Relock" : "Unlock");
+    const char* edit = item_kind(item_choice) ? (inventory_amount ? "Done" : "Edit amount") : (have ? "Relock" : "Unlock");
     ui::Prompt prompts[5] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, inventory_amount ? "Amount" : "Move"}, {ui::kTabs, "Section"}};
     int prompts_n = 3;
     if (have >= 0) prompts[prompts_n++] = {ui::kConfirm, edit};
@@ -3609,17 +3660,17 @@ void draw_inventory(ui::Ctx& c) {
     float tpx = 16 * s, tpad = 26 * s, tgap = 8 * s;
     auto tabs_w = [&] {
         float w = 0;
-        for (int i = 0; i <= kItemSections; ++i) w += ui::size_of(c.f.strong, tpx, i ? item_sections.s[i - 1].name : "All").x + tpad + tgap;
+        for (int i = 0; i <= item_sections_n(); ++i) w += ui::size_of(c.f.strong, tpx, i ? section_name(list, i - 1) : "All").x + tpad + tgap;
         return w - tgap;
     };
     if (tabs_w() > right - left) tpad = 16 * s, tgap = 6 * s;
     if (const float w = tabs_w(); w > right - left) {
-        const float text = w - (kItemSections + 1) * tpad - kItemSections * tgap;
+        const float text = w - (item_sections_n() + 1) * tpad - item_sections_n() * tgap;
         tpx = std::max(12 * s, tpx * (right - left - (w - text)) / text);
     }
     float x = left, y = hh + 18 * s;
-    for (int i = 0; i <= kItemSections; ++i) {
-        const char* label = i ? item_sections.s[i - 1].name : "All";
+    for (int i = 0; i <= item_sections_n(); ++i) {
+        const char* label = i ? section_name(list, i - 1) : "All";
         const float w = ui::size_of(c.f.strong, tpx, label).x + tpad;
         if (x > left && x + w > right) x = left, y += 36 * s;
         const ImVec2 a(x, y), b(std::min(x + w, right), y + 30 * s);
@@ -3635,20 +3686,20 @@ void draw_inventory(ui::Ctx& c) {
     const float pitch = (loaded ? 62 : 46) * s;   // (the title screen: the names alone, no line under them)
     if (!loaded) {   // (the title screen: one note for the page, not "Load a save" on every card)
         ui::diamond(c, ImVec2(left + 5 * s, top - 2 * s), 4 * s, ui::kGoldHi);
-        ui::text_mid(c, c.f.body, 16 * s, left + 18 * s, top - 2 * s, ui::kSoft, "Load a save to edit the inventory.");
+        ui::text_mid(c, c.f.body, 16 * s, left + 18 * s, top - 2 * s, ui::kSoft, list.help ? list.help : "");
         top += 30 * s;
     }
     const float strip = 58 * s, detail = bar - 14 * s - strip, grid_bottom = std::max(top, detail - 8 * s);
-    const char* help = have < 0 ? "Load a save to edit this item." : item_kinds[item_choice] ?
+    const char* help = have < 0 ? "Load a save to edit this item." : item_kind(item_choice) ?
         "Choose Edit amount, then use Left and Right to change the quantity." : "Unlock or relock this item.";
     if (!narrow)
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), item_names[item_choice], help, nullptr, nullptr, 0, false,
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), item_name(item_choice), help, nullptr, nullptr, 0, false,
                  hh + 18 * s, bar - 12 * s);
     // (as many columns as fit the longest name, at most 5; whole pages of cards, the range and the page under them)
     static float name_w = 0, name_s = 0;
     if (name_s != s) {
         name_s = s, name_w = 0;
-        for (int i = 0; i < kItems; ++i) name_w = std::max(name_w, ui::size_of(c.f.strong, 15.5f * s, item_names[i]).x);
+        for (int i = 0; i < item_count(); ++i) name_w = std::max(name_w, ui::size_of(c.f.strong, 15.5f * s, item_name(i)).x);
     }
     inventory_columns = std::clamp((int)((right - left + gap) / std::max(name_w + 26 * s + gap, 150 * s)), 1, 5);
     inventory_capacity = inventory_columns * std::max(1, (int)((grid_bottom - top + gap) / pitch));
@@ -3667,10 +3718,10 @@ void draw_inventory(ui::Ctx& c) {
         c.d->AddRect(a, b, owned ? ui::kAccent : ui::alpha(ui::kEdge, count < 0 ? 0.5f : 1.0f), 4 * s, std::max(1.0f, s));
         if (owned) c.d->AddRectFilled(a + ImVec2(0, 4 * s), ImVec2(a.x + 3 * s, b.y - 4 * s), ui::kAccent);
         c.d->PushClipRect(a + ImVec2(8 * s, 0), b - ImVec2(8 * s, 0), true);
-        ui::text_mid(c, c.f.strong, 15.5f * s, a.x + 13 * s, loaded ? a.y + 17 * s : (a.y + b.y) * 0.5f, count < 0 ? ui::kDim : ui::kInkBright, item_names[i]);
+        ui::text_mid(c, c.f.strong, 15.5f * s, a.x + 13 * s, loaded ? a.y + 17 * s : (a.y + b.y) * 0.5f, count < 0 ? ui::kDim : ui::kInkBright, item_name(i));
         char amount[40];
         if (count < 0) snprintf(amount, sizeof amount, "%s", loaded ? "Unavailable" : "");
-        else if (item_kinds[i]) snprintf(amount, sizeof amount, "Quantity %d", count);
+        else if (item_kind(i)) snprintf(amount, sizeof amount, "Quantity %d", count);
         else snprintf(amount, sizeof amount, "%s", count ? "Unlocked" : "Locked");
         const float ly = a.y + 37 * s;
         if (editing) {   // (the amount being changed: its arrows, gold)
@@ -3724,9 +3775,10 @@ void draw_inventory(ui::Ctx& c) {
 
 void draw_teleport(ui::Ctx& c) {
     const float s = c.s;
+    const NX2MenuList& list = places();   // (the game's places list: its cards, sections and words)
     char count[32];
-    snprintf(count, sizeof count, "%d of %d", teleport_choice + 1, kTeleports);
-    const float hh = title_banner(c, "Teleport", count);
+    snprintf(count, sizeof count, "%d of %d", teleport_choice + 1, teleport_count());
+    const float hh = title_banner(c, list.title ? list.title : "", count);
     float cx0, cx1, hx0, hx1;
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
@@ -3737,35 +3789,35 @@ void draw_teleport(ui::Ctx& c) {
     const float left = cx0 + 24 * s, right = cx1 - 24 * s, top = hh + 16 * s;
     const float strip = 58 * s, detail = bar - 14 * s - strip;
     const float bottom = std::max(top, detail - 6 * s), gap = 10 * s, pitch = 48 * s, head = 40 * s;
-    const char* const note = teleport_notes[teleport_choice];
+    const char* const note = teleport_note(teleport_choice);
     if (!narrow)
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), teleport_names[teleport_choice],
-                 "Select a destination, then Travel (or Enter) to go to its map entrance. Link keeps his current age.", note, nullptr, 0,
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), teleport_name(teleport_choice), list.help, note, nullptr, 0,
                  false, hh + 18 * s, bar - 12 * s);
     // (as many columns as fit the longest name and its tag, at most 4; each section under its heading, the cards scrolled to
     // keep the selected one in view)
     static float card_w = 0, card_s = 0;
     if (card_s != s) {
         card_s = s, card_w = 0;
-        for (int i = 0; i < kTeleports; ++i)
-            card_w = std::max(card_w, ui::size_of(c.f.body, 17 * s, teleport_names[i]).x +
-                                          (teleport_notes[i] ? card_tag(c, 0, 0, teleport_notes[i], false) + 12 * s : 0));
+        for (int i = 0; i < teleport_count(); ++i)
+            card_w = std::max(card_w, ui::size_of(c.f.body, 17 * s, teleport_name(i)).x +
+                                          (teleport_note(i) ? card_tag(c, 0, 0, teleport_note(i), false) + 12 * s : 0));
     }
     teleport_columns = std::clamp((int)((right - left + gap) / (card_w + 36 * s + gap)), 1, 4);
     const int cols = teleport_columns;
     const float width = (right - left + gap) / cols;
     // (the y of each section's heading and first row, from the top of the list)
-    float section_y[kTeleportSections + 1];
+    const int sections = teleport_sections_n();
+    float section_y[kMaxSections + 1];
     float total = 0;
-    for (int k = 0; k < kTeleportSections; ++k) {
+    for (int k = 0; k < sections; ++k) {
         section_y[k] = total;
-        const int n = teleport_section_end(k) - teleport_sections[k].first;
-        total += head + (n + cols - 1) / cols * pitch + (k + 1 < kTeleportSections ? 10 * s : 0);
+        const int n = teleport_section_end(k) - section_first(list, k);
+        total += head + (n + cols - 1) / cols * pitch + (k + 1 < sections ? 10 * s : 0);
     }
-    section_y[kTeleportSections] = total;
+    section_y[sections] = total;
     auto card_y = [&](int i) {
         const int k = teleport_section_of(i);
-        return section_y[k] + head + (i - teleport_sections[k].first) / cols * pitch;
+        return section_y[k] + head + (i - section_first(list, k)) / cols * pitch;
     };
     const float view = bottom - top;
     teleport_page_rows = std::max(1, (int)(view / pitch) - 1);
@@ -3776,7 +3828,7 @@ void draw_teleport(ui::Ctx& c) {
     else if (!teleport_follow) want = std::clamp(want, 0.0f, total - view);
     else {
         const int k = teleport_section_of(teleport_choice);
-        const bool first_row = teleport_choice - teleport_sections[k].first < cols;
+        const bool first_row = teleport_choice - section_first(list, k) < cols;
         const float y0 = first_row ? section_y[k] : card_y(teleport_choice) - pitch * 0.5f, y1 = card_y(teleport_choice) + pitch * 1.5f;
         if (y0 < want) want = y0;
         if (y1 > want + view) want = y1 - view;
@@ -3786,20 +3838,20 @@ void draw_teleport(ui::Ctx& c) {
     if (std::fabs(want - at) < 0.5f) at = want;
     if (total > view) scroll_bar(c, cx0 + 12 * s, top, bottom, (int)total, (int)view, at);
     c.d->PushClipRect(ImVec2(left - 12 * s, top), ImVec2(right + 12 * s, bottom), true);
-    for (int k = 0; k < kTeleportSections; ++k) {
+    for (int k = 0; k < sections; ++k) {
         const float hy = top + section_y[k] - at + head * 0.5f;
         if (hy > bottom + head || hy < top - head) continue;
-        ui::text_mid(c, c.f.heading, 20 * s, left, hy, ui::kInkBright, teleport_sections[k].name);
-        const float tw = ui::size_of(c.f.heading, 20 * s, teleport_sections[k].name).x;
+        ui::text_mid(c, c.f.heading, 20 * s, left, hy, ui::kInkBright, section_name(list, k));
+        const float tw = ui::size_of(c.f.heading, 20 * s, section_name(list, k)).x;
         char n_text[16];
-        snprintf(n_text, sizeof n_text, "%d", teleport_section_end(k) - teleport_sections[k].first);
+        snprintf(n_text, sizeof n_text, "%d", teleport_section_end(k) - section_first(list, k));
         const float nw = ui::size_of(c.f.body, 15 * s, n_text).x;
         ui::text_mid(c, c.f.body, 15 * s, right - nw, hy, ui::kSoft, n_text);
         c.d->AddLine(ImVec2(left + tw + 14 * s, hy + s), ImVec2(right - nw - 12 * s, hy + s), ui::alpha(ui::kAccent, 0.45f),
                      std::max(1.0f, s));
     }
-    for (int i = 0; i < kTeleports; ++i) {
-        const int k = teleport_section_of(i), cell = i - teleport_sections[k].first;
+    for (int i = 0; i < teleport_count(); ++i) {
+        const int k = teleport_section_of(i), cell = i - section_first(list, k);
         const ImVec2 a(left + cell % cols * width, top + card_y(i) - at);
         const ImVec2 b(a.x + width - gap, a.y + pitch - 8 * s);
         if (b.y < top || a.y > bottom) continue;
@@ -3808,10 +3860,10 @@ void draw_teleport(ui::Ctx& c) {
         c.d->AddRect(a, b, ui::kEdge, 3 * s, std::max(1.0f, s));
         if (selected) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
         float name_end = b.x - 10 * s;
-        if (teleport_notes[i]) name_end -= card_tag(c, b.x - 8 * s, (a.y + b.y) * 0.5f, teleport_notes[i]) + 8 * s;
+        if (teleport_note(i)) name_end -= card_tag(c, b.x - 8 * s, (a.y + b.y) * 0.5f, teleport_note(i)) + 8 * s;
         c.d->PushClipRect(a, ImVec2(name_end, b.y), true);
         ui::text_mid(c, selected ? c.f.strong : c.f.body, 17 * s, a.x + 16 * s, (a.y + b.y) * 0.5f, selected ? ui::kInkBright : ui::kInk,
-                     teleport_names[i]);
+                     teleport_name(i));
         c.d->PopClipRect();
         if (selected) ui::glow(c, a, b);
         hits.add(a.x, std::max(a.y, top), b.x, std::min(b.y, bottom), menu_hit::kListLine, i);
@@ -3823,9 +3875,9 @@ void draw_teleport(ui::Ctx& c) {
         const float bw = ui::size_of(c.f.strong, 20 * s, "Travel").x + 56 * s;
         const ImVec2 a(right - bw, my - 18 * s), b(right, my + 18 * s);
         c.d->PushClipRect(ImVec2(left, detail), ImVec2(a.x - 12 * s, detail + strip), true);
-        ui::text_mid(c, c.f.strong, 18 * s, left, my - 10 * s, ui::kInkBright, teleport_names[teleport_choice]);
+        ui::text_mid(c, c.f.strong, 18 * s, left, my - 10 * s, ui::kInkBright, teleport_name(teleport_choice));
         char where[64];
-        snprintf(where, sizeof where, note ? "%s · %s" : "%s", teleport_sections[teleport_section_of(teleport_choice)].name, note);
+        snprintf(where, sizeof where, note ? "%s · %s" : "%s", section_name(list, teleport_section_of(teleport_choice)), note);
         ui::text_mid(c, c.f.body, 15 * s, left, my + 12 * s, ui::kAccent, where);
         c.d->PopClipRect();
         ui::button(c, a, b, "Travel", false);
@@ -4305,6 +4357,47 @@ static void fork_options_moved(int old_upscaling, bool has_dlss, int old_method,
     if (old_method >= 0 && !has_by) opts.framegen_by = fgm::from_old(old_method);
 }
 
+/// (game packs a4) The game's menu table into the menu, once, at the start (menu_init): its tools' names and help into their
+/// slots of the rows table and their first values, its words for the general rows (by their options-file key), its own
+/// controls after the engine's, and its tools' switch (tools_env) with the toggles' own (env)
+void menu_game_init() {
+    const NX2GameMenu* m = menu_game();
+    if (!m) {
+        logf("menu: no menu table from the game: its own rows and tools left out");
+        return;
+    }
+    const int tools = m->tools ? std::clamp(m->tool_count, 0, kMaxTools) : 0;
+    for (Row& r : rows) {
+        if (r.cheat >= 0 && r.cheat < tools && m->tools[r.cheat].kind != NX2_TOOL_ROW) {
+            const NX2MenuTool& t = m->tools[r.cheat];
+            r.name = t.name ? t.name : "";
+            r.help = t.help;
+            tool_value[r.cheat].store(t.kind == NX2_TOOL_SWITCH ? -1 : t.start);
+        }
+        for (int i = 0; r.value && m->texts && i < m->text_count; i++)
+            if (m->texts[i].key && m->texts[i].text && !strcmp(m->texts[i].key, ini_key(r))) r.help = m->texts[i].text;
+    }
+    for (int i = 0; m->texts && i < m->text_count; i++)
+        if (m->texts[i].key && m->texts[i].text && !strcmp(m->texts[i].key, "controls_hint")) controls_hint = m->texts[i].text;
+    for (int i = 0; m->controls && i < m->control_count && kControls < kMaxControls; i++) {
+        const NX2MenuControl& g = m->controls[i];
+        bool known = g.button < kEngineControls || g.button >= HOS_KEY_N || !g.name;
+        for (int k = 0; k < kControls && !known; k++) known = controls[k].button == g.button;
+        if (!known) controls[kControls++] = {g.button, g.name};
+    }
+    if (m->tools_env) {
+        const char* on = getenv(m->tools_env);
+        cheats_env = on && !strcmp(on, "1");
+    }
+    for (int i = 0; cheats_env && i < tools; i++) {   // (the tools on by their switch: a toggle's own switch starts it on or off)
+        const NX2MenuTool* t = tool_of(i);
+        if (!t || t->kind != NX2_TOOL_TOGGLE || !t->env) continue;
+        const char* on = getenv(t->env);
+        tool_value[i].store(on && !strcmp(on, "1") ? t->on : t->off);
+    }
+    logf("menu: the game's menu table: %s, %d tools, %d lists, %d controls of its own, features %#x%s", m->name ? m->name : "a game",
+         tools, m->list_count, kControls - kEngineControls, (unsigned)m->features, cheats_env ? " (its tools on by its switch)" : "");
+}
 void menu_init() {
     static bool done;
     if (done) return;
@@ -4323,12 +4416,7 @@ void menu_init() {
             }
     bool has_options = false;
     bool has_memory_budget = false;   // (a file from before memory_budget: its preset's)
-    const char* cheats = getenv("HOS_OOT_CHEATS");
-    cheats_env = cheats && !strcmp(cheats, "1");
-    if (cheats_env) {
-        const char* hearts = getenv("HOS_OOT_PROTECT_HEARTS");
-        protect_hearts.store(hearts && !strcmp(hearts, "1"));
-    }
+    menu_game_init();   // (the game's menu table: its tools in their slots, its words, its controls, its switches)
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         char line[80];
         bool has_resolution = false;
@@ -4503,17 +4591,24 @@ void menu_set_gpu_count(int count) {
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
-// (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
-// host's own HOS_OOT_PROTECT_HEARTS)
-int menu_heart_protection() {
-    const int v = protect_hearts.load(std::memory_order_relaxed);
-    return cheats_on() || v < 0 ? v : 0;
+// (the game's option ids, its pack's range: its tools' values and their actions. The tools off on the Debug tab: each reads its
+// off (flight, the free camera and heart protection put away, Movement speed 1x); a toggle never set reads as it starts, -1 for
+// Heart protection: the host's own HOS_OOT_PROTECT_HEARTS)
+bool menu_game_option(int id, int* out) {
+    if (id < HOS_OPT_GAME_BASE) return false;
+    const NX2GameMenu* m = menu_game();
+    if (!m) return false;
+    if (m->action_option && id == m->action_option) return *out = cheat_action.exchange(0, std::memory_order_relaxed), true;
+    for (int i = 0; i < tool_total(); i++) {
+        const NX2MenuTool* t = tool_of(i);
+        if (!t || !t->option || t->option != id) continue;
+        const int v = tool_value[i].load(std::memory_order_relaxed);
+        if (t->kind == NX2_TOOL_TOGGLE) return *out = cheats_on() || v == t->start ? v : t->off, true;
+        if (t->kind == NX2_TOOL_CHOICE) return *out = cheats_on() ? choice_value(t, v) : t->off, true;
+    }
+    return false;
 }
-int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
-int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
-int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
 int menu_damage_taken() { return cheats_on() ? opts.damage_taken : 1; }   // (Normal while the tools are off; the choice is kept)
-int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
@@ -4615,19 +4710,26 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 // inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
 void menu_option_set(int id, int value) {
-    if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
-        if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
-        return;
-    }
-    if (id >= OOT_CHEAT_ITEM_BASE && id < OOT_CHEAT_ITEM_BASE + kItems) {   // (the game side's inventory counts)
-        if (item_counts[id - OOT_CHEAT_ITEM_BASE].exchange(value, std::memory_order_relaxed) != value && page == 4)
-            menu_refresh = true;
-        return;
-    }
-    if (id == HOS_OPT_CHEAT_FLIGHT) {
-        if (cheats_on()) {
-            int expected = value ? 0 : 1;
-            player_flight.compare_exchange_strong(expected, value != 0, std::memory_order_relaxed);
+    if (id >= HOS_OPT_GAME_BASE) {   // (the game's own: what it reports to its tools and its lists, its pack's ids)
+        const NX2GameMenu* m = menu_game();
+        for (int i = 0; m && i < tool_total(); i++) {
+            const NX2MenuTool* t = tool_of(i);
+            if (!t || !t->option || t->option != id) continue;
+            if (t->kind == NX2_TOOL_SWITCH) {   // (its half: Link's age, which the Switch age row shows)
+                if (tool_value[i].exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
+            } else if (t->kind == NX2_TOOL_TOGGLE && cheats_on()) {   // (a toggle that is on, moved by the game within its on: flight's 0 and 1)
+                int was = tool_value[i].load(std::memory_order_relaxed);
+                if (was != t->off && was >= t->on && was <= t->on_max)
+                    tool_value[i].compare_exchange_strong(was, std::clamp(value, t->on, t->on_max), std::memory_order_relaxed);
+            }
+            return;
+        }
+        for (int l = 0; m && l < m->list_count; l++) {   // (an items list's counts: the Inventory's)
+            const NX2MenuList* list = list_of(l);
+            if (!list || list->style != NX2_LIST_ITEMS || !list->counts || id < list->counts || id >= list->counts + card_count(*list))
+                continue;
+            if (item_counts[id - list->counts].exchange(value, std::memory_order_relaxed) != value && page == 4) menu_refresh = true;
+            return;
         }
         return;
     }
@@ -4809,7 +4911,7 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
 void inventory_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
     if (ptr.pressed & HOS_MOUSE_LEFT) {
-        if (hit.part == menu_hit::kRow && hit.index >= 0 && hit.index <= kItemSections) choose_inventory_filter(hit.index), changed = true;
+        if (hit.part == menu_hit::kRow && hit.index >= 0 && hit.index <= item_sections_n()) choose_inventory_filter(hit.index), changed = true;
         else if (hit.part == menu_hit::kListLine && hit.index >= inventory_begin() && hit.index < inventory_end())
             item_choice = hit.index, inventory_amount = false, changed = true;
         else if (hit.part == menu_hit::kButton && hit.index == 0) press[7] = true;
@@ -4829,61 +4931,76 @@ void inventory_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool&
 void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
     if (ptr.pressed & HOS_MOUSE_LEFT) {
-        if (hit.part == menu_hit::kListLine && hit.index >= 0 && hit.index < kTeleports)
+        if (hit.part == menu_hit::kListLine && hit.index >= 0 && hit.index < teleport_count())
             teleport_choice = hit.index, teleport_follow = true, changed = true;
         else if (hit.part == menu_hit::kButton) press[7] = true;
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
     if (ptr.wheel) teleport_wheel += ptr.wheel, teleport_follow = false, changed = true;
 }
-/// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
-/// Inventory open their pages; back from them comes to the Debug tab, the row still selected
+/// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click), as its kind
+/// (NX2_TOOL_*) has them. A list opens its page (Teleport, Inventory); back from it comes to the Debug tab, the row still selected
 void cheat_press(int i, const bool* press, bool& changed) {
-    if (i < 2 && (press[3] || press[4] || press[7])) {   // (Left Off, Right On, confirm flips)
-        const bool was = i == 0 ? protect_hearts.load() == 1 : player_flight.load() >= 0;
-        const bool on = press[7] ? !was : press[4];
-        if (i == 0) protect_hearts.store(on ? 1 : 0);
-        else if (on != was) player_flight.store(on ? 0 : -1);
-        changed = true;
-    }
-    if (i == 4 && (press[3] || press[4])) {
-        clock_hour = (clock_hour + (press[4] ? 1 : 23)) % 24;
-        changed = true;
-    }
-    if (i == 5 && (press[3] || press[4])) {
-        pouch_item = (pouch_item + kPouchItems + (press[4] ? 1 : -1)) % kPouchItems;
-        changed = true;
-    }
-    if (i == 11 && (press[3] || press[4])) {   // (Movement speed: stops at 1x and 3x)
-        link_speed.store(std::clamp(link_speed.load() + (press[4] ? 1 : -1), 0, kLinkSpeeds - 1));
-        changed = true;
-    }
-    if (i == 6 && (press[3] || press[4])) {
-        const int step = press[4] ? 1 : -1;
-        pouch_delta = std::clamp(pouch_delta + step, -10, 10);
-        if (!pouch_delta) pouch_delta = step;
-        changed = true;
-    }
-    if (press[7] && i >= 2 && i <= 4) cheat_action.store(i == 4 ? 100 + clock_hour : i);
-    if (press[7] && i == 6) cheat_action.store(200 + pouch_item * 32 + pouch_delta + 10);
-    if ((press[3] || press[4] || press[7]) && i == 7) {   // (an On / Off as the first two: Left Off, Right On, confirm flips)
-        free_camera.store(press[7] ? !free_camera.load() : press[4] ? 1 : 0);
-        changed = true;
-    }
-    if (press[7] && i == 8) page = 3, teleport_follow = true, changed = true;
-    if (press[7] && i == 10) page = 4, choose_inventory_filter(0), changed = true;
-    if (i == 9 && (press[3] || press[4])) {   // (Kid | Adult: Left Kid, Right Adult, a switch when Link is the other age)
-        const int age = link_age.load(std::memory_order_relaxed);
-        if (age >= 0 && age != (press[4] ? 1 : 0)) {
-            cheat_action.store(999);
-            open_now = false;
+    const NX2MenuTool* t = tool_of(i);
+    if (!t) return;
+    std::atomic<int>& value = tool_value[i];
+    switch (t->kind) {
+    case NX2_TOOL_TOGGLE:
+        if (press[3] || press[4] || press[7]) {   // (Left Off, Right On, confirm flips; one not set yet takes its choice even so)
+            const int v = value.load();
+            const bool was = tool_on(t, v), on = press[7] ? !was : press[4];
+            if (on != was || v == t->start) value.store(on ? t->on : t->off);
             changed = true;
         }
-    }
-    if (press[7] && i == 9) {
-        cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
-        open_now = false;
-        changed = true;
+        break;
+    case NX2_TOOL_CHOICE:
+        if ((press[3] || press[4]) && t->count > 0) {   // (round, or stopping at the ends: Movement speed at 1x and 3x)
+            const int step = press[4] ? 1 : -1, v = value.load();
+            value.store(t->wrap ? (v + t->count + step) % t->count : std::clamp(v + step, 0, t->count - 1));
+            changed = true;
+        }
+        if (press[7] && t->action) cheat_action.store(t->action + choice_value(t, value.load()));   // (Set time: 100 + the hour)
+        break;
+    case NX2_TOOL_ACTION:
+        if (press[7] && t->action) {
+            cheat_action.store(t->action);
+            if (t->closes) open_now = false, changed = true;
+        }
+        break;
+    case NX2_TOOL_LIST:
+        if (press[7]) {
+            if (const NX2MenuList* list = list_of(t->list)) {
+                if (list->style == NX2_LIST_PLACES) {   // (its choice as it was left: another places list's kept for it)
+                    int& shown = list_shown[0];
+                    if (shown != t->list && t->list < kMaxLists) {
+                        if (shown >= 0 && shown < kMaxLists) list_choice[shown] = teleport_choice;
+                        teleport_choice = list_choice[t->list];
+                    }
+                    shown = t->list;
+                    teleport_choice = std::clamp(teleport_choice, 0, card_count(*list) - 1);
+                    page = 3, teleport_follow = true, changed = true;
+                } else {   // (the items page opens on All at its first card, as it always has)
+                    list_shown[1] = t->list;
+                    page = 4, choose_inventory_filter(0), changed = true;
+                }
+            }
+        }
+        break;
+    case NX2_TOOL_SWITCH:
+        if (press[3] || press[4]) {   // (Kid | Adult: Left Kid, Right Adult, a switch when the game's half is the other)
+            const int half = value.load(std::memory_order_relaxed);
+            if (half >= 0 && half != (press[4] ? 1 : 0)) {
+                cheat_action.store(t->action);
+                if (t->closes) open_now = false;
+                changed = true;
+            }
+        }
+        if (press[7]) {
+            cheat_action.store(t->action);   // (Ocarina's OOT_AGE_ACTION, packs/oot/menu/oot_menu.h)
+            if (t->closes) open_now = false;
+            changed = true;
+        }
+        break;
     }
 }
 
@@ -5226,12 +5343,12 @@ void menu_tick() {
         if (press[5] && inventory_amount) inventory_amount = false, changed = true;   // (back: out of the amount first)
         else if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
         else if (tab_left || tab_right) {   // (another section, from editing an amount too: that ends)
-            const int filters = kItemSections + 1;
+            const int filters = item_sections_n() + 1;
             choose_inventory_filter((inventory_filter + filters + (tab_left ? -1 : 1)) % filters);
             changed = true;
         } else if (inventory_amount) {
             if (press[7]) inventory_amount = false, changed = true;
-            else if (press[3] || press[4]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
+            else if (press[3] || press[4]) cheat_action.store(items().action + item_choice * 256 + 64 + (press[4] ? 1 : -1));
         } else {
             // (the cards as drawn, inventory_columns to a row: the arrows move, Page Up and Down a page, Home and End the ends)
             const int begin = inventory_begin(), end = inventory_end();
@@ -5241,8 +5358,8 @@ void menu_tick() {
                 inventory_reveal();
                 changed = true;
             } else if (press[7] && item_counts[item_choice].load(std::memory_order_relaxed) >= 0) {
-                if (item_kinds[item_choice]) inventory_amount = true, changed = true;   // (an amount: Left and Right change it)
-                else cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 200);   // (unlock or relock)
+                if (item_kind(item_choice)) inventory_amount = true, changed = true;   // (an amount: Left and Right change it)
+                else cheat_action.store(items().action + item_choice * 256 + 200);   // (unlock or relock)
             }
             if (item_choice != chosen) inventory_reveal();   // (a click on a card: its page)
         }
@@ -5250,12 +5367,12 @@ void menu_tick() {
         if (mouse) teleport_mouse(ptr, mx, my, press, changed);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
-            cheat_action.store(1000 + teleport_choice);
+            cheat_action.store(places().action + teleport_choice);
             open_now = false, page = 0;   // (back to the game: the map change starts with an event)
             changed = true;
         } else if (tab_left || tab_right) {   // (the first map of the previous or next section)
-            const int section = (teleport_section_of(teleport_choice) + kTeleportSections + (tab_left ? -1 : 1)) % kTeleportSections;
-            teleport_choice = teleport_sections[section].first, teleport_follow = true;
+            const int section = (teleport_section_of(teleport_choice) + teleport_sections_n() + (tab_left ? -1 : 1)) % teleport_sections_n();
+            teleport_choice = section_first(places(), section), teleport_follow = true;
             changed = true;
         } else {
             // (the cards as drawn, each section's in rows under its heading: Up and Down a row, the column kept; Left and Right the
@@ -5263,8 +5380,8 @@ void menu_tick() {
             const int rows = (press[2] - press[1]) + (press[14] - press[13]) * teleport_page_rows;
             const int was = teleport_choice;
             if (press[15]) teleport_choice = 0;
-            else if (press[16]) teleport_choice = kTeleports - 1;
-            else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
+            else if (press[16]) teleport_choice = teleport_count() - 1;
+            else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, teleport_count() - 1);
             if (teleport_choice != was) teleport_follow = true, changed = true;
         }
     } else if (open_now.load()) {
@@ -5303,7 +5420,7 @@ void menu_tick() {
                     changed = true;
                 } else if (hit.part == menu_hit::kRow) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
-                    if (!d.value && d.cheat >= 0 && (cheat_chooses(d.cheat) || age_shown(d.cheat) || d.cheat <= 1 || d.cheat == 7) &&
+                    if (!d.value && d.cheat >= 0 && (cheat_chooses(d.cheat) || age_shown(d.cheat) || cheat_is_toggle(d.cheat)) &&
                         hit.side != 0)
                         press[hit.side < 0 ? 3 : 4] = true;   // (a tool's choice: its halves as Left and Right)
                     else if (!d.value) press[7] = true;   // (a page, a tool: as Enter)
