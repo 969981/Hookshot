@@ -251,3 +251,31 @@ Fitted to this tree: #252's Intel compiler gate goes on this tree's `guarded_gra
 | [#1359](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1359) | SadTransGirl | perf(vk): a freed sparse mirror's buffer is kept for the next mirror of its size, not destroyed (RX_VK_SPARSE_SPARE_MB) |
 
 Adapted: #637 is taken for discrete cards of less than 8 GB alone (`vram_compact::under_8gb`, the device-local heap under 7.5 GB, since an 8 GB card's heap and allowance both read under 8 GB; never an integrated GPU such as the Steam Deck's): there it brings the start's 8% of blocks, the dynamic floor of 1800 MB and up, damped contraction, the runs' proportional start, the target pool halved over 90%, VMA's 32 and 16 MB blocks, `RX_VK_KEEP_FINALIZED_MB` 128, `RX_VK_ASTC_BC_MB` 1, `RX_VK_IMPORT_LOW` 70, and a 6 GB card's mirrors at a third (at most 1700 MB); its two DLSS CNN rows are for every card, and its staging keeps 128 MB where the driver allows 6.5 GB or less on a discrete card under 8 GB (an integrated GPU keeps main's 64 MB). Its changes for every card are left out: the Vulkan driver picked from DriverStore when `VK_ICD_FILENAMES` is unset, the write-back cap on by default (`RX_VK_WB_MAX_KB`), the textures' floor on cards of 8 GB and more, the hold's 80% line and its shorter times, a 4 GB card's mirrors past its 256 MB, the upload deferral's 12 ms and its terrain test, the 16 MB staging arenas and the two kept warm (on every card: on the Steam Deck #568 measured 9 to 41 ms for each arena made again), and an unused rule for hosts of version 14. Its host API stays this tree's (no host_storage field, the version checked exactly), its presenter queue stays off by default, and its device-local heap is the raw heap size. #1188's check asks once per driver (`gpu/vk/cold_check.h`). #1255's sweep goes through this tree's `target_overlap::DrawnOver`. #311's note is in `docs/temporal-history.md`. Moved to later slices: #977 (after #443, in A2), #952 (an A/B against this tree's uniform snapshot reuse), #416 with #1595 and 19beb1a6 (the pipeline cache file rule).
+
+### Lifter, build and script fixes (D2)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#34](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/34) | dyst | fix(linux): the log says why the renderer did not load |
+| [#371](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/371) | HumanBean | perf(build): one object store for every work folder, so a new one compiles only what no other built |
+| [#540](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/540) | Zelda Ootr | fix(builder): a compile that raises stops build.py at once, not after every queued compile |
+| [#561](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/561) | Zelda Ootr | test(build): give the CPM discovery check's toolchain stand-in find and need |
+| [#592](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/592) | futondestroyer | test(build): isolate shipped-profile lookups in game-free fixtures |
+| [#602](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/602) | HumanBean | fix(scripts): dev_packs builds a pack for a profile switch, and a renderer pack with the profile its base had |
+| [#623](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/623) | Zelda Ootr | test(build): the lift clean-up check stands in for the shared lift store |
+| [#1090](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1090) | dyst | test(build): the DLSS cache check reads the preprocessed value instead of running a program |
+| [#1267](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1267) | HumanBean | fix(build): a clang that can't read the play profile says which clang it is and where the one that reads it is |
+
+Fitted to this tree:
+- #371 keeps this tree's `write_compdb` and `--host-only` paths in `nx2/build.py`; a host-only build shares its objects with the store before it stops. `scripts/dev_packs.py` uses the store at `~/.cache/hookshot-objects` (`%LOCALAPPDATA%\Hookshot\objects` on Windows) unless `HOOKSHOT_OBJ_STORE` names another; a player's build uses none unless it is set.
+- #602 and #1267, which D1 left out while Longshot's play profile was not here, come now: B1 brought it (#569, `RX_VK_PGO=1`). #540, which D1 counted with the Builder's fixes, is `nx2/build.py`'s.
+- #34's log line names the renderer's `.so` and drops the path dlerror() repeats; Linux has no WebGPU renderer to fall back on, so the line says nothing is drawn.
+
+Moved:
+- #151, #465, #641, #1453 and #690 to the Builders, with their rename: the setup and the Builder differ here (one library of every game).
+- #1379 and #1059 to the crash records' batch: #1379 edits the crash window (#593), and #1059 keeps the game's stderr for the crash window after a restart.
+- #1602 to the switch table (K): this tree has no `.def` or `.inl` files until `switches.def` comes.
+- #80 and #1316 to the dev tooling (F): they edit Longshot's `check_third_party.py` and coverage tool, which come with it.
+- #627 and #898 to the control bridge (CB): they edit the pipeline tour, which comes with it.
+
+Not taken: #624. This tree's AppImage keeps `$APPDIR/usr/lib/hookshot` for its own files, so Longshot's narrowed check does not hold here.

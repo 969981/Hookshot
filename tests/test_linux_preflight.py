@@ -8,6 +8,7 @@ exact same fail-before checks.
 from functools import partial
 import argparse
 import contextlib
+from functools import partial
 import importlib.util
 import io
 import os

@@ -1,10 +1,5 @@
 """One store of compiled objects for every work folder on this PC (HOOKSHOT_OBJ_STORE=<folder>; off when unset, empty or 0).
 
-In this tree only part of it is used: it came whole with Longshot #487, which edits it, before #371, which made it and wires
-build.py and make_game.py to it. Today make_game.py's forget_renderer_objects calls folder() and forget() when a build fails
-after the game linked (#1080), and that does nothing unless HOOKSHOT_OBJ_STORE is set; then it deletes <store>/<key>.o of the
-renderer's objects alone. Nothing here fetches, shares or prunes yet: what follows is the store as #371 makes it.
-
 A work folder keeps its own object cache (<work>/objcache: nx2/build.py's cache_put and compile_one, make_game.py's
 prune_object_cache) as before. With a store, build.py takes the objects this build needs and the folder lacks from the store
 (fetch), and gives the store the folder's objects it lacks (share). Both are hard links, so an object is on the disk once
@@ -17,8 +12,8 @@ drop_stale_objects) and lets its objects go when they change. The store keeps a 
 characters), and a work folder without the note uses no store.
 
 Nothing writes an object in place: the compiler writes a new file and renames it over the old one, and the folder's clean-up
-only removes its own links, so a store object stays whole while any folder uses it. The store's own clean-up (prune, which #371 runs
-after each make_game.py build and nothing runs here yet): an object only the store holds (one link, or every object where there are none) goes once it has not been
+only removes its own links, so a store object stays whole while any folder uses it. The store's own clean-up (prune, after each
+make_game.py build): an object only the store holds (one link, or every object where there are none) goes once it has not been
 used for HOOKSHOT_OBJ_STORE_DAYS (14), and the oldest go first while those come to more than HOOKSHOT_OBJ_STORE_GB (8). An
 object used in the last hour is never taken, so a build that is fetching it keeps it.
 """

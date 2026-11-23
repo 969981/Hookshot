@@ -539,8 +539,8 @@ both. Recording a new one:
 
 1. **Build a renderer that counts**, `RX_VK_PGO=gen`: the back end's own files (`gpu/vk/*.cpp` and suyu's texture
    decoders; not Eden's recompiler, sirit, Dear ImGui or zstd) are built with `-fprofile-instr-generate`, still at
-   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way),
-   or the renderer alone:
+   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way;
+   `pack` builds the renderer for `RX_VK_PGO` even when no file changed since the base), or the renderer alone:
    ```
    RX_VK_PGO=gen python -I scripts/dev_packs.py pack <dir> vk-count
    RX_VK_PGO=gen OOT_WORK=<work> RX_RELEASE=1 RX_VK_ONLY=1 python -I nx2/build.py --standalone

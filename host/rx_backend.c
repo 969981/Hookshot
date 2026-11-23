@@ -331,8 +331,15 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     if (!m) {
 #ifdef _WIN32
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
-#else   /* (why: a missing file, or a symbol it needs that this executable lacks, as one from another build) */
-        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): WebGPU", path, hos_load_error());
+#else   /* (why, as dlerror() said: a missing file, a glibc too old, a wrong ELF class. The line names the file
+           LoadLibraryA opened, hookshot_vk.so, and drops dlerror()'s leading "<that file>: ", so the path, home folder
+           included, is in it once. Linux has no WebGPU: wgr_start draws nothing) */
+        char *ext = strrchr(path, '.');
+        if (ext && !strcmp(ext, ".dll")) strcpy(ext, ".so");
+        const char *why = hos_load_error();
+        const size_t n_path = strlen(path);
+        if (!strncmp(why, path, n_path) && !strncmp(why + n_path, ": ", 2)) why += n_path + 2;
+        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): nothing is drawn", path, why);
 #endif
         return NULL;
     }

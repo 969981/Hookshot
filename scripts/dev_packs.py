@@ -283,9 +283,20 @@ def clear_output(game):
             os.remove(p)
 
 
+def object_store():
+    """(nx2/object_store.py) The object store every base and pack on this PC shares, unless HOOKSHOT_OBJ_STORE names another (or
+    is empty or 0: none): a new base compiles only what no earlier one did. In the user's cache folder; on another drive than the
+    bases its objects are copied instead of linked, so set HOOKSHOT_OBJ_STORE to a folder on the bases' drive"""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Hookshot", "objects")
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-objects")
+
+
 def run(cmd, cwd, env=None):
     print("+ " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=cwd, check=True, env=dict(os.environ, **(env or {})))
+    e = dict(os.environ, **(env or {}))
+    e.setdefault("HOOKSHOT_OBJ_STORE", object_store())
+    subprocess.run(cmd, cwd=cwd, check=True, env=e)
 
 
 def base_env(predict_s):
@@ -297,12 +308,39 @@ def base_env(predict_s):
 
 
 def renderer_profile(base_work, environ):
-    """The renderer's play profile for a pack of the renderer alone: the one make_game.py gave the base's build
-    (<base work>/hookshot_vk.profdata, by the same path, so the base's objects are found again), since nx2/build.py run by
-    itself uses none and the pack's renderer would then differ from the base's by more than the change. Nothing when the base
-    had none, or when RX_VK_PGO is set (a counting pack, or another profile)"""
-    prof = os.path.join(base_work, "hookshot_vk.profdata")
-    return {"RX_VK_PGO": prof} if not environ.get("RX_VK_PGO") and os.path.isfile(prof) else {}
+    """The renderer's play profile for a pack of the renderer alone: the one the base's build used, by the same path, so the
+    base's objects are found again, since nx2/build.py run by itself uses none and the pack's renderer would then differ from
+    the base's by more than the change. (hookshot) Read from what the base's build compiled the renderer with, its
+    <base work>/sa/build/compile_commands.json (-fprofile-instr-use=): a profile file being in the work folder does not say
+    the build used it, the profile being off by default here (RX_VK_PGO=1, #119), and make_game.py unpacks the committed one
+    all the same. Nothing when the base had none, or when RX_VK_PGO is set (a counting pack, or another profile)"""
+    if environ.get("RX_VK_PGO"):
+        return {}
+    try:
+        with open(os.path.join(base_work, "sa", "build", "compile_commands.json"), encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    for e in entries if isinstance(entries, list) else ():
+        if not isinstance(e, dict) or "/gpu/vk/" not in str(e.get("file", "")).replace("\\", "/"):
+            continue
+        args = e.get("arguments") or shlex.split(e.get("command") or "")
+        for a in args:
+            if a.startswith("-fprofile-instr-use=") and os.path.isfile(a.split("=", 1)[1]):
+                return {"RX_VK_PGO": a.split("=", 1)[1]}
+    return {}
+
+
+def pack_route(how, environ):
+    """What a pack builds: route()'s answer for the changed files, except that a profile switch set for this pack makes it build
+    even when no file changed. RX_VK_PGO (gen: a renderer that counts, for recording its profile; or another profile) builds
+    the renderer; RX_PGO (the game's hot pieces) the game. Before, `RX_VK_PGO=gen dev_packs.py pack` of an unchanged tree said
+    "nothing to build" and the pack held the base's ordinary renderer: a recording with it wrote nothing"""
+    if environ.get("RX_PGO"):
+        return "game"
+    if environ.get("RX_VK_PGO") and how is None:
+        return "renderer"
+    return how
 
 
 def prepare(game, b):
@@ -443,7 +481,7 @@ def cmd_pack(a):
     if subprocess.run(["git", "-C", tree, "merge-base", "--is-ancestor", b["commit"], "HEAD"]).returncode:
         sys.exit("%s is not built on the base %s: rebase it on the base, or make a new base" % (tree, b["commit"][:8]))
     changed = changed_files(tree, b["commit"])
-    how = route(changed, tree)
+    how = pack_route(route(changed, tree), os.environ)
     pack = os.path.join(d, "packs", a.name)
     if os.path.isdir(pack):   # (what an earlier build of this pack brought goes: this one says again what differs)
         shutil.rmtree(pack)
