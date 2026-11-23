@@ -14,7 +14,7 @@
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/dlss_math.h"
 #include "control.h"
-#include "nx2_pack.h"   /* (the game's pack: its loading cover, MkwVkHost.wide_cover) */
+#include "nx2_pack.h"   /* (the game's pack: its loading cover, MkwVkHost.wide_cover; its menu, MkwVkHost.game_menu) */
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -254,7 +254,7 @@ static const MkwVkHost vk_host = {
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
     host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_screen_size,
-    hos_game_wide_cover, host_out_of_memory,
+    hos_game_wide_cover, host_out_of_memory, hos_game_menu,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -331,8 +331,15 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     if (!m) {
 #ifdef _WIN32
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
-#else   /* (why: a missing file, or a symbol it needs that this executable lacks, as one from another build) */
-        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): WebGPU", path, hos_load_error());
+#else   /* (why, as dlerror() said: a missing file, a glibc too old, a wrong ELF class. The line names the file
+           LoadLibraryA opened, hookshot_vk.so, and drops dlerror()'s leading "<that file>: ", so the path, home folder
+           included, is in it once. Linux has no WebGPU: wgr_start draws nothing) */
+        char *ext = strrchr(path, '.');
+        if (ext && !strcmp(ext, ".dll")) strcpy(ext, ".so");
+        const char *why = hos_load_error();
+        const size_t n_path = strlen(path);
+        if (!strncmp(why, path, n_path) && !strncmp(why + n_path, ": ", 2)) why += n_path + 2;
+        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): nothing is drawn", path, why);
 #endif
         return NULL;
     }

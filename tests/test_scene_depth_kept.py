@@ -31,11 +31,13 @@ def main():
     compaction = compaction[:compaction.index("\n}\n")]
     if "depth_destroy_gen++;" not in compaction:
         raise SystemExit("a compaction pass moves images without the depth counter moving")
-    # (two places free a Texture: the eviction sweep, and between its passes the dead targets' sweep (dead_targets.h, Longshot
-    # #1255); each through destroy_later, which moves the depth counter for a depth image)
-    if (tex.count("textures.erase(") != 2 or "destroy_later(*tex);" not in block(tex, "void texture_frame(uint64_t completed)")
-            or "destroy_later(*tex);" not in block(tex, "void dead_targets_sweep(uint64_t completed)")):
-        raise SystemExit("a Texture is freed somewhere other than the two sweeps, or without destroy_later: check that it bumps the depth counter")
+    # (three places free a Texture: the eviction sweep, between its passes the dead targets' sweep (dead_targets.h, Longshot
+    # #1255), and the ASTC images that served a new texture's blocks (astc_reuse.h, Longshot #1222); each through
+    # destroy_later, which moves the depth counter for a depth image)
+    if (tex.count("textures.erase(") != 3 or "destroy_later(*tex);" not in block(tex, "void texture_frame(uint64_t completed)")
+            or "destroy_later(*tex);" not in block(tex, "void dead_targets_sweep(uint64_t completed)")
+            or "destroy_later(*t);" not in block(tex, "void reuse_retire_frame() {")):
+        raise SystemExit("a Texture is freed somewhere other than the three sweeps, or without destroy_later: check that it bumps the depth counter")
     if tex.count("depth_destroy_gen++") != 2:
         raise SystemExit("vk_texture.cpp bumps the depth counter somewhere new: say why here")
     for name in ("vk_temporal.cpp", "vk_fsr3_inputs.cpp"):

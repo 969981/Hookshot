@@ -316,6 +316,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_NO_DRAWN_WRITEBACK=1` | Small mip-chained textures the GPU drew are not written into guest memory a few frames later (where that memory is still zero, or still their own last write-back), as before: Ocarina of Time's ground garbles after some minutes in one area (its copies of drawn terrain tiles are all zero) |
 | `RX_VK_NO_DRAWN_PAGE_MAP=1` | A texture in a virtual pool that the GPU writes before anything uploads it has no page map noted at that write, as before: once the game has finalized it, its next check takes all of its storage for remapped and uploads it whole from guest memory over what the GPU drew (Ocarina of Time's HUD button labels go blank after a zone change) |
 | `RX_VK_ASTC_CPU=1` or `0` | ASTC textures decoded on the CPU (as RGBA8), or by the GPU's decoder (and big ones re-encoded as BC3). Unset: on the CPU on Windows with the graphics built into AMD's Ryzen 7000 and 9000 desktop CPUs (2 CUs; not the APUs' larger iGPUs), where the GPU's decode of Kokiri Forest's terrain arrays ran so long in one submission that Windows reset the GPU; by the GPU elsewhere |
+| `RX_VK_ASTC_REUSE=1` | A new ASTC texture whose blocks (hashed at the upload) and image match one the game finalized takes that one's image by a GPU copy, and the finalized one goes at the next present: the game makes an area's textures again at other addresses when it is visited again, and each visit decoded 0.8-1.2 GB again and kept the earlier copies (Longshot #1222, its issue 1069). Off by default: the hashing of every new texture made one frame of MKW's boot 627-711 ms against 280-290, and the bench's routes reused nothing. The log's `vk: decoded ASTC used again` line counts them |
 | `RX_VK_SKIP_COMPRESSED_OVER_RT=1` | A compressed (ASTC, BC, ETC2/EAC) texture made over storage render targets used is not uploaded, as before: bosses and new enemies all blue the first time |
 | `RX_VK_ZERO_UPLOAD=0`, `RX_VK_ZERO_HOLES=0` | A texture of 32 MB or more whose storage is all zero is cleared on the GPU instead of unswizzled on the CPU (`upload_all_zero`, `gpu/vk/vk_texture.cpp`); `RX_VK_ZERO_UPLOAD=0`: unswizzled, as before. On Linux the check reads only the pages of the guest window's memfd that hold data (`gpu/vk/guest_holes.h`): a hole is zero, and reading one made the kernel give it a page (the Hyrule Field shadow map's 288 MB, never written, became guest memory at each load). `RX_VK_ZERO_HOLES=0` (or `off`, `false`, `no`): the whole storage read, as before |
 | `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
@@ -539,8 +540,8 @@ both. Recording a new one:
 
 1. **Build a renderer that counts**, `RX_VK_PGO=gen`: the back end's own files (`gpu/vk/*.cpp` and suyu's texture
    decoders; not Eden's recompiler, sirit, Dear ImGui or zstd) are built with `-fprofile-instr-generate`, still at
-   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way),
-   or the renderer alone:
+   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way;
+   `pack` builds the renderer for `RX_VK_PGO` even when no file changed since the base), or the renderer alone:
    ```
    RX_VK_PGO=gen python -I scripts/dev_packs.py pack <dir> vk-count
    RX_VK_PGO=gen OOT_WORK=<work> RX_RELEASE=1 RX_VK_ONLY=1 python -I nx2/build.py --standalone
@@ -731,7 +732,7 @@ number is not the obvious one:
 | `gpu_device` | 0 Auto, n the n-th card with Vulkan 1.3 as the row lists them |
 | `frame_generation` | 0 Off, 2 to 8 the multiplier |
 | `resolution` | 0 Auto, 1 100%, 2 75%, 3 67%, 4 50% |
-| `output_res` | A size, `<width>x<height>`: 2048x1152 (the game's own), one of the screen's display modes (the menu's Aspect ratio and Output resolution rows), or any other with each side a multiple of 8 (rounded down), at least 640x360, at most 5120x2880's pixels, 5:4 to 48:9; anything else is the game's own. A size more than 1 % off 16:9 sets the picture's shape (`host/hos_wide_size.h` `hos_output_own_shape`). The Aspect ratio row saves `ultrawide=` 1 for the monitor's own shape, else 0; another shape is `output_res`'s own. The numbers saved before (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880) are still read |
+| `output_res` | A size, `<width>x<height>`: 2048x1152 (the game's own), one of the screen's display modes (the menu's Aspect ratio and Output resolution rows), or any other with each side a multiple of 8 (rounded down), at least 640x360, at most 5120x2880's pixels, 5:4 to 48:9; anything else is the game's own. A size more than 1 % off 16:9 sets the picture's shape (`host/hos_wide_size.h` `hos_output_own_shape`). The Aspect ratio row saves `ultrawide=` 1 for the monitor's own shape, else 0; another shape is `output_res`'s own. The numbers saved before (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880) are still read. When there is none, a first start's Auto (this PC) picks the screen's own size where its tier has the memory for it; at High and Ultra, where it does not (or the screen is not known), 2560x1440, unless the screen has fewer pixels than that. High or Ultra chosen on the Quality preset row moves an output still at 2048x1152 to 2560x1440 the same way; no other preset changes it |
 | `upscaling` | 0 Off, 1 Catmull-Rom, 2 Lanczos |
 | `compile_shaders` | No menu row: the Builder's, `make_game.py --compile-shaders`'s and the launcher's Compile shaders, read by a preparation (`vk_draw.cpp` `compile_all`). 1 All (the default: the predicted pipelines too), 0 Most; any other number is All. A file with only this line still makes the game's first start a first start |
 | `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y` | percent |
@@ -790,12 +791,24 @@ A pack's code and data sit beside its manifest. Ocarina's:
 | `packs/oot/tools/` | the button prompts (`prompt_assets.py` and its faces) and the save copier (`oot_saves.py`) | the `prompts` build step; a person |
 | `packs/oot/assets/pipeline_states/` | the pipeline state list's sources | the `pipeline_states` build step |
 | `packs/oot/host/` | Ocarina's runtime C: the debug tools (`oot_cheats.c`), the teleport and age switch (`oot_teleport.c`), Skip opening (`oot_opening.c`), the ultrawide loading cover (`oot_wide_cover.c`), the hooks of `oot_*.c`, and `oot_pack.c`, its table of the runtime's hooks and its control bridge verbs | `nx2/build.py`, into Ocarina's runtime only |
+| `packs/oot/menu/` | Ocarina's Insert menu content (`menu.c`): the general rows it implements (`features`), its own words for some of them, its debug tools and their Teleport and Inventory pages, its ocarina note controls, and their translations (`menu_i18n.h`); the destinations and items lists its game side shares (`oot_destinations.h`, `oot_cheat_items.h`), and the option ids and actions between the two (`oot_menu.h`) | `nx2/build.py`, into Ocarina's runtime only; handed to the shared renderer as `MkwVkHost.game_menu` |
 
 A pack's `host` list (pack.json) is its runtime C, compiled into that game's runtime only (`nx2/build.py`
 `pack_host`); a game whose pack has none links `host/game_none.c` (Bananza). The shared runtime asks the game through
 `host/nx2_pack.h`'s `NX2PackHost` (start, the control bridge's verbs, the debug cheats' live action, Auto run's
-player state, the loading cover, a present's pacer hooks, a thread dump's idle loop), and a pack's C includes only that
-header and the ones it names. Mario Kart World's `packs/mkw/host/` keeps its 1.8.0 pacer behind that build's check.
+player state, the loading cover, a present's pacer hooks, a thread dump's idle loop, the menu table, the debug flight's and
+free camera's option ids), and a pack's C includes only that header and the ones it names. Mario Kart World's
+`packs/mkw/host/` keeps its 1.8.0 pacer behind that build's check.
+
+The shared renderer's Insert menu (`gpu/vk/vk_menu.cpp`) holds no game's content: the running game's table
+(`NX2GameMenu`, `gpu/vk/vk_api.h`) says which of its general rows the game implements (a row of a feature the game does
+not list is hidden: Field of view, Text speed, Text size, Skip opening, Camera speed, Disable camera centering, Auto run,
+Damage taken, Debug tools), gives its own words for a row by the row's key in `hookshot_options.ini`, its tools on the
+Debug tab (a slot each in the rows table) and the list pages they open, its own controls, and its translations, looked
+up before the renderer's. A game's option ids are its pack's, `HOS_OPT_GAME_BASE` (0x10000) and up. A game with no table
+(Mario Kart World, Bananza) has none of these rows and no tools; the Debug tab keeps its Developer rows. The renderer is
+compiled with the empty profile's `game_profile.h` (`nx2/build.py` `empty_profile_dir`), so it holds no game's program keys
+either: the runtime hands it its own (`HOOKSHOT_PROFILE_*`).
 
 `build_steps` in pack.json say which of `make_game.py`'s optional steps a game takes part in: a game whose pack names
 none (Bananza, MKW) gets no prompts and no shipped pipeline list. The lift's cache key hashes every pack.json's lift

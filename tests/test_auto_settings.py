@@ -80,6 +80,20 @@ def check_source():
     if not main.index("dev.mesh_capable = m.meshShader && m.taskShader;") < main.index(
             "if (mesh_mode_used == 2) dev.mesh_shader = false;"):
         raise SystemExit("vk_main.cpp: dev.mesh_capable must be read before the Mesh shaders mode is applied")
+    # (Longshot #292, adapted: High or Ultra chosen on the row moves an output still at the game's 2048x1152 to 1440p, by
+    # auto_settings.h's high_output, never while the environment holds the row, and only when the player chooses: apply_preset
+    # leaves the row, which stays exempt from the presets)
+    fn = menu[menu.index("void preset_output(int p) {"):]
+    fn = fn[:fn.index("\n}\n")]
+    for must in ("if (env_holds(&opts.output_res)) return;", "o.w == kGameOutput.w && o.h == kGameOutput.h",
+                 "::auto_settings::high_output(p,", "::auto_settings::kHighW"):
+        if must not in fn:
+            raise SystemExit("vk_menu.cpp preset_output: no %s (High and Ultra's 1440p output)" % must)
+    if "apply_preset(*r.value);\n        preset_output(*r.value);" not in menu:
+        raise SystemExit("vk_menu.cpp: the Quality preset row no longer applies High and Ultra's 1440p output")
+    preset = menu[menu.index("void apply_preset(int p) {"):]
+    if "opts.output_res" in preset[:preset.index("\n}\n")]:
+        raise SystemExit("vk_menu.cpp apply_preset sets the Output resolution: the row is exempt from the presets")
     need("vk_replay.cpp", (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8"), ["menu_auto_tune(gpu_ms, draws, 120.0 / secs);"])
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     need("vk_api.h", api, ["#define MKWVK_WINDOW_VERSION 3", "void (*desktop_size)(void *window, int *width, int *height);"])

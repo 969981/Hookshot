@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include "../gpu/vk/import_reach.h"
 
 struct FakeBuf {
     const char* name;
@@ -74,6 +75,7 @@ bool memory_rb_refresh(VkCommandBuffer up);
 std::mutex pools_mu;
 #include "rb_pool.inc"
 std::map<uint64_t, Pool> imported;
+#include "rb_table.inc"
 uint64_t mirror_epoch = 0;
 bool mirror_upload = false;
 #include "rb_writeback.inc"
@@ -160,7 +162,7 @@ void run_gpu() {
 void setup() {
     Pool p;
     p.lo = LO, p.hi = LO + SZ, p.buffer = &G, p.mirror = &M, p.mstate = Pool::MIRROR_ON;
-    imported.emplace(LO, p);
+    imported_add(p);
 }
 // (memory_begin_submission / memory_end_submission, modelled: the epoch, and the write-back of what was marked written)
 void begin_submission() {

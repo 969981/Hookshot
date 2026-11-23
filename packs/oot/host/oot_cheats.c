@@ -2,7 +2,7 @@
    host/hos_main.c (docs/game-packs.md a3): the code is as it was there. */
 #include "nx2_pack.h"
 #include "oot_host.h"
-#include "../gpu/vk/oot_cheat_items.h"
+#include "../menu/oot_cheat_items.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +13,7 @@ volatile int hos_oot_live_action;   /* (test runs) the live input file's "!cheat
 
 int hos_oot_hearts_enabled(void) {
     int rx_option(int id, int otherwise);
-    const int menu = rx_option(HOS_OPT_CHEAT_HEARTS, -1);
+    const int menu = rx_option(OOT_OPT_HEARTS, -1);
     return menu < 0 ? hos_oot_protect_hearts : menu;
 }
 
@@ -101,14 +101,14 @@ static void oot_edit_pouch(Ctx *c, int action) {
     static const char *const items[] = {
         "Item_DekuSeed", "Item_DekuNut", "Item_DekuStick", "Item_Bomb", "Item_Arrow_Normal"
     };
-    const unsigned item = (unsigned)(action - 200) / 32;
-    const int delta = (action - 200) % 32 - 10;
+    const unsigned item = (unsigned)(action - OOT_POUCH_ACTION) / 32;
+    const int delta = (action - OOT_POUCH_ACTION) % 32 - 10;
     if (item >= sizeof items / sizeof items[0] || !delta || delta < -10 || delta > 10) return;
     const int result = oot_pouch_change(c, items[item], delta);
     if (result >= 0) hos_log("cheats: pouch %s %+d (event status %d)", items[item], delta, result);
 }
 
-/* The Inventory page (gpu/vk/oot_cheat_items.h): counts go to the menu twice a second, edits come back as actions. */
+/* The Inventory page (packs/oot/menu/oot_cheat_items.h): counts go to the menu twice a second, edits come back as actions. */
 #define OOT_ITEM_NAME(label, name, kind) name,
 #define OOT_ITEM_KIND(label, name, kind) kind,
 #define OOT_NO_SECTION(name)
@@ -127,11 +127,11 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     for (unsigned i = 0; i < OOT_ITEM_COUNT; i++) {
         const int count = oot_item_count(c, oot_item_names[i]);
         if (!i) loaded = count >= 0;
-        rx_option_set(OOT_CHEAT_ITEM_BASE + (int)i, count);
+        rx_option_set(OOT_OPT_ITEMS + (int)i, count);
     }
     {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
         int child = 1;
-        rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
+        rx_option_set(OOT_OPT_AGE, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
     }
     if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
                        the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
@@ -174,7 +174,7 @@ static int oot_item_count(Ctx *c, const char *name) {
 }
 
 static void oot_inventory_edit(Ctx *c, int action) {
-    const unsigned item = (unsigned)(action - OOT_CHEAT_ITEM_ACTION) / 256, op = (unsigned)(action - OOT_CHEAT_ITEM_ACTION) % 256;
+    const unsigned item = (unsigned)(action - OOT_ITEM_ACTION) / 256, op = (unsigned)(action - OOT_ITEM_ACTION) % 256;
     if (item >= OOT_ITEM_COUNT) return;
     const char *name = oot_item_names[item];
     char alias[64];
@@ -259,13 +259,13 @@ static uint64_t oot_player_controller(Ctx *c, uint64_t components) {
     return recomp_load64(c, controller) == 0x84c54f10ULL ? controller : 0;
 }
 
-/* Movement speed (the Debug tab's row, HOS_OPT_CHEAT_SPEED in percent): Link's controller and the percent for
+/* Movement speed (the Debug tab's row, OOT_OPT_SPEED in percent): Link's controller and the percent for
    hos_oot_cct_speed, which scales the forward speed the game sets on it. (The controller's speed rate beside it, +476, is no
    use: the game sets it again before each step.) */
 static void oot_player_speed(Ctx *c, uint64_t components) {
     int rx_option(int id, int otherwise);
     static int logged = 100;
-    int percent = rx_option(HOS_OPT_CHEAT_SPEED, 100);
+    int percent = rx_option(OOT_OPT_SPEED, 100);
     if (percent < 100 || percent > 400) percent = 100;
     __atomic_store_n(&oot_speed_controller, percent > 100 ? oot_player_controller(c, components) : 0, __ATOMIC_RELAXED);
     __atomic_store_n(&oot_speed_percent, percent, __ATOMIC_RELAXED);
@@ -291,7 +291,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
-    int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    int flying = rx_option(OOT_OPT_FLIGHT, 0) > 0;
     /* An event that takes Link (a map change he flew into, the age toggle's, a cutscene) waits for him to stand, and the
        flight holds him in the air: the screen the event had faded stayed black until the flight was switched off, and a
        second request met "waits until the current event ends". While an event plays he is let go and lands; the flight
@@ -302,7 +302,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
     if (marked_actor != actor || now - last_player_tick > 2000000000LL) marked_controller = 0;
     last_player_tick = now;
-    int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
+    int action = rx_option(OOT_OPT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     int bridge_ticket = 0;   /* (the control bridge's teleport or age switch, host/control.c: what came of it is kept for its reply) */
     int bridge_adult = -1;   /* (the bridge's age switch: the age wanted, 1 the adult) */
@@ -315,7 +315,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     oot_inventory_refresh(c, now);
     oot_player_speed(c, components);
     oot_map_refresh(c, now);
-    if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
+    if (action >= OOT_ITEM_ACTION && action < OOT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
         int child = 1;   /* (the bridge's: Link's age now, not its sample's; already the age wanted, nothing to flip) */
@@ -329,12 +329,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     } else if (action >= OOT_TELEPORT_ACTION) {
         const int sent = oot_teleport(c, actor, (unsigned)(action - OOT_TELEPORT_ACTION));
         if (bridge_ticket) oot_bridge_teleport_done(bridge_ticket, sent);
-    } else if (action >= 200) {
+    } else if (action >= OOT_POUCH_ACTION) {
         oot_edit_pouch(c, action);
-    } else if (action >= 100 && action < 124) {
-        oot_set_time(c, action - 100);
+    } else if (action >= OOT_TIME_ACTION && action < OOT_TIME_ACTION + 24) {
+        oot_set_time(c, action - OOT_TIME_ACTION);
     }
-    if (!flying && action != 2 && action != 3) return;
+    if (!flying && action != OOT_MARK_ACTION && action != OOT_RETURN_ACTION) return;
 
     // Follow OneShotPhysicsCctChangePosition to Link's controller.
     const uint64_t controller = oot_player_controller(c, components);
@@ -342,7 +342,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     A64Fn change_position = a64_lookup(0x806d2530ULL);
     if (!change_position) return;
 
-    if (action == 2) {
+    if (action == OOT_MARK_ACTION) {
         for (unsigned i = 0; i < 3; i++) {
             const uint32_t bits = recomp_load32(c, actor + 796 + i * 4);
             memcpy(&mark[i], &bits, sizeof bits);
@@ -351,8 +351,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         marked_controller = controller;
         hos_log("cheats: marked position %.2f %.2f %.2f", mark[0], mark[1], mark[2]);
     }
-    const int returning = action == 3 && marked_controller == controller;
-    if (action == 3 && !returning) hos_log("cheats: no mark for this player controller");
+    const int returning = action == OOT_RETURN_ACTION && marked_controller == controller;
+    if (action == OOT_RETURN_ACTION && !returning) hos_log("cheats: no mark for this player controller");
     if (!flying && !returning) return;
     const int64_t elapsed = now - last_tick;
     if (flying_actor != actor)
@@ -377,7 +377,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!returning) {
         const float dt = fminf((float)elapsed * 1e-9f, 0.05f);
         float desired[3] = {0};
-        if (foreground == GetCurrentProcessId() && !rx_option(1, 0) && !rx_option(HOS_OPT_CHEAT_CAMERA, 0)) {
+        if (foreground == GetCurrentProcessId() && !rx_option(1, 0) && !rx_option(OOT_OPT_CAMERA, 0)) {
             const uint64_t axes = hos_flight_input();
             const float right = (int16_t)axes / 32767.0f, forward = (int16_t)(axes >> 16) / 32767.0f;
             const int vertical = (GetAsyncKeyState(VK_PRIOR) < 0) - (GetAsyncKeyState(VK_NEXT) < 0);
@@ -574,7 +574,7 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
 
     static SRWLOCK lock = SRWLOCK_INIT;
     AcquireSRWLockExclusive(&lock);
-    const int enabled = rx_option(HOS_OPT_CHEAT_CAMERA, 0);
+    const int enabled = rx_option(OOT_OPT_CAMERA, 0);
     oot_build_free_view(c, enabled ? view : 0, view + 8);
     ReleaseSRWLockExclusive(&lock);
 #else

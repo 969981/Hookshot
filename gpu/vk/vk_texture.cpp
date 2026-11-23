@@ -57,6 +57,7 @@
 #include "host_shaders/bc7_encoder_comp_spv.h"
 #include "bc_levels.h"
 #include "astc_bc_policy.h"
+#include "astc_reuse.h"
 #include "drawn_writeback.h"
 #include "vram_compact.h"
 #include "commit_room.h"
@@ -1280,14 +1281,25 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
     return scratch.data();
 }
 
-void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to) {
-    const int comp = from / 3;
+/// The alpha an RGB format widened to RGBA gets: one in the format's own encoding (by component size alone, SNORM8 read
+/// -0.008, UNORM16 0.23 and the integer formats 255, 15360 or 0x3F800000)
+uint32_t widen_alpha(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8_SNORM: return 0x7F;
+    case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R16G16B16_UINT:
+    case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32_SINT: return 1;
+    case VK_FORMAT_R16G16B16_SFLOAT: return 0x3C00;
+    case VK_FORMAT_R16G16B16_UNORM: return 0xFFFF;
+    case VK_FORMAT_R16G16B16_SNORM: return 0x7FFF;
+    case VK_FORMAT_R32G32B32_SFLOAT: return 0x3F800000;
+    default: return 0xFF;
+    }
+}
+void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to, uint32_t alpha) {
+    const int n = to - from;
     for (size_t i = 0; i < texels; i++) {
         std::memcpy(dst + i * to, src + i * from, from);
-        uint8_t* a = dst + i * to + from;
-        if (comp == 1) a[0] = 0xFF;
-        else if (comp == 2) a[0] = 0x00, a[1] = 0x3C;   // (half 1.0; UNORM16 would want 0xFFFF: close enough for alpha)
-        else { const float one = 1.0f; std::memcpy(a, &one, 4); }
+        std::memcpy(dst + i * to + from, &alpha, n);   // (little endian: the low n bytes)
     }
 }
 
@@ -1876,6 +1888,104 @@ bool upload(Texture& tex, const Ranges* dirty) {
     }
     return ok;
 }
+// ---- (hookshot) decoded ASTC used again (astc_reuse.h): a new texture whose blocks and image are those of one the game
+// finalized takes that one's image by a GPU copy, and the old one goes at the next texture_frame. RX_VK_ASTC_REUSE=0: every
+// new texture decoded, as before ----
+/// (hookshot) Off by default, RX_VK_ASTC_REUSE=1 on: every new 2D ASTC texture's blocks are hashed at its first upload, and in
+/// MKW's boot, which uploads its textures in a few frames before the title, that made one frame of 627-711 ms against main's
+/// 280-290 (RTX 5060 Ti, Linux; DK Bananza's A3 runs, gone with it off). Nothing measured here was reused by it either: the
+/// game's revisits in the bench routes made none of their textures again with the blocks and shape of a finalized one
+bool reuse_on() {
+    static const bool v = getenv("RX_VK_ASTC_REUSE") && atoi(getenv("RX_VK_ASTC_REUSE")) != 0;
+    return v;
+}
+std::mutex reuse_mu;
+astc_reuse::Freed<Texture> freed;   // (reuse_mu)
+std::vector<Texture*> reuse_gone;   // (reuse_mu: the images that served one, for texture_frame)
+std::atomic<int64_t> st_reused{0}, st_reused_bytes{0}, st_reuse_retired{0}, st_reuse_hash_ns{0}, st_reuse_hash_bytes{0};
+astc_reuse::Shape reuse_shape(const Texture& t) {
+    // (hookshot) by the format it was made in: an opaque texture this tree made BC1 on its first upload (#2554, bc1 == 2) is
+    // found as the BC3 it was made, as the new one of the same blocks still is when it is looked for (reuse_upload makes it
+    // BC1 too before the copy). By its BC1 a source never matched, and nothing was ever reused
+    const VkFormat made = t.bc1 == 2 && t.format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ? VK_FORMAT_BC3_UNORM_BLOCK : t.format;
+    return {(uint32_t)made, t.width, t.height, t.depth, t.levels, t.layers, t.skip, (uint32_t)t.nvn_format, t.key_layout,
+            t.bc, t.bc_resized};
+}
+/// (used again by its own address, or going: no longer one to copy from)
+void reuse_drop(Texture& t) {
+    if (!t.freed_listed && !t.reuse_retire) return;
+    std::lock_guard lk(reuse_mu);
+    if (t.freed_listed) freed.unlist(t.blocks_hash, &t), t.freed_listed = false;
+    t.reuse_retire = false;
+}
+/// The game finalized `t`: its decoded ASTC from memory, of the same shape, listed to serve the same blocks made again elsewhere
+void reuse_released(const nvn_tex* t) {
+    if (!reuse_on()) return;
+    auto [a, b] = by_gpu.equal_range(t->gpu);
+    for (auto it = a; it != b; ++it) {
+        Texture* x = it->second;
+        if (!x->astc || !x->blocks_hash || !x->uploaded || x->gpu_written || x->freed_listed || x->reuse_retire) continue;
+        if (x->d.format != t->d.format || x->d.width != t->d.width || x->d.height != t->d.height ||
+            x->d.depth != t->d.depth || x->d.levels != t->d.levels || x->d.target != t->d.target)
+            continue;
+        std::lock_guard lk(reuse_mu);
+        freed.list(x->blocks_hash, x);
+        x->freed_listed = true;
+    }
+}
+/// A new decoded ASTC texture's blocks hashed (its first upload, whole), and the image of a finalized one with the same blocks
+/// and shape copied into it: true when it was. One uploaded again keeps no hash, and is not listed when finalized
+bool reuse_upload(Texture& tex, uint64_t total) {
+    // (hookshot) none of these is ever served, and none is a source: their blocks are not hashed (a hash costs ~0.08 ms a MB
+    // on the replay thread, in a load)
+    if (tex.sparse || tex.type != VK_IMAGE_TYPE_2D || !tex.image) return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    static thread_local std::vector<uint8_t> scratch;
+    astc_reuse::Hasher h;
+    for (uint64_t at = 0; at < total; at += 64ull << 20) {
+        const uint64_t n = std::min<uint64_t>(64ull << 20, total - at);
+        h.add(guest_bytes(tex.gpu + at, n, scratch), n);
+    }
+    tex.blocks_hash = h.h | 1;
+    st_reuse_hash_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    st_reuse_hash_bytes += (int64_t)total;
+    Texture* from;
+    {
+        std::lock_guard lk(reuse_mu);
+        if (!freed.size()) return false;
+        from = freed.find(tex.blocks_hash, reuse_shape(tex), [](const Texture* t) { return reuse_shape(*t); });
+        if (!from || from == &tex || !from->image || !from->uploaded || from->gpu_written) return false;
+        // (hookshot) a source made BC1 (opaque, #2554): the new one, made BC3, is made BC1 too, so the copy is between
+        // images of one block size; a new one that cannot be made so is decoded as before
+        if (from->format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK && tex.format != VK_FORMAT_BC1_RGBA_UNORM_BLOCK) {
+            if (tex.format != VK_FORMAT_BC3_UNORM_BLOCK || !bc_reformat(tex, VK_FORMAT_BC1_RGBA_UNORM_BLOCK)) return false;
+            tex.bc1 = 2;
+        }
+        freed.unlist(from->blocks_hash, from);
+        from->freed_listed = false, from->reuse_retire = true;
+        reuse_gone.push_back(from);
+    }
+    VkCommandBuffer cmd = upload_cmd();
+    full_barrier(cmd);
+    std::vector<VkImageCopy> regions(tex.levels);
+    for (uint32_t l = 0; l < tex.levels; l++) {
+        VkImageCopy& r = regions[l];
+        r.srcSubresource = r.dstSubresource = {tex.aspect, l, 0, tex.layers};
+        r.extent = {std::max(1u, tex.width >> l), std::max(1u, tex.height >> l), 1};
+    }
+    vkCmdCopyImage(cmd, from->image, VK_IMAGE_LAYOUT_GENERAL, tex.image, VK_IMAGE_LAYOUT_GENERAL, tex.levels, regions.data());
+    full_barrier(cmd);
+    from->last_value = std::max(from->last_value, rec_value);   // (its image goes once this submission is done with it)
+    const int64_t n = ++st_reused;
+    st_reused_bytes += (int64_t)tex.bytes;
+    if (n <= 8 || n % 500 == 0)
+        logf("vk: ASTC texture #%u %#llx %ux%u x%u levels %u: the image of #%u %#llx (the same blocks, finalized by the game) "
+             "copied, not decoded again (%lld so far, %lld MB)", tex.id, (unsigned long long)tex.gpu, tex.width, tex.height,
+             tex.layers, tex.levels, from->id, (unsigned long long)from->gpu, (long long)n,
+             (long long)(st_reused_bytes.load() >> 20));
+    return true;
+}
+
 /// (hookshot) A big texture whose whole storage is zero: the image cleared to zero on the GPU, not unswizzled on the CPU. All-zero
 /// bits are 0 in every format this path takes (not ASTC or BC, not one widened on the way), so the clear is what the unswizzle
 /// would have made. The game's shadow map (12288 x 12288 D16, 288 MB, its storage fresh and zero) took 73 ms of the replay
@@ -2015,6 +2125,10 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                  (unsigned long long)tex.first_seen);
         }
     }
+    if (tex.astc) {
+        tex.blocks_hash = 0;
+        if (!dirty && !tex.uploaded && reuse_on() && reuse_upload(tex, total)) return up_route = UP_ASTC, true;
+    }
     if (tex.astc && (up_route = UP_ASTC, upload_astc_gpu(tex, total, dirty))) return true;
     up_route = UP_CPU;
     if (tex.bc) return false;   // (no CPU path into BC3)
@@ -2023,7 +2137,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
         return up_route = UP_GPU, true;
     const bool linear = nvn_tex_is_linear(&tex.d);
     int widen_from = 0;
-    widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
+    const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
+    widened(src_vf, &widen_from);
     if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
@@ -2188,7 +2303,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                            (u32)tex.block_w, (u32)tex.block_h,
                                                            std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
                 } else if (widen_from) {
-                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb);
+                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
                 }
                 st_bytes += (int64_t)out_bytes;
                 // (a sparse image: only its blocks this holds texels other than zero get memory; the others read
@@ -2385,6 +2500,7 @@ void destroy_later(Texture& tex) {
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
 void forget_gpu(Texture* tex) {
     vw_forget(*tex);
+    reuse_drop(*tex);
     auto [a, b] = by_gpu.equal_range(tex->gpu);
     for (auto it = a; it != b; ++it)
         if (it->second == tex) {
@@ -2670,7 +2786,25 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     const bool in_textures = compact_on() && !x.sparse && !(as_target && !is_bc(x.format) && !is_astc(x.format));
     if (x.sparse) {
         ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
-        bool ok = vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
+        // (the sparse flags and usage within the device's limits for them: extent, levels, layers, samples)
+        const auto fits = [&] {
+            VkImageFormatProperties ifp{};
+            return vkGetPhysicalDeviceImageFormatProperties(dev.physical, ci.format, ci.imageType, ci.tiling, ci.usage,
+                                                            ci.flags, &ifp) == VK_SUCCESS &&
+                   ci.extent.width <= ifp.maxExtent.width && ci.extent.height <= ifp.maxExtent.height &&
+                   ci.extent.depth <= ifp.maxExtent.depth && ci.mipLevels <= ifp.maxMipLevels &&
+                   ci.arrayLayers <= ifp.maxArrayLayers && (ci.samples & ifp.sampleCounts);
+        };
+        // (a compressed one the driver refuses sparse with its raw attachment usage, or then its raw storage usage, the
+        // residency query above did not ask about: asked again without it, as a compressed image refused is made below;
+        // its raw views are then not made. hookshot: not on AMD, whose drivers answer no for the raw attachment usage and
+        // take it all the same, as the image without sparse keeps it there (#1801): made as before, a refusal handled below)
+        bool ok = dev.props.vendorID == 0x1002 || fits() ||
+                  ((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
+                   (ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, x.usage = ci.usage, fits())) ||
+                  ((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && is_bc(x.format) &&
+                   (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, fits()));
+        ok = ok && vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
         if (ok) {
             VkMemoryRequirements mr{};
             vkGetImageMemoryRequirements(dev.device, x.image, &mr);
@@ -3021,6 +3155,7 @@ bool upload_defer(const Texture& tex) {
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
     tex->last_value = rec_value;
+    if (tex->freed_listed || tex->reuse_retire) reuse_drop(*tex);
     if (!for_sampling) return tex;
     if (upload_defer(*tex)) return nullptr;
     // contents: from guest memory unless the GPU wrote the image (then it is the content, unless the texture was
@@ -3362,12 +3497,19 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
         case NVN_FORMAT_RGBX8: case NVN_FORMAT_RGBX8SN: case NVN_FORMAT_RGBX8UI: case NVN_FORMAT_RGBX8I:
         case NVN_FORMAT_RGBX16F: case NVN_FORMAT_RGBX16: case NVN_FORMAT_RGBX16SN: case NVN_FORMAT_RGBX16UI:
         case NVN_FORMAT_RGBX16I: case NVN_FORMAT_RGBX32F: case NVN_FORMAT_RGBX32UI: case NVN_FORMAT_RGBX32I:
-        case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB:
+        case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB: case NVN_FORMAT_BGR5:
+        case NVN_FORMAT_RGB5:
             for (unsigned& s : sw)
                 if (s == NVN_TEXTURE_SWIZZLE_A) s = NVN_TEXTURE_SWIZZLE_ONE;
             break;
         default: break;
         }
+        // (RGB5A1 and RGB5 have R in the low bits, their A1R5G5B5 image B: swapped for texels uploaded from the game's memory.
+        // hookshot: not for an image the GPU drew, which its attachment views wrote unswizzled, R in the image's R: sampled
+        // swapped, a 5-5-5 render target came back with R and B exchanged)
+        if ((nf == NVN_FORMAT_RGB5A1 || nf == NVN_FORMAT_RGB5) && !tex->gpu_written)
+            for (unsigned& s : sw)
+                s = s == NVN_TEXTURE_SWIZZLE_R ? NVN_TEXTURE_SWIZZLE_B : s == NVN_TEXTURE_SWIZZLE_B ? NVN_TEXTURE_SWIZZLE_R : s;
         static const bool swap_9e5 = env_on("RX_VK_9E5_SWAP");   // (hookshot, diagnosis: R and B swapped)
         if (swap_9e5 && nf == NVN_FORMAT_RGB9E5F) std::swap(sw[0], sw[2]);
         cm = {component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
@@ -4167,6 +4309,7 @@ void texture_written(Texture* tex, const char* why) {
 std::atomic<int64_t> touch_miss_upload{0}, touch_miss_epoch{0}, touch_miss_unuploaded{0};
 
 bool texture_touch_quick(Texture* tex, bool for_sampling) {
+    if (tex->freed_listed || tex->reuse_retire) return false;   // (texture_touch takes it out of the reuse list)
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
     tex->last_value = rec_value;
     if (!for_sampling) return true;
@@ -4512,6 +4655,49 @@ struct TexelViews {
 std::mutex texel_views_mu;
 std::map<VkBuffer, TexelViews> texel_views;
 uint64_t texel_registry_failed_frame = UINT64_MAX;
+
+int texel_kind(VkFormat f) {   // 0 float, 1 unsigned integer, 2 signed integer (the numeric type a shader reads it as)
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_R16_UINT:
+    case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT:
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT: return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_A8B8G8R8_SINT_PACK32: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT:
+    case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT: return 2;
+    default: return 0;
+    }
+}
+
+/// Without robustness2's nullDescriptor a texel buffer descriptor must not be VK_NULL_HANDLE
+/// (VUID-VkWriteDescriptorSet-descriptorType-02995): a view of 16 zero bytes in R32_SFLOAT, R32_UINT or R32_SINT (the
+/// numeric type of the format it stands for; uniform and storage texel buffers of all three are mandatory), made once
+VkBufferView dummy_texel_view(VkFormat f) {
+    static std::mutex mu;
+    static VkBuffer buffer = VK_NULL_HANDLE;
+    static VmaAllocation alloc = nullptr;
+    static VkBufferView views[3]{};
+    static bool tried = false;
+    std::lock_guard lk(mu);
+    if (!tried) {
+        tried = true;
+        void* mapped = nullptr;
+        if (create_buffer(16, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, true, buffer,
+                          alloc, &mapped)) {
+            if (mapped) std::memset(mapped, 0, 16);
+            const VkFormat formats[3] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_SINT};
+            for (int i = 0; i < 3; i++) {
+                VkBufferViewCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
+                ci.buffer = buffer, ci.format = formats[i], ci.offset = 0, ci.range = 16;
+                if (vkCreateBufferView(dev.device, &ci, nullptr, &views[i]) != VK_SUCCESS) views[i] = VK_NULL_HANDLE;
+            }
+        } else {
+            buffer = VK_NULL_HANDLE, alloc = nullptr;
+        }
+    }
+    return views[texel_kind(f)];
+}
 } // namespace
 
 void release_texel_buffer_views(VkBuffer buffer) {
@@ -4530,12 +4716,13 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     const int nf = view_nvn_format(t, v);
     VkFormat f = vk_format(nf).format;
     if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
-    {   // (a format the device has no texel buffers of, e.g. some 3-component ones: no view rather than an invalid one)
+    {   // (a format the device has no texel buffers of, e.g. some 3-component ones: no view rather than an invalid one; a
+        // dummy view where the device has no null descriptor)
         if (!(format_props(f).bufferFeatures & (storage ? VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT : VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT))) {
             static std::atomic<int> logged{0};
             if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
                 logf("vk: texel buffer of format %d (%s) not supported by the device: unbound", (int)f, storage ? "storage" : "uniform");
-            return VK_NULL_HANDLE;
+            return dev.null_descriptor ? VK_NULL_HANDLE : dummy_texel_view(f);
         }
     }
     int bw = 1, bh = 1;
@@ -4864,6 +5051,51 @@ uint64_t system_ram_bytes() {
     }();
     return v;
 }
+
+/// (hookshot) the images that served a new texture's blocks (astc_reuse.h): gone, unless their own texture was used since
+void reuse_retire_frame() {
+    std::vector<Texture*> went;
+    {
+        std::lock_guard lk(reuse_mu);
+        went.swap(reuse_gone);
+    }
+    std::unordered_set<const Texture*> gone;
+    for (Texture* t : went) {
+        if (!t->reuse_retire) continue;
+        t->reuse_retire = false;
+        watch_tex(t, "its image served a new texture: retired");
+        if (!t->gpu_written && t->uploaded && !remade_skip_old()) {   // (made again here, it is uploaded from memory: evict's)
+            std::lock_guard lk(from_memory_mu);
+            if (evicted_from_memory.size() > 50000) evicted_from_memory.clear();
+            evicted_from_memory[evicted_key(t->gpu, t->width, t->height, t->nvn_format)] = t->guest_size;
+        }
+        if (remade_log_on()) {   // (as the eviction's ends: no longer one made again)
+            std::lock_guard lk(evicted_mu);
+            remade.erase(t);
+        }
+        destroy_later(*t);
+        forget_gpu(t);
+        gone.insert(t);
+    }
+    st_reuse_retired += (int64_t)gone.size();
+    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
+        if (gone.erase(it->second.get())) it = textures.erase(it);
+        else ++it;
+    }
+}
+/// (hookshot) A finalized texture the GPU drew whose storage the game has since written over (the CPU wrote three quarters of it or more
+/// since it was finalized): its image holds nothing that memory holds on the console, and a draw that sampled it would take the
+/// memory's contents over its texels (texture_touch). Only a texture of 32 KB or more: a small one shares its pages with what the game
+/// keeps beside it, and a write there says nothing of it. The eviction pass lets such a texture go whatever the budget says
+bool finalized_obsolete(const Texture& t) {
+    if (!t.released || !t.gpu_written || t.gpu >= (1ull << 40) || t.guest_size < (32ull << 10)) return false;
+    static thread_local Ranges written;
+    written.clear();
+    memory_written_runs(t.guest, t.guest_size, t.release_gen, written);
+    uint64_t sum = 0;
+    for (const auto& r : written) sum += r.second - r.first;
+    return sum * 4 >= t.guest_size * 3;
+}
 void texture_frame(uint64_t completed) {
     const TraceTimer timed{st_texture_frame_ns};   // (hookshot: the frame trace's tex_frame_ms)
     upload_frame_report();
@@ -4880,6 +5112,7 @@ void texture_frame(uint64_t completed) {
     completed_value = completed;
     frame_no++;
     drawn_writeback_frame();
+    reuse_retire_frame();
     {   // (staging arenas the GPU is done with, beyond 256 MB of them, and any over 64 MB: freed. A scene change stages
         // hundreds of MB to over a GB (the course maps, the terrain's ASTC arrays), and that host memory was kept)
         // (hookshot: 64 on a card of 6 GB or less. On one with resizable BAR the arenas are VRAM: VMA puts a host-visible buffer the GPU
@@ -5234,6 +5467,11 @@ void texture_frame(uint64_t completed) {
              "used in the last 8 presents %llu MB", (unsigned long long)(astc_b >> 20), (unsigned long long)(rt_b >> 20),
              baked_n, (unsigned long long)(baked_b >> 10), (unsigned long long)(other_b >> 20),
              (unsigned long long)(recent_b >> 20));
+        if (reuse_on())
+            logf("vk: decoded ASTC used again: %lld textures (%lld MB) copied from ones the game finalized, not decoded; %lld of "
+                 "those retired, %zu listed; %lld MB of blocks hashed in %lld ms", (long long)st_reused.load(),
+                 (long long)(st_reused_bytes.load() >> 20), (long long)st_reuse_retired.load(), freed.size(),
+                 (long long)(st_reuse_hash_bytes.load() >> 20), (long long)(st_reuse_hash_ns.load() / 1000000));
         for (size_t i = 0; i < big.size() && i < 8; i++)
             logf("vk:   %llu MB: %#llx %ux%ux%u x%u levels %u NVN %#x%s%s, last used %llu presents ago",
                  (unsigned long long)(big[i]->bytes >> 20), (unsigned long long)big[i]->gpu, big[i]->width, big[i]->height,
@@ -5348,7 +5586,7 @@ void texture_frame(uint64_t completed) {
         (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : vram_under_8gb() ? 128 : 512) << 20;
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
-            tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
+            tex->first_written != tex->last_written || tex->bytes > (4ull << 20) || finalized_obsolete(*tex))
             return false;
         const auto g = gpu_owned.find(tex->gpu);   // (its storage's range still the one the GPU drew it in)
         if (g == gpu_owned.end() || g->second.first != tex->gpu + std::max<uint64_t>(tex->guest_size, 1)) return false;
@@ -5420,11 +5658,16 @@ void texture_frame(uint64_t completed) {
         // (hookshot, RX_VK_COMPACT: the hold's pass, above. A live texture stays once the excess over its line is covered: the
         // reserve's line for one long unused, the hold's own for one unused ten seconds, and what the other rules ask (the 90%
         // rule, the budget's size, the driver's limit) for one unused as long as an eviction asks with the compaction off)
-        if (by_hold && !overwritten) {
+        // (hookshot) a finalized texture whose storage the game has written over since goes, whatever the budget says: what its image
+        // held is gone from that memory on the console too, and a draw that sampled it would take the memory's contents over its
+        // texels (texture_touch). Within the budget the pass is a sweep that lets go of nothing the GPU did not draw over, and these
+        // were never drawn over by a target: the game's own writes to the memory they stood in kept every one for good (issue 1443)
+        const bool obsolete = !overwritten && finalized_obsolete(*tex);
+        if (by_hold && !overwritten && !obsolete) {
             const uint64_t to = vram_compact::hold_target(frame_no - last, need_unused, rule_to, hold_to, evict_to);
             if (to == UINT64_MAX || vram_compact::hold_met(total_bytes, hold_live, hold_dead, to)) continue;
         }
-        if (finalized_kept && keep_finalized(tex)) {   // (above. Oldest first: beyond the cap the least recently used go)
+        if (!obsolete && finalized_kept && keep_finalized(tex)) {   // (above. Oldest first: beyond the cap the least recently used go)
             if (finalized_kept <= keep_finalized_max) continue;
             finalized_kept -= tex->bytes;
             static int logged;
@@ -5434,7 +5677,7 @@ void texture_frame(uint64_t completed) {
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
         if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && frame_no - last < keep_rendered) continue;
-        if (sweep && !overwritten) continue;
+        if (sweep && !overwritten && !obsolete) continue;
         // (hookshot) nor a live texture the GPU drew whose texels cannot be written back into its memory (ASTC kept as BC3, sparse,
         // past the write-back's size, ...): its image is the only copy, and one made again over that storage is not uploaded (the
         // memory counts as the GPU's), so it showed whatever its new memory held: the rainbow/garbled textures that spread over play
@@ -5468,9 +5711,9 @@ void texture_frame(uint64_t completed) {
         // tiled pattern over the Deku Tree's planks and Hyrule Field's path, with a 16 GB card's textures at the 6 GB budget
         // (issue 386). RX_VK_EVICT_NO_FLUSH=1: not written back, as before)
         static const bool no_flush = env_on("RX_VK_EVICT_NO_FLUSH");
-        evict.push_back({tex, !no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted, overwritten});
+        evict.push_back({tex, !no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted, overwritten || obsolete});
         pending_bytes += tex->bytes + tex->pad;
-        if (by_hold && !overwritten) hold_live += tex->bytes + tex->pad;
+        if (by_hold && !overwritten && !obsolete) hold_live += tex->bytes + tex->pad;
     }
     {   // (hookshot) nor one whose storage another image was drawn into after its own last drawing (evict_reason.h's
         // write_back_stale): its write-back puts old texels over memory that is the other image's now, and marks those pages
@@ -5608,6 +5851,7 @@ void texture_released(const nvn_tex* t) {
                      it->second->id, (unsigned long long)it->second->gpu, it->second->width, it->second->height,
                      it->second->layers, it->second->nvn_format, (unsigned long long)(it->second->bytes >> 20));
         }
+    reuse_released(t);
 }
 
 uint64_t texture_made() {

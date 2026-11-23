@@ -1,6 +1,7 @@
 // (hookshot) The Insert menu's languages (vk_menu_i18n.h).
 //
-// menu_i18n.h holds one table a language: each English text of vk_menu.cpp and its translation. A text is looked up whole;
+// menu_i18n.h holds one table a language: each English text of vk_menu.cpp and its translation; the running game's menu table
+// (NX2GameMenu.langs: its tools, lists and words, packs/<key>/menu/) holds its own, looked up first. A text is looked up whole;
 // a text the menu made with snprintf is matched against the table's texts that hold printf conversions ("%d of %d") and
 // put together from the translated format, its %s parts looked up in turn. Place and item names are not in the tables (the
 // official translated names are not checked yet): they stay English. The table's pointers live for the process; a text
@@ -105,8 +106,16 @@ std::string fill_format(const char* fmt, const std::vector<std::string>& args) {
 
 struct Table {
     std::unordered_map<std::string_view, const char*> exact;   // (keys: the table's own texts, which live for the process)
-    std::vector<const menu_i18n::Entry*> formats;   // (the entries with printf conversions)
+    std::vector<std::pair<const char*, const char*>> formats;   // (the entries with printf conversions: the English, its text)
 };
+/// Whether a text holds a printf conversion: a format, matched against the texts made from it
+bool has_format(const char* en) {
+    for (const char* p = strchr(en, '%'); p; p = strchr(p + 1, '%')) {
+        char kind = 0;
+        if (conversion(p + 1, kind) && kind != '%') return true;
+    }
+    return false;
+}
 /// A language's table, made at its first use. A lookup after that takes no lock and makes no string (call_once's check only)
 const Table& table(int lang) {
     static std::unique_ptr<Table> t[menu_i18n::kLangCount];
@@ -114,17 +123,18 @@ const Table& table(int lang) {
     std::call_once(made[lang], [lang] {
         t[lang] = std::make_unique<Table>();
         const menu_i18n::Lang& l = menu_i18n::kLangs[lang];
-        for (int i = 0; i < l.count; i++) {
-            const menu_i18n::Entry& e = l.entries[i];
-            t[lang]->exact.emplace(e.en, e.text);
-            for (const char* p = strchr(e.en, '%'); p; p = strchr(p + 1, '%')) {
-                char kind = 0;
-                if (conversion(p + 1, kind) && kind != '%') {
-                    t[lang]->formats.push_back(&e);
-                    break;
-                }
-            }
-        }
+        auto add = [&](const char* en, const char* text) {   // (the first of a text stands: the game's before the menu's own)
+            if (!en || !text) return;
+            t[lang]->exact.emplace(en, text);
+            if (has_format(en)) t[lang]->formats.emplace_back(en, text);
+        };
+        // (game packs a4) the game's texts first, its menu table's (NX2GameMenu.langs: its tools, lists and words), in this
+        // language by its code
+        if (const NX2GameMenu* g = menu_game(); g && g->langs && l.code)
+            for (int k = 0; k < g->lang_count; k++)
+                if (g->langs[k].code && g->langs[k].entries && !strcmp(g->langs[k].code, l.code))
+                    for (int i = 0; i < g->langs[k].count; i++) add(g->langs[k].entries[i].en, g->langs[k].entries[i].text);
+        for (int i = 0; i < l.count; i++) add(l.entries[i].en, l.entries[i].text);
     });
     return *t[lang];
 }
@@ -264,9 +274,9 @@ std::string tr_text(const std::string& s) {
     if (s.empty() || !lang) return s;
     const Table& t = table(lang);
     if (auto it = t.exact.find(s); it != t.exact.end()) return it->second;
-    for (const menu_i18n::Entry* e : t.formats) {
+    for (const auto& [en, text] : t.formats) {
         std::vector<std::string> args;
-        if (match_format(e->en, s.c_str(), args)) return fill_format(e->text, args);
+        if (match_format(en, s.c_str(), args)) return fill_format(text, args);
     }
     return s;
 }

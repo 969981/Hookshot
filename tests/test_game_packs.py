@@ -485,7 +485,7 @@ def check_pack_host():
     api = tuple(int(re.search(r"#define NX2_PACK_API_%s (\d+)" % n, header).group(1)) for n in ("MAJOR", "MINOR"))
     check(api == packs.NX2PC_PACK_API, "host/nx2_pack.h's interface is %d.%d, nx2/packs.py's %d.%d" % (api + packs.NX2PC_PACK_API))
     with tempfile.TemporaryDirectory(prefix="pack-host-") as tmp:
-        for key, want in (("oot", sorted((ROOT / "packs" / "oot" / "host").glob("*.c"))),
+        for key, want in (("oot", sorted((ROOT / "packs" / "oot" / "host").glob("*.c")) + sorted((ROOT / "packs" / "oot" / "menu").glob("*.c"))),
                           ("mkw", sorted((ROOT / "packs" / "mkw" / "host").glob("*.c"))),
                           ("dkb", [ROOT / "host" / "game_none.c"]), ("none", [ROOT / "host" / "game_none.c"])):
             folder = Path(tmp, key)
@@ -516,8 +516,12 @@ def check_pack_host():
     check(mkw.count("mkw_180() &&") == 2 and "if (hos_mkw_pacer && forced" in mkw and "if (pacer && freq)" in mkw,
           "Mario Kart World 1.8.0's hooks are not behind its build check")
     # (every pack's table and game_none.c's: the version and size, and only the table's own members)
-    members = re.findall(r"\(\*(\w+)\)\(", header[header.index("typedef struct NX2PackHost"):header.index("} NX2PackHost;")])
-    check(members[:1] == ["start"] and len(members) >= 10, "NX2PackHost's hooks: %r" % members)
+    body = header[header.index("typedef struct NX2PackHost"):header.index("} NX2PackHost;")]
+    members = re.findall(r"\(\*(\w+)\)\(", body)
+    check(members[:1] == ["start"] and len(members) >= 11 and "menu" in members, "NX2PackHost's hooks: %r" % members)
+    # (0.4: and the option ids of the game's debug flight and free camera, host/nn_hid.c's)
+    members += [m for pair in re.findall(r"^\s*int (\w+)(?:, (\w+))?;", body, re.M) for m in pair if m]
+    check({"flight_option", "free_camera_option"} <= set(members), "NX2PackHost has no flight or free camera option ids")
     tables = [p for p in sorted((ROOT / "packs").glob("*/host/*.c")) if "static const NX2PackHost" in p.read_text(encoding="utf-8")]
     check([p.relative_to(ROOT).as_posix() for p in tables] == ["packs/mkw/host/mkw_pacer.c", "packs/oot/host/oot_pack.c"],
           "the packs' tables are not Mario Kart World's and Ocarina's: %r" % tables)
@@ -532,22 +536,28 @@ def check_pack_host():
 
 
 def check_pack_object_key():
-    """A pack object's key follows every header its C includes: the Inventory's items (gpu/vk/oot_cheat_items.h, which the
-    menu and Ocarina's cheats both read) changed, oot_cheats.o is compiled again with vk_menu.cpp"""
+    """A pack object's key follows every header its C includes: the Inventory's items (packs/oot/menu/oot_cheat_items.h, which
+    the pack's menu table and its cheats both read; gpu/vk/ until game packs a4) changed, oot_cheats.o and menu.o are compiled
+    again"""
     import build
     key, srcs = build.pack_host_files("oot", packs.tree()["oot"])
     dirs = sorted({os.path.dirname(f) for f in srcs}) + [build.HOST, build.GAME]
     headers = [os.path.realpath(h) for h in build.included_headers(srcs, dirs)]
-    items = os.path.realpath(ROOT / "gpu" / "vk" / "oot_cheat_items.h")
-    check(items in headers, "Ocarina's pack's C does not see gpu/vk/oot_cheat_items.h: %r" % headers[:8])
+    items = os.path.realpath(ROOT / "packs" / "oot" / "menu" / "oot_cheat_items.h")
+    check(items in headers, "Ocarina's pack's C does not see packs/oot/menu/oot_cheat_items.h: %r" % headers[:8])
+    for name in ("oot_destinations.h", "oot_menu.h", "menu_i18n.h"):
+        check(os.path.realpath(ROOT / "packs" / "oot" / "menu" / name) in headers, "Ocarina's pack's C does not see menu/%s" % name)
+    check(not (ROOT / "gpu" / "vk" / "oot_cheat_items.h").exists(), "gpu/vk/ still has Ocarina's items")
     check(os.path.realpath(ROOT / "host" / "nx2_pack.h") in headers and os.path.realpath(ROOT / "gpu" / "vk" / "vk_api.h") in headers,
           "the pack's headers miss nx2_pack.h or vk_api.h (included through it)")
     paths = build.included_headers(srcs, dirs)
     before = build.headers_bytes(paths)
     after = build.headers_bytes(paths, read=lambda path: open(path, "rb").read() + (b"\n/* an item */\n" if os.path.realpath(path) == items else b""))
     cheats = next(f for f in srcs if f.endswith("oot_cheats.c"))
-    check(before != after and build.object_key(cheats, ["-O2"], before) != build.object_key(cheats, ["-O2"], after),
-          "a change to gpu/vk/oot_cheat_items.h leaves the key of Ocarina's oot_cheats.o")
+    table = next(f for f in srcs if f.endswith(os.path.join("menu", "menu.c")))
+    for src in (cheats, table):
+        check(before != after and build.object_key(src, ["-O2"], before) != build.object_key(src, ["-O2"], after),
+              "a change to packs/oot/menu/oot_cheat_items.h leaves the key of Ocarina's %s" % os.path.basename(src))
     check(build.show_path(cheats) == "packs/oot/host/oot_cheats.c", "build.show_path: %r" % build.show_path(cheats))
     hosts = dict(build.all_pack_hosts())
     check(sorted(hosts) == ["mkw", "none", "oot"] and hosts["none"][0].endswith("game_none.c")
@@ -558,6 +568,45 @@ def check_pack_object_key():
     check("nx2/build.py --standalone --host-only" in job and "runs-on: windows-2022" in job and "release_parts.py part" in job,
           "windows-builder.yml has no job compiling the runtime's and the packs' C for Windows")
     check("needs: [package, vulkan, runtime]" in yml, "a Windows release does not wait for the runtime's C to compile")
+
+
+def check_pack_menu():
+    """Game packs a4: the menu's content is the game's. Ocarina's pack.json features are the ones its menu table hands the
+    renderer (menu/menu.c NX2_FEATURE_*, by the names gpu/vk/vk_api.h gives them), Mario Kart World and Donkey Kong Bananza list
+    none and have no table; the renderer's sources hold none of Ocarina's texts, items or places, and the renderer is compiled
+    with the empty profile's header, not Ocarina's"""
+    api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    names = dict(re.findall(r'NX2_FEATURE_(\w+) = 1u << \d+,? +/\* "(\w+)"', api))
+    check(len(names) >= 9 and len(set(names.values())) == len(names), "vk_api.h's features: %r" % names)
+    table = (ROOT / "packs" / "oot" / "menu" / "menu.c").read_text(encoding="utf-8")
+    bits = table[table.index(".features = "):table.index(".texts = ")]
+    listed = sorted(names[b] for b in re.findall(r"NX2_FEATURE_(\w+)", bits))
+    manifest = packs.tree()
+    check(sorted(manifest["oot"].get("features", [])) == listed,
+          "packs/oot/pack.json features %r, its menu table's %r" % (sorted(manifest["oot"].get("features", [])), listed))
+    check(set(listed) <= set(names.values()), "a feature vk_api.h has not")
+    check(manifest["oot"].get("host") == ["host/*.c", "menu/*.c"], "Ocarina's menu C is not in its runtime: %r" % manifest["oot"].get("host"))
+    for key in ("mkw", "dkb"):
+        check(not manifest[key].get("features") and not list((ROOT / "packs" / key).glob("menu/*.c")),
+              "%s lists features or has a menu table: its rows would show what it does not implement" % key)
+    check(".menu = oot_menu," in (ROOT / "packs" / "oot" / "host" / "oot_pack.c").read_text(encoding="utf-8"),
+          "Ocarina's pack hands the renderer no menu")
+    check(".menu" not in (ROOT / "host" / "game_none.c").read_text(encoding="utf-8"), "game_none.c hands a menu over")
+    # (no Ocarina in the renderer: its texts, tools, items and places are the pack's)
+    words = re.compile(r"\b(Link|Navi|Ocarina|ocarina|Kokiri|Hyrule|Deku|Gohma|Ganon|Gerudo|Zora|Goron|Teleport|Heart protection|"
+                       r"Switch age|No-clip flight|Kid)\b")
+    texts = []
+    for path in sorted((ROOT / "gpu" / "vk").glob("*.[ch]*")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        text = re.sub(r"//[^\n]*", "", text)
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        for s in re.findall(r'"((?:[^"\\\n]|\\.)*)"', text):
+            if words.search(s):
+                texts.append("%s: %r" % (path.name, s[:60]))
+    check(not texts, "the renderer's sources hold Ocarina's texts: %s" % texts[:6])
+    build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
+    check('"-I" + vk_profile' in build_py and 'os.path.join(kit.ROOT, "game"),   # (game/game_profile.h, GAME)' not in build_py
+          and "game_profile.emit_header(game_profile.NONE)" in build_py, "the renderer is not compiled with the empty profile's header")
 
 
 def game_profile_code(text):
@@ -596,6 +645,7 @@ def main():
     check_pack_folders()
     check_pack_host()
     check_pack_object_key()
+    check_pack_menu()
     check_builders()
     for f in FAILURES:
         print("FAIL: " + f)

@@ -44,14 +44,16 @@ def main():
     # Rollback, prefetch drops, a trim's rollback (mirrors_trim) and both published-import reapers must share the same
     # owner-release point.
     assert memory.count("vkDestroyBuffer(") == 1
-    assert memory.count("destroy_import_buffer(") == 10
+    # (11 with Longshot #1555: a host pointer import whose memory type does not match is let go through it too)
+    assert memory.count("destroy_import_buffer(") == 11
     fixture = (ROOT / "tests/texel_buffer_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* DEAD IMPORT */", block(memory, "struct DeadImport {") + ";")
     fixture = fixture.replace("/* ACTUAL */", actual)
     cases = ["healthy", "remap", "offset", "format", "range", "liveness", "late-map",
              "host-oom", "device-oom", "other-error", "registry-commit", "view-commit",
              "cached-after-failure", "independent", "retirement", "eviction", "reuse-handle",
-             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "unsupported", "concurrent"]
+             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "unsupported", "unsupported-dummy",
+             "concurrent"]
     with tempfile.TemporaryDirectory(prefix="texel-buffer-ownership-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

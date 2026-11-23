@@ -9,6 +9,7 @@ No compiler, no game.
 python -I -B tests/test_vk_pgo.py
 """
 import importlib.util
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -107,13 +108,45 @@ def check_dev_packs():
     spec.loader.exec_module(packs)
     with tempfile.TemporaryDirectory(prefix="longshot-vk-pgo-base-") as work:
         prof = os.path.join(work, make_game.VK_PROFILE)
-        check("a base with no profile: a renderer pack is built with none", packs.renderer_profile(work, {}) == {})
+        shipped = os.path.join(work, make_game.VK_PROFILE_UNPACKED)
+        check("a base with no compile database: a renderer pack is built with no profile", packs.renderer_profile(work, {}) == {})
+        db = os.path.join(work, "sa", "build")
+        os.makedirs(db)
+
+        def built(*vk_args):
+            entries = [{"file": "/src/host/hos_main.c", "arguments": ["clang", "-fprofile-instr-use=/game.prof", "-c"]},
+                       {"file": "/src/gpu/vk/vk_draw.cpp", "arguments": ["clang++", *vk_args, "-c"]}]
+            with open(os.path.join(db, "compile_commands.json"), "w", encoding="utf-8") as f:
+                json.dump(entries, f)
+        # (a base of main: make_game.py unpacked the committed profile, but the profile is off by default here: built without)
+        with open(shipped, "wb") as f:
+            f.write(b"committed profile")
+        built("-O2")
+        check("a base whose renderer was built without a profile: none, whatever profile files its work folder holds",
+              packs.renderer_profile(work, {}) == {})
+        built("-O2", "-fprofile-instr-use=" + shipped)
+        check("a base whose renderer was built with the committed profile: the pack too, by the base's path",
+              packs.renderer_profile(work, {}) == {"RX_VK_PGO": shipped})
         with open(prof, "wb") as f:
             f.write(b"profile")
-        check("a renderer pack is built with its base's profile, by the base's path", packs.renderer_profile(work, {}) == {"RX_VK_PGO": prof})
+        built("-O2", "-fprofile-instr-use=" + prof)
+        check("a base whose checkout had its own profile: that one, as the base's build used it",
+              packs.renderer_profile(work, {}) == {"RX_VK_PGO": prof})
+        built("-O2", "-fprofile-instr-use=" + os.path.join(work, "gone.profdata"))
+        check("a profile the base's build used that is gone: none", packs.renderer_profile(work, {}) == {})
         check("a counting pack stays one", packs.renderer_profile(work, {"RX_VK_PGO": "gen"}) == {})
+    # (what a pack builds: a profile switch set for it builds, even with no file changed)
+    for how, env, want, why in ((None, {}, None, "no change, no switch: nothing to build"),
+                                (None, {"RX_VK_PGO": "gen"}, "renderer", "a counting renderer of an unchanged tree is built"),
+                                (None, {"RX_VK_PGO": "/other.profdata"}, "renderer", "another renderer profile is built"),
+                                ("game", {"RX_VK_PGO": "gen"}, "game", "a game change still builds both modules"),
+                                ("renderer", {}, "renderer", "a renderer change, as before"),
+                                (None, {"RX_PGO": "gen"}, "game", "the game's counting build of an unchanged tree is built"),
+                                ("renderer", {"RX_PGO": "/p.prof"}, "game", "a game profile builds the game")):
+        check("pack_route: " + why, packs.pack_route(how, env) == want)
     text = (ROOT / "scripts" / "dev_packs.py").read_text(encoding="utf-8")
     check("the renderer's own build takes it", '**renderer_profile(b["work"], os.environ)' in text)
+    check("cmd_pack routes through pack_route", "how = pack_route(route(changed, tree), os.environ)" in text)
 
 
 def check_writer():
@@ -126,6 +159,33 @@ def check_writer():
             check("%s is declared weak and hidden" % name, ("%s[] __attribute__((weak, visibility(\"hidden\")));" % name) in text)
     windows = text[text.index("#ifdef _WIN32"):text.index("#else")]
     check("the COFF sections are Windows' alone", ".lprfc$A" in windows and ".lprfc$A" not in text.replace(windows, ""))
+
+
+def check_unread_message():
+    """A clang that can't read a profile says which clang, which profile and, on Linux when it is older than the build tools'
+    LLVM, where the one that reads it is (a distro's clang 18 and the committed LLVM 23 profile)"""
+    err = "error: Profile data error: unsupported version\n"
+    prof = os.path.join("work", make_game.VK_PROFILE_UNPACKED)
+    old = make_game.profile_unread_message(prof, "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64\n", err, True, "23.1.5")
+    check("the line names the clang and its version", old.startswith("clang 18.1.3 cannot read the play profile"))
+    check("and the profile, by its file name", make_game.VK_PROFILE_UNPACKED in old and "work" + os.sep not in old)
+    check("and clang's own reason", "(error: Profile data error: unsupported version)" in old)
+    check("and that the build goes on", "building without it" in old)
+    check("an older clang on Linux is told where the build tools' LLVM is",
+          "LLVM 23.1.5 reads it" in old and "scripts/linux/deps.sh" in old and "clang 23 or newer" in old)
+    new = make_game.profile_unread_message(prof, "clang version 23.1.4\n", err, True, "23.1.5")
+    check("a clang as new as the build tools' gets no advice to install it", "deps.sh" not in new)
+    check("nor does Windows (llvm-mingw is the builder's own)",
+          "deps.sh" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, False, "23.1.5"))
+    unknown = make_game.profile_unread_message(prof, "", "", True, "23.1.5")
+    check("a clang that names no version is 'this compiler', and an empty reason is said",
+          unknown.startswith("this compiler cannot read") and "(no message)" in unknown and "scripts/linux/deps.sh" in unknown)
+    check("without the build tools' version (no deps.sh) the line has no advice",
+          "deps.sh" not in make_game.profile_unread_message(prof, "clang version 18.1.3\n", err, True, None))
+    check("the build tools' version comes from scripts/linux/deps.sh",
+          make_game.build_tools_llvm(str(ROOT)) and make_game.build_tools_llvm(str(ROOT))[0].isdigit())
+    with tempfile.TemporaryDirectory() as empty:
+        check("and is None outside a checkout", make_game.build_tools_llvm(empty) is None)
 
 
 def check_release():
@@ -152,5 +212,6 @@ if __name__ == "__main__":
     check_make_game()
     check_dev_packs()
     check_writer()
+    check_unread_message()
     check_release()
     print("OK: the renderer's play profile is opt-in, and the game's counters keep their own switch")

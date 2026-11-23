@@ -274,8 +274,15 @@ class OcarinaNotesTests(unittest.TestCase):
         self.assertIn("oc_consumed_pads", hid[hid.index("static uint64_t bound_pad_buttons("):hid.index("static volatile LONG pad_raw_now")],
                       "the pad read does not consult the consumed pad mask")
         menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-        for label in ("Ocarina note (L)", "Ocarina note (R)", "Ocarina note (A)", "Ocarina note (Y)", "Ocarina note (X)"):
-            self.assertIn('"%s"' % label, menu, "the Controls page has no row for " + label)
+        # (the note rows are Ocarina's own controls, its menu table's (packs/oot/menu/menu.c, game packs a4), which the renderer
+        # puts after the engine's on the Controls page)
+        table = (ROOT / "packs" / "oot" / "menu" / "menu.c").read_text(encoding="utf-8")
+        for key, label in (("L", "Ocarina note (L)"), ("R", "Ocarina note (R)"), ("A", "Ocarina note (A)"), ("Y", "Ocarina note (Y)"),
+                           ("X", "Ocarina note (X)")):
+            self.assertIn('{HOS_KEY_OC_NOTE_%s, "%s"}' % (key, label), table, "the Controls page has no row for " + label)
+            self.assertNotIn('"%s"' % label, menu, "the renderer names Ocarina's " + label)
+        self.assertIn(".controls = oot_controls,", table, "Ocarina's table hands no controls over")
+        self.assertIn("if (!known) controls[kControls++] = {g.button, g.name};", menu, "the renderer does not add a game's controls")
         self.assertIn("controls[i].button >= HOS_KEY_MOVE_UP && controls[i].button <= HOS_KEY_CAM_RIGHT", menu,
                       "keys_only does not leave the note rows a gamepad column")
         self.assertIn("i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X", menu, "the ini save writes no pad_ line for a note row")

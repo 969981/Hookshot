@@ -3,7 +3,7 @@ forward speed is set (SPEED_PLACES: Link's move f_809552f0 at its two setter cal
 once, after its anchor, with s0's unit; a file patched before is given back as it is, and a file without them is left alone.
 apply makes them only in the supported build's lift (protect_hearts). packs/oot/host/oot_cheats.c's hos_oot_cct_speed scales the speed for
 Link's controller alone, only while the left stick is pushed and only up to 15 m/s (a ledge climb's 55 is left alone); the menu
-sends the row's percent (menu_link_speed), 100 while the debug tools are off.
+sends the row's percent (the pack's menu table's choice, OOT_OPT_SPEED), 100 while the debug tools are off.
 
 python -I -B tests/test_movement_speed.py
 """
@@ -74,10 +74,18 @@ def main():
     fn = fn[:fn.index("\n}\n")]
     check("oot_speed_controller" in fn and "hos_move_stick_held()" in fn, "the host scales only Link's speed while he is steered")
     check(re.search(r"<= 15\.0f", fn) is not None, "the host leaves speeds over 15 m/s alone")
+    # (the row is the pack's menu table's (packs/oot/menu/menu.c, game packs a4): a choice whose value the game reads at
+    # OOT_OPT_SPEED, its off read while the tools are off, as the renderer answers a choice (vk_menu.cpp menu_game_option))
+    table = (ROOT / "packs" / "oot" / "menu" / "menu.c").read_text(encoding="utf-8")
+    check("static const int oot_speeds[] = {100, 125, 150, 200, 300};" in table, "the row's choices are 1x, 1.25x, 1.5x, 2x, 3x")
+    check('static const char *const oot_speed_names[] = {"1x", "1.25x", "1.5x", "2x", "3x"};' in table, "the choices' names")
+    speed = table[table.index('.name = "Movement speed"'):]
+    speed = speed[:speed.index("},")]
+    check(".option = OOT_OPT_SPEED, .off = 100," in speed and ".values = oot_speeds" in speed,
+          "the row sends its percent at OOT_OPT_SPEED, 100 while the debug tools are off")
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    check("constexpr int link_speeds[] = {100, 125, 150, 200, 300};" in menu, "the row's choices are 1x, 1.25x, 1.5x, 2x, 3x")
-    check(re.search(r"int menu_link_speed\(\) \{ return cheats_on\(\) \? .* : 100; \}", menu) is not None,
-          "the row sends 100 while the debug tools are off")
+    check(re.search(r"if \(t->kind == NX2_TOOL_CHOICE\) return \*out = cheats_on\(\) \? choice_value\(t, v\) : t->off, true;",
+                    menu) is not None, "the renderer answers a choice with its off while the debug tools are off")
     print("PASS: movement speed hooks, host gate and menu choices")
 
 

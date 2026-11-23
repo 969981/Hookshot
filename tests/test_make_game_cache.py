@@ -8,6 +8,7 @@ Run with: python -I tests/test_make_game_cache.py
 from functools import partial
 import contextlib
 import errno
+from functools import partial
 import importlib.util
 import io
 import os

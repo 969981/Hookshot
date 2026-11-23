@@ -132,7 +132,7 @@ class Workflow(unittest.TestCase):
         self.assertIn("\n  vulkan-fixtures:\n", workflow)
         job = workflow.split("\n  vulkan-fixtures:\n", 1)[1].split("\n  actionlint:\n", 1)[0]
         self.assertIn("runs-on: ubuntu-24.04", job)
-        self.assertIn("timeout-minutes: 5", job)
+        self.assertIn("timeout-minutes: 15", job)   # (bounded: a slow archive day needs more than the 2 minutes the install takes)
         self.assertNotIn("self-hosted", job)
         self.assertNotIn("continue-on-error", job)
         self.assertNotIn("secrets.", job)

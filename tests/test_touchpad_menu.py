@@ -8,7 +8,7 @@ after the paddles. gpu/vk/vk_menu.cpp presses F1 (press[6]) with it while no row
 The poll's button block is compiled over a stand-in SDL, which reports one button at a time; it also checks that all four
 paddle buttons have their own bindable bits. Then the menu's Controls table, touchpad_bound and pad_name, its F1 line and
 its listening binding's mask are cut from vk_menu.cpp and run with a stand-in host's bindings: unbound, a click is F1;
-bound to Minus (or an ocarina note) it is not; a listening binding takes the click; its name is "Touchpad".
+bound to Minus (or a game's own control, Ocarina's ocarina note) it is not; a listening binding takes the click; its name is "Touchpad".
 
     python -I -B tests/test_touchpad_menu.py [--cxx clang++]
 """
@@ -132,6 +132,7 @@ int main() {
     CHECK(listened(click | 1u << HOS_PAD_GUIDE) == HOS_PAD_TOUCHPAD);
     bound[HOS_SW_MINUS][1] = HOS_PAD_TOUCHPAD;
     CHECK(!f1(click, 0));   // (Minus's Input 2: the click is Minus's)
+    controls[kControls++] = {HOS_KEY_OC_NOTE_A, "Ocarina note (A)"};   // (a game's own control, as Ocarina's menu table adds it)
     bound[HOS_SW_MINUS][1] = -1, bound[HOS_KEY_OC_NOTE_A][0] = HOS_PAD_TOUCHPAD;
     CHECK(!f1(click, 0));   // (an ocarina note's)
     bound[HOS_KEY_OC_NOTE_A][0] = -1;

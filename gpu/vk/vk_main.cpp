@@ -705,6 +705,7 @@ bool create_device() {
     dev.null_descriptor = dev.null_descriptor && robust2.nullDescriptor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     dev.provoking_vertex = dev.provoking_vertex && pv.provokingVertexLast;
+    dev.vertex_divisor = dev.vertex_divisor && vdiv.vertexAttributeInstanceRateDivisor;   // (a divisor over 1 needs the feature, not only the extension)
     dev.conditional_rendering = dev.conditional_rendering && cond.conditionalRendering;
     // (hookshot) the occlusion queries' real counts (vk_replay.cpp, RX_VK_OCC_QUERIES): a sample count, not only "any", and
     // their reset from the CPU once read (both on when the device has them: the queried chain is what it is created with)
@@ -1771,7 +1772,12 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     host = h;
     std::set_new_handler(new_refused);   // (issue 1280: a refused C++ allocation waits, then says out of memory)
     if (!load_global()) {
+#ifdef _WIN32
         logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
+#else   // (linux: why libvulkan.so.1 did not load, kept by LoadLibraryA, which read the one message; "" if it loaded)
+        const char* why = hos_load_error();
+        logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)%s%s", *why ? ": " : "", why);
+#endif
         return nullptr;
     }
     if (!create_instance()) {
@@ -1797,8 +1803,10 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         // (a GPU with no buffer device addresses has no fallback to run either)
         logf("vk: this GPU has no mesh shaders: the game's foliage, grass and many effects cannot be drawn");
 #ifdef _WIN32
-        std::thread([name = std::string(dev.props.deviceName)] {
-            const std::string text = "Your graphics card (" + name + ") or its driver has no mesh shader support, which Ocarina of Time "
+        // (the game by its name from its menu table, NX2GameMenu.name: "Ocarina of Time")
+        const NX2GameMenu* const game = menu_game();
+        std::thread([name = std::string(dev.props.deviceName), title = std::string(game && game->name ? game->name : "the game")] {
+            const std::string text = "Your graphics card (" + name + ") or its driver has no mesh shader support, which " + title + " "
                 "uses for foliage, grass and many effects, so parts of the picture will be missing or broken.\n\nHookshot needs a GPU "
                 "with mesh shaders: NVIDIA GeForce RTX 20 series or newer, AMD Radeon RX 6000 series or newer, or Intel Arc. If your "
                 "card is one of those, update its driver.";

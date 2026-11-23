@@ -34,9 +34,10 @@ extern "C" {
 
 /* The interface's version: nx2/packs.py NX2PC_PACK_API, the same two numbers (tests/test_game_packs.py holds them so). A pack
    built for another major is not this engine's; during 0.x any minor may break (0.2: lift/, tools/, assets/ and build_steps,
-   docs/game-packs.md a2; 0.3: this header and a pack's host/ C, a3) */
+   docs/game-packs.md a2; 0.3: this header and a pack's host/ C, a3; 0.4: the menu table, NX2GameMenu (vk_api.h), and its
+   option ids from HOS_OPT_GAME_BASE, a4) */
 #define NX2_PACK_API_MAJOR 0
-#define NX2_PACK_API_MINOR 3
+#define NX2_PACK_API_MINOR 4
 
 /* The runtime's functions and globals a pack's C may use besides hos.h's: */
 int rx_option(int id, int otherwise);        /* (host/rx_backend.c) an Insert menu row's value, or otherwise */
@@ -69,6 +70,12 @@ typedef struct NX2PackHost {
     void (*present_log)(void);
     /* host/hos_thread.c, a thread dump: 1 when c is in the game's own idle loop, whose registers are not worth printing */
     int (*thread_idle)(const Ctx *c);
+    /* (0.4) the game's menu content for the shared renderer (gpu/vk/vk_api.h NX2GameMenu: its pack's menu/ C), handed over as
+       MkwVkHost.game_menu (host/rx_backend.c), asked once; NULL, or none: the menu's game rows hidden, no tools */
+    const NX2GameMenu *(*menu)(void);
+    /* (0.4) host/nn_hid.c, the controller as the game reads it: the option ids of the game's debug flight and free camera, whose
+       inputs it routes (hos_flight_input, hos_free_camera_input, the flight's double-tap shortcut); 0: the game has none */
+    int flight_option, free_camera_option;
 } NX2PackHost;
 
 /* The running game's pack: never NULL (host/game_none.c's for a game whose pack has no C) */
@@ -115,6 +122,12 @@ static inline int hos_game_thread_idle(const Ctx *c) {
     const NX2PackHost *p = nx2_pack_host();
     return p->thread_idle ? p->thread_idle(c) : 0;
 }
+static inline const NX2GameMenu *hos_game_menu(void) {
+    const NX2PackHost *p = nx2_pack_host();
+    return p->menu ? p->menu() : NULL;
+}
+static inline int hos_game_flight_option(void) { return nx2_pack_host()->flight_option; }
+static inline int hos_game_free_camera_option(void) { return nx2_pack_host()->free_camera_option; }
 
 #ifdef __cplusplus
 }

@@ -33,6 +33,7 @@
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
 #include "import_fence.h"
+#include "import_reach.h"
 #include "mirror_budget.h"   // (mirror_budget's rule, by the card)
 #include "vram_compact.h"   // (vram_under_8gb: #637's cards)
 #include "mirror_trim.h"
@@ -143,6 +144,20 @@ Pool* last_pool = nullptr;            // (the last pool_of hit: draws in a row b
 extern Pool* pool_cache[4096];
 void retire_pool(std::map<uint64_t, Pool>::iterator it);
 Pool* pool_lookup(uint64_t guest, uint64_t size);
+// (hookshot) The spans of the imports in `imported`, for the scans down the table by start (import_reach.h): how far below an
+// address one that reaches it may start. Kept by imported_add and imported_take, the only ways in and out (pools_mu held)
+import_reach::Reach live_reach;
+/// An import into the table, counted in live_reach (pools_mu held)
+std::map<uint64_t, Pool>::iterator imported_add(const Pool& p) {
+    const auto [it, added] = imported.emplace(p.lo, p);
+    if (added) live_reach.add(p.hi - p.lo);
+    return it;
+}
+/// An import out of the table, its node (and the Pool in it) kept where it is, no longer counted (pools_mu held)
+std::map<uint64_t, Pool>::node_type imported_take(std::map<uint64_t, Pool>::iterator it) {
+    live_reach.remove(it->second.hi - it->second.lo);
+    return imported.extract(it);
+}
 struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken for every buffer a draw binds)
     SRWLOCK l = SRWLOCK_INIT;
     void lock() { AcquireSRWLockExclusive(&l); }
@@ -457,24 +472,23 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
         return true;
     }
 #endif
-    // (the host allocations' memory type: the same for every pointer, asked once)
-    static uint32_t type = UINT32_MAX;
-    if (type == UINT32_MAX) {
-        VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-        if (vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr,
-                                                &hp) != VK_SUCCESS) {
-            import_remember_failure(lo, hi);
-            return false;
-        }
-        for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)   // (host visible, coherent)
-            if ((hp.memoryTypeBits >> i & 1) &&
-                (dev.memory.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-                type = i;
-        if (type == UINT32_MAX) {
-            import_remember_failure(lo, hi);
-            return false;
-        }
+    // (hookshot, import_fence.h) the driver's question about the pointer walks the heap from here to the end of its run of
+    // read-write pages: the page after the range ends the run while it is asked. Not with the CPU write watches, which
+    // change protections themselves. RX_VK_IMPORT_FENCE=0 (or off, false, no): off
+    static const bool fence_on = [] {
+        const char* v = getenv("RX_VK_IMPORT_FENCE");
+        return !v || !env_value_off(v);
+    }();
+    // (the memory types this pointer can be imported as, asked before the buffer is made: see below)
+    VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    VkResult asked;
+    {
+        const ImportFence fence(ptr, bytes, fence_on && !page_watches);
+        asked = vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hp);
+    }
+    if (asked != VK_SUCCESS) {
+        import_remember_failure(lo, hi);
+        return false;
     }
     t1 = clk::now();
     VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
@@ -484,6 +498,24 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     bi.size = bytes;
     bi.usage = kUsage;
     if (vkCreateBuffer(dev.device, &bi, nullptr, &p.buffer) != VK_SUCCESS) {
+        import_remember_failure(lo, hi);
+        return false;
+    }
+    // (Longshot #1555: the type must also be one the buffer allows, and the buffer must fit in the imported bytes. The types
+    // are this pointer's own, asked for each import: one outside them is not valid for it, VUID-VkMemoryAllocateInfo-
+    // memoryTypeIndex-01744. hookshot: asked inside the import fence, as the allocation is: the question walks the heap on
+    // NVIDIA's Windows driver, 13-30 ms an import without it, import_fence.h)
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(dev.device, p.buffer, &req);
+    uint32_t type = UINT32_MAX;
+    for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)   // (host visible, coherent)
+        if ((hp.memoryTypeBits & req.memoryTypeBits) >> i & 1 &&
+            (dev.memory.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            type = i;
+    if (type == UINT32_MAX || req.size > bytes) {
+        destroy_import_buffer(p.buffer);
+        p.buffer = VK_NULL_HANDLE;
         import_remember_failure(lo, hi);
         return false;
     }
@@ -498,13 +530,6 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.pNext = &im;
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
-    // (hookshot, import_fence.h) the driver's question about the pointer walks the heap from here to the end of its run of
-    // read-write pages: the page after the range ends the run while it is asked. Not with the CPU write watches, which
-    // change protections themselves. RX_VK_IMPORT_FENCE=0 (or off, false, no): off
-    static const bool fence_on = [] {
-        const char* v = getenv("RX_VK_IMPORT_FENCE");
-        return !v || !env_value_off(v);
-    }();
     VkResult allocated;
     {
         const ImportFence fence(ptr, bytes, fence_on && !page_watches);
@@ -2936,7 +2961,7 @@ void bg_drain() {
             --o;
             if (o == imp) continue;
             if (o->second.hi <= p.lo) {
-                if (o->second.hi + (1ull << 30) < p.lo) break;
+                if (import_reach::beyond(live_reach, o->second.lo, p.lo)) break;   // (none further down reaches p.lo)
                 continue;
             }
             overlap = true;
@@ -2950,7 +2975,7 @@ void bg_drain() {
             continue;
         }
         if (imp != imported.end()) retire_pool(imp);
-        imported.emplace(lo, p);
+        imported_add(p);
         guest_pages_set(p.lo, p.hi, p.address);
     }
 }
@@ -2971,7 +2996,7 @@ void prefetch_chunks(uint64_t lo, uint64_t hi, uint64_t chunk) {
         for (auto o = imported.lower_bound(b); o != imported.begin();) {
             --o;
             if (o->second.hi > a) return true;
-            if (o->second.hi + (1ull << 30) < a) break;
+            if (import_reach::beyond(live_reach, o->second.lo, a)) break;
         }
         return false;
     };
@@ -3051,11 +3076,13 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
     if (guest < it->lo || guest >= it->hi || !size || size > it->hi - guest) return nullptr;
     const uint64_t chunk = import_chunk();
     const GuestPool range = chunk ? GuestPool{guest, guest + size} : *it;
-    auto covering = [&]() {
-        auto c = imported.upper_bound(range.lo);
-        if (c == imported.begin()) return imported.end();
-        --c;
-        return c->second.lo <= range.lo && c->second.hi >= range.hi ? c : imported.end();
+    auto covering = [&]() {   // (the import holding the whole range: the last one starting at or below it, or one further down)
+        for (auto c = imported.upper_bound(range.lo); c != imported.begin();) {
+            --c;
+            if (c->second.hi >= range.hi) return c;
+            if (import_reach::beyond(live_reach, c->second.lo, range.hi)) break;   // (none further down reaches range.hi)
+        }
+        return imported.end();
     };
     auto imp = chunk ? covering() : imported.find(range.lo);
     if (chunk && range.hi > UINT64_MAX - (chunk - 1)) return nullptr;
@@ -3101,7 +3128,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                 while (it != imported.begin()) {
                     --it;
                     if (it->second.hi <= lo) {
-                        if (it->second.hi + (1ull << 30) < lo) break;   // (imports are at most 1 GB: none further down reaches lo)
+                        if (import_reach::beyond(live_reach, it->second.lo, lo)) break;   // (none further down reaches lo)
                         continue;
                     }
                     overlapped.push_back(it->first);
@@ -3156,7 +3183,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                 p.gpu_only |= o->second.gpu_only, p.gpu_written |= o->second.gpu_written, p.trims = std::max(p.trims, o->second.trims),
                     p.trim_epoch = std::max(p.trim_epoch, o->second.trim_epoch), retire_pool(o);
         }
-        imp = imported.emplace(p.lo, p).first;
+        imp = imported_add(p);
         guest_pages_set(p.lo, p.hi, p.address);
         if (chunk) prefetch_chunks(p.lo, p.hi, chunk);
         if (overlapped.size() > 1) {
@@ -3222,14 +3249,16 @@ bool import_in_background(uint64_t guest, uint64_t size) {
     if (guest < it->lo || guest >= it->hi || size > it->hi - guest) return false;
     const uint64_t chunk = import_chunk();
     if (!chunk || guest + size > UINT64_MAX - chunk) return false;
-    if (auto c = imported.upper_bound(guest); c != imported.begin() && std::prev(c)->second.lo <= guest &&
-                                              std::prev(c)->second.hi >= guest + size)
-        return false;   // (covered)
+    for (auto c = imported.upper_bound(guest); c != imported.begin();) {   // (covered: by the last one at or below it, or further down)
+        --c;
+        if (c->second.hi >= guest + size) return false;
+        if (import_reach::beyond(live_reach, c->second.lo, guest + size)) break;
+    }
     const uint64_t lo = guest / chunk * chunk, hi = (guest + size + chunk - 1) / chunk * chunk;
     for (auto o = imported.lower_bound(hi); o != imported.begin();) {   // (an import there: the synchronous path grows it)
         --o;
         if (o->second.hi <= lo) {
-            if (o->second.hi + (1ull << 30) < lo) break;
+            if (import_reach::beyond(live_reach, o->second.lo, lo)) break;
             continue;
         }
         return false;
@@ -3697,7 +3726,7 @@ void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     static const bool no_inherit = env_on("RX_VK_NO_INHERIT");
     if (old->mstate == Pool::MIRROR_ON && !no_inherit) old->inherit_pending = true, old->retired_epoch = mirror_epoch;
     pools_gen++;
-    retired_pools.push_back(imported.extract(it));
+    retired_pools.push_back(imported_take(it));
     last_pool = nullptr;
     std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
     static int logged;
@@ -3979,11 +4008,11 @@ void memory_note_gpu_write(uint64_t gpu, uint64_t size) {
     }
     std::lock_guard lk(pools_mu);
     rb_hazard_locked(guest, guest + size);
-    // (and the pools it reaches keep their mirrors: imports are at most 1 GB, so none further down reaches guest)
+    // (and the pools it reaches keep their mirrors: down the table until none further down can reach guest, import_reach.h)
     for (auto it = imported.upper_bound(guest + size - 1); it != imported.begin();) {
         --it;
         if (it->second.hi > guest) it->second.gpu_only = true;
-        else if (it->second.hi + (1ull << 30) < guest) break;
+        else if (import_reach::beyond(live_reach, it->second.lo, guest)) break;
     }
 }
 void memory_rb_recording_begun() {
@@ -4103,7 +4132,7 @@ int memory_guest_imported(uint64_t lo, uint64_t hi) {
     while (it != imported.begin()) {
         --it;
         if (it->second.hi > lo) return 1;
-        if (it->second.hi + (1ull << 30) < lo) break;   // (imports are at most 1 GB: none further down reaches lo)
+        if (import_reach::beyond(live_reach, it->second.lo, lo)) break;   // (none further down reaches lo: import_reach.h)
     }
     for (const auto& nh : retired_pools)
         if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
@@ -4699,7 +4728,7 @@ void imports_give_back() {   // (pools_mu held)
         p.retired_value = mem_rec_value;   // (this submission's recording is being made: freed once it is done)
         freed += p.hi - p.lo;
         n++;
-        evicted_pools.push_back(imported.extract(it));
+        evicted_pools.push_back(imported_take(it));
     }
     if (!n) {
         static int logged_none;
@@ -4787,7 +4816,7 @@ bool mirrors_trim() {   // (pools_mu held; true when one was trimmed: its parts 
     trims_waiting++;
     for (Pool& m : made) {
         m.gpu_only = gpu_only, m.gpu_written = gpu_written, m.trims = trims, m.trim_epoch = mirror_epoch;
-        auto it = imported.emplace(m.lo, m).first;
+        auto it = imported_add(m);
         guest_pages_set(it->second.lo, it->second.hi, it->second.address);
         it->second.mstate = Pool::MIRROR_WANTED;
         mirror_wanted.push_back(&it->second);

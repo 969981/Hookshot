@@ -83,6 +83,7 @@ bool memory_sparse_wait(VkSemaphoreSubmitInfo*) { return false; }   // (vk_memor
 uint64_t oldest_unfinished() { return oldest; }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
+void host_read_barrier(VkCommandBuffer) {}   // (Longshot #1031: each recording's end into the host's reads; nothing to check here)
 struct Queued { std::vector<uintptr_t> uses; uint64_t signal = 0; };
 std::deque<Queued> queued;
 std::map<VkCommandBuffer,std::vector<uintptr_t>> command_uses;

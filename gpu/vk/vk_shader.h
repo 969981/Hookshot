@@ -171,6 +171,9 @@ Shader::TextureType handle_texture_type(uint32_t handle);
 void shader_stats(int64_t* translated, int64_t* failed);
 /// The networks this card left out on purpose (not among the failed)
 int64_t shader_left_out();
+/// (hookshot, from Longshot #423) After the preparation's "N failed": a line for each "not translated" line's programs, all of them
+/// (those lines stop at 30)
+void shader_fail_lines();
 double shader_translate_ms();
 void program_released(const nvn_prog* p);
 /// (hookshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw (vk_programs.cpp): its stages' code keys

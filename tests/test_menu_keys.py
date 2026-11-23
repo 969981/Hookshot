@@ -315,8 +315,16 @@ def main():
     # (the debug tools, rows of the Debug tab: confirm on Teleport opens its list, on Inventory the editor; the list pages go
     # back to the tab, which kept its selection; no page of their own any more)
     cheats = menu[menu.index("void cheat_press(int i,"):menu.index("void menu_tick() {")]
-    need(cheats, r"press\[7\] && i == 8\) page = 3", "confirm on Teleport does not open the map list")
-    need(cheats, r"press\[7\] && i == 10\) page = 4", "confirm on Inventory does not open the editor")
+    # (game packs a4: the tools are the game's menu table's, a list tool opens its list's page by its style: Ocarina's Teleport
+    # the places page, 3, its Inventory the items page, 4)
+    need(cheats, r"case NX2_TOOL_LIST:\s*if \(press\[7\]\) \{.*?if \(list->style == NX2_LIST_PLACES\) \{.*?page = 3, teleport_follow = true",
+         "confirm on a places list's tool (Teleport) does not open the map list")
+    need(cheats, r"\} else \{[^}]*?list_shown\[1\] = t->list;\s*page = 4, choose_inventory_filter\(0\)", "confirm on an items list's tool (Inventory) does not open the editor")
+    table = (ROOT / "packs" / "oot" / "menu" / "menu.c").read_text(encoding="utf-8")
+    need(table, r'\.kind = NX2_TOOL_LIST, \.name = "Teleport",.*?\.list = OOT_LIST_TELEPORT\}', "Ocarina's Teleport is no list tool")
+    need(table, r'\.kind = NX2_TOOL_LIST, \.name = "Inventory",.*?\.list = OOT_LIST_INVENTORY\}', "Ocarina's Inventory is no list tool")
+    need(table, r"oot_lists\[OOT_LIST_TELEPORT\] = \(NX2MenuList\)\{\s*\.style = NX2_LIST_PLACES", "Ocarina's Teleport list is no places list")
+    need(table, r"oot_lists\[OOT_LIST_INVENTORY\] = \(NX2MenuList\)\{\s*\.style = NX2_LIST_ITEMS", "Ocarina's Inventory is no items list")
     if "page == 2" in tick or "page = 2" in tick:
         raise SystemExit("FAIL: vk_menu.cpp: the debug tools' old page is still reached")
     for page in ("4", "3"):
@@ -330,7 +338,9 @@ def main():
     # (the prompts: the buttons lit are the same ones, and the rows say what confirm does)
     need(menu, r"c\.confirm_dot = menu_keys::dot\(pad_confirm\), c\.back_dot = menu_keys::dot\(pad_back\)",
          "the prompts do not light A's and B's buttons")
-    need(menu, r'"Open list"', "the Teleport row's prompt does not say it opens the list")
+    need(table, r'\.name = "Teleport",.*?\.confirm = "Open list"', "the Teleport row's prompt does not say it opens the list")
+    need(menu, r"const char\* cheat_confirm\(int i\) \{\s*const NX2MenuTool\* t = tool_of\(i\);\s*return t \? t->confirm : nullptr;",
+         "a tool's prompt is not its table's confirm")
     print("PASS: A and B, Enter and Esc, and clicks open and leave every page")
 
 

@@ -51,6 +51,7 @@ Options opts;
 int saves = 0;
 void save() { ++saves; }
 void apply_pad_layout(int) {}
+void preset_output(int) {}   // (High and Ultra's 1440p output on the preset row, Longshot #292: not what this checks)
 int detect_pad_layout() { return opts.pad_layout; }
 constexpr int kAutoPreset = 6;   /* (the Quality preset Auto (this PC): apply_auto, not reached here) */
 void apply_auto(bool) {}

@@ -113,7 +113,7 @@ struct Options {
     int nr_scale = 100;         // the size the model works at, percent of the frame's sides, 50 to 100 (vk_nr_scale.h)
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
-    int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
+    int debug_tools = 0;   // (hookshot) the Debug tab's tools, the game's (Ocarina's #785: flight, free camera, teleport, inventory): 0 off; the game's tools_env (HOS_OOT_CHEATS=1) also turns them on
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
     int skip_opening = 0;   // (hookshot) skip the new-game opening (host/hos_main.c hos_oot_opening: HOS_OPT_SKIP_OPENING, 52). Off
@@ -181,12 +181,13 @@ int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolut
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
 int menu_setting(int index, MkwVkSetting* out);   // (the control bridge, host/control.c: the rows with a value)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out);
-int menu_heart_protection();
-int menu_player_flight();
-int menu_free_camera();
-int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
+/// (game packs a4) the game's own option ids (HOS_OPT_GAME_BASE and up, its menu table's): its tools' values and their actions,
+/// as the game reads them; false for an id that is not one of them
+bool menu_game_option(int id, int* out);
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
-int menu_take_cheat_action();
+/// The running game's menu table (gpu/vk/vk_api.h NX2GameMenu, MkwVkHost.game_menu), or nullptr: none (vk_menu_i18n.cpp's
+/// translations look in it first)
+const NX2GameMenu* menu_game();
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed

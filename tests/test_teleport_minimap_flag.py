@@ -190,6 +190,8 @@ def build(cc, tmp, source_path=None):
     source = (source_path or ROOT / "packs" / "oot" / "host" / "oot_teleport.c").read_text(encoding="utf-8")
     places = source.index("typedef struct {\n    const char *child_banc")   # (OotDestination and the table of them)
     places = source[places:source.index("};", source.index("static const OotDestination oot_destinations[] = {")) + 2]
+    if "OOT_DESTINATIONS(" in places:   # (game packs a4: the table from the one list, packs/oot/menu/oot_destinations.h)
+        places = '#include "%s"\n' % (ROOT / "packs" / "oot" / "menu" / "oot_destinations.h").as_posix() + places
     start = source.index("#define OOT_GAMEDATA_SLOT")
     end = block_end(source, source.index("int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {"))
     src, exe = tmp / "teleport.c", tmp / "teleport"

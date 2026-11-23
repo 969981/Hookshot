@@ -7566,6 +7566,33 @@ int mask_radius_env() {
     static const int r = std::clamp(getenv("RX_VK_MASK_RADIUS") ? atoi(getenv("RX_VK_MASK_RADIUS")) : 0, 0, 4);
     return r;
 }
+/// (hookshot, RX_VK_MASK_BLEND) What mask_stabilize no longer uses: the history images a new mask size replaced, and the views of
+/// textures that went (texture_destroy_generation). Given back 120 presents later, when no work in flight can use them, as the TAAU's
+/// replaced histories are. They were overwritten where they stood: an image, its memory and its view lost at every size change (the
+/// dynamic resolution makes one every few frames), and a view kept for each texture image the mask was blended into, after the image went,
+/// and found again under its handle for another image
+struct MaskOld {
+    VkImage image;
+    VmaAllocation mem;
+    VkImageView view;
+    uint64_t frame;
+};
+std::vector<MaskOld> mask_old;
+void mask_retire(VkImage& image, VmaAllocation& mem, VkImageView& view, uint64_t frame) {
+    if (image || view) mask_old.push_back({image, mem, view, frame});
+    image = VK_NULL_HANDLE, mem = nullptr, view = VK_NULL_HANDLE;
+}
+void mask_reap(uint64_t frame) {
+    for (size_t i = 0; i < mask_old.size();) {
+        if (frame - mask_old[i].frame < 120) {
+            i++;
+            continue;
+        }
+        if (mask_old[i].view) vkDestroyImageView(dev.device, mask_old[i].view, nullptr);
+        if (mask_old[i].image) destroy_image(mask_old[i].image, mask_old[i].mem);
+        mask_old.erase(mask_old.begin() + (ptrdiff_t)i);
+    }
+}
 void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, float weight) {
     if (!tex || !tex->image || tex->format != VK_FORMAT_R8G8B8A8_UNORM || !(tex->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return;
@@ -7602,6 +7629,17 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
     // (the mask's own storage view at that level and layer, made once a texture and level)
     static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
+    static uint64_t views_gen = 0;
+    mask_reap(texture_frame_no());
+    if (views_gen != texture_destroy_generation()) {   // (a texture went: every view is given back, the ones still wanted made again)
+        for (auto& kv : views) {
+            VkImage none = VK_NULL_HANDLE;
+            VmaAllocation no_mem = nullptr;
+            mask_retire(none, no_mem, kv.second, texture_frame_no());
+        }
+        views.clear();
+        views_gen = texture_destroy_generation();
+    }
     VkImageView& mv = views[{tex->image, level, layer}];
     if (!mv) {
         VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -7616,6 +7654,7 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     static uint64_t hist_frame = 0;
     end_pass(cmd); // History image transitions must be outside dynamic rendering.
     if (hist_w != w || hist_h != h) {
+        for (int i = 0; i < 2; i++) mask_retire(hist[i], hist_mem[i], hist_view[i], texture_frame_no());   // (the old size's, given back later)
         for (int i = 0; i < 2; i++) {
             VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -8436,7 +8475,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (g_fine) fine_ns[FT_VERTEX] += prof_now() - fine_vertex_t0;
     if (!vertex_complete) occ.drop(kOccVertexInput);
     const VkIndexType itype = d.itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-    if (d.indexed && d.itype == 0 && !dev.index_uint8) SKIP_HERE();
+    // (quads read their indices on the CPU and draw with 32-bit ones: they need no uint8 index support)
+    if (d.indexed && d.itype == 0 && !dev.index_uint8 && d.prim != NVN_DRAW_PRIMITIVE_QUADS) SKIP_HERE();
     if (d.prim == NVN_DRAW_PRIMITIVE_QUADS) {   // (quads as two triangles each: indices made in the stream)
         if (d.indirect || d.count < 4) SKIP_HERE();
         if (d.count > (1 << 24)) SKIP_HERE();   // (hookshot: 4M quads at most; the game's count sized host vectors of up to 16 GB)
@@ -9492,6 +9532,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
          "%zu programs with texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed,
          (long long)shader_left_out(), libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    shader_fail_lines();   // (the failed by their "not translated" lines, all of them: those lines stop at 30 programs each)
     if (warm) {
         // (translated, whatever becomes of the libraries: a start that is closed in them goes on with them alone)
         prepared_for.warmed = 0;

@@ -50,6 +50,15 @@ inline int output_tier(int w, int h) {
     return px <= (long long)kGameW * kGameH ? 1 : px <= 2560LL * 1600 ? 3 : px <= 3840LL * 2160 ? 4 : 5;
 }
 
+// (hookshot, from Longshot #292) The output High and Ultra start at where the screen's own size is not chosen (not known, too
+// large for the tier, or the game's own): 2560 x 1440, the game's docked picture at its full graphics scale, the cards those
+// tiers are for having the memory and the GPU time for it. Where the screen has fewer pixels than that, the game's own: a picture
+// larger than the screen shows only costs. Lower tiers keep the game's 2048 x 1152. sw, sh: the screen's, 0 when not known
+constexpr int kHighW = 2560, kHighH = 1440, kHighTier = 4;
+inline bool high_output(int tier, int sw, int sh) {
+    return tier >= kHighTier && (sw <= 0 || sh <= 0 || (long long)sw * sh >= (long long)kHighW * kHighH);
+}
+
 // (upscaler_rows.h's, kept here so the rules compile on their own; the test checks they agree)
 enum { GAME = 0, DLSS = 1, FSR4 = 4 };
 enum { RES_QUALITY = 3, RES_PERFORMANCE = 4, RES_BALANCED = 5 };
@@ -115,10 +124,16 @@ inline Choice choose(const Hardware& h) {
         if (c.tier >= need) {
             c.output_w = sw, c.output_h = sh;
             std::snprintf(b, sizeof b, "output %dx%d (the screen's)", sw, sh);
+        } else if (high_output(c.tier, sw, sh)) {
+            c.output_w = kHighW, c.output_h = kHighH;
+            std::snprintf(b, sizeof b, "output 2560x1440 (the screen's %dx%d needs tier %d; High and up start at 1440p)", sw, sh, need);
         } else {
             std::snprintf(b, sizeof b, "output 2048x1152 (the screen's %dx%d needs tier %d)", sw, sh, need);
         }
         add(c, b);
+    } else if (high_output(c.tier, sw, sh)) {
+        c.output_w = kHighW, c.output_h = kHighH;
+        add(c, "output 2560x1440 (High and up; the screen's size not known)");
     } else {
         add(c, "output 2048x1152");
     }
