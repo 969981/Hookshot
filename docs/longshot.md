@@ -252,6 +252,45 @@ Fitted to this tree: #252's Intel compiler gate goes on this tree's `guarded_gra
 
 Adapted: #637 is taken for discrete cards of less than 8 GB alone (`vram_compact::under_8gb`, the device-local heap under 7.5 GB, since an 8 GB card's heap and allowance both read under 8 GB; never an integrated GPU such as the Steam Deck's): there it brings the start's 8% of blocks, the dynamic floor of 1800 MB and up, damped contraction, the runs' proportional start, the target pool halved over 90%, VMA's 32 and 16 MB blocks, `RX_VK_KEEP_FINALIZED_MB` 128, `RX_VK_ASTC_BC_MB` 1, `RX_VK_IMPORT_LOW` 70, and a 6 GB card's mirrors at a third (at most 1700 MB); its two DLSS CNN rows are for every card, and its staging keeps 128 MB where the driver allows 6.5 GB or less on a discrete card under 8 GB (an integrated GPU keeps main's 64 MB). Its changes for every card are left out: the Vulkan driver picked from DriverStore when `VK_ICD_FILENAMES` is unset, the write-back cap on by default (`RX_VK_WB_MAX_KB`), the textures' floor on cards of 8 GB and more, the hold's 80% line and its shorter times, a 4 GB card's mirrors past its 256 MB, the upload deferral's 12 ms and its terrain test, the 16 MB staging arenas and the two kept warm (on every card: on the Steam Deck #568 measured 9 to 41 ms for each arena made again), and an unused rule for hosts of version 14. Its host API stays this tree's (no host_storage field, the version checked exactly), its presenter queue stays off by default, and its device-local heap is the raw heap size. #1188's check asks once per driver (`gpu/vk/cold_check.h`). #1255's sweep goes through this tree's `target_overlap::DrawnOver`. #311's note is in `docs/temporal-history.md`. Moved to later slices: #977 (after #443, in A2), #952 (an A/B against this tree's uniform snapshot reuse), #416 with #1595 and 19beb1a6 (the pipeline cache file rule).
 
+### Renderer fixes (A3)
+
+| Longshot | Author | What |
+|---|---|---|
+| [#423](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/423) | mooki | fix(vk): count every program not translated, past the 30 lines that name them |
+| [#431](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/431) | mooki | fix(vk): scan the import table as far back as its largest live import |
+| [#595](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/595) | jcabarca | fix(vk): draw quads with 8-bit indices on devices without index_uint8 |
+| [#671](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/671) | jcabarca | fix(vk): make a sparse BC image with the usage its sparse residency was checked for |
+| [#700](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/700) | mooki | fix(vk): the readback line also counts the waits for a whole submission whose pages were written in place |
+| [#788](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/788) | mooki | fix(vk): free on the GPU's progress, not on a frame count: the upscalers' and the headless overlays' frees |
+| [#919](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/919) | jcabarca | fix(vk): use vertex divisors only when vertexAttributeInstanceRateDivisor is supported |
+| [#923](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/923) | jcabarca | fix(vk): widen RGB rows with each format's own alpha one |
+| [#924](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/924) | jcabarca | fix(vk): map the NVN 5-5-5 and BGRA8 formats by their bit layout |
+| [#1031](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1031) | jcabarca | fix(vk): make the GPU's writes visible to the host's reads at each submission's end |
+| [#1222](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1222) | Joey Magnus | fix(vk): a revisited area's ASTC textures take the finalized copies' images, not a decode |
+| [#1244](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1244) | jcabarca | fix(vk): skip texel buffer views of formats the device cannot use |
+| [#1462](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1462) | mooki | fix(vk): a finalized render target goes once the game has written over its storage |
+| [#1534](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1534) | mooki | fix(vk): the tree-shadow mask gives back the history images and views a new size or a gone texture replaces |
+| [#1555](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/1555) | jcabarca | fix(vk): a host pointer import takes its memory type from its own pointer and the buffer's requirements |
+
+Fitted to this tree:
+- #423 is ported, not picked. This tree tells the networks a card leaves out apart by their own exception and counts them on the preparation's line, so only the three other "not translated" lines get counters of their own, and `tests/test_not_translated_counts.py` is this tree's.
+- #700's counter goes into this tree's own readback wait, whose rule for which waits are forced differs from Longshot's.
+- #1244's dummy view, for devices without a null descriptor, replaces this tree's earlier form of the same fix.
+- #1462's obsolete targets join this tree's `evict_rendered` and `RX_VK_EVICT_NO_FLUSH` rules.
+- #1222 is off by default (`RX_VK_ASTC_REUSE=1` turns it on): hashing every new texture made one frame of MKW's boot 627-711 ms against 280-290, and the bench's routes reused nothing. On, it finds a source by the format it was made in: an opaque texture this tree made BC1 on its first upload (#2554) is found as the BC3 it was made, and the new one is made BC1 too before the copy. Only 2D, non-sparse textures are hashed.
+- #1555 keeps the memory types host pointers import as, asked once, and asks again, inside the import fence, only when they give a buffer none or its allocation fails: asked for every import, the question walks the heap on NVIDIA's Windows driver (13-30 ms an import).
+- #924's R and B swap is for texels uploaded from the game's memory only: a 5-5-5 image the GPU drew is sampled as its attachment wrote it.
+- #671 keeps this tree's AMD rule: there a sparse BC image keeps its raw attachment usage, which the driver answers no for and takes.
+- #919 brings only the feature gate (`vertexAttributeInstanceRateDivisor`): this tree already read `maxVertexAttribDivisor` and clamped to it.
+
+Already here, their checks taken: #1241 (blits validated), #1242 (no clears of ASTC-kept textures), #1243 (mesh indirect ranges), #1247 (the cooperative matrix probe) and #1248 (failed sparse binds); their code was in this tree before, and their picks bring only the tests. Already here: #1162 (upstream Hookshot #3003), #1250 (upstream Hookshot #3031) and #1251 (with A2's read-back fixes).
+
+Moved:
+- #1536 to frame generation (G): it needs Longshot's present slots (`kPresentSlotsMax`).
+- #1618 to the pipeline cache batch: it needs Longshot's `warm_computes_apart`.
+
+
+
 ### The output default (#292)
 
 | Longshot | Author | What |

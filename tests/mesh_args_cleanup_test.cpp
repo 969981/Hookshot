@@ -1,6 +1,7 @@
 // Authored allocator/address failures only; no Vulkan device, driver or game data.
 // Null mapping and zero BDA are defensive injections, not conforming-driver outcomes.
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -120,6 +121,28 @@ int main(int argc, char** argv) {
             require(creates == 1 && destroys == 0 && addresses == 1 &&
                     mesh_args_words[4] == 123 && mesh_args_words[7] == 456,
                     "reuse recreated, destroyed or reset the ring");
+        } else if (mode == "take_ranges") {
+            // Entries handed out stay in use until kMeshArgs / 2 more have been handed out: no range may reuse one
+            // sooner. A big draw right before the old modulus wrapped, then a one-entry draw, overlapped.
+            std::vector<uint64_t> taken_at(kMeshArgs, UINT64_MAX);
+            uint64_t handed = 1;   // (the ring's counter starts at 1)
+            const auto take = [&](uint32_t n) {
+                const uint32_t at = mesh_args_take(n);
+                n = std::clamp<uint32_t>(n, 1, kMeshArgs / 2);
+                require(at >= 1 && (uint64_t)at + n <= kMeshArgs, "range outside the ring or on entry 0");
+                for (uint32_t i = 0; i < n; ++i) {
+                    const uint64_t prior = taken_at[at + i];
+                    require(prior == UINT64_MAX || handed + n - prior > kMeshArgs / 2,
+                            "range reuses entries still in use");
+                    taken_at[at + i] = handed;
+                }
+                handed += n;
+            };
+            constexpr uint32_t big = 4096;
+            while (handed < (uint64_t)kMeshArgs - big) take(1);
+            take(big);
+            for (uint32_t k = 0; k < 64; ++k) take(1 + k % 5);
+            for (uint32_t k = 0; k < 3 * kMeshArgs / big; ++k) take(k % 3 ? 1 + k % 97 : big);
         } else {
             throw std::runtime_error("unknown fixture case");
         }

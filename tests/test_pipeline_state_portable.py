@@ -44,7 +44,8 @@ def main():
     shader = (ROOT / 'gpu/vk/vk_shader.cpp').read_text(encoding='utf-8')
     # vk_formats.cpp: the ASTC tables, vk_format (astc_native: the made-up device's answer below)
     astc_tables = block(fmts, 'namespace {\nconstexpr int kAstcBw', True)
-    formats = '\n'.join([astc_tables, block(fmts, 'VkFormatInfo vk_format(int nvn_format)'),
+    formats = '\n'.join([astc_tables, 'namespace {\n' + block(fmts, 'bool r5g5b5a1_sampled()') + '\n}',
+                         block(fmts, 'VkFormatInfo vk_format(int nvn_format)'),
                          block(fmts, 'bool is_depth_format(VkFormat f)'), block(fmts, 'bool has_stencil(VkFormat f)')])
     texture = '\n'.join(block(tex, m) for m in (
         'bool is_bc(VkFormat f)', 'bool is_astc(VkFormat f)', 'VkFormat linear_twin(VkFormat f)', 'VkFormat widened(VkFormat f, int* from_bpb)',

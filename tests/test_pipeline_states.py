@@ -32,7 +32,7 @@ def check_v1_table(tool, headers):
     formats = (ROOT / "gpu" / "vk" / "vk_formats.cpp").read_text(encoding="utf-8")
     nvn_h = (ROOT / "gpu" / "render" / "nvn_api.h").read_text(encoding="utf-8")
     nvn = {m.group(1): int(m.group(2), 0) for m in re.finditer(r"(NVN_FORMAT_\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)", nvn_h)}
-    to_vk = {nvn[n]: v for n, v in re.findall(r"case (NVN_FORMAT_\w+): return \{(VK_FORMAT_\w+),", formats)}
+    to_vk = {nvn[n]: v for n, v in re.findall(r"case (NVN_FORMAT_\w+):\s*return \{(?:\w+\(\) \? )?(VK_FORMAT_\w+)(?:,| :)", formats)}
     for vk_value, nvn_value in tool.V1_NVN.items():
         name = to_vk.get(nvn_value)
         if not name or "BLOCK" in name:

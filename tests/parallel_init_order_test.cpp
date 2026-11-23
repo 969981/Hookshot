@@ -104,6 +104,7 @@ VkResult vkEndCommandBuffer(VkCommandBuffer cb) {
     cb->ended = true;
     return VK_SUCCESS;
 }
+void host_read_barrier(VkCommandBuffer) {}   // (Longshot #1031: each recording's end into the host's reads; nothing to check here)
 VkResult vkQueueSubmit2(VkQueue, uint32_t n, const VkSubmitInfo2* si, VkFence) {
     for (uint32_t s = 0; s < n; s++)
         for (uint32_t i = 0; i < si[s].commandBufferInfoCount; i++) {

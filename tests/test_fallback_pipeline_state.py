@@ -75,8 +75,8 @@ struct {
     bool vertex_divisor = false, eds3_clamp = false, eds3_polygon = false;
     bool provoking_vertex = false, eds3_a2c = false, eds3_blend = false;
     bool task_mesh_fallback = false;
-    VkPhysicalDeviceProperties props{};
     uint32_t max_vertex_divisor = 0;
+    VkPhysicalDeviceProperties props{};
     VkDriverId driver_id = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
 } dev;

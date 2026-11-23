@@ -62,6 +62,10 @@ def main():
     inc = {
         "rb_bufferref.inc": block(internal, "struct BufferRef {") + ";\n",
         "rb_pool.inc": block(memory, "struct Pool {") + ";\n",
+        # (the table's only ways in and out, which keep the live imports' reach memory_note_gpu_write's scan stops at)
+        "rb_table.inc": cut(memory, "import_reach::Reach live_reach;", "\n") + "\n"
+        + block(memory, "std::map<uint64_t, Pool>::iterator imported_add(") + "\n"
+        + block(memory, "std::map<uint64_t, Pool>::node_type imported_take("),
         "rb_writeback.inc": block(memory, "struct WriteBack {") + ";\n",
         "rb_refresh.inc": cut(memory, "// ---- (from PR 430, YunaraDebugs) Readback pages", "BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {"),
         "rb_bindtail.inc": cut(block(memory, "BufferRef gpu_buffer_bind("),

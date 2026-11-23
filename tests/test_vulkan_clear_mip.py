@@ -132,7 +132,17 @@ int main() {
     clear_tex(VK_NULL_HANDLE,state,clear);
     CHECK(tex.gpu_written && clear_count==2 && whole_count==0 && block_copies==4);
     CHECK(touched[1][0]==0 && touched[1][1]==0 && touched[1][2]==1 && touched[1][3]==1);
-    std::puts("PASS: array clears and BC volume clears preserve mip and slice addressing");
+    tex=Texture{};
+    tex.format=VK_FORMAT_ASTC_4x4_UNORM_BLOCK; tex.astc=false;   // (an image kept in ASTC blocks: nothing clears it)
+    expected_mip=0;
+    clear_count=whole_count=block_copies=0;
+    nvn_p_clear_tex astc{&input};
+    astc.view.set_levels=true; astc.view.base_level=0; astc.view.nlevels=1;
+    astc.view.set_layers=true; astc.view.min_layer=0; astc.view.nlayers=1;
+    astc.r.width=64; astc.r.height=32;
+    clear_tex(VK_NULL_HANDLE,state,astc);
+    CHECK(!tex.gpu_written && clear_count==0 && whole_count==0 && block_copies==0);
+    std::puts("PASS: array clears and BC volume clears preserve mip and slice addressing; ASTC images are not cleared");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="hookshot-clear-mip-") as directory:

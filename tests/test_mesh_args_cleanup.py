@@ -10,12 +10,12 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("allocation_failure", "allocation_failure_outputs", "null_mapping",
-         "zero_address", "success_reuse")
+         "zero_address", "success_reuse", "take_ranges")
 
 
 def actual_initializer(source):
     start = source.index("constexpr uint32_t kMeshArgs =")
-    first = source.index("{", source.index("bool mesh_args_ready()", start))
+    first = source.index("{", source.index("uint32_t mesh_args_take(uint32_t n)", start))
     depth, at = 1, first + 1
     while depth:
         if source[at] == "{":

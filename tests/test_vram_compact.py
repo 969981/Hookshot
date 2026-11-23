@@ -63,7 +63,7 @@ def check_source():
           # the driver's limit, when it asks for more, clears both)
           "hold_to = evict_to;", "vram_compact::reserve_pct(pct),", "active_floor, vram_under_8gb());", "if (reserve < budget) budget = evict_to = reserve;",
           "if (budget < evict_to) evict_to = hold_to = 0;",
-          "if (by_hold && !overwritten) hold_live += tex->bytes + tex->pad;"])
+          "if (by_hold && !overwritten && !obsolete) hold_live += tex->bytes + tex->pad;"])
     # (and a live texture is judged by the hold only once it is known whether a render target drew over it)
     if not frame.index("const bool overwritten = shifted || drawn_over(tex);") < frame.index("vram_compact::hold_target(frame_no - last"):
         raise SystemExit("vk_texture.cpp: the hold's pass judges a texture before it knows whether it is a dead render target")

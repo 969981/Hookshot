@@ -101,6 +101,7 @@ static const bool by_part = true, unforced = true;
 static uint64_t in_place_part;   // (the newest part that reads guest memory in place, as vk_memory.cpp keeps it)
 static uint64_t memory_in_place_part() { return in_place_part; }
 static int held_back;
+static int in_place;   // (the waits for a whole submission whose pages were written in place, part 0)
 static uint64_t fence_handed;             // (the newest value handed out, as fence() when the readback begins)
 static readback_late::Rules late_rules;   // (RX_VK_READBACK_LATE: none set, until the checks of it)
 static bool readback_late_wanted(uint64_t size, bool newest) { return readback_late::wanted(late_rules, size, newest); }
@@ -173,8 +174,11 @@ int main() {
     note(d, 4);
     rec_open_values.push_back(11);
     note(e, 5);
+    in_place = 0;
     check(readback(3 * P, 64) == 5, "a range written in place waits for its submission's last part");
     check(readback(3 * P, 2 * P) == 5, "and so does a range with a page written in place and one written back from a mirror");
+    check(in_place == 1, "the readback line counts the range written in place (no mirror: part 0) as a wait for its whole "
+          "submission, and not the range with a mirror's page (its part known)");
     check(readback(4 * P, 64) == 4, "the mirror's page alone waits for its part");
     // a page written back from a mirror, then written in place by a later submission: the part is gone with the value
     wb_pages_note(1 * P, 2 * P, 12, 0);
@@ -208,11 +212,12 @@ int main() {
     // a part after the range's own reads guest memory in place (a pool with no mirror, a mirror's pages from no capture):
     // the game, let go after the range's part, would write what that part still reads. The last part, as before
     done_value = 10;
-    held_back = 0;
+    held_back = 0, in_place = 0;
     in_place_part = 4;
     check(readback(4 * P, 64) == 4 && held_back == 0, "guest memory read in place in the range's own part: that part is enough");
     in_place_part = 5;
     check(readback(4 * P, 64) == 5 && held_back == 1, "guest memory read in place in a later part: the submission's last part");
+    check(in_place == 0, "a range in a part of its own (not written in place) counted as a whole-submission wait");
     in_place_part = 0;
     // RX_VK_READBACK_LATE: a range the rule names is read without its wait, the others wait as before (page 4: value 11)
     late_rules = readback_late::parse("newest");
@@ -303,6 +308,8 @@ def main():
         "update_blocked no longer says whether a stopped queue waits on an event in guest memory"
     assert "const bool in_place_after = memory_in_place_part() > part;" in choice and "!in_place_after &&" in choice, \
         "the readback's part wait no longer gives way to guest memory read in place after its part"
+    assert "if (!parted && !part) in_place++;" in choice and "(long long)held_back.exchange(0), (long long)in_place.exchange(0));" \
+        in replay, "the readback line no longer counts the waits for a whole submission whose pages were written in place"
     memory_src = memory
     # every place the guest pool's own buffer is handed to the GPU to read: bound, copied from, or given out whole
     # (gpu_buffer: a texture unswizzled on the GPU, a texel buffer's view). The write-back's own copies into it, the

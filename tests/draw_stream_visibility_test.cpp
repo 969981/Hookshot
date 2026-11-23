@@ -88,6 +88,7 @@ bool texture_uploads_recorded() { return true; }
 void gprof_submitted(int,bool) {}
 void gpu_time_end(Recording&) {}
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
+void host_read_barrier(VkCommandBuffer) {}   // (Longshot #1031: each recording's end into the host's reads; nothing to check here)
 VkSemaphore timeline{},rec_timeline{};
 uint64_t rec_seq=0;
 std::mutex rec_map_mu;

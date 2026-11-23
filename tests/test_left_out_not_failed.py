@@ -47,6 +47,8 @@ static void logf_at(LogLevel, const char* f, ...) {   // (recorded as logf's: th
     lines.push_back(b);
 }
 std::atomic<int64_t> st_failed, st_left_out;
+constexpr int64_t kFailNamed = 30;   // (Longshot #423: the failures past the 30 named lines are counted too)
+std::atomic<int64_t> st_not_translated;
 struct Forced { std::string want; };
 static Forced* forced;
 struct Program { uint64_t key; bool failed; };
