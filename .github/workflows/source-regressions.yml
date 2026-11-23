@@ -290,7 +290,9 @@ jobs:
   vulkan-fixtures:
     name: Vulkan fixtures (lavapipe, validation)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # (15: installing the software Vulkan packages takes 2 minutes on a good day; on 2026-11-23 the archive was slow
+    # enough that the old 5 cut the job off before its fixtures ran)
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

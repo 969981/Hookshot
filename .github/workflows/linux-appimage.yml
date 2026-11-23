@@ -56,6 +56,14 @@ jobs:
       # (dpkg without an fsync per file: this container is thrown away after the job, so an install cut short loses nothing)
       - name: Package installs without fsync
         run: echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/force-unsafe-io
+      # (the job's container fetches from archive.ubuntu.com, which on 2026-11-23 served GitHub's runners slowly enough that
+      # four AppImage builds hit the hour still downloading packages. GitHub's runners are in Azure, whose Ubuntu mirror is
+      # near them: use it, and give apt its own retries and a timeout so one slow connection is dropped. Its own step, so the
+      # package bootstrap below stays the script tests/test_appimage_package_retry.py runs)
+      - name: Package mirror
+        run: |
+          sed -i -E 's#http://(archive|security)\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80-ci-network
       - name: System packages
         env:
           DEBIAN_FRONTEND: noninteractive
