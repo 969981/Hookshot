@@ -13,9 +13,13 @@ Checked here:
     in both, a game at this version skipped unless --force, --dry-run running nothing, the @@game lines, the summary lines
     and the exit status;
   - --update-all: a folder that keeps no game files is "rebuild", not a failure; each game other than the default one
-    gets its own work folder when the work folder is the builder's own; --dry-run makes no folder and touches no power
+    gets its own work folder when the work folder is the builder's own, and from --work-base (the player's chosen build
+    files folder: <dir>, <dir>-<key>) when given; each folder keeps its own upscalers (the runtimes' fetch and NVIDIA's
+    SDK only where it has them); --dry-run makes no folder and touches no power
     state; an update's reason is its @@error line; the parser takes no abbreviations;
   - --base: the copy's game picks its own folder under the base; not with --out or --update;
+  - each game its own work folder in --update and --base too: <work>-<key> from the builder's own, --work-base's <dir>,
+    <dir>-<key>, a --work given kept;
   - a copy of one game is refused over a folder that holds another, before the folder is touched, and an empty folder, the
     same game's, one that keeps no copy, and --update are built as before.
 
@@ -218,9 +222,12 @@ class UpdateAll(MakeGame):
     def run_all(self, *argv, fail=()):
         ran = []
 
-        def run_one(cmd):
+        self.envs = {}
+
+        def run_one(cmd, env=None):
             folder = cmd[cmd.index("--update") + 1]
             ran.append((folder, cmd))
+            self.envs[folder] = env
             return (1, "the compile stopped") if folder in fail else (0, None)
         a = self.parse("--update-all", self.base, *argv)
         out = io.StringIO()
@@ -338,6 +345,82 @@ class UpdateAll(MakeGame):
         for f, cmd in ran:
             self.assertEqual([cmd[i + 1] for i, x in enumerate(cmd) if x == "--work"], [mine], "a work folder given is kept")
 
+    def test_the_players_build_files_folder(self):
+        """--work-base: the folder the player chose (on another drive) is every game's, by the folder rule: the default game's
+        DIR, another's DIR-<key>, by the game the folder holds. Nothing falls back to the default work folder"""
+        built(self.base, self.default, "v2.3.0-rc.1")
+        built(game_folders.folder(self.base, self.second), self.second, "v2.3.0-rc.1")
+        built(self.base + "-" + self.third, self.second, "v2.3.0-rc.1")   # (the second game in the third's folder too)
+        mine = os.path.join(self.tmp, "D drive", "Hookshot work")
+        ran, _, _ = self.run_all("--work-base", mine)
+        works = {f: [cmd[i + 1] for i, x in enumerate(cmd) if x == "--work"] for f, cmd in ran}
+        self.assertEqual(works, {self.base: [mine], game_folders.folder(self.base, self.second): [mine + "-" + self.second],
+                                 self.base + "-" + self.third: [mine + "-" + self.second]})
+        for _, cmd in ran:
+            self.assertNotIn("--work-base", cmd, "--work-base is --update-all's own")
+        ran, _, _ = self.run_all("--work-base=" + mine)
+        self.assertEqual([cmd[cmd.index("--work") + 1] for _, cmd in ran][0], mine, "--work-base=<dir> too")
+        self.assertFalse(any("--work-base=" + mine in cmd for _, cmd in ran))
+        self.assertFalse(os.path.exists(mine), "the folders are the updates' to make, not --update-all's")
+
+    def test_dlss_of_an_older_sdk_is_still_dlss(self):
+        """A folder an older NVIDIA SDK built keeps DLSS in Update all: its runtime of any version (Linux's
+        libnvidia-ngx-dlss.so.<version>), or Frame Generation's alone, is DLSS, as the Linux Builder's folder_has_dlss says"""
+        older, framegen, none = self.base, game_folders.folder(self.base, self.second), game_folders.folder(self.base, self.third)
+        built(older, self.default, "v2.3.0-rc.1")
+        built(framegen, self.second, "v2.3.0-rc.1")
+        built(none, self.third, "v2.3.0-rc.1")
+        runtimes = {"linux": ("libnvidia-ngx-dlss.so.300.0.0", "libnvidia-ngx-dlssg.so.300.0.0"),
+                    "windows": ("nvngx_dlss.dll", "nvngx_dlssg.dll")}[self.mg.ngx_platform()]
+        for folder, name in ((older, runtimes[0]), (framegen, runtimes[1])):
+            os.makedirs(os.path.join(folder, "ngx"), exist_ok=True)
+            Path(folder, "ngx", name).write_bytes(b"authored runtime placeholder")
+        os.makedirs(os.path.join(none, "ngx"))
+        Path(none, "ngx", "libnvidia-ngx-dlss-not.txt").write_bytes(b"not a runtime")
+        self.assertEqual([self.mg.folder_dlss(f) for f in (older, framegen, none)], [True, True, False])
+        flags = ["--fetch-ngx-sdk", "--accept-nvidia-license"]
+        with mock.patch.dict(os.environ, HOOKSHOT_NGX_SDK=os.path.join(self.tmp, "ngx-sdk")):
+            ran, _, _ = self.run_all(*flags)
+        cmds = dict(ran)
+        self.assertEqual([x for x in cmds[older] if x in flags], flags, "an older SDK's DLSS fetched again, not dropped")
+        self.assertEqual([x for x in cmds[framegen] if x in flags], flags)
+        self.assertIsNone(self.envs[older])
+        self.assertNotIn("HOOKSHOT_NGX_SDK", self.envs[none])
+
+    def test_work_base_goes_with_a_build_of_known_games(self):
+        mine = os.path.join(self.tmp, "my work")
+        self.assertIn("--work-base goes with --update-all, --update or --base",
+                      self.refused("--nup", self.nup, "--out", self.base, "--work-base", mine))
+        self.assertIn("no --work with it", self.refused("--update-all", self.base, "--work-base", mine, "--work", mine))
+        self.assertIn("needs a folder", self.refused("--update-all", self.base, "--work-base", " "))
+        self.assertEqual(self.parse("--update-all", self.base, "--work-base", mine).work_base, mine)
+
+    def test_each_folder_keeps_its_own_upscalers(self):
+        """Update all passes no upscaler to every game: the runtimes' fetch only to a folder that has that upscaler (DLSS's
+        runtime, FSR 4's mark), and NVIDIA's SDK out of the environment of a folder without DLSS"""
+        dlss_folder, fsr_folder = self.base, game_folders.folder(self.base, self.second)
+        built(dlss_folder, self.default, "v2.3.0-rc.1")
+        built(fsr_folder, self.second, "v2.3.0-rc.1")
+        ngx = self.mg.ngx_script()
+        runtime = os.path.join(dlss_folder, "ngx", ngx.runtime_name(self.mg.ngx_platform(), "runtime"))
+        os.makedirs(os.path.dirname(runtime))
+        Path(runtime).write_bytes(b"authored runtime placeholder")
+        Path(fsr_folder, self.mg.FSR_MARK).touch()
+        flags = ["--fetch-ngx-sdk", "--accept-nvidia-license", "--fetch-fsr-runtime", "--accept-amd-license"]
+        with mock.patch.dict(os.environ, HOOKSHOT_NGX_SDK=os.path.join(self.tmp, "ngx-sdk")):
+            ran, _, code = self.run_all(*flags)
+        self.assertEqual(code, 0)
+        cmds = dict(ran)
+        self.assertEqual([x for x in cmds[dlss_folder] if x in flags], flags[:2], "DLSS's fetch for the folder with DLSS alone")
+        self.assertEqual([x for x in cmds[fsr_folder] if x in flags], flags[2:], "FSR 4's fetch for the folder with FSR 4 alone")
+        for cmd in cmds.values():
+            self.assertNotIn("--fsr", cmd)
+            self.assertNotIn("--no-dlss", cmd)
+        self.assertIsNone(self.envs[dlss_folder], "the folder with DLSS builds with NVIDIA's SDK")
+        self.assertNotIn("HOOKSHOT_NGX_SDK", self.envs[fsr_folder], "the folder without DLSS does not get it")
+        ran, _, _ = self.run_all()
+        self.assertTrue(all(x not in cmd for _, cmd in ran for x in flags), "no fetch the Builder did not ask for")
+
     def test_two_folders_say_what_happened_to_each(self):
         second, third = (game_folders.folder(self.base, k) for k in (self.second, self.third))
         built(second, self.second, "v2.3.0-rc.1")
@@ -398,6 +481,39 @@ class UpdateAll(MakeGame):
             self.mg.PREPARE = True   # (under --prepare the update says RecompLauncher's error line instead)
             self.assertEqual(self.mg.update_one([sys.executable, "-I", "-c", "print('error The drive is full.'); raise SystemExit(1)"]),
                              (1, "The drive is full."))
+
+
+class GameWorkFolders(MakeGame):
+    """Each game keeps its own build files (object cache) in every build, not only Update all's: --update of a folder of
+    another game than the default one uses <work>-<key> when the work folder is the builder's own; --work-base (the folder
+    the player chose) gives <dir> and <dir>-<key> to --update and --base alike; a --work given is kept"""
+
+    def test_update(self):
+        default_work = self.parse("--update-all").default_work
+        own, other = self.base, game_folders.folder(self.base, self.second)
+        built(own, self.default, "v2.3.0-rc.1")
+        built(other, self.second, "v2.3.0-rc.1")
+        elsewhere = os.path.join(self.tmp, "Elsewhere")
+        built(elsewhere, self.second, "v2.3.0-rc.1")   # (the second game in a folder the player chose: by the game it holds)
+        self.assertEqual(self.parse("--update", own).work, default_work)
+        self.assertEqual(self.parse("--update", other).work, game_folders.folder(default_work, self.second))
+        self.assertEqual(self.parse("--update", elsewhere).work, game_folders.folder(default_work, self.second))
+        mine = os.path.join(self.tmp, "D drive", "work")
+        self.assertEqual(self.parse("--update", own, "--work-base", mine).work, mine)
+        self.assertEqual(self.parse("--update", other, "--work-base", mine).work, mine + "-" + self.second)
+        given = os.path.join(self.tmp, "given")
+        self.assertEqual(self.parse("--update", other, "--work", given).work, given, "a work folder given is kept")
+
+    def test_base(self):
+        mine = os.path.join(self.tmp, "D drive", "work")
+        for key, want in ((self.default, mine), (self.second, mine + "-" + self.second)):
+            with self.subTest(key=key):
+                a = self.parse("--base", self.base, "--nup", self.nup, "--work-base", mine)
+                self.mg.dump_build_id = lambda a, work, key=key: game_profile.GAMES[key].build_id
+                a.copy_bid = None
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.mg.game_folders_for_dump(a)
+                self.assertEqual((a.out, a.work), (game_folders.folder(self.base, key), want))
 
 
 class Base(MakeGame):

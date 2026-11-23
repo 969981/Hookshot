@@ -68,6 +68,10 @@ printf '%s
 printf '%s\n' "${GITHUB_REPOSITORY:-notquiteog/Hookshot}" > "$T/repository.txt"
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
+# (the Builders' string table, from Strings.cs: the Linux Builder's game library says what the Windows Builders say, in the same
+# languages. builder/linux/hookshot_builder.py _string_table)
+mkdir -p "$T/builder/py/hookshot_builder"
+cp builder/py/hookshot_builder/strings.py "$T/builder/py/hookshot_builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)

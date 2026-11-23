@@ -12,5 +12,7 @@
     <Compile Include="../../builder/HookshotBuilder/BuilderHome.cs" Link="BuilderHome.cs"/>
     <Compile Include="../../builder/HookshotBuilder/BuilderSettings.cs" Link="BuilderSettings.cs"/>
     <Compile Include="../../builder/HookshotBuilder/ShaderStep.cs" Link="ShaderStep.cs"/>
+    <!-- (Runner.Library reads the game library: Games.LibraryGame, Games.ParseLibrary) -->
+    <Compile Include="../../builder/HookshotBuilder/Games.cs" Link="Games.cs"/>
   </ItemGroup>
 </Project>

@@ -7,6 +7,7 @@ with the compiler, sysroot and libraries it brings in the environment.
     hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when a newer release is out
     hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
 """
+import json
 import math
 import os
 import queue
@@ -113,13 +114,17 @@ COMPILE_TIP = ("All (the default): every shader, the pipelines the game is known
                "in play, but more may be compiled the first time you visit a place.")
 
 
-def make_game_env(dlss, environ=None):
+def make_game_env(dlss, environ=None, keep_prebuilt=False):
     """The environment make_game.py runs in. HOOKSHOT_NGX_SDK is set only when DLSS is chosen (one set in the shell is not
-    passed on when unticked, as on Windows), and HOOKSHOT_VK_PREBUILT is dropped so build.py compiles hookshot_vk.so with NGX."""
+    passed on when unticked, as on Windows), and HOOKSHOT_VK_PREBUILT is dropped so build.py compiles hookshot_vk.so with NGX.
+    keep_prebuilt (Update all): kept, as make_game.py gives NVIDIA's SDK only to the folders with DLSS, and nx2/build.py
+    leaves the AppImage's renderer for those alone (prebuilt_renderer): the folders without DLSS keep that renderer, and its
+    AVX2 check"""
     env = dict(os.environ if environ is None else environ)
     if dlss:
         env["HOOKSHOT_NGX_SDK"] = ngx_sdk_dir()
-        env.pop("HOOKSHOT_VK_PREBUILT", None)
+        if not keep_prebuilt:
+            env.pop("HOOKSHOT_VK_PREBUILT", None)
     else:
         env.pop("HOOKSHOT_NGX_SDK", None)
     return env
@@ -165,6 +170,113 @@ def your_games(out):
     folder (out), when that folder holds a built game (game_folders.built_games). The Windows Builder's Games.cs keeps the same"""
     import game_folders
     return game_folders.built_games(out, linux_update.game_exe)
+
+
+def library_for(out):
+    """The game library under the base of the Builder's game folder (out): nx2/game_folders.py --library <base> --json, run as
+    make_game.py is (the one core the three Builders read: every game, installed or not, where, its version, an update due).
+    Without its answer, game_folders.library read here with no update flag"""
+    import game_folders
+    if not out:
+        return []
+    base = game_folders.base_of(os.path.abspath(os.path.expanduser(out)))
+    try:
+        r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "game_folders.py"), "--library", base, "--json"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=ROOT, timeout=60)
+        games = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        games = None
+    if isinstance(games, list):
+        return games
+    # (no answer: the library read here, with no engine to compare: kept game files and versions as they are, no update flag
+    # (None: "Installed", with Update). Never "built before updates came in" because the answer failed)
+    try:
+        return game_folders.library(base, engine="unknown")
+    except Exception:   # (the tools' own modules not there: nothing to list)
+        return []
+
+
+def game_results(lines):
+    """Update all's outcomes from its lines (Games.cs Results): (key, folder, result, text) for each @@game end line, with the
+    folder of the start line before it (game_folders.update_line reads them)"""
+    import game_folders
+    results, folder = [], ""
+    for line in lines:
+        got = game_folders.update_line(line)
+        if got and got[0] == "start":
+            folder = got[2]
+        elif got:
+            results.append((got[1], folder, got[2], got[3]))
+    return results
+
+
+def _string_table():
+    """The Builders' string table: builder/py/hookshot_builder/strings.py, which builder/py/gen_strings.py writes from the WPF
+    Builder's Strings.cs (the AppImage carries it), so the three Builders say the same in the same languages. None without it"""
+    import importlib.util
+    path = os.path.join(ROOT, "builder", "py", "hookshot_builder", "strings.py")
+    try:
+        spec = importlib.util.spec_from_file_location("hookshot_builder_strings", path)
+        table = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(table)
+        return table
+    except (OSError, ImportError, SyntaxError):
+        return None
+
+
+STRINGS = _string_table()
+
+
+# (the table's English for what the Linux Builder says, when the AppImage's copy of it is missing: never a key on screen.
+# tests/test_builder_games.py holds these to Strings.cs)
+ENGLISH = {
+    "Nup": ".nup file", "Folders": "romfs and exefs", "OpenFolder": "Open folder", "Play": "Play", "LibTitle": "Your games",
+    "LibSub": "Install a game from your own copy, or update the ones you have.", "LibMissing": "Not installed",
+    "LibCurrent": "Up to date · {0}", "LibUpdate": "Update available · yours is {0}", "LibInstalled": "Installed",
+    "LibAlsoIn": "Also installed in {0}",
+    "LibTaken": "Its folder {0} holds {1}: installing it there would replace {1}. Move that game, or choose another folder for your games.",
+    "LibInstall": "Install", "LibUpdateOne": "Update", "LibUpdateAll": "Update all", "LibPickFile": "Choose your copy of {0} (.nup)",
+    "LibPickFolder": "Choose the folder with the romfs and exefs of {0}", "LibNoFolders": "That folder has no romfs and exefs folders in it.",
+    "LibAsk": "Update these games now? Your saves stay.", "LibNothing": "Every installed game is up to date.",
+    "LibUpdating": "Updating your games", "LibUpdatingOne": "Updating {0} ({1} of {2})", "LibAllUpdated": "Your games are updated",
+    "LibSomeFailed": "Not every game could be updated", "ResUpdated": "{0}: updated to {1}", "ResCurrent": "{0}: up to date ({1})",
+    "ResWould": "{0}: will be updated from {1}", "ResWouldPlain": "{0}: will be updated", "ResMissing": "{0}: not installed",
+    "ResFailed": "{0}: failed: {1}", "LibRebuild": "Built before updates came in: choose this game's files once to update it",
+    "ResRebuild": "{0}: choose this game's files once to update it", "LibStopped": "Update all stopped",
+    "LibStoppedSub": "The games updated before it stopped are updated; the others are as they were and still play.",
+    "ResStopped": "{0}: not updated: it stopped before this game",
+}
+
+
+def text(key, code="en-US"):
+    """A string of the table in the language whose code is given (the game language chosen), English where it has none; the
+    English above without the table"""
+    if STRINGS is None:
+        return ENGLISH.get(key, key)
+    lang = next((l for l in STRINGS.LANGUAGES if l[0] == code), STRINGS.LANGUAGES[0])
+    return STRINGS.text(lang, key)
+
+
+def result_text(p, every, code="en-US"):
+    """One game's outcome in Update all (or what it would be, its dry run), in the player's words; the folder named when the game
+    is in more than one. p is (key, folder, result, text). MainWindow.xaml.cs ResultText"""
+    import game_profile
+    key, folder, result, detail = p
+    name = game_profile.GAMES[key].game if key in game_profile.GAMES else key
+    if result == "updated":
+        said = text("ResUpdated", code).format(name, detail or "")
+    elif result == "current":
+        said = text("ResCurrent", code).format(name, detail or "")
+    elif result == "update":
+        said = (text("ResWould", code).format(name, detail[5:] if detail.startswith("from ") else detail) if detail else
+                text("ResWouldPlain", code).format(name))
+    elif result == "missing":
+        said = text("ResMissing", code).format(name)
+    elif result == "rebuild":
+        said = text("ResRebuild", code).format(name)
+    else:
+        said = text("ResFailed", code).format(name, detail or "")
+    return "%s · %s" % (said, folder) if folder and sum(1 for x in every if x[0] == key) > 1 else said
 
 
 def read_cgroup(path):
@@ -318,20 +430,89 @@ def desktop_exec(path):
 APP_ID = "io.github.NotRexed.Hookshot"   # (the game's window names itself so: host/posix/display_sdl.c's HOS_APP_ID)
 
 
+def elide_middle(text, room, measure):
+    """text with its middle left out ("/home/me/…/Games/Hookshot-mkw") so measure(text) fits room, as many letters kept as fit,
+    half from each end; the whole text when it fits"""
+    if measure(text) <= room:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        keep = (lo + hi + 1) // 2
+        if measure(text[:(keep + 1) // 2] + "…" + text[len(text) - keep // 2:]) <= room:
+            lo = keep
+        else:
+            hi = keep - 1
+    return text[:(lo + 1) // 2] + "…" + text[len(text) - lo // 2:]
+
+
+def older_than(have, new):
+    """have is a known version older than new (the updaters' order, linux_update.release_key); False when either names none"""
+    a, b = linux_update.release_key(have or ""), linux_update.release_key(new or "")
+    return bool(a and b and a < b)
+
+
+def menu_entry(folder):
+    """The menu entry's file and name for a game folder, by the game it holds (game_folders.folder_key): hookshot.desktop,
+    "Hookshot", for the default game, the entry it always had (made again, not a second one beside it);
+    hookshot-<key>.desktop, "<game> (Hookshot)", for another. And the game's name, for the entry's comment"""
+    import game_folders
+    import game_profile
+    key = game_folders.folder_key(folder)
+    name = game_profile.GAMES[key].game
+    entry = "hookshot.desktop" if key == game_profile.DEFAULT else "hookshot-%s.desktop" % key
+    return entry, game_folders.shortcut_name(key), name
+
+
 def add_to_menu(folder):
-    """an entry in the applications menu that starts the game"""
+    """an entry in the applications menu that starts the game, one per game (menu_entry): named and described by the game the
+    folder holds, starting that folder's own game"""
     if any(ch in folder for ch in "\r\n\0"):   # (a line break would start another key of the entry)
         raise ValueError("the game folder's name has a line break")
+    import game_folders
+    folder = game_folders.shortcut_folder(folder)   # (a game in two folders: its entry on its own one, never the other)
+    entry, title, game = menu_entry(folder)
     icon = os.path.join(folder, "hookshot.png")
     src = os.path.join(ROOT, "assets", "hookshot.png")
     if os.path.exists(src):
         shutil.copyfile(src, icon)
     apps = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
     os.makedirs(apps, exist_ok=True)
-    with open(os.path.join(apps, "hookshot.desktop"), "w", encoding="utf-8") as f:
-        f.write("[Desktop Entry]\nType=Application\nName=Hookshot\nComment=The Legend of Zelda: Ocarina of Time, built from your copy\n"
+    with open(os.path.join(apps, entry), "w", encoding="utf-8") as f:
+        f.write("[Desktop Entry]\nType=Application\nName=%s\nComment=%s, built from your copy\n"
                 "Exec=%s\nPath=%s\nIcon=%s\nCategories=Game;\nTerminal=false\nStartupWMClass=%s\n"
-                % (desktop_exec(os.path.join(folder, "hookshot")), folder, icon, APP_ID))
+                % (title, game, desktop_exec(os.path.join(folder, "hookshot")), folder, icon, APP_ID))
+
+
+def game_profile_name(key):
+    """A profile's game, or the key itself"""
+    import game_profile
+    return game_profile.GAMES[key].game if key in game_profile.GAMES else key
+
+
+def default_folder_of(games):
+    """The default game's folder in a library, when it is installed"""
+    import game_profile
+    return next((g["folder"] for g in games if g["key"] == game_profile.DEFAULT and g["built"]), None)
+
+
+def repoint_default(default_folder):
+    """A hookshot.desktop (the default game's entry) that an older Builder made for the folder it built, holding another game:
+    made again onto the default game's folder when that game is installed (default_folder), else left as it is, and nothing
+    said. Finder.cs RepointDefault"""
+    import game_folders
+    import game_profile
+    if not default_folder:
+        return
+    entry = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications", "hookshot.desktop")
+    try:
+        with open(entry, encoding="utf-8") as f:
+            was = next((line[5:].rstrip("\n") for line in f if line.startswith("Path=")), "")
+        if was and game_folders.folder_key(was) != game_profile.DEFAULT:
+            if game_ready(was):   # (that game keeps an entry: its own, hookshot-<key>.desktop, first)
+                add_to_menu(was)
+            add_to_menu(default_folder)
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
 
 
 def free_gb(path):
@@ -553,6 +734,9 @@ class Builder(tk.Tk):
         self.time_text = tk.StringVar()
         self.page = None
         self.build_button = None
+        self.library_cache = None   # ((base, games): the game library, read again when a build or an update ends)
+        self.copy_game = None   # (the game the chosen copy is, from its version check: game_folders.copy_key)
+        self.update_all = None   # (Update all's outcomes while it runs)
         if update is not None:
             self.after(200, self.begin_update)
         elif launch:
@@ -626,6 +810,7 @@ class Builder(tk.Tk):
                               ("Sub.TLabel", {"foreground": INK_SOFT}), ("Note.TLabel", {"foreground": INK_SOFT, "font": "HsNote"}),
                               ("Small.TLabel", {"foreground": INK_SOFT, "font": "HsSmall"}),
                               ("Faint.TLabel", {"foreground": INK_FAINT, "font": "HsSmall"}),
+                              ("Bad.Small.TLabel", {"foreground": BAD, "font": "HsSmall"}),
                               ("Section.TLabel", {"foreground": INK_SOFT, "font": "HsLabel"}),
                               ("Status.TLabel", {"foreground": BRAND_INK, "font": "HsNote"}),
                               ("Stage.TLabel", {"background": GLASS, "font": "HsStrong"}),
@@ -856,6 +1041,7 @@ class Builder(tk.Tk):
 
     # ---- the form ----
     def show_form(self):
+        self.page_kind = "form"   # (the library's answer redraws the form, not another page: pump)
         self.title("Hookshot Builder")
         if self.page:
             self.page.destroy()
@@ -872,10 +1058,11 @@ class Builder(tk.Tk):
         f.columnconfigure(0, weight=1, minsize=px(580))   # (every page px(800) wide: the window keeps its width, as on Windows)
         f.columnconfigure(1, minsize=px(20))
         f.columnconfigure(2, minsize=px(200))
-        ttk.Label(f, text="Build your game", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
+        # (the page is every game's: the library's heading, no game named and no product either)
+        ttk.Label(f, text=self.T("LibTitle"), style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(f, text=self.T("LibSub"), style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        games = your_games(self.cfg.get("out"))
+        games = self.library_games()
         if games:
             self.games_list(f, games).grid(row=2, column=0, columnspan=3, sticky="we")
         self.section(f, "Game files", 3, columnspan=3)
@@ -904,8 +1091,10 @@ class Builder(tk.Tk):
         out.grid(row=8, column=0, sticky="we")
         out.columnconfigure(1, weight=1)
         self.path_row(out, 0, None, self.out, lambda: self.pick_dir(self.out), button="Change")
-        ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly",
-                     font="HsNote", cursor="hand2").grid(row=8, column=2, sticky="we")
+        language = ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly",
+                                font="HsNote", cursor="hand2")
+        language.grid(row=8, column=2, sticky="we")
+        language.bind("<<ComboboxSelected>>", lambda _e: self.after_idle(self.show_form))   # (the page in the language chosen)
         # (the update track: Release, Release candidate or Nightly; the builder updates from it, saved once chosen)
 
         options = ttk.Frame(f)
@@ -950,34 +1139,302 @@ class Builder(tk.Tk):
         self.apply_mode()
         scrolls()
 
+    def T(self, key):
+        """The string table's text (text) in the game language chosen"""
+        return text(key, next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US"))
+
+    def library_games(self):
+        """The game library (library_for) for the base of the game folder in the form, read once per base and again when a build
+        or an update ends (library_cache cleared)"""
+        import game_folders
+        out = os.path.expanduser(self.out.get().strip())
+        base = game_folders.base_of(os.path.abspath(out)) if out else ""
+        cache = getattr(self, "library_cache", None)   # (none yet, or a window made without __init__: tests)
+        if cache and cache[0] == base:
+            return cache[1]
+        lines = getattr(self, "lines", None)
+        if lines is None or not out:   # (a window made without __init__ (tests), or no folder: read here)
+            self.library_cache = (base, library_for(out) if out else [])
+            return self.library_cache[1]
+        if getattr(self, "library_loading", None) != base:   # (read off the window's thread: "library", then the form again)
+            self.library_loading = base
+
+            def load():
+                games = None
+                try:
+                    games = library_for(out)
+                finally:   # (said even when the reading died: the flag cleared, no rows kept for it)
+                    lines.put(("library", (base, games)))
+            threading.Thread(target=load, daemon=True).start()
+        return []   # (while this base's library is read: none of another base's rows)
+
+    def library_state(self, g):
+        """A row's state: not installed, built before updates came in (its files to choose once), an update due, up to date, or
+        installed (its version not known: a build from a checkout)"""
+        if not g["built"]:
+            return self.T("LibMissing")
+        if not g["kept"]:
+            return self.T("LibRebuild")
+        if g["update"] is True:
+            return self.T("LibUpdate").format(g["version"] or "?")
+        if g["update"] is False:
+            return self.T("LibCurrent").format(g["version"] or "?")
+        return self.T("LibInstalled") + (" · " + g["version"] if g["version"] else "")
+
     def games_list(self, parent, games):
-        """"Your games" (your_games): a row for each built game, its name and folder, with Open folder and Play. Play starts it
-        as `--play <base> --game <key>` does (play_folder_for), the path the launcher's tiles take. Built again with the form,
-        so a build's new game is in it when the form comes back"""
+        """The game library (library_games): a row for every game that builds, installed or not, its name, state and folder, with
+        Install (its own folder under the base, refused and said when that folder holds another game), Update, Open folder and
+        Play (the row's own folder, where the game is), and Update all. Built again with the form, so a build's new game is in it
+        when the form comes back. MainWindow.xaml.cs ShowLibrary"""
+        import game_profile
         px = self.px
         box = ttk.Frame(parent)
         box.columnconfigure(0, weight=1)
-        self.section(box, "Your games", 0, top=16)
+        self.section(box, self.T("LibTitle"), 0, top=16)
+        due = any(g["update"] is True for g in games)
+        if any(g["built"] for g in games):   # (a button, enabled when an update is due, else disabled and saying why)
+            head = ttk.Frame(box)
+            head.grid(row=0, column=0, sticky="e", pady=(px(16), px(10)))
+            if not due:
+                ttk.Label(head, text=self.T("LibNothing"), style="Small.TLabel").pack(side="left", padx=(0, px(10)))
+            update_all = ttk.Button(head, text=self.T("LibUpdateAll"), cursor="hand2", command=self.update_all_click)
+            update_all.pack(side="left")
+            if not due:
+                update_all.state(["disabled"])
         rows = ttk.Frame(box)
         rows.grid(row=1, column=0, sticky="we")
         rows.columnconfigure(0, weight=1)
+        home = os.path.expanduser("~").rstrip("/")
+        paths, wrapped = [], []   # (the folder labels, elided below to the room the buttons leave; the labels that wrap to it)
+
+        def shown(f):
+            return "~" + f[len(home):] if home and f.startswith(home + "/") else f
         for i, g in enumerate(games):
             if i:
-                tk.Frame(rows, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i - 1, column=0, columnspan=3, sticky="we",
+                tk.Frame(rows, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i - 1, column=0, columnspan=4, sticky="we",
                                                                                 pady=px(6))
             texts = ttk.Frame(rows)
-            texts.grid(row=2 * i, column=0, sticky="we")
+            texts.grid(row=2 * i, column=0, sticky="we", padx=(0, px(12)))
             ttk.Label(texts, text=g["name"], style="Game.TLabel").pack(anchor="w")
-            home = os.path.expanduser("~").rstrip("/")
-            shown = "~" + g["folder"][len(home):] if home and g["folder"].startswith(home + "/") else g["folder"]
-            ttk.Label(texts, text=shown, style="Small.TLabel").pack(anchor="w")
-            ttk.Button(rows, text="Open folder", cursor="hand2",
-                       command=lambda f=g["folder"]: subprocess.Popen(["xdg-open", f])).grid(row=2 * i, column=1, padx=px(8))
-            ttk.Button(rows, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
-                       command=lambda g=g: self.play_and_close(play_folder_for(g["base"], g["key"]))).grid(row=2 * i, column=2)
+            state = ttk.Label(texts, text=self.library_state(g), style="Small.TLabel")
+            state.pack(anchor="w")
+            wrapped.append(state)
+            if g["built"]:
+                where = ttk.Label(texts, text=shown(g["folder"]), style="Small.TLabel")
+                where.pack(anchor="w")
+                paths.append((where, shown(g["folder"])))
+            if g["other_folders"]:
+                also = ttk.Label(texts, text=self.T("LibAlsoIn").format(", ".join(shown(f) for f in g["other_folders"])), style="Small.TLabel")
+                also.pack(anchor="w")
+                wrapped.append(also)
+            # (its own folder holds another game: an install there would replace that game, and make_game.py refuses it)
+            taken = (self.T("LibTaken").format(shown(g["own_folder"]), game_profile.GAMES[g["own_folder_holds"]].game)
+                     if not g["built"] and g["own_folder_holds"] in game_profile.GAMES else None)
+            if taken:
+                bad = ttk.Label(texts, text=taken, style="Bad.Small.TLabel")
+                bad.pack(anchor="w", pady=(px(4), 0))
+                wrapped.append(bad)
+            # (three button columns shared by every row, so Install, Update, Open folder and Play line up from row to row)
+            if not g["built"] or not g["kept"]:   # (a folder with no game files kept: built again from them)
+                install = ttk.Button(rows, text=self.T("LibInstall"), cursor="hand2")
+                install.configure(command=lambda g=g, b=install: self.install_menu(g, b))
+                install.grid(row=2 * i, column=1, sticky="we", padx=(0, px(8)))
+                if taken:
+                    install.state(["disabled"])
+            elif g["update"] is not False:   # (due, or not known: the tools did not answer, a build with no version)
+                ttk.Button(rows, text=self.T("LibUpdateOne"), cursor="hand2",
+                           command=lambda f=g["folder"]: self.update_game_row(f)).grid(row=2 * i, column=1, sticky="we", padx=(0, px(8)))
+            if g["built"]:
+                ttk.Button(rows, text=self.T("OpenFolder"), cursor="hand2",
+                           command=lambda f=g["folder"]: subprocess.Popen(["xdg-open", f])).grid(row=2 * i, column=2, sticky="we",
+                                                                                                  padx=(0, px(8)))
+                play = ttk.Button(rows, text=self.T("Play"), style="Go.TButton", image=self.images["play"], compound="left",
+                                  cursor="hand2", command=lambda f=g["folder"]: self.play_and_close(f))
+                play.grid(row=2 * i, column=3, sticky="we")
+                if not game_ready(g["folder"]):   # (a Windows build of the game: not one this Builder starts)
+                    play.state(["disabled"])
+        # (the room the button columns leave the texts, in the form's px(800): each path's middle left out to it, the whole path
+        # on Open folder, and the longer lines wrapped to it)
+        rows.update_idletasks()
+        buttons = sum(rows.grid_bbox(column, 0)[2] for column in (1, 2, 3)) if games else 0
+        room = max(px(200), px(800) - buttons - px(12))
+        for label, full in paths:
+            label.configure(text=elide_middle(full, room, lambda t: int(self.tk.call("font", "measure", "HsSmall", t))))
+        for label in wrapped:
+            label.configure(wraplength=room)
         if game_ready(self.cfg.get("out")):   # (the pipeline list of the folder built last, as beside its Play before)
             self.share_row(box, self.cfg["out"], wrap=px(560)).grid(row=2, column=0, sticky="w", pady=(px(10), 0))
         return box
+
+    def install_menu(self, g, button):
+        """Install: the game's copy chosen, its .nup or the folder with its romfs and exefs, then built (install)"""
+        menu = tk.Menu(self, tearoff=0)
+
+        def nup():
+            p = filedialog.askopenfilename(title=self.T("LibPickFile").format(g["name"]),
+                                           filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
+            if p:
+                self.install(g, p)
+
+        def folders():
+            p = filedialog.askdirectory(title=self.T("LibPickFolder").format(g["name"]), initialdir=os.path.expanduser("~"))
+            if not p:
+                return
+            if os.path.isdir(os.path.join(p, "romfs")) and os.path.isdir(os.path.join(p, "exefs")):
+                self.install(g, p)
+            else:
+                messagebox.showerror("Hookshot", self.T("LibNoFolders"))
+        menu.add_command(label=self.T("Nup"), command=nup)
+        menu.add_command(label=self.T("Folders"), command=folders)
+        menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    def install(self, g, copy):
+        """One game's copy built: checked to be that game (--game-<key>), into its own folder under the base (--base), or, for a
+        game installed before folders kept their game files, built again where it is. build's other choices"""
+        try:
+            jobs = make_game.requested_jobs(os.environ.get("HOOKSHOT_JOBS"))
+            if jobs is None and os.environ.get("RX_JOBS"):
+                jobs = toolchain.default_jobs()
+        except ValueError as error:
+            return messagebox.showerror("Hookshot", str(error))
+        code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
+        dlss = bool(self.dlss.get())
+        # (its own build files: --base with --work-base, each game's from the Builder's; a folder built again where it is, that
+        # game's work folder by the same rule)
+        import game_folders
+        where = (["--out", g["folder"], "--work", game_folders.folder(cache_dir(), g["key"])] if g["built"] else
+                 ["--base", g["base"], "--work-base", cache_dir()])
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--game-%s" % g["key"], copy] + where + \
+            ["--language", code] + ([] if jobs is None else ["--jobs", str(jobs)]) + \
+            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + ["--compile-shaders", self.compile_level()] + dlss_args(dlss)
+        slow = slow_disk_warning(g["folder"] if g["built"] else g["own_folder"])
+        if slow is not None and not messagebox.askokcancel("Hookshot", slow):
+            return
+        self.show_progress()
+        self.started = time.time()
+        self.proc = subprocess.Popen(cmd, cwd=ROOT, env=make_game_env(dlss), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, encoding="utf-8", errors="replace", start_new_session=True)
+        threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
+        self.tick()
+
+    def update_game_row(self, folder):
+        """A row's Update: that game's folder, as the form's Update does (begin_update: a newer Builder first when one is out,
+        and then, the new Builder installed, every installed game)"""
+        self.fetched = False
+        self.begin_update(folder)
+
+    def update_all_click(self):
+        """Update all: what it would do first (make_game.py --update-all <base> --dry-run, nothing run), then, asked, every game
+        under the base updated in turn with this Builder's engine (start_update_all)"""
+        games = self.library_games()
+        base = self.library_cache[0] if self.library_cache else ""
+        if not base or self.proc or getattr(self, "planning", False):
+            return
+        self.planning = True   # (one plan at a time; the dry run off the window's thread: "update-all-plan")
+
+        def run():
+            try:
+                r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update-all", base,
+                                    "--dry-run"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=ROOT,
+                                   timeout=120)
+                lines, error = r.stdout.splitlines(), ([l for l in r.stderr.splitlines() if l.strip()] or [None])[-1]
+            except (OSError, subprocess.TimeoutExpired) as e:
+                lines, error = [], str(e)
+            self.lines.put(("update-all-plan", (base, games, lines, error)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def update_all_plan(self, base, games, lines, error):
+        """Update all's dry run read: what it would do, asked; then Update all, unless a build or an update started meanwhile"""
+        import game_folders
+        self.planning = False
+        if self.proc:   # (a build or an update started while the plan was read: no second one)
+            return
+        code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
+        plan = game_results(lines)
+        if not plan:
+            return messagebox.showerror("Hookshot", error or self.T("LibSomeFailed"))
+        said = "\n".join(result_text(p, plan, code) for p in plan if p[2] != "missing")
+        if not any(p[2] == "update" for p in plan):
+            return messagebox.showinfo(self.T("LibUpdateAll"), said + "\n\n" + self.T("LibNothing"))
+        if not messagebox.askyesno(self.T("LibUpdateAll"), said + "\n\n" + self.T("LibAsk")) or self.proc:
+            return
+        self.show_progress(self.T("LibUpdating"))
+        self.start_update_all(base, game_folders.installed_folders(games))
+
+    def start_update_all(self, base, folders):
+        """Every game under the base updated with these tools (make_game.py --update-all <base>), on the progress page. No one
+        DLSS choice for every game: make_game.py keeps each folder's own (folder_upscalers), NVIDIA's SDK fetched for the
+        folders with DLSS when its license was accepted. The Builder's build files folder, every game's from it (--work-base)"""
+        self.update_all, self.update_all_folders, self.update_all_at, self.update_all_folder = [], list(folders), 0, ""
+        self.error = None
+        dlss = license_accepted(self.cfg)
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update-all", base, "--work-base", cache_dir()] + \
+            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + (["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else [])
+        self.heading.configure(text=self.T("LibUpdating"))
+        self.stage_text.set("Starting")
+        self.started = time.time()
+        self.proc = subprocess.Popen(cmd, cwd=ROOT, env=make_game_env(dlss, keep_prebuilt=True), stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, encoding="utf-8", errors="replace", start_new_session=True)
+        threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
+        self.tick()
+
+    def game_framed(self, line):
+        """An @@game line of Update all: a game's update begins ("Updating Mario Kart World (2 of 3)") or ends (its outcome kept
+        for the summary)"""
+        import game_folders
+        import game_profile
+        got = game_folders.update_line(line)
+        if not got:
+            return
+        if got[0] == "start":
+            self.update_all_folder = got[2]
+            if got[2] not in self.update_all_folders:
+                return   # (a game not installed)
+            self.update_all_at += 1
+            name = game_profile.GAMES[got[1]].game if got[1] in game_profile.GAMES else got[1]
+            self.heading.configure(text=self.T("LibUpdatingOne").format(name, self.update_all_at,
+                                                                       max(self.update_all_at, len(self.update_all_folders))))
+            self.bar.configure(mode="determinate", value=0)
+            self.changed, self.compiled_files, self.eta, self.compile_started = -1, 0, None, None
+            return
+        self.update_all.append((got[1], self.update_all_folder, got[2], got[3]))
+
+    def update_all_done(self, code):
+        """Update all ended (MainWindow.xaml.cs EndUpdateAll): one line per game, the games it finished and the ones it did not
+        reach (game_folders.update_all_outcome). A non-zero exit or a cancel (Cancel's error) is a stop, and says so"""
+        import game_folders
+        results, self.update_all = self.update_all, None
+        self.library_cache = None
+        lang = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
+        stopped = code != 0 or bool(getattr(self, "error", None))
+        done, unfinished = game_folders.update_all_outcome(results, self.update_all_folders, stopped)
+        lines = [result_text(r, results, lang) for r in results if r[2] != "missing"]
+        for f in unfinished:
+            key = game_folders.folder_key(f)
+            several = sum(1 for x in self.update_all_folders if game_folders.folder_key(x) == key) > 1
+            lines.append(text("ResStopped", lang).format(game_profile_name(key)) + (" · " + f if several else ""))
+        for r in results:
+            if r[2] == "updated":
+                try:
+                    add_to_menu(r[1])   # (its menu entry onto the folder, named by its game)
+                except (OSError, ValueError):
+                    pass
+        failed = any(r[2] == "failed" for r in results)
+        said = "\n".join(lines)
+        if not done and not failed and getattr(self, "error", None):
+            said = (said + "\n\n" if said else "") + self.error
+        self.stage_text.set(said or "The update stopped: see the lines above")
+        if done:
+            self.bar.configure(value=1.0)
+        else:   # (some games may be updated: not "unchanged")
+            said = said + "\n\n" + text("LibStoppedSub", lang)
+            self.stage_text.set(said)
+        ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
+        self.heading.configure(text=self.T("LibAllUpdated") if done else self.T("LibSomeFailed") if failed else self.T("LibStopped"))
+        self.stage_label.configure(style="Go.Stage.TLabel" if done else "Bad.Stage.TLabel")
+        if done:
+            self.set_step(2)
 
     def scrolled(self, parent, padding):
         """a page's body that scrolls when the window is shorter than it: by the wheel or trackpad, the scroll bar (shown only
@@ -1110,6 +1567,7 @@ class Builder(tk.Tk):
 
     def check_version(self):
         args = ["--nup", self.nup.get()] if self.kind.get() == "nup" else ["--exefs", self.exefs.get()]
+        self.copy_game = None   # (the copy's game, said again by this check: build_where)
         self.check_text.set("Checking the game version...")
 
         def run():
@@ -1203,6 +1661,7 @@ class Builder(tk.Tk):
             self.launch_update.pack(side="right", padx=self.px(4)) if show else self.launch_update.pack_forget()
 
     def show_launch(self, folder):
+        self.page_kind = "launch"
         if self.page:
             self.page.destroy()
         self.title("Hookshot")
@@ -1215,8 +1674,13 @@ class Builder(tk.Tk):
         f = ttk.Frame(page, padding=(px(48), px(24), px(48), px(56)))
         f.pack(fill="both", expand=True)
         ttk.Frame(f, width=px(800), height=0).pack()
-        ttk.Label(f, text="THE LEGEND OF ZELDA", style="Section.TLabel").pack()
-        ttk.Label(f, text="Ocarina of Time", style="Display.TLabel").pack(pady=(px(4), 0))
+        # (the game the folder holds, not always Ocarina: its kept copy, else its folder by the rule)
+        import game_folders
+        import game_profile
+        series, title = game_folders.title_parts(game_profile.GAMES[game_folders.folder_key(folder)].game)
+        if series:
+            ttk.Label(f, text=series, style="Section.TLabel").pack()
+        ttk.Label(f, text=title, style="Display.TLabel").pack(pady=(px(4), 0))
         ttk.Label(f, text=folder, style="Sub.TLabel", wraplength=px(600), justify="center").pack(pady=(px(8), 0))
         self.launch_status = tk.StringVar(value="Checking for updates...")
         ttk.Label(f, textvariable=self.launch_status, style="Note.TLabel", wraplength=px(600), justify="center").pack(pady=(px(16), 0))
@@ -1315,8 +1779,32 @@ class Builder(tk.Tk):
             self.status.set("This builder is the latest version.")
             self.lookup_latest()
             return
+        # (the new Builder just installed (fetched): every game installed beside this folder is updated with it, when there is
+        # more than one and this folder is older than the new Builder. Else the folder alone, as before: a game installed alone,
+        # and one at another version that is not older, the older one a player agreed to on a switch of track
+        # (--allow-downgrade-from), which Update all, never taking a game back, would leave as it is. The library is read off
+        # the window's thread: "update-plan")
+        have = linux_update.game_version(folder)[0]
+        if self.fetched and older_than(have, self.tools) and not getattr(self, "planned", False):
+            self.planned = True
+            threading.Thread(target=lambda: self.lines.put(("update-plan", (folder, library_for(folder)))), daemon=True).start()
+            return
+        self.update_one(folder)
+
+    def update_plan(self, folder, games):
+        """(the self-update) the library read: Update all when more than one game is installed, else the folder alone"""
+        import game_folders
+        folders = game_folders.installed_folders(games)
+        if len(folders) > 1:
+            self.library_cache = (games[0]["base"], games)
+            return self.start_update_all(games[0]["base"], folders)
+        self.update_one(folder)
+
+    def update_one(self, folder):
+        """The folder's make_game --update, its game's own build files (--work-base: the Builder's, <dir>-<key> for another
+        game than the default one)"""
         dlss = bool(self.dlss.get()) if getattr(self, "dlss_toggled", False) else folder_has_dlss(folder)
-        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder, "--work-base", cache_dir()] + \
             ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss)   # (as the last build chose)
         self.heading.configure(text="Updating your game")
         self.stage_text.set("Compiling what changed")
@@ -1371,7 +1859,9 @@ class Builder(tk.Tk):
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
-        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
+        # (a checked copy of another game than the folder's goes to its own folder beside the others: build_where)
+        where = self.build_where(out) if getattr(self, "copy_game", None) and self.kind.get() == "nup" else ["--out", out]
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + where + ["--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
             ["--compile-shaders", self.compile_level()] + dlss_args(dlss)
         slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
@@ -1385,12 +1875,29 @@ class Builder(tk.Tk):
         threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
         self.tick()
 
+    def build_where(self, out):
+        """Build's place for the copy (MainWindow.xaml.cs BuildWhere): --out, the game folder in the form, when the copy is that
+        folder's game (or its game is not known: romfs and exefs folders are not checked, and make_game.py refuses them over
+        another game's folder); --base when the checked copy is another game, which then goes to its own folder beside the others
+        (where it is installed under that base already, or its own folder by the rule), never into the form's game's folder"""
+        import game_folders
+        key = self.copy_game
+        held = game_folders.folder_game(out)
+        if not key or (held and held.key == key):
+            return ["--out", out]
+        base = game_folders.base_of(os.path.abspath(out))
+        g = next((x for x in self.library_games() if x["key"] == key), None)
+        target = game_folders.folder(base, key) if g is None else g["folder"] if g["built"] else g["own_folder"]
+        return ["--out", out] if os.path.abspath(target).rstrip("/") == os.path.abspath(out).rstrip("/") else \
+            ["--base", out, "--work-base", cache_dir()]   # (its own build files too: <dir>-<key>)
+
     def read(self, proc):
         for line in proc.stdout:
             self.lines.put(("line", line.rstrip("\n")))
         self.lines.put(("exit", proc.wait()))
 
     def show_progress(self, title="Building your game"):
+        self.page_kind = "progress"
         if self.page:
             self.page.destroy()
         self.changed, self.compiled_files = -1, 0
@@ -1454,8 +1961,23 @@ class Builder(tk.Tk):
         try:
             while True:
                 kind, v = self.lines.get_nowait()
-                if kind == "check":
+                if kind == "library":   # (library_games: the library read; the form again when it shows another)
+                    base, games = v
+                    self.library_loading = None
+                    if games is None:   # (the reading died: nothing to show, a later form asks again)
+                        continue
+                    self.library_cache = (base, games)
+                    if getattr(self, "page_kind", None) == "form" and self.proc is None:
+                        self.show_form()
+                    repoint_default(default_folder_of(games))   # (a stale hookshot.desktop onto the default game's folder)
+                elif kind == "update-plan":   # (the self-update: the library read off the window's thread)
+                    self.update_plan(*v)
+                elif kind == "update-all-plan":   # (Update all's dry run, read off the window's thread)
+                    self.update_all_plan(*v)
+                elif kind == "check":
                     self.check_text.set(v)
+                    import game_folders
+                    self.copy_game = game_folders.copy_key(v)   # (the game the copy is: build_where)
                 elif kind == "latest":
                     self.latest = v or None
                     self.apply_mode()
@@ -1485,7 +2007,9 @@ class Builder(tk.Tk):
         self.after(100, self.pump)
 
     def on_line(self, line):
-        if line.startswith("@@stage "):
+        if getattr(self, "update_all", None) is not None and line.startswith("@@game "):   # (Update all: a game begins or ends)
+            self.game_framed(line)
+        elif line.startswith("@@stage "):
             stage = line.split(" ", 2)[1]
             self.stage_text.set(STAGES.get(stage, line.split(" ", 2)[-1]))
             self.bar.configure(mode="determinate", value=0)
@@ -1546,6 +2070,9 @@ class Builder(tk.Tk):
         self.time_text.set("")   # (the clock and its countdown are a running build's; the line above says how it ended)
         for w in self.buttons.winfo_children():
             w.destroy()
+        self.library_cache = None   # (the library read again when the form comes back: a game built or updated is in it)
+        if getattr(self, "update_all", None) is not None:   # (Update all: every game's outcome, a failed one beside the others)
+            return self.update_all_done(code)
         folder = getattr(self, "built", None)
         if code == 0 and folder and game_ready(folder):
             s = int(time.time() - self.started)

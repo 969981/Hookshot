@@ -144,7 +144,8 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertIn('place_ngx_runtime(out, drop=getattr(a, "no_dlss", False))', call)
         # (the builders' windows pass it with the tick off; the Windows Builder's --cli, RecompLauncher's prepare, does not)
         win = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
-        self.assertIn('if (!dlss && !args.Contains("--no-dlss")) args.Add("--no-dlss");', win)
+        # (but not to Update all: make_game.py --update-all keeps each folder's own, folder_upscalers)
+        self.assertIn('if (!dlss && !all && !args.Contains("--no-dlss")) args.Add("--no-dlss");', win)
         cli = (ROOT / "builder" / "HookshotBuilder" / "App.xaml.cs").read_text(encoding="utf-8")
         self.assertNotIn('Add("--no-dlss")', cli)
 

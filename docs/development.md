@@ -442,12 +442,13 @@ and no release or player build. Build those with the defaults.
 
 Each game has its own folder under one base: the default game (Ocarina) keeps `<base>`, another game gets
 `<base>-<key>` (`nx2/game_folders.py`, [one engine, four games](one-engine.md)). These are the calls a program that
-manages every game makes; the Builders' library (to come) runs them:
+manages every game makes; the three Builders' game library runs them (Your games, Install, Update all, and the update
+after a new Builder):
 
 | Call | What it does |
 |---|---|
 | `python -I nx2/game_folders.py --library <base> [--json]` | Every game that builds, in profile order, installed or not: where it is installed, the version it was built with, and whether this engine would update it |
-| `python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run]` | Every built folder under the base (default `~/Games/Hookshot`) updated in turn as the game it holds, each by a `make_game.py --update` of its own; one that fails does not stop the others. A folder already at this version is skipped unless `--force`. `--dry-run` says what it would do and changes nothing. Exit status 1 when any failed |
+| `python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run] [--work-base <dir>]` | Every built folder under the base (default `~/Games/Hookshot`) updated in turn as the game it holds, each by a `make_game.py --update` of its own; one that fails does not stop the others. A folder already at this version is skipped unless `--force`. `--dry-run` says what it would do and changes nothing. Exit status 1 when any failed |
 | `python -I nx2/make_game.py --nup <copy> --base <base>` | The copy's game (by main's build id) into its own folder under the base, with its own work folder as `--prepare` gives it. Not with `--out` or `--update` |
 
 A game is looked for in all of the base's folders (`<base>` and every `<base>-<key>`), its own folder first. The Builders
@@ -493,7 +494,13 @@ own first). It passes each update's own lines on as they come (its `@@done` or `
 `rebuild` is a folder built before folders kept the game files an update builds from: it can't be updated, only built
 again from the game's files once. It is not a failure and leaves the exit status as it is. Each game other than the
 default one is updated with its own work folder, `<work>-<key>` (by the game the folder holds), when the work folder is
-the builder's own, as `--prepare` and `--base` give it, so each game keeps its own object cache. `--dry-run` runs
+the builder's own, as `--prepare` and `--base` give it, so each game keeps its own object cache. A Builder whose player chose
+the build files folder (another drive) passes it as `--work-base <dir>`: the default game's is `<dir>`, another's
+`<dir>-<key>`, so no update falls back to the default folder on the system drive. `make_game.py --update <folder>` and `--base` follow the
+same rule: a folder of another game than the default one is updated with `<work>-<key>` (by the game it holds) when the
+work folder is the builder's own, and `--work-base <dir>` gives them `<dir>` and `<dir>-<key>` too. Each folder keeps its
+own NVIDIA DLSS and AMD FSR 4: the runtimes' fetch (`--fetch-ngx-sdk`, `--fetch-fsr-runtime`) given to `--update-all`
+reaches only a folder that has that upscaler, and a folder without DLSS is built without NVIDIA's SDK. `--dry-run` runs
 nothing and makes no folder.
 
 Then one summary line per game (`Mario Kart World: updated`; with the folder, `... in <folder>: updated`, when the game

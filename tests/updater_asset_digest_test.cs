@@ -102,6 +102,7 @@ namespace DigestFixture
         public readonly byte[] Good = Encoding.ASCII.GetBytes("authored harmless setup bytes");
         public readonly byte[] Old = Encoding.ASCII.GetBytes("keep previous cached file");
         public readonly List<double> Progress = new();
+        public readonly List<(string Folder, bool All)> Builds = new();   // (MainWindow.UpdateBuildOrAll's calls)
         public int MetadataRequests;
         public string Cache => Path.Combine(Root, "HookshotBuilder", "update");
         public string Setup => Path.Combine(Cache, "HookshotBuilder.exe");
@@ -333,6 +334,22 @@ namespace DigestFixture
                 var content = new StreamContent(new Bytes(s.Good, () => s.Cancel.Cancel()));
                 Check(await Rejects<OperationCanceledException>(() => Once(s, content, s.Good.Length, s.Cancel.Token)), "Cancellation changed."); s.NoPartial();
             });
+            await Case("fetched-builds-every-game", async s =>
+            {
+                // (the new Builder just installed (--fetched, its own version): no download, and the build is every installed game's)
+                Updater.UpdateFolder(s.Window, s.Game, "v0.0.0", fetched: true);
+                Check(await s.Outcome.Task.WaitAsync(TimeSpan.FromSeconds(10)) == "build", "A fetched update did not build.");
+                Check(s.Builds.SequenceEqual(new[] { (s.Game, true) }), "A fetched update did not ask for every game.");
+                Check(s.Handler.Requests.Count == 0 && s.Starts.Count == 0, "A fetched update downloaded or launched.");
+            });
+            await Case("current-tools-build-one", async s =>
+            {
+                // (these tools already the release asked for, not just installed: that folder alone)
+                Updater.UpdateFolder(s.Window, s.Game, "v0.0.0", fetched: false);
+                Check(await s.Outcome.Task.WaitAsync(TimeSpan.FromSeconds(10)) == "build", "An update with current tools did not build.");
+                Check(s.Builds.SequenceEqual(new[] { (s.Game, false) }), "An update with current tools asked for every game.");
+                Check(s.Handler.Requests.Count == 0, "An update with current tools downloaded.");
+            });
             Console.WriteLine($"Updater digest cases: {cases - failures} passed, {failures} failed.");
             if (failures != 0) System.Environment.ExitCode = 1;
         }
@@ -353,6 +370,13 @@ namespace HookshotBuilder
         public void Note(string _) { }
         public void BeginUpdate(string folder, string? tag) { }
         public void UpdateBuild(Tools tools, string folder) => throw new Exception("Unexpected real build path.");
+        // (the build once the tools are there: every installed game when the new Builder was just installed (all), else the
+        // folder alone. Recorded, nothing built)
+        public void UpdateBuildOrAll(Tools tools, string folder, bool all)
+        {
+            DigestFixture.State.Current.Builds.Add((folder, all));
+            DigestFixture.State.Current.Outcome.TrySetResult("build");
+        }
         public void DownloadProgress(double value) => DigestFixture.State.Current.Progress.Add(value);
         public void DownloadFailed(string reason) => DigestFixture.State.Current.Outcome.TrySetResult(reason);
     }

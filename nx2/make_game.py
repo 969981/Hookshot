@@ -9,9 +9,11 @@
                                                                     exit 0 when the game is built; with --check, its "check ok|bad" line)
     python -I nx2/make_game.py --nup <file.nup> --base <folder>   (the copy's game into its own folder under that base: <folder> for
                                                                     the default game, <folder>-<key> for another; not with --out)
-    python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run]   (every game built under base, default
-                                                                    ~/Games/Hookshot, updated in turn; one that fails does not
-                                                                    stop the others; --dry-run says what it would do)
+    python -I nx2/make_game.py --update-all [<base>] [--force] [--dry-run] [--work-base <dir>]   (every game built under base,
+                                                                    default ~/Games/Hookshot, updated in turn; one that fails does
+                                                                    not stop the others; --dry-run says what it would do;
+                                                                    --work-base: the build files folder the player chose, <dir>
+                                                                    for the default game and <dir>-<key> for another)
 
 A copy is never built into a folder that holds another game (its .hookshot_exefs/main names another profile): the build stops
 with both games and the folder named. An empty folder, or one that holds the same game, is built into as before.
@@ -683,7 +685,8 @@ def game_folders_for_dump(a):
     if profile is None:
         return
     a.out = game_folders.folder(a.out, profile.key)
-    if os.path.abspath(a.work) == os.path.abspath(a.default_work):
+    # (the builder's own work folder, or --work-base's: the folder the player chose, <dir> and <dir>-<key> alike)
+    if os.path.abspath(a.work) == os.path.abspath(a.default_work) or getattr(a, "work_from_base", False):
         a.work = game_folders.folder(a.work, profile.key)
         os.makedirs(a.work, exist_ok=True)
     if profile.key != game_profile.DEFAULT:
@@ -734,26 +737,78 @@ UPDATE_LINE = "@@game"   # (--update-all's framing lines: the module's docstring
 
 def update_all_args(argv):
     """The arguments each game's make_game --update gets: the ones given, without --update-all's own (its base, --force,
-    --dry-run) and without --log (this make_game's log holds every game's lines, which it passes on). The parser takes no
-    abbreviations (allow_abbrev=False), so these are the only spellings"""
+    --dry-run, --work-base: each game gets its own --work from it) and without --log (this make_game's log holds every game's
+    lines, which it passes on). The parser takes no abbreviations (allow_abbrev=False), so these are the only spellings"""
     rest, skip = [], False
     for i, arg in enumerate(argv):
         if skip:
             skip = False
-        elif arg in ("--update-all", "--log"):
-            skip = arg == "--log" or (i + 1 < len(argv) and not argv[i + 1].startswith("-"))
-        elif arg.startswith(("--update-all=", "--log=")) or arg in ("--force", "--dry-run"):
+        elif arg in ("--update-all", "--log", "--work-base"):
+            skip = arg != "--update-all" or (i + 1 < len(argv) and not argv[i + 1].startswith("-"))
+        elif arg.startswith(("--update-all=", "--log=", "--work-base=")) or arg in ("--force", "--dry-run"):
             pass
         else:
             rest.append(arg)
     return rest
 
 
-def update_one(cmd):
+def update_work(a):
+    """(--update) The work folder of the game the folder holds (game_folders.folder_key: its kept copy's), so each game keeps
+    its own object cache: --work-base's (<dir> for the default game, <dir>-<key> for another), else, the work folder being the
+    builder's own, <work>-<key> for a game other than the default one (as --base and --update-all give it); else --work as
+    given"""
+    key = game_folders.folder_key(os.path.abspath(a.update))
+    if getattr(a, "work_base", None):
+        return game_folders.folder(os.path.abspath(os.path.expanduser(a.work_base)), key)
+    if os.path.abspath(a.work) == os.path.abspath(a.default_work) and key != game_profile.DEFAULT:
+        return game_folders.folder(os.path.abspath(a.work), key)
+    return a.work
+
+
+UPSCALER_ARGS = ("--fetch-ngx-sdk", "--accept-nvidia-license", "--fetch-fsr-runtime", "--accept-amd-license")
+
+
+DLSS_RUNTIMES = {"windows": ("nvngx_dlss.dll", "nvngx_dlssg.dll"),
+                 "linux": ("libnvidia-ngx-dlss.so", "libnvidia-ngx-dlssg.so")}   # (DLSS's and Frame Generation's, any version)
+
+
+def folder_dlss(f):
+    """A game folder built with NVIDIA DLSS: DLSS's runtime or DLSS Frame Generation's in its ngx folder, of any version (on
+    Linux libnvidia-ngx-dlss.so.<version>: one placed by an older SDK too, the Linux Builder's folder_has_dlss rule), so a
+    new pinned SDK does not take DLSS from a folder an older one built"""
+    try:
+        names = os.listdir(os.path.join(f, "ngx"))
+    except OSError:
+        return False
+    runtimes = DLSS_RUNTIMES[ngx_platform()]
+    if ngx_platform() == "windows":
+        return any(n.lower() in runtimes for n in names)
+    return any(n == r or n.startswith(r + ".") for n in names for r in runtimes)
+
+
+def folder_upscalers(f, rest):
+    """(--update-all) One folder's own NVIDIA DLSS and AMD FSR 4, as a single --update of it keeps them: the runtimes' fetch
+    (--fetch-ngx-sdk, --fetch-fsr-runtime, with their licenses, as given to --update-all) only for a folder that has DLSS's
+    runtime or FSR 4's mark, and NVIDIA's SDK (HOOKSHOT_NGX_SDK) left out of the environment of one without DLSS, so no game
+    gets an upscaler because another has it. FSR 4 itself the update keeps by the folder's mark. (args, env or None)"""
+    dlss = folder_dlss(f)
+    fsr = os.path.isfile(os.path.join(f, FSR_MARK))
+    args = []
+    if dlss:
+        args += [x for x in ("--fetch-ngx-sdk", "--accept-nvidia-license") if x in rest]
+    if fsr:
+        args += [x for x in ("--fetch-fsr-runtime", "--accept-amd-license") if x in rest]
+    env = None
+    if not dlss and "HOOKSHOT_NGX_SDK" in os.environ:
+        env = {k: v for k, v in os.environ.items() if k != "HOOKSHOT_NGX_SDK"}
+    return args, env
+
+
+def update_one(cmd, env=None):
     """One game's make_game --update: its lines passed on as they come. (0, None) when it built, else its exit status and the
     reason it said: its @@error line (under --prepare, RecompLauncher's "error" line, which is what it prints instead)"""
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None if PREPARE else subprocess.STDOUT,
-                         encoding="utf-8", errors="replace")
+                         encoding="utf-8", errors="replace", env=env)
     reason = None
     for line in p.stdout:
         line = line.rstrip("\r\n")
@@ -778,15 +833,19 @@ def update_all(a, run_one=None):
     own (as --prepare and --base give it), so each game's object cache stays its own. A folder built with this version is
     skipped unless --force; one that keeps no game files to update from (built before updates came in) is "rebuild":
     not a failure, its files are to be chosen once. --dry-run: the same lines, with what would be done (update, current,
-    rebuild, missing), and nothing run. Then one summary line per game, and exit status 1 when any failed"""
+    rebuild, missing), and nothing run. Each folder keeps its own NVIDIA DLSS and AMD FSR 4 (folder_upscalers): the runtimes'
+    fetch given to --update-all reaches only a folder that has that upscaler. Then one summary line per game, and exit
+    status 1 when any failed"""
     import version as _version
     run_one = run_one or update_one
     base = game_folders.base_of(os.path.abspath(os.path.expanduser(a.update_all or default_game_folder())))
-    rest = update_all_args(sys.argv[1:])
+    given = update_all_args(sys.argv[1:])
+    rest = [x for x in given if x not in UPSCALER_ARGS]   # (each folder's own: folder_upscalers)
     stream = sys.stderr if PREPARE else sys.stdout
     engine = _version.release()
     dry = getattr(a, "dry_run", False)
     own_work = os.path.abspath(a.work) == os.path.abspath(getattr(a, "default_work", a.work))
+    work_base = os.path.abspath(os.path.expanduser(a.work_base)) if getattr(a, "work_base", None) else None
     results = []   # (game, folder, result, text)
 
     def line(*words):
@@ -799,7 +858,9 @@ def update_all(a, run_one=None):
             results.append((g, g["folder"], "missing", None))
             continue
         work = []
-        if own_work and g["key"] != game_profile.DEFAULT:   # (the game's own work folder, as --prepare and --base give it)
+        if work_base:   # (the build files folder the player chose: the default game's, and <dir>-<key> for another)
+            work = ["--work", game_folders.folder(work_base, g["key"])]
+        elif own_work and g["key"] != game_profile.DEFAULT:   # (the game's own work folder, as --prepare and --base give it)
             work = ["--work", game_folders.folder(os.path.abspath(a.work), g["key"])]
         for f in [g["folder"]] + g["other_folders"]:
             first = f == g["folder"]
@@ -814,7 +875,8 @@ def update_all(a, run_one=None):
             elif dry:
                 result, text = "update", have and "from %s" % have
             else:
-                code, reason = run_one(PY + [os.path.abspath(__file__)] + rest + work + ["--update", f])
+                upscalers, env = folder_upscalers(f, given)
+                code, reason = run_one(PY + [os.path.abspath(__file__)] + rest + upscalers + work + ["--update", f], env)
                 result, text = ("failed", reason) if code else ("updated", engine)
             line("end", g["key"], result, text)
             results.append((g, f, result, text))
@@ -2593,6 +2655,11 @@ def parse_args():
     p.add_argument("--dry-run", action="store_true",
                    help="with --update-all: say what it would do for each game (its @@game lines: update, current, missing), "
                         "and change nothing")
+    p.add_argument("--work-base", metavar="DIR",
+                   help="with --update-all, --update or --base: the build files folder the player chose (the Builders' setting), "
+                        "so no game's build falls back to the default one: the default game's work folder is DIR, another "
+                        "game's DIR-<key> (as nx2/game_folders.py names game folders), by the game the folder or the copy is. "
+                        "Not with --work")
     p.add_argument("--base", help="the games' base folder instead of --out: the copy's game decides its own folder in it (the base "
                                   "for the default game, <base>-<key> for another: nx2/game_folders.py)")
     p.add_argument("--no-prepare-shaders", action="store_true",
@@ -2627,6 +2694,12 @@ def parse_args():
              "or --check with it.")
     if (a.force or a.dry_run) and a.update_all is None:
         fail("%s goes with --update-all." % ("--force" if a.force else "--dry-run"))
+    if a.work_base is not None and a.update_all is None and not a.update and a.base is None:
+        fail("--work-base goes with --update-all, --update or --base.")
+    if a.work_base is not None and (not a.work_base.strip() or
+                                    os.path.abspath(a.work) != os.path.abspath(p.get_default("work"))):
+        fail("--work-base names each game's build files folder: give it a folder, and no --work with it." if a.work_base.strip()
+             else "--work-base needs a folder.")
     # (--prepare with no --out: the default game's folder below, and main makes it the copy's game's: game_folders_for_dump)
     a.out_from_game = bool(a.prepare and not a.out)
     if a.base is not None:   # (--base: the same choice, from the base given)
@@ -2652,6 +2725,10 @@ def parse_args():
         else:
             fail("Your copy of the game was not found: %s" % a.game)
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
+    if a.update:   # (the game the folder holds, its own work folder: update_work)
+        a.work = update_work(a)
+    elif a.base is not None and a.work_base:   # (--base: the default game's <dir>, another's <dir>-<key>: game_folders_for_dump)
+        a.work, a.work_from_base = os.path.abspath(os.path.expanduser(a.work_base)), True
     return a
 
 

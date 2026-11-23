@@ -218,10 +218,11 @@ static class Updater
             w.DownloadFailed($"The update installed {tools.Version}, not {tag}: GitHub's download links can lag right after a release. Try Update again in a few minutes.");
             return;
         }
-        // (already the new release, or just downloaded: no second download)
+        // (already the new release, or just downloaded: no second download. Just downloaded, the new Builder updates every game
+        // installed beside this one, not only this folder: MainWindow.UpdateBuildOrAll)
         if (fetched || (tag != null && tools.Version == tag))
         {
-            w.UpdateBuild(tools, folder);
+            w.UpdateBuildOrAll(tools, folder, all: fetched);
             return;
         }
         try

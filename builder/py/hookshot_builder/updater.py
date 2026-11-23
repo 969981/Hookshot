@@ -91,7 +91,9 @@ def update_folder(ui, folder, tag, fetched):
                            "in a few minutes." % (tools.version, tag))
         return
     if tools and (fetched or (tag and tools.version == tag)):
-        ui.update_build(tools, folder)
+        # (just installed, the new Builder updates every game installed beside this one, not only this folder: window.py
+        # update_build_or_all)
+        ui.update_build_or_all(tools, folder, fetched)
         return
     ui.note("Asking GitHub for the latest release")
 

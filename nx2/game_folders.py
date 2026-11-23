@@ -218,6 +218,91 @@ def library(base, game_exe=game_exe, engine=None):
     return games
 
 
+def folder_key(game_folder):
+    """The profile key of the game a folder is: its kept copy's (folder_game), else the game whose folder it is by the rule
+    (<base>-<key> is that key's, any other folder the default game's). The Builders name a folder's launcher page and its
+    shortcuts by it; Games.cs FolderKey keeps the same"""
+    held = folder_game(game_folder)
+    if held:
+        return held.key
+    f = game_folder.rstrip("/\\") or game_folder
+    b = base_of(f)
+    for p in buildable():
+        if folder(b, p.key) == f:
+            return p.key
+    return game_profile.DEFAULT
+
+
+def shortcut_name(key):
+    """A game's shortcut (the Windows Builders' .lnk) and menu entry name: "Hookshot" for the default game, the name its
+    shortcut always had (a player's Hookshot.lnk is the one made again, not a second one), "<game> (Hookshot)" for another,
+    without the letters a Windows file name cannot hold. Games.cs ShortcutName keeps the same"""
+    if key == game_profile.DEFAULT:
+        return "Hookshot"
+    return re.sub(r'[\\/:*?"<>|]', "", game_profile.GAMES[key].game).strip() + " (Hookshot)"
+
+
+def title_parts(name):
+    """The launcher page's two lines for a game: the series above, in capitals, and the title, split at the name's first ": "
+    ("THE LEGEND OF ZELDA", "Ocarina of Time"); ("", name) for a name without one ("Mario Kart World")"""
+    head, sep, rest = name.partition(": ")
+    return (head.upper(), rest) if sep and head and rest else ("", name)
+
+
+GAME_LINE = re.compile(r"^@@game (start|end) ([a-z0-9]{1,16})(?: (.*))?$")
+
+
+def update_line(line):
+    """One of make_game.py --update-all's framing lines, read: ("start", key, folder), ("end", key, result, text or None), or
+    None for any other line. The Builders follow an Update all by them; Games.cs GameLine keeps the same"""
+    m = GAME_LINE.match((line or "").rstrip("\r\n"))
+    if not m:
+        return None
+    kind, key, rest = m.group(1), m.group(2), m.group(3) or ""
+    if kind == "start":
+        return ("start", key, rest)
+    result, _, text = rest.partition(" ")
+    return ("end", key, result, text or None)
+
+
+def copy_key(check_text):
+    """The profile key of a copy make_game.py --check found supported, from its sentence ("... (build e0f3ccfa)."), or None.
+    The Builders send a copy of another game than the folder's to its own folder by it (--base); Games.cs CopyKey keeps the
+    same"""
+    m = re.search(r"\(build ([0-9a-f]{8,64})\)", check_text or "")
+    if not m:
+        return None
+    return next((p.key for p in buildable() if p.build_id.startswith(m.group(1))), None)
+
+
+def update_all_outcome(results, folders, stopped):
+    """How an Update all ended, for the Builders' summary: (done, unfinished). results are its outcomes so far, (key, folder,
+    result, text) for each @@game end line; folders the installed folders it was to go through; stopped that it ended badly
+    (a failure, a non-zero exit, a cancel). done only when it was not stopped, every folder has an outcome and none failed;
+    unfinished the folders it did not reach (the one it was in when it stopped among them). Games.cs Outcome keeps the same"""
+    reached = {os.path.normcase(r[1]) for r in results}
+    unfinished = [f for f in folders if os.path.normcase(f) not in reached]
+    done = not stopped and bool(results) and not unfinished and not any(r[2] == "failed" for r in results)
+    return done, unfinished
+
+
+def shortcut_folder(game_folder):
+    """The folder a game's shortcuts start: its own folder by the rule when that holds the game (built, its kept copy that
+    game's), so a game installed in two folders has its shortcut on its own one, never the other; else the folder given.
+    Games.cs ShortcutFolder keeps the same"""
+    key = folder_key(game_folder)
+    own = folder(base_of(game_folder), key)
+    if os.path.normcase(os.path.abspath(own)) != os.path.normcase(os.path.abspath(game_folder)) and \
+            folder_identity(own, key) == key and folder_game(own) is not None and folder_game(own).key == key:
+        return own
+    return game_folder
+
+
+def installed_folders(games):
+    """The built folders a library (library()) names: each built game's folder and its other_folders, in its order"""
+    return [f for g in games if g["built"] for f in [g["folder"]] + list(g["other_folders"])]
+
+
 def copy_label(p):
     """What the launcher says when it asks for this game's copy: the game, its exact version and main's build"""
     return ("Your copy of %s for Nintendo Switch 2, %s (build %s): the .nup file, or the folder that holds its romfs and "

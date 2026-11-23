@@ -111,6 +111,13 @@ For a portable install on an external SSD, run the downloaded setup with `--port
 Next time, start the game from the Hookshot shortcut, or `hookshot.exe` in the game folder. That is the launcher: it
 has **Play**, and **Update** when a newer release is out.
 
+**Your games**, at the top of the builder's first page, lists every game Hookshot builds, installed or not: whether it
+is up to date or an update is available, and **Install**, **Update**, **Open folder** and **Play** for each. **Install**
+asks for that game's own copy (its `.nup`, or the folder with its romfs and exefs) and builds it in its own folder
+beside the others (`Games\Hookshot-mkw` for Mario Kart World), never over another game. **Update all** first lists which
+games it would update, then updates them one after another; one that fails does not stop the others. Each game gets
+its own shortcut, named after it; Ocarina's stays **Hookshot**.
+
 The build prepares the game's shaders at its end, which takes a while. Later starts are faster.
 
 **Compile shaders** (the Builder, the launcher's settings, `make_game.py --compile-shaders`) chooses what that
@@ -141,9 +148,12 @@ changed what the shaders are translated for) follows the same choice, kept as `c
 6. Press **Build**. It takes about 10 to 45 minutes, depending on your CPU and memory.
 7. When it says "Your game is ready", press **Play**.
 
-The game is also added to your applications menu as "Hookshot". That entry, and `hookshot` in the game folder, open the
-launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
-update.
+The game is also added to your applications menu as "Hookshot" (another game as "Mario Kart World (Hookshot)", and so
+on). That entry, and `hookshot` in the game folder, open the launcher: **Play**, and **Update** when a newer release is
+out. Keep the AppImage where it is: the launcher uses it to update.
+
+**Your games**, above **Game files**, is the same list as on Windows: every game, its state, **Install** (that game's
+copy, into its own folder beside the others), **Update**, **Open folder**, **Play**, and **Update all**.
 
 When the desktop gives the launcher its own systemd service, **Play** waits up to two seconds for the game's
 separate scope before closing the window. If that hand-off fails, it cancels that attempt before starting the
@@ -178,6 +188,11 @@ folder. The build files of the last build are gone by then (see [Where the files
 update takes about as long as the first build. Your saves and settings are kept. What changed is on the
 [Releases page](https://github.com/notquiteog/Hookshot/releases).
 
+With more than one game installed, an update that brings a new Hookshot Builder updates every installed game, one after
+another, and says at the end how each went. **Update all** in the builder's **Your games** does the same without a new
+builder. A game built before game folders kept their game files can't be updated: the list says to choose its files
+once (**Install**), and from then on it updates like the others.
+
 <details>
 <summary>What an update keeps and replaces, and updating from the command line</summary>
 
@@ -193,8 +208,9 @@ To be safe, copy your saves somewhere first: the `user` folder in the game folde
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
 
-From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`. The Linux AppImage does the same
-with `--update <game folder>`.
+From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`, or
+`python -I nx2/make_game.py --update-all <games folder>` for every game (`--dry-run` to see what it would do). The Linux
+AppImage does the same with `--update <game folder>`.
 
 </details>
 

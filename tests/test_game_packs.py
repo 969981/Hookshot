@@ -15,9 +15,9 @@ What this guards, and why each check is here rather than left to review:
    unlisted one comes after in key order, and two packs cannot name one build.
 4. **packs/ travels and counts:** the AppImage's tools and the Windows package carry it, the source stamp reads it, and
    the lift's cache key hashes every pack.json (a profile change lifts again, as an edit to game_profile.py did).
-5. **The Builders' copies:** builder/HookshotBuilder/Games.cs's table and DefaultKey and builder/setup/setup.c's
-   HOOKSHOT_DEFAULT_GAME are the packs' (also held by tests/test_builder_games.py and tests/test_launcher_games.py,
-   which run their code).
+5. **The Builders' copies:** builder/HookshotBuilder/Games.cs's table and DefaultKey, the Qt Builder's PROFILES and
+   DEFAULT_KEY (builder/py/hookshot_builder/core.py) and builder/setup/setup.c's HOOKSHOT_DEFAULT_GAME are the packs'
+   (also held by tests/test_builder_games.py and tests/test_launcher_games.py, which run their code).
 
     python -I -B tests/test_game_packs.py
 """
@@ -386,6 +386,12 @@ def check_builders():
     setup = (ROOT / "builder" / "setup" / "setup.c").read_text(encoding="utf-8")
     default = re.search(r'#define HOOKSHOT_DEFAULT_GAME "([a-z0-9]+)"', setup)
     check(default and default.group(1) == packs.DEFAULT, "setup.c's HOOKSHOT_DEFAULT_GAME is not the packs' default")
+    core = (ROOT / "builder" / "py" / "hookshot_builder" / "core.py").read_text(encoding="utf-8")
+    table = core[core.index("PROFILES = (\n"):core.index("\n)\n", core.index("PROFILES = (\n"))]
+    rows = re.findall(r'\("([a-z0-9]+)", "([^"]+)", "([0-9a-f]+)"\)', table)
+    check(rows == want, "the Qt Builder's PROFILES (core.py) are not the packs' (key, name, build id, in order): %r" % rows)
+    default = re.search(r'^DEFAULT_KEY = "([a-z0-9]+)"$', core, re.M)
+    check(default and default.group(1) == packs.DEFAULT, "the Qt Builder's DEFAULT_KEY is not the packs' default")
 
 
 def main():

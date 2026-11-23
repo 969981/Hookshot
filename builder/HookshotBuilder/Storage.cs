@@ -58,6 +58,14 @@ static class Storage
         foreach (var d in WorkParts(old)) Delete(d);
         if (!Same(old, Base))
             try { Directory.Delete(old); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }   // (only when empty)
+        // (each other game's, <old>-<key> beside it: what the builds left there goes too)
+        foreach (var p in Games.Profiles)
+        {
+            var other = Games.Folder(old, p.Key);
+            if (p.Key == Games.DefaultKey || !Directory.Exists(other) || Same(other, Games.Folder(to, p.Key))) continue;
+            foreach (var d in WorkParts(other)) Delete(d);
+            try { Directory.Delete(other); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     /// What a build makes in its work folder (make_game.py, lift.py, build.py)
@@ -94,9 +102,10 @@ static class Storage
     /// update compiled all ~600 files again, an hour and more). The Free up space button lets those go too
     static IEnumerable<string> Freeable(bool afterBuild = false)
     {
-        foreach (var d in afterBuild ? new[] { "sa", "exefs", "probe" } : new[] { "objcache", "sa", "exefs", "probe" })
-            if (!(afterBuild && d == "sa" && KeptTranslation(Path.Combine(Work, d))))
-                yield return Path.Combine(Work, d);
+        foreach (var work in WorkFolders())
+            foreach (var d in afterBuild ? new[] { "sa", "exefs", "probe" } : new[] { "objcache", "sa", "exefs", "probe" })
+                if (!(afterBuild && d == "sa" && KeptTranslation(Path.Combine(work, d))))
+                    yield return Path.Combine(work, d);
         foreach (var d in new[] { "downloads", "update" })
             yield return Path.Combine(Base, d);
         var versions = Path.Combine(Base, "versions");
@@ -105,7 +114,17 @@ static class Storage
                 if (!Kept(v)) yield return v;
     }
 
-    /// Bytes in the builder's folder and the build files folder, and in what Free lets go (an object hard-linked in both sa\build and
+    /// The build files folders: the default game's (Work), and each other game's beside it (Work-<key>, as make_game.py names it
+    /// for --base, --update and Update all: Games.Folder), those that are there
+    public static IEnumerable<string> WorkFolders()
+    {
+        yield return Work;
+        foreach (var p in Games.Profiles)
+            if (p.Key != Games.DefaultKey && Games.Folder(Work, p.Key) is var w && Directory.Exists(w))
+                yield return w;
+    }
+
+    /// Bytes in the builder's folder and the build files folders, and in what Free lets go (an object hard-linked in both sa\build and
     /// objcache counted once)
     public static (long total, long freeable) Measure()
     {
@@ -113,7 +132,7 @@ static class Storage
         long freeable = 0;
         foreach (var d in Freeable()) freeable += Size(d, seen);
         seen.Clear();
-        var total = Size(Base, seen) + (WorkChosen ? Size(Work, seen) : 0);
+        var total = Size(Base, seen) + (WorkChosen ? Size(Work, seen) : 0) + WorkFolders().Skip(1).Sum(w => Size(w, seen));
         return (Math.Max(total, freeable), freeable);
     }
 
@@ -121,7 +140,8 @@ static class Storage
     public static long Free(bool afterBuild = false)
     {
         foreach (var d in Freeable(afterBuild)) Delete(d);
-        if (!afterBuild) Delete(Path.Combine(Work, "system_headers.txt"));   // (the stamp of the compiled objects' system headers goes with them)
+        if (!afterBuild)   // (the stamp of the compiled objects' system headers goes with them)
+            foreach (var work in WorkFolders()) Delete(Path.Combine(work, "system_headers.txt"));
         if (!afterBuild) return Measure().freeable;
         var seen = new HashSet<(uint, ulong)>();   // (what of the after-build set is still there: a file in use)
         long left = 0;
