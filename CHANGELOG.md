@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.0-rc.44](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.43...v2.3.0-rc.44) (2026-11-23)
+
+
+### Bug Fixes
+
+* **builder:** name a game module copied in text mode, not a translator error ([#142](https://github.com/notquiteog/Hookshot/issues/142)) ([ccbbb7d](https://github.com/notquiteog/Hookshot/commit/ccbbb7d02388c5ed2108a782b008441a41b3465f))
+* **release:** the latest release candidate carries the Windows setup too ([#140](https://github.com/notquiteog/Hookshot/issues/140)) ([5170700](https://github.com/notquiteog/Hookshot/commit/5170700fac5e7c4137bda6064fe11d60e18f5df1))
+
+
+### Performance Improvements
+
+* **vk:** Longshot's renderer performance picks from 514591a3..9dd41326 (B2) ([#123](https://github.com/notquiteog/Hookshot/issues/123)) ([d2a1341](https://github.com/notquiteog/Hookshot/commit/d2a1341eb5fd287e523cfb62fc19d1a1f08a700d))
+
+
+### Code Refactoring
+
+* **packs:** Ocarina's Python and pipeline lists in its pack; build steps from the packs (game packs a2) ([#138](https://github.com/notquiteog/Hookshot/issues/138)) ([90bb29c](https://github.com/notquiteog/Hookshot/commit/90bb29c582694ca3bb21b6ad5995414660c1dcf3))
+
 ## [2.3.0-rc.43](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.42...v2.3.0-rc.43) (2026-11-23)
 
 
