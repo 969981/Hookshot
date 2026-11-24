@@ -1,6 +1,6 @@
 # Automated upstream synchronization and preview releases
 
-This mirror follows [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot)'s `main` branch.
+The configured successor candidate is [Hookshot self-hosted Git](https://git.notrexed.dev/Hookshot/Hookshot), branch `main`. On 2026-11-24 the web endpoint returned HTTP 521; availability and shared Git ancestry must be verified by the workflow before any merge. The old GitHub addresses are historical only.
 
 Every four hours (UTC cron `23 */4 * * *`) and on manual dispatch, [Sync upstream and publish](../.github/workflows/sync-upstream.yml) checks the upstream head. When there are new commits it **merges** upstream `main` into this repository's `main` and pushes without rewriting history. If the merge conflicts, the job fails without forcing an update.
 
@@ -11,6 +11,8 @@ It then uses `workflow_dispatch` to run the existing [Linux AppImage](../.github
 This explicit dispatch is necessary because code and tag pushes using the built-in `GITHUB_TOKEN` do **not** trigger new `push` workflows. The synchronization job requires only the `contents: write` and `actions: write` permissions granted in its workflow; no personal access token is required. The repository's Actions settings must permit write access for `GITHUB_TOKEN`.
 
 ## Operation
+
+- **Unavailable or unrelated upstream:** fail closed before merging or publishing; retain all previous snapshots. Do not use an unrelated mirror without provenance review.
 
 - **Manual sync / retry:** Actions → Sync upstream and publish → Run workflow. When a tag exists but assets are missing, a manual run redispatches both builders.
 - **Build status:** See Actions → Linux AppImage / Windows builder. A release appears under Releases once assets are uploaded.
