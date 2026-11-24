@@ -1,4 +1,4 @@
-# Keep a non-fork mirror current with the verified notquiteog/Hookshot continuation without force-pushing over local changes.
+# Track the candidate official self-hosted upstream; fail closed on unavailable or unrelated history.
 # GITHUB_TOKEN pushes do not trigger push workflows, so tag builds are explicitly dispatched.
 name: Sync upstream and publish
 
@@ -41,7 +41,17 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git remote add upstream https://github.com/notquiteog/Hookshot.git
+          git remote add upstream https://git.notrexed.dev/Hookshot/Hookshot.git
+          if ! timeout 60 git ls-remote --exit-code --heads upstream refs/heads/main >/dev/null; then
+            echo "::error::Hookshot upstream unavailable; no merge, tag or release performed."
+            echo "Upstream unavailable; existing mirror preserved." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git fetch --no-recurse-submodules --no-tags upstream main
+          if ! git merge-base HEAD upstream/main >/dev/null; then
+            echo "::error::Upstream history is unrelated; manual migration review required."
+            exit 1
+          fi
           git fetch --no-recurse-submodules --tags upstream main
           upstream_sha=$(git rev-parse refs/remotes/upstream/main)
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
